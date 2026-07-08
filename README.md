@@ -46,3 +46,7 @@ python3 -m pytest
 The public config examples live in `config/`. Keep generated runs, private
 topics, tuned prompt libraries, and real learner profiles outside this package
 repository.
+
+`config/learner-profile.example.toml` is a synthetic fixture showing the learner
+profile schema. Real profiles should stay in a local workspace such as
+`profiles/<profile-id>.toml`, not in this package repo.

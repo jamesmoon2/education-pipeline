@@ -1,0 +1,33 @@
+schema_version = 1
+id = "public-beginner-analytics"
+target_learner = "public audience"
+prior_education = "comfortable with high-school algebra"
+prior_experience = "uses spreadsheets for simple lists and budgets"
+current_skill_level = "beginner"
+adjacent_domains = ["spreadsheet formulas", "basic chart reading"]
+learning_goals = ["understand core analytics concepts", "practice interpreting simple datasets"]
+preferred_examples = ["household budgets", "public transit schedules", "weather observations"]
+examples_to_avoid = ["medical advice", "personal finance recommendations"]
+math_comfort = "basic algebra with plain-language explanations"
+reading_level = "clear adult general audience"
+pace = "steady"
+desired_depth = "practical foundation"
+time_budget = "two to three hours"
+assessment_styles = ["short quizzes", "scenario checks"]
+accessibility_constraints = ["avoid color-only distinctions"]
+tone_preference = "concise, practical, and encouraging"
+sensitive_areas = ["do not include personal learner details in published output"]
+
+[localization]
+locale = "en-US"
+units = "imperial and metric when examples need units"
+language_register = "plain professional"
+
+[privacy]
+private_by_default = true
+include_in_published_output = false
+publishable_summary = "Beginner public audience seeking a practical analytics foundation."
+
+[metadata]
+example_fixture = true
+source = "synthetic public example"
