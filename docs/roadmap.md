@@ -40,14 +40,17 @@ Current status:
   into `approved/`, and `compile_outline_prompt` /
   `RunStore.write_outline_prompt` build the outline prompt from the approved
   spec plus the topic and profile.
+- Done: draft stage. `compile_draft_prompt` / `RunStore.write_draft_prompt` build
+  the draft prompt from the approved outline, reusing the shared
+  approved-upstream prompt builder that outline uses.
 - Done: resumable run state. Every artifact (topic, profile snapshot, prompts,
   responses, approved copies, manifest events) is persisted per stage, and the
   writers refuse to clobber saved work by default. `RunStore.run_status` /
   `stage_status` / `list_run_ids` read only the workspace filesystem, so a fresh
   session (for example after running out of tokens) recovers exactly where work
   left off and `next_action` names the next step to take.
-- Next: extend prompt compilation and the run writer to draft, QA, and repair
-  stages, reusing the same approval-driven chaining.
+- Next: extend prompt compilation and the run writer to QA and repair stages,
+  reusing the same approval-driven chaining.
 
 ## Phase 4: Model Plan UI
 

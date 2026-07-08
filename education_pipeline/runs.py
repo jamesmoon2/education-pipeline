@@ -12,6 +12,7 @@ from education_pipeline.config import ConfigError
 from education_pipeline.prompts import (
     PromptArtifact,
     SpecPromptInput,
+    compile_draft_prompt,
     compile_outline_prompt,
     compile_spec_prompt,
     compile_topic_spec_prompt,
@@ -23,10 +24,9 @@ MANIFEST_SCHEMA_VERSION = 1
 
 RUN_SUBDIRS = ("inputs", "prompts", "responses", "approved", "reports", "final")
 
-#: Stages this writer can currently compile prompts for. Draft, QA, repair,
-#: finalize, and export are intentionally omitted until their prompt compilers
-#: exist.
-SUPPORTED_STAGES = ("spec", "outline")
+#: Stages this writer can currently compile prompts for. QA, repair, finalize,
+#: and export are intentionally omitted until their prompt compilers exist.
+SUPPORTED_STAGES = ("spec", "outline", "draft")
 
 _PROMPT_SUFFIX = ".prompt.md"
 _RESPONSE_SUFFIX = ".response.md"
@@ -338,6 +338,25 @@ class RunStore:
         approved_spec = self.read_approved(safe_id, "spec")
         profile = self._load_attached_profile(safe_id)
         artifact = compile_outline_prompt(topic, approved_spec, profile)
+        return self._write_prompt(artifact, overwrite=overwrite)
+
+    def write_draft_prompt(
+        self,
+        topic_id: str,
+        *,
+        overwrite: bool = False,
+    ) -> PromptFile:
+        """Compile and write the draft prompt from the approved outline.
+
+        Requires the outline stage to have been approved, and reuses the topic's
+        attached learner profile snapshot when one exists.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        topic = TopicStore(self.root).load_topic(safe_id)
+        approved_outline = self.read_approved(safe_id, "outline")
+        profile = self._load_attached_profile(safe_id)
+        artifact = compile_draft_prompt(topic, approved_outline, profile)
         return self._write_prompt(artifact, overwrite=overwrite)
 
     def _write_prompt(self, artifact: PromptArtifact, *, overwrite: bool) -> PromptFile:

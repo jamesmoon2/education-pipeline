@@ -106,6 +106,43 @@ _OUTLINE_OUTPUT_AND_QUALITY_LINES = (
     "- Keep private learner details out of publishable outline text unless explicitly allowed.",
 )
 
+_DRAFT_HEADER_LINES = (
+    "# Draft Stage Prompt",
+    "",
+    "You are writing the teachable draft for a local-first education pipeline.",
+    "Turn the approved outline into complete lesson content, module by module.",
+    "This is the lesson draft itself: the prose, examples, visuals, and practice a learner will use.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The approved outline.",
+    "4. Topic requirements.",
+    "5. Learner profile context.",
+)
+
+_DRAFT_OUTPUT_AND_QUALITY_LINES = (
+    "## Output Format",
+    "Return markdown for the full draft:",
+    "1. `# <course title>`",
+    "2. One section per module from the approved outline, in outline order. Each module section includes:",
+    "   - a short intro naming the module's learning outcomes,",
+    "   - clear explanations of the key concepts,",
+    "   - each planned visual aid, rendered inline as a markdown table or diagram when possible, or described precisely enough to build,",
+    "   - at least one fully worked example where the outline calls for one,",
+    "   - practice items or a checkpoint aligned to the module's outcomes, with answers or guidance.",
+    "3. `## Downstream Prompt Notes`",
+    "",
+    "## Quality Bar",
+    "- Follow the approved outline's module order and scope; do not add or drop modules.",
+    "- Teach to the stated outcomes; keep explanations concrete and example-driven.",
+    "- Realize each planned visual aid instead of only mentioning it.",
+    "- Keep worked examples fully worked, not sketched.",
+    "- Make practice items check the module's outcomes, and provide answers or guidance.",
+    "- Keep private learner details out of publishable draft text unless explicitly allowed.",
+    "- Flag any gaps or contradictions in the outline instead of silently inventing scope.",
+)
+
 
 def compile_spec_prompt(spec_input: SpecPromptInput) -> PromptArtifact:
     """Compile a deterministic spec-stage prompt from loose topic fields."""
@@ -143,21 +180,37 @@ def compile_outline_prompt(
 ) -> PromptArtifact:
     """Compile the outline-stage prompt from a topic and its approved spec."""
 
-    spec_text = _required_block(approved_spec, "approved specification")
-    topic_id, topic_lines = _topic_section_lines(topic)
-    lines = [
-        *_OUTLINE_HEADER_LINES,
-        "",
-        *topic_lines,
-        "",
-        "## Approved Specification",
-        "The following specification was approved upstream. Treat it as the binding contract for scope and outcomes.",
-        "",
-        spec_text.rstrip(),
-        "",
-        *_OUTLINE_OUTPUT_AND_QUALITY_LINES,
-    ]
-    return _finalize("outline", topic_id, lines, profile)
+    return _compile_upstream_prompt(
+        stage="outline",
+        header_lines=_OUTLINE_HEADER_LINES,
+        upstream_heading="## Approved Specification",
+        upstream_note="The following specification was approved upstream. Treat it as the binding contract for scope and outcomes.",
+        upstream_label="specification",
+        upstream_text=approved_spec,
+        output_and_quality_lines=_OUTLINE_OUTPUT_AND_QUALITY_LINES,
+        topic=topic,
+        profile=profile,
+    )
+
+
+def compile_draft_prompt(
+    topic: Topic,
+    approved_outline: str,
+    profile: LearnerProfile | None = None,
+) -> PromptArtifact:
+    """Compile the draft-stage prompt from a topic and its approved outline."""
+
+    return _compile_upstream_prompt(
+        stage="draft",
+        header_lines=_DRAFT_HEADER_LINES,
+        upstream_heading="## Approved Outline",
+        upstream_note="The following outline was approved upstream. Draft every module it defines, in order, and add nothing outside it.",
+        upstream_label="outline",
+        upstream_text=approved_outline,
+        output_and_quality_lines=_DRAFT_OUTPUT_AND_QUALITY_LINES,
+        topic=topic,
+        profile=profile,
+    )
 
 
 def compile_attached_spec_prompt(
@@ -178,6 +231,37 @@ def compile_attached_spec_prompt(
             profile=profile,
         )
     )
+
+
+def _compile_upstream_prompt(
+    *,
+    stage: str,
+    header_lines: tuple[str, ...],
+    upstream_heading: str,
+    upstream_note: str,
+    upstream_label: str,
+    upstream_text: str,
+    output_and_quality_lines: tuple[str, ...],
+    topic: Topic,
+    profile: LearnerProfile | None,
+) -> PromptArtifact:
+    """Build a stage prompt that embeds an approved upstream artifact."""
+
+    text = _required_block(upstream_text, f"approved {upstream_label}")
+    topic_id, topic_lines = _topic_section_lines(topic)
+    lines = [
+        *header_lines,
+        "",
+        *topic_lines,
+        "",
+        upstream_heading,
+        upstream_note,
+        "",
+        text.rstrip(),
+        "",
+        *output_and_quality_lines,
+    ]
+    return _finalize(stage, topic_id, lines, profile)
 
 
 def _topic_section_lines(topic: Topic) -> tuple[str, list[str]]:

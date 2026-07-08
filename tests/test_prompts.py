@@ -8,6 +8,7 @@ from education_pipeline import (
     SpecPromptInput,
     Topic,
     compile_attached_spec_prompt,
+    compile_draft_prompt,
     compile_outline_prompt,
     compile_spec_prompt,
     compile_topic_spec_prompt,
@@ -20,6 +21,17 @@ APPROVED_SPEC = """\
 ## Learning Outcomes
 - Explain reinforcing and balancing feedback loops.
 - Identify system boundaries.
+"""
+
+
+APPROVED_OUTLINE = """\
+# Course Outline: Systems Thinking
+
+## Modules
+1. Feedback loops
+   - Outcomes covered: Explain reinforcing and balancing feedback loops.
+2. System boundaries
+   - Outcomes covered: Identify system boundaries.
 """
 
 
@@ -216,6 +228,42 @@ def test_compile_outline_prompt_includes_profile_context(tmp_path: Path) -> None
     artifact = compile_outline_prompt(
         Topic(id="systems-thinking", title="Systems Thinking"),
         APPROVED_SPEC,
+        profile=profile,
+    )
+
+    assert "# Learner Profile Context" in artifact.text
+    assert "No learner profile is attached." not in artifact.text
+
+
+def test_compile_draft_prompt_embeds_outline_and_topic() -> None:
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+
+    artifact = compile_draft_prompt(topic, APPROVED_OUTLINE)
+
+    assert artifact.stage == "draft"
+    assert artifact.topic_id == "systems-thinking"
+    assert artifact.text.startswith("# Draft Stage Prompt\n")
+    assert "- Title: Systems Thinking" in artifact.text
+    assert "## Approved Outline" in artifact.text
+    assert "1. Feedback loops" in artifact.text
+    assert "## Output Format" in artifact.text
+    assert "## Quality Bar" in artifact.text
+    assert "No learner profile is attached." in artifact.text
+
+
+def test_compile_draft_prompt_requires_outline_text() -> None:
+    with pytest.raises(ConfigError, match="must be a non-empty string"):
+        compile_draft_prompt(Topic(id="x", title="X"), "\n\n")
+
+
+def test_compile_draft_prompt_includes_profile_context(tmp_path: Path) -> None:
+    store = ProfileStore(tmp_path)
+    store.save_profile_toml("visual-profile", PROFILE_TOML)
+    profile = store.load_profile("visual-profile")
+
+    artifact = compile_draft_prompt(
+        Topic(id="systems-thinking", title="Systems Thinking"),
+        APPROVED_OUTLINE,
         profile=profile,
     )
 
