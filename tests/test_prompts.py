@@ -10,6 +10,7 @@ from education_pipeline import (
     compile_attached_spec_prompt,
     compile_draft_prompt,
     compile_outline_prompt,
+    compile_qa_prompt,
     compile_spec_prompt,
     compile_topic_spec_prompt,
 )
@@ -32,6 +33,14 @@ APPROVED_OUTLINE = """\
    - Outcomes covered: Explain reinforcing and balancing feedback loops.
 2. System boundaries
    - Outcomes covered: Identify system boundaries.
+"""
+
+
+APPROVED_DRAFT = """\
+# Systems Thinking
+
+## Feedback loops
+A reinforcing loop amplifies change; a balancing loop resists it.
 """
 
 
@@ -264,6 +273,58 @@ def test_compile_draft_prompt_includes_profile_context(tmp_path: Path) -> None:
     artifact = compile_draft_prompt(
         Topic(id="systems-thinking", title="Systems Thinking"),
         APPROVED_OUTLINE,
+        profile=profile,
+    )
+
+    assert "# Learner Profile Context" in artifact.text
+    assert "No learner profile is attached." not in artifact.text
+
+
+def test_compile_qa_prompt_embeds_contract_and_draft() -> None:
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+
+    artifact = compile_qa_prompt(
+        topic,
+        approved_spec=APPROVED_SPEC,
+        approved_outline=APPROVED_OUTLINE,
+        approved_draft=APPROVED_DRAFT,
+    )
+
+    assert artifact.stage == "qa"
+    assert artifact.topic_id == "systems-thinking"
+    assert artifact.text.startswith("# QA Stage Prompt\n")
+    assert "- Title: Systems Thinking" in artifact.text
+    assert "## Approved Specification" in artifact.text
+    assert "## Approved Outline" in artifact.text
+    assert "## Draft Under Review" in artifact.text
+    assert "- Explain reinforcing and balancing feedback loops." in artifact.text
+    assert "1. Feedback loops" in artifact.text
+    assert "A reinforcing loop amplifies change" in artifact.text
+    assert "## Output Format" in artifact.text
+    assert "## Quality Bar" in artifact.text
+    assert "No learner profile is attached." in artifact.text
+
+
+def test_compile_qa_prompt_requires_draft_text() -> None:
+    with pytest.raises(ConfigError, match="must be a non-empty string"):
+        compile_qa_prompt(
+            Topic(id="x", title="X"),
+            approved_spec=APPROVED_SPEC,
+            approved_outline=APPROVED_OUTLINE,
+            approved_draft="   ",
+        )
+
+
+def test_compile_qa_prompt_includes_profile_context(tmp_path: Path) -> None:
+    store = ProfileStore(tmp_path)
+    store.save_profile_toml("visual-profile", PROFILE_TOML)
+    profile = store.load_profile("visual-profile")
+
+    artifact = compile_qa_prompt(
+        Topic(id="systems-thinking", title="Systems Thinking"),
+        approved_spec=APPROVED_SPEC,
+        approved_outline=APPROVED_OUTLINE,
+        approved_draft=APPROVED_DRAFT,
         profile=profile,
     )
 

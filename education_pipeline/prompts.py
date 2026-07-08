@@ -143,6 +143,41 @@ _DRAFT_OUTPUT_AND_QUALITY_LINES = (
     "- Flag any gaps or contradictions in the outline instead of silently inventing scope.",
 )
 
+_QA_HEADER_LINES = (
+    "# QA Stage Prompt",
+    "",
+    "You are reviewing a course draft for a local-first education pipeline.",
+    "Evaluate the draft under review against the approved specification and outline.",
+    "Produce a findings report; do not rewrite the draft.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The approved specification and outline, which are the contract the draft must meet.",
+    "4. Topic requirements.",
+    "5. Learner profile context.",
+)
+
+_QA_OUTPUT_AND_QUALITY_LINES = (
+    "## Output Format",
+    "Return markdown with exactly these sections:",
+    "1. `# QA Report: <title>`",
+    "2. `## Verdict` - one of pass, revise, or fail, with a one-line justification.",
+    "3. `## Outcome Coverage` - for each specification outcome, mark covered, partial, or missing, citing the module.",
+    "4. `## Findings` - a numbered list. For each: severity (blocker, major, minor), location (module or section), what is wrong, and why it matters.",
+    "5. `## Scope And Accuracy Checks` - flag out-of-scope material, factual errors, and unsupported claims.",
+    "6. `## Repair Instructions` - concrete fixes the repair stage can apply, ordered by severity.",
+    "",
+    "## Quality Bar",
+    "- Judge the draft only against the approved specification and outline, not personal preference.",
+    "- Record every missing or partial outcome as a finding.",
+    "- Make findings specific and located; avoid vague notes.",
+    "- Do not rewrite the draft here; describe each fix precisely for the repair stage.",
+    "- Separate blocking problems from minor polish.",
+    "- Flag any contradiction between the specification and outline instead of guessing.",
+    "- Keep private learner details out of publishable report text unless explicitly allowed.",
+)
+
 
 def compile_spec_prompt(spec_input: SpecPromptInput) -> PromptArtifact:
     """Compile a deterministic spec-stage prompt from loose topic fields."""
@@ -213,6 +248,45 @@ def compile_draft_prompt(
     )
 
 
+def compile_qa_prompt(
+    topic: Topic,
+    *,
+    approved_spec: str,
+    approved_outline: str,
+    approved_draft: str,
+    profile: LearnerProfile | None = None,
+) -> PromptArtifact:
+    """Compile the QA-stage prompt: review the draft against spec and outline."""
+
+    return _compile_stage_prompt(
+        stage="qa",
+        header_lines=_QA_HEADER_LINES,
+        sections=(
+            (
+                "## Approved Specification",
+                "The binding contract for scope and outcomes.",
+                "specification",
+                approved_spec,
+            ),
+            (
+                "## Approved Outline",
+                "The intended module structure and coverage.",
+                "outline",
+                approved_outline,
+            ),
+            (
+                "## Draft Under Review",
+                "The material to evaluate. Check it against the contract above; do not treat it as authoritative.",
+                "draft",
+                approved_draft,
+            ),
+        ),
+        output_and_quality_lines=_QA_OUTPUT_AND_QUALITY_LINES,
+        topic=topic,
+        profile=profile,
+    )
+
+
 def compile_attached_spec_prompt(
     store: ProfileStore,
     topic_id: str,
@@ -245,22 +319,39 @@ def _compile_upstream_prompt(
     topic: Topic,
     profile: LearnerProfile | None,
 ) -> PromptArtifact:
-    """Build a stage prompt that embeds an approved upstream artifact."""
+    """Build a stage prompt that embeds one approved upstream artifact."""
 
-    text = _required_block(upstream_text, f"approved {upstream_label}")
+    return _compile_stage_prompt(
+        stage=stage,
+        header_lines=header_lines,
+        sections=((upstream_heading, upstream_note, upstream_label, upstream_text),),
+        output_and_quality_lines=output_and_quality_lines,
+        topic=topic,
+        profile=profile,
+    )
+
+
+def _compile_stage_prompt(
+    *,
+    stage: str,
+    header_lines: tuple[str, ...],
+    sections: tuple[tuple[str, str, str, str], ...],
+    output_and_quality_lines: tuple[str, ...],
+    topic: Topic,
+    profile: LearnerProfile | None,
+) -> PromptArtifact:
+    """Build a stage prompt that embeds one or more approved artifacts.
+
+    Each section is ``(heading, note, label, text)``; ``label`` names the
+    artifact in validation errors.
+    """
+
     topic_id, topic_lines = _topic_section_lines(topic)
-    lines = [
-        *header_lines,
-        "",
-        *topic_lines,
-        "",
-        upstream_heading,
-        upstream_note,
-        "",
-        text.rstrip(),
-        "",
-        *output_and_quality_lines,
-    ]
+    lines = [*header_lines, "", *topic_lines]
+    for heading, note, label, text in sections:
+        body = _required_block(text, f"approved {label}")
+        lines.extend(["", heading, note, "", body.rstrip()])
+    lines.extend(["", *output_and_quality_lines])
     return _finalize(stage, topic_id, lines, profile)
 
 

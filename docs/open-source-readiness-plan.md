@@ -477,9 +477,10 @@ Add a project settings panel:
    `compile_topic_spec_prompt` and `RunStore.write_topic_spec_prompt`.
 4. Thread attached profile context into outline, draft, QA, and repair prompt
    compilation as those stages are introduced, and generalize the run writer
-   beyond the spec stage. In progress: outline and draft stages done, each
-   chaining off the previous stage's approved output via `RunStore.approve_stage`
-   and a shared approved-upstream prompt builder; QA/repair remain.
+   beyond the spec stage. In progress: outline, draft, and QA stages done. Each
+   chains off approved upstream output via `RunStore.approve_stage`; QA embeds
+   the approved spec, outline, and draft through a shared multi-section builder.
+   Repair remains.
 5. Make runs resumable so no work is lost across sessions. Done: all stage
    artifacts are persisted on disk, writers refuse to clobber saved work, and
    `RunStore.run_status` / `stage_status` / `list_run_ids` recover progress and

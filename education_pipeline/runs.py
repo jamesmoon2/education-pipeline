@@ -14,6 +14,7 @@ from education_pipeline.prompts import (
     SpecPromptInput,
     compile_draft_prompt,
     compile_outline_prompt,
+    compile_qa_prompt,
     compile_spec_prompt,
     compile_topic_spec_prompt,
 )
@@ -24,9 +25,9 @@ MANIFEST_SCHEMA_VERSION = 1
 
 RUN_SUBDIRS = ("inputs", "prompts", "responses", "approved", "reports", "final")
 
-#: Stages this writer can currently compile prompts for. QA, repair, finalize,
-#: and export are intentionally omitted until their prompt compilers exist.
-SUPPORTED_STAGES = ("spec", "outline", "draft")
+#: Stages this writer can currently compile prompts for. Repair, finalize, and
+#: export are intentionally omitted until their prompt compilers exist.
+SUPPORTED_STAGES = ("spec", "outline", "draft", "qa")
 
 _PROMPT_SUFFIX = ".prompt.md"
 _RESPONSE_SUFFIX = ".response.md"
@@ -357,6 +358,33 @@ class RunStore:
         approved_outline = self.read_approved(safe_id, "outline")
         profile = self._load_attached_profile(safe_id)
         artifact = compile_draft_prompt(topic, approved_outline, profile)
+        return self._write_prompt(artifact, overwrite=overwrite)
+
+    def write_qa_prompt(
+        self,
+        topic_id: str,
+        *,
+        overwrite: bool = False,
+    ) -> PromptFile:
+        """Compile and write the QA prompt from the approved draft, spec, and outline.
+
+        Requires the spec, outline, and draft stages to have been approved, and
+        reuses the topic's attached learner profile snapshot when one exists.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        topic = TopicStore(self.root).load_topic(safe_id)
+        approved_spec = self.read_approved(safe_id, "spec")
+        approved_outline = self.read_approved(safe_id, "outline")
+        approved_draft = self.read_approved(safe_id, "draft")
+        profile = self._load_attached_profile(safe_id)
+        artifact = compile_qa_prompt(
+            topic,
+            approved_spec=approved_spec,
+            approved_outline=approved_outline,
+            approved_draft=approved_draft,
+            profile=profile,
+        )
         return self._write_prompt(artifact, overwrite=overwrite)
 
     def _write_prompt(self, artifact: PromptArtifact, *, overwrite: bool) -> PromptFile:
