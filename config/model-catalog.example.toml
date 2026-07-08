@@ -1,0 +1,16 @@
+# Example model catalog. Real defaults should be reviewed before release.
+
+[[providers]]
+id = "manual"
+label = "Manual prompt workflow"
+description = "Copy prompts into any model UI, then paste or import responses."
+
+[[providers]]
+id = "claude-code"
+label = "Claude Code"
+description = "Run configured stages through Claude Code CLI when available."
+
+[[providers]]
+id = "codex"
+label = "Codex"
+description = "Run configured stages through Codex when available."

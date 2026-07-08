@@ -1,0 +1,18 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# User workspace data. Public examples should live under examples/.
+runs/
+topics/
+profiles/
+queue/
+
+# Local app/session state.
+.remember/
+.playwright-mcp/

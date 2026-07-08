@@ -1,0 +1,19 @@
+provider = "manual"
+
+[stages.profile]
+recommendation = "fast_or_strong_summary"
+
+[stages.spec]
+recommendation = "strong_contract_design"
+
+[stages.outline]
+recommendation = "premium_reasoning"
+
+[stages.draft]
+recommendation = "strong_longform_generation"
+
+[stages.qa]
+recommendation = "fast_cheap_check"
+
+[stages.repair]
+recommendation = "strong_or_premium_repair"
