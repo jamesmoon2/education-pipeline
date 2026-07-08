@@ -3,6 +3,7 @@ id = "public-beginner-analytics"
 target_learner = "public audience"
 prior_education = "comfortable with high-school algebra"
 prior_experience = "uses spreadsheets for simple lists and budgets"
+professional_experience = "entry-level operations or administrative work"
 current_skill_level = "beginner"
 adjacent_domains = ["spreadsheet formulas", "basic chart reading"]
 learning_goals = ["understand core analytics concepts", "practice interpreting simple datasets"]
@@ -17,6 +18,19 @@ assessment_styles = ["short quizzes", "scenario checks"]
 accessibility_constraints = ["avoid color-only distinctions"]
 tone_preference = "concise, practical, and encouraging"
 sensitive_areas = ["do not include personal learner details in published output"]
+
+[learning_preferences]
+preferred_modalities = ["visual", "hands-on practice", "reading"]
+explanation_style = "visual-first with concise text"
+preferred_visual_aids = ["flowcharts", "concept maps", "comparison tables", "annotated examples"]
+diagram_frequency = "frequent for new concepts and multi-step processes"
+interaction_style = "step-by-step"
+practice_style = ["scenario exercises", "self-check quizzes"]
+feedback_style = "explain why wrong answers are wrong"
+worked_example_preference = "before abstract theory"
+common_sticking_points = ["translating word problems into structured steps"]
+attention_constraints = ["prefer short sections with quick recaps"]
+review_style = ["chapter summaries", "cumulative review"]
 
 [localization]
 locale = "en-US"

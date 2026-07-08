@@ -19,6 +19,7 @@ _TOP_LEVEL_KEYS = {
     "target_learner",
     "prior_education",
     "prior_experience",
+    "professional_experience",
     "current_skill_level",
     "adjacent_domains",
     "learning_goals",
@@ -33,6 +34,7 @@ _TOP_LEVEL_KEYS = {
     "accessibility_constraints",
     "tone_preference",
     "sensitive_areas",
+    "learning_preferences",
     "localization",
     "privacy",
     "metadata",
@@ -59,6 +61,23 @@ class LearnerPrivacy:
 
 
 @dataclass(frozen=True)
+class LearnerPreferences:
+    """Learning experience preferences used to adapt explanations and practice."""
+
+    preferred_modalities: tuple[str, ...] = ()
+    explanation_style: str | None = None
+    preferred_visual_aids: tuple[str, ...] = ()
+    diagram_frequency: str | None = None
+    interaction_style: str | None = None
+    practice_style: tuple[str, ...] = ()
+    feedback_style: str | None = None
+    worked_example_preference: str | None = None
+    common_sticking_points: tuple[str, ...] = ()
+    attention_constraints: tuple[str, ...] = ()
+    review_style: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class LearnerProfile:
     """Learner or cohort context used by the profile pipeline stage."""
 
@@ -67,6 +86,7 @@ class LearnerProfile:
     schema_version: int = PROFILE_SCHEMA_VERSION
     prior_education: str | None = None
     prior_experience: str | None = None
+    professional_experience: str | None = None
     current_skill_level: str | None = None
     adjacent_domains: tuple[str, ...] = ()
     learning_goals: tuple[str, ...] = ()
@@ -81,6 +101,7 @@ class LearnerProfile:
     accessibility_constraints: tuple[str, ...] = ()
     tone_preference: str | None = None
     sensitive_areas: tuple[str, ...] = ()
+    learning_preferences: LearnerPreferences = field(default_factory=LearnerPreferences)
     localization: LearnerLocalization = field(default_factory=LearnerLocalization)
     privacy: LearnerPrivacy = field(default_factory=LearnerPrivacy)
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -128,6 +149,7 @@ def parse_learner_profile(data: Mapping[str, Any]) -> LearnerProfile:
         )
 
     localization = _parse_localization(data.get("localization", {}))
+    learning_preferences = _parse_learning_preferences(data.get("learning_preferences", {}))
     privacy = _parse_privacy(data.get("privacy", {}))
     if privacy.include_in_published_output and privacy.publishable_summary is None:
         raise ConfigError(
@@ -144,6 +166,11 @@ def parse_learner_profile(data: Mapping[str, Any]) -> LearnerProfile:
         target_learner=_required_string(data, "target_learner", "learner profile"),
         prior_education=_optional_string(data, "prior_education", "learner profile"),
         prior_experience=_optional_string(data, "prior_experience", "learner profile"),
+        professional_experience=_optional_string(
+            data,
+            "professional_experience",
+            "learner profile",
+        ),
         current_skill_level=_optional_string(data, "current_skill_level", "learner profile"),
         adjacent_domains=_string_tuple(data, "adjacent_domains", "learner profile"),
         learning_goals=_string_tuple(data, "learning_goals", "learner profile"),
@@ -162,6 +189,7 @@ def parse_learner_profile(data: Mapping[str, Any]) -> LearnerProfile:
         ),
         tone_preference=_optional_string(data, "tone_preference", "learner profile"),
         sensitive_areas=_string_tuple(data, "sensitive_areas", "learner profile"),
+        learning_preferences=learning_preferences,
         localization=localization,
         privacy=privacy,
         metadata=MappingProxyType(dict(metadata)),
@@ -184,6 +212,64 @@ def _parse_localization(raw: Any) -> LearnerLocalization:
         locale=_optional_string(raw, "locale", "localization"),
         units=_optional_string(raw, "units", "localization"),
         language_register=_optional_string(raw, "language_register", "localization"),
+    )
+
+
+def _parse_learning_preferences(raw: Any) -> LearnerPreferences:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raise ConfigError("learner profile field 'learning_preferences' must be a table")
+
+    _reject_unknown(
+        raw,
+        {
+            "preferred_modalities",
+            "explanation_style",
+            "preferred_visual_aids",
+            "diagram_frequency",
+            "interaction_style",
+            "practice_style",
+            "feedback_style",
+            "worked_example_preference",
+            "common_sticking_points",
+            "attention_constraints",
+            "review_style",
+        },
+        "learning_preferences",
+    )
+    return LearnerPreferences(
+        preferred_modalities=_string_tuple(
+            raw,
+            "preferred_modalities",
+            "learning_preferences",
+        ),
+        explanation_style=_optional_string(raw, "explanation_style", "learning_preferences"),
+        preferred_visual_aids=_string_tuple(
+            raw,
+            "preferred_visual_aids",
+            "learning_preferences",
+        ),
+        diagram_frequency=_optional_string(raw, "diagram_frequency", "learning_preferences"),
+        interaction_style=_optional_string(raw, "interaction_style", "learning_preferences"),
+        practice_style=_string_tuple(raw, "practice_style", "learning_preferences"),
+        feedback_style=_optional_string(raw, "feedback_style", "learning_preferences"),
+        worked_example_preference=_optional_string(
+            raw,
+            "worked_example_preference",
+            "learning_preferences",
+        ),
+        common_sticking_points=_string_tuple(
+            raw,
+            "common_sticking_points",
+            "learning_preferences",
+        ),
+        attention_constraints=_string_tuple(
+            raw,
+            "attention_constraints",
+            "learning_preferences",
+        ),
+        review_style=_string_tuple(raw, "review_style", "learning_preferences"),
     )
 
 

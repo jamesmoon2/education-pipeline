@@ -17,6 +17,7 @@ from education_pipeline.config import (
 from education_pipeline.profiles import (
     PROFILE_SCHEMA_VERSION,
     LearnerLocalization,
+    LearnerPreferences,
     LearnerPrivacy,
     LearnerProfile,
     load_learner_profile,
@@ -29,6 +30,7 @@ __all__ = [
     "STAGE_ORDER",
     "ConfigError",
     "LearnerLocalization",
+    "LearnerPreferences",
     "LearnerPrivacy",
     "LearnerProfile",
     "ModelCatalog",
