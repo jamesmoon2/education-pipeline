@@ -470,12 +470,15 @@ Add a project settings panel:
 1. Add the generic stage/run prompt writer. Done: `RunStore.write_spec_prompt`
    creates run directories, writes the prompt, drops a response stub, and logs
    manifest events.
-2. Add topic artifact parsing/storage with fixture-only tests.
-3. Thread attached profile context into outline, draft, QA, and repair prompt
+2. Add topic artifact parsing/storage with fixture-only tests. Done: `Topic`,
+   `parse_topic`/`load_topic`, and `TopicStore`.
+3. Wire stored topics into spec prompt compilation so the run writer can build a
+   prompt from a saved topic rather than loose keyword arguments.
+4. Thread attached profile context into outline, draft, QA, and repair prompt
    compilation as those stages are introduced, and generalize the run writer
    beyond the spec stage.
-4. Add profile privacy warnings for UI/API consumers.
-5. Decide whether to add minimal CLI commands or go straight to UI surfaces.
-6. Add the profile and model-settings panels to the dashboard.
-7. Generalize the authoring contract and examples after the profile stage exists,
+5. Add profile privacy warnings for UI/API consumers.
+6. Decide whether to add minimal CLI commands or go straight to UI surfaces.
+7. Add the profile and model-settings panels to the dashboard.
+8. Generalize the authoring contract and examples after the profile stage exists,
    because the profile fields will clarify what needs to be variable.

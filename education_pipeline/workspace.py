@@ -9,6 +9,7 @@ import tomllib
 
 from education_pipeline.config import ConfigError
 from education_pipeline.profiles import LearnerProfile, load_learner_profile, parse_learner_profile
+from education_pipeline.topics import Topic, load_topic, parse_topic
 
 
 _ARTIFACT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -133,12 +134,91 @@ class ProfileStore:
         return load_learner_profile(self.topic_profile_snapshot_path(topic_id))
 
 
+@dataclass(frozen=True)
+class TopicStore:
+    """Read and write workspace-local topic artifacts."""
+
+    root: Path
+
+    def __init__(self, root: str | Path) -> None:
+        object.__setattr__(self, "root", Path(root))
+
+    @property
+    def topics_dir(self) -> Path:
+        return self.root / "topics"
+
+    def topic_path(self, topic_id: str) -> Path:
+        safe_id = _artifact_id(topic_id, "topic id")
+        return self.topics_dir / f"{safe_id}.toml"
+
+    def list_topic_ids(self) -> tuple[str, ...]:
+        if not self.topics_dir.exists():
+            return ()
+        ids = [
+            path.stem
+            for path in self.topics_dir.glob("*.toml")
+            if path.is_file() and _is_artifact_id(path.stem)
+        ]
+        return tuple(sorted(ids))
+
+    def load_topic(self, topic_id: str) -> Topic:
+        return load_topic(self.topic_path(topic_id))
+
+    def read_topic_toml(self, topic_id: str) -> str:
+        path = self.topic_path(topic_id)
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise ConfigError(f"topic file not found: {path}") from exc
+
+    def save_topic_toml(
+        self,
+        topic_id: str,
+        toml_text: str,
+        *,
+        overwrite: bool = False,
+    ) -> Topic:
+        safe_id = _artifact_id(topic_id, "topic id")
+        topic = _parse_topic_toml(toml_text, f"topic {safe_id!r}")
+        if topic.id != safe_id:
+            raise ConfigError(
+                f"topic id mismatch: artifact is {safe_id!r} but topic defines {topic.id!r}"
+            )
+
+        path = self.topic_path(safe_id)
+        _write_text(path, toml_text, overwrite=overwrite)
+        return topic
+
+    def import_topic(
+        self,
+        topic_id: str,
+        source_path: str | Path,
+        *,
+        overwrite: bool = False,
+    ) -> Topic:
+        source = Path(source_path)
+        try:
+            toml_text = source.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise ConfigError(f"topic import file not found: {source}") from exc
+
+        return self.save_topic_toml(topic_id, toml_text, overwrite=overwrite)
+
+
 def _parse_profile_toml(toml_text: str, context: str) -> LearnerProfile:
     try:
         data = tomllib.loads(toml_text)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"invalid TOML in {context}: {exc}") from exc
     return parse_learner_profile(data)
+
+
+def _parse_topic_toml(toml_text: str, context: str) -> Topic:
+    try:
+        data = tomllib.loads(toml_text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"invalid TOML in {context}: {exc}") from exc
+    return parse_topic(data)
 
 
 def _require_matching_profile_id(profile: LearnerProfile, expected_id: str) -> None:

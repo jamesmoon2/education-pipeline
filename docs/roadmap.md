@@ -31,8 +31,10 @@ Current status:
 - Done: the run prompt writer (`RunStore`) creates run directories, writes the
   spec prompt, drops a `SAVE_RESPONSE_HERE` stub, and logs manifest events;
   stubs never count as ingested responses.
-- Next: parse and store the topic artifact, then extend prompt compilation to
-  outline, draft, QA, and repair stages.
+- Done: topic artifact model (`Topic`), TOML parser, and workspace-local
+  `TopicStore` that preserves imported TOML text.
+- Next: wire stored topics into spec prompt compilation, then extend prompt
+  compilation to outline, draft, QA, and repair stages.
 
 ## Phase 4: Model Plan UI
 

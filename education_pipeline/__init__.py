@@ -39,7 +39,13 @@ from education_pipeline.profiles import (
     render_profile_prompt_context,
     render_profile_public_summary,
 )
-from education_pipeline.workspace import ProfileAttachment, ProfileStore
+from education_pipeline.topics import (
+    TOPIC_SCHEMA_VERSION,
+    Topic,
+    load_topic,
+    parse_topic,
+)
+from education_pipeline.workspace import ProfileAttachment, ProfileStore, TopicStore
 
 __all__ = [
     "DEFAULT_STAGE_RECOMMENDATIONS",
@@ -48,6 +54,7 @@ __all__ = [
     "RUN_SUBDIRS",
     "STAGE_ORDER",
     "SUPPORTED_STAGES",
+    "TOPIC_SCHEMA_VERSION",
     "ConfigError",
     "LearnerLocalization",
     "LearnerPreferences",
@@ -65,14 +72,18 @@ __all__ = [
     "SpecPromptInput",
     "StageModelPlan",
     "StagePaths",
+    "Topic",
+    "TopicStore",
     "compile_attached_spec_prompt",
     "compile_spec_prompt",
     "load_learner_profile",
     "load_model_catalog",
     "load_model_plan",
+    "load_topic",
     "parse_learner_profile",
     "parse_model_catalog",
     "parse_model_plan",
+    "parse_topic",
     "render_profile_prompt_context",
     "render_profile_public_summary",
 ]
