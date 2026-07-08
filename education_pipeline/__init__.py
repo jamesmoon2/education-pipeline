@@ -22,6 +22,8 @@ from education_pipeline.profiles import (
     LearnerProfile,
     load_learner_profile,
     parse_learner_profile,
+    render_profile_prompt_context,
+    render_profile_public_summary,
 )
 
 __all__ = [
@@ -44,4 +46,6 @@ __all__ = [
     "parse_learner_profile",
     "parse_model_catalog",
     "parse_model_plan",
+    "render_profile_prompt_context",
+    "render_profile_public_summary",
 ]

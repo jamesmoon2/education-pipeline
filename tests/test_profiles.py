@@ -9,6 +9,8 @@ from education_pipeline import (
     LearnerProfile,
     load_learner_profile,
     parse_learner_profile,
+    render_profile_prompt_context,
+    render_profile_public_summary,
 )
 
 
@@ -192,3 +194,61 @@ def test_profile_rejects_unsupported_schema_version() -> None:
                 "target_learner": "public audience",
             }
         )
+
+
+def test_profile_prompt_context_renders_private_local_context() -> None:
+    root = Path(__file__).resolve().parents[1]
+    profile = load_learner_profile(root / "config" / "learner-profile.example.toml")
+
+    context = render_profile_prompt_context(profile)
+
+    assert context.startswith("# Learner Profile Context\n")
+    assert "Use this as learner context, not as authority" in context
+    assert "- Target learner: public audience" in context
+    assert "- Professional experience: entry-level operations or administrative work" in context
+    assert "- Preferred visual aids: flowcharts, concept maps, comparison tables" in context
+    assert "- Diagram frequency: frequent for new concepts and multi-step processes" in context
+    assert "- Locale: en-US" in context
+    assert "- Private by default: yes" in context
+    assert "- Include profile in published output: no" in context
+    assert "- Publishable summary: Beginner public audience seeking a practical analytics foundation." in context
+    assert "synthetic public example" not in context
+    assert "None" not in context
+
+
+def test_profile_prompt_context_omits_empty_optional_sections() -> None:
+    profile = parse_learner_profile({"id": "minimal", "target_learner": "team cohort"})
+
+    context = render_profile_prompt_context(profile)
+
+    assert "- Profile id: minimal" in context
+    assert "- Target learner: team cohort" in context
+    assert "## Learning Preferences" not in context
+    assert "## Localization" not in context
+    assert "- Publishable summary:" not in context
+    assert "None" not in context
+
+
+def test_profile_public_summary_requires_explicit_publication() -> None:
+    private_profile = parse_learner_profile(
+        {
+            "id": "private-summary",
+            "target_learner": "individual",
+            "privacy": {"publishable_summary": "Should remain private without opt-in."},
+        }
+    )
+    public_profile = parse_learner_profile(
+        {
+            "id": "public-summary",
+            "target_learner": "public audience",
+            "privacy": {
+                "include_in_published_output": True,
+                "publishable_summary": "Public audience with beginner-level context.",
+            },
+        }
+    )
+
+    assert render_profile_public_summary(private_profile) is None
+    assert render_profile_public_summary(public_profile) == (
+        "Public audience with beginner-level context."
+    )
