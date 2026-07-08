@@ -25,6 +25,7 @@ from education_pipeline.profiles import (
     render_profile_prompt_context,
     render_profile_public_summary,
 )
+from education_pipeline.workspace import ProfileAttachment, ProfileStore
 
 __all__ = [
     "DEFAULT_STAGE_RECOMMENDATIONS",
@@ -38,6 +39,8 @@ __all__ = [
     "ModelCatalog",
     "ModelOption",
     "ModelPlan",
+    "ProfileAttachment",
+    "ProfileStore",
     "Provider",
     "StageModelPlan",
     "load_learner_profile",
