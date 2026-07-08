@@ -486,7 +486,9 @@ Add a project settings panel:
 5. Make runs resumable so no work is lost across sessions. Done: all stage
    artifacts are persisted on disk, writers refuse to clobber saved work, and
    `RunStore.run_status` / `stage_status` / `list_run_ids` recover progress and
-   the next action from the workspace alone.
+   the next action from the workspace alone. `RunStore.advance` drives a run
+   forward one machine step at a time, pausing at human save/approve steps, so a
+   fresh session resumes exactly where an earlier one stopped.
 6. Add profile privacy warnings for UI/API consumers.
 7. Decide whether to add minimal CLI commands or go straight to UI surfaces.
 8. Add the profile and model-settings panels to the dashboard.

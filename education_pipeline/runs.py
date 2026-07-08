@@ -108,6 +108,15 @@ class RunStatus:
 
 
 @dataclass(frozen=True)
+class AdvanceResult:
+    """The outcome of advancing a run by one machine step."""
+
+    topic_id: str
+    performed: str | None
+    status: RunStatus
+
+
+@dataclass(frozen=True)
 class RunStore:
     """Create run directories and write stage prompt/response artifacts."""
 
@@ -206,6 +215,44 @@ class RunStore:
             finalized=finalized,
             next_action=self._next_action(safe_id, stages, finalized),
         )
+
+    def advance(self, topic_id: str) -> AdvanceResult:
+        """Perform the run's next machine step, pausing at human steps.
+
+        Machine steps (writing the next stage prompt, or finalizing) are done
+        automatically. Human steps (saving a response, approving it) and a
+        completed run are left untouched, so this can be called repeatedly to
+        drive a run forward and resume it from wherever it stopped.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        action = self.run_status(safe_id).next_action
+        performed: str | None = None
+        if action.action == "write_prompt" and action.stage is not None:
+            self._write_stage_prompt(safe_id, action.stage)
+            performed = "write_prompt"
+        elif action.action == "finalize":
+            self.finalize_run(safe_id)
+            performed = "finalize"
+        return AdvanceResult(
+            topic_id=safe_id,
+            performed=performed,
+            status=self.run_status(safe_id),
+        )
+
+    def _write_stage_prompt(self, topic_id: str, stage: str) -> PromptFile:
+        writers = {
+            "spec": self.write_topic_spec_prompt,
+            "outline": self.write_outline_prompt,
+            "draft": self.write_draft_prompt,
+            "qa": self.write_qa_prompt,
+            "repair": self.write_repair_prompt,
+        }
+        try:
+            writer = writers[stage]
+        except KeyError as exc:
+            raise ConfigError(f"no prompt writer for stage {stage!r}") from exc
+        return writer(topic_id)
 
     def _next_action(
         self,

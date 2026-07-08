@@ -56,6 +56,11 @@ Current status:
   `final/guide.md`, records a `finalized` manifest event, and flips
   `run_status.finalized`; `next_action` reports `finalize` once every stage is
   approved and `done` once the guide is written.
+- Done: run driver. `RunStore.advance` performs the run's next machine step
+  (writing the next stage prompt, or finalizing) and pauses at human steps
+  (saving a response, approving it). Called repeatedly it drives a run forward
+  and resumes it from disk, so a fresh session picks up exactly where an earlier
+  one stopped. This is the API a CLI or UI would sit on.
 - Done: resumable run state. Every artifact (topic, profile snapshot, prompts,
   responses, approved copies, manifest events) is persisted per stage, and the
   writers refuse to clobber saved work by default. `RunStore.run_status` /

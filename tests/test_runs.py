@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from education_pipeline import (
+    AdvanceResult,
     ConfigError,
     NextAction,
     PromptFile,
@@ -461,6 +462,77 @@ def test_run_status_advances_through_spec_substates(tmp_path: Path) -> None:
     status = runs.run_status("systems-thinking")
     assert status.stages[0].state == "approved"
     assert (status.next_action.stage, status.next_action.action) == ("outline", "write_prompt")
+
+
+def test_advance_writes_the_next_prompt(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+
+    result = runs.advance("systems-thinking")
+
+    assert isinstance(result, AdvanceResult)
+    assert result.performed == "write_prompt"
+    assert (tmp_path / "runs" / "systems-thinking" / "prompts" / "spec.prompt.md").exists()
+    assert result.status.next_action.action == "save_response"
+
+
+def test_advance_pauses_on_human_steps(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    runs.advance("systems-thinking")  # writes the spec prompt
+
+    result = runs.advance("systems-thinking")
+
+    assert result.performed is None
+    assert result.status.next_action.action == "save_response"
+
+
+def test_advance_finalizes_when_all_stages_approved(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_all_stages_to_approved(runs, "systems-thinking")
+
+    result = runs.advance("systems-thinking")
+
+    assert result.performed == "finalize"
+    assert result.status.finalized is True
+    assert result.status.next_action.action == "done"
+
+
+def test_advance_is_noop_when_done(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_all_stages_to_approved(runs, "systems-thinking")
+    runs.finalize_run("systems-thinking")
+
+    result = runs.advance("systems-thinking")
+
+    assert result.performed is None
+    assert result.status.next_action.action == "done"
+
+
+def test_advance_drives_a_full_run_with_human_steps(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+
+    for _ in range(50):
+        status = runs.advance("systems-thinking").status
+        action = status.next_action
+        if action.action == "done":
+            break
+        if action.action == "save_response":
+            runs.stage_paths("systems-thinking", action.stage).response_path.write_text(
+                f"# {action.stage} output\n", encoding="utf-8"
+            )
+        elif action.action == "approve":
+            runs.approve_stage("systems-thinking", action.stage)
+    else:  # pragma: no cover - guards against a non-converging loop
+        raise AssertionError("advance did not reach done")
+
+    final_status = runs.run_status("systems-thinking")
+    assert final_status.finalized is True
+    assert final_status.next_action.action == "done"
+    assert (tmp_path / "runs" / "systems-thinking" / "final" / "guide.md").exists()
 
 
 def test_stage_status_rejects_unsupported_stage(tmp_path: Path) -> None:
