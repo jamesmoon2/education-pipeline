@@ -35,3 +35,14 @@ Generated runs, private topics, tuned prompt libraries, and real learner
 profiles belong in user workspaces, not in this public package repository.
 
 See `docs/extraction-manifest.md` for the extraction boundary.
+
+## Development
+
+```bash
+python3 -m pip install -e ".[dev]"
+python3 -m pytest
+```
+
+The public config examples live in `config/`. Keep generated runs, private
+topics, tuned prompt libraries, and real learner profiles outside this package
+repository.

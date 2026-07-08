@@ -5,12 +5,46 @@ id = "manual"
 label = "Manual prompt workflow"
 description = "Copy prompts into any model UI, then paste or import responses."
 
+[[providers.models]]
+id = "prompt-only"
+label = "Prompt-only handoff"
+description = "No automated execution. The user chooses the model outside this tool."
+quality = "manual"
+
 [[providers]]
 id = "claude-code"
 label = "Claude Code"
 description = "Run configured stages through Claude Code CLI when available."
 
+[[providers.models]]
+id = "balanced"
+label = "Balanced"
+description = "Project-local alias for the default balanced Claude Code model."
+quality = "balanced"
+default_effort = "medium"
+
+[[providers.models]]
+id = "premium-reasoning"
+label = "Premium reasoning"
+description = "Project-local alias for harder outline, repair, and design stages."
+quality = "premium"
+default_effort = "high"
+
 [[providers]]
 id = "codex"
 label = "Codex"
 description = "Run configured stages through Codex when available."
+
+[[providers.models]]
+id = "balanced"
+label = "Balanced"
+description = "Project-local alias for the default balanced Codex model."
+quality = "balanced"
+default_effort = "medium"
+
+[[providers.models]]
+id = "fast-check"
+label = "Fast check"
+description = "Project-local alias for inexpensive mechanical review stages."
+quality = "fast"
+default_effort = "low"
