@@ -9,8 +9,13 @@ import json
 import re
 
 from education_pipeline.config import ConfigError
-from education_pipeline.prompts import PromptArtifact, SpecPromptInput, compile_spec_prompt
-from education_pipeline.workspace import ProfileStore
+from education_pipeline.prompts import (
+    PromptArtifact,
+    SpecPromptInput,
+    compile_spec_prompt,
+    compile_topic_spec_prompt,
+)
+from education_pipeline.workspace import ProfileStore, TopicStore
 
 
 MANIFEST_SCHEMA_VERSION = 1
@@ -142,6 +147,24 @@ class RunStore:
                 profile=profile,
             )
         )
+        return self._write_prompt(artifact, overwrite=overwrite)
+
+    def write_topic_spec_prompt(
+        self,
+        topic_id: str,
+        *,
+        overwrite: bool = False,
+    ) -> PromptFile:
+        """Compile and write the spec prompt from a stored topic artifact.
+
+        Loads the topic from the workspace ``topics`` directory and reuses the
+        topic's attached learner profile snapshot when one exists.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        topic = TopicStore(self.root).load_topic(safe_id)
+        profile = self._load_attached_profile(safe_id)
+        artifact = compile_topic_spec_prompt(topic, profile)
         return self._write_prompt(artifact, overwrite=overwrite)
 
     def _write_prompt(self, artifact: PromptArtifact, *, overwrite: bool) -> PromptFile:

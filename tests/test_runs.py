@@ -8,7 +8,18 @@ from education_pipeline import (
     PromptFile,
     ProfileStore,
     RunStore,
+    TopicStore,
 )
+
+
+TOPIC_TOML = """\
+schema_version = 1
+id = "systems-thinking"
+title = "Systems Thinking"
+brief = "A public introduction to feedback loops."
+audience = "early-career analysts"
+goals = ["explain feedback loops"]
+"""
 
 
 PROFILE_TOML = """\
@@ -118,6 +129,44 @@ def test_has_ingested_response_ignores_stub(tmp_path: Path) -> None:
     result.response_path.write_text("# Course Specification\n", encoding="utf-8")
 
     assert store.has_ingested_response("systems-thinking", "spec") is True
+
+
+def test_write_topic_spec_prompt_uses_stored_topic(tmp_path: Path) -> None:
+    topics = TopicStore(tmp_path)
+    topics.save_topic_toml("systems-thinking", TOPIC_TOML)
+
+    runs = RunStore(tmp_path)
+    result = runs.write_topic_spec_prompt("systems-thinking")
+
+    assert isinstance(result, PromptFile)
+    assert result.stage == "spec"
+    assert result.topic_id == "systems-thinking"
+
+    prompt_text = result.prompt_path.read_text(encoding="utf-8")
+    assert "- Title: Systems Thinking" in prompt_text
+    assert "- Audience: early-career analysts" in prompt_text
+    assert "- Goals: explain feedback loops" in prompt_text
+
+    manifest = runs.read_manifest("systems-thinking")
+    assert manifest["events"][0]["stage"] == "spec"
+
+
+def test_write_topic_spec_prompt_uses_attached_profile_snapshot(tmp_path: Path) -> None:
+    profiles = ProfileStore(tmp_path)
+    profiles.save_profile_toml("visual-profile", PROFILE_TOML)
+    profiles.attach_profile_to_topic("visual-profile", "systems-thinking")
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+
+    result = RunStore(tmp_path).write_topic_spec_prompt("systems-thinking")
+
+    prompt_text = result.prompt_path.read_text(encoding="utf-8")
+    assert "# Learner Profile Context" in prompt_text
+    assert "- Professional experience: early-career analysts" in prompt_text
+
+
+def test_write_topic_spec_prompt_missing_topic_raises(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="topic file not found"):
+        RunStore(tmp_path).write_topic_spec_prompt("systems-thinking")
 
 
 def test_run_store_rejects_path_traversal_topic_ids(tmp_path: Path) -> None:

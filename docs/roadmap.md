@@ -33,8 +33,11 @@ Current status:
   stubs never count as ingested responses.
 - Done: topic artifact model (`Topic`), TOML parser, and workspace-local
   `TopicStore` that preserves imported TOML text.
-- Next: wire stored topics into spec prompt compilation, then extend prompt
-  compilation to outline, draft, QA, and repair stages.
+- Done: stored topics drive spec prompt compilation
+  (`compile_topic_spec_prompt` and `RunStore.write_topic_spec_prompt`), rendering
+  rich topic fields into the prompt's Topic section.
+- Next: extend prompt compilation and the run writer to outline, draft, QA, and
+  repair stages.
 
 ## Phase 4: Model Plan UI
 

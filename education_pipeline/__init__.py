@@ -19,6 +19,7 @@ from education_pipeline.prompts import (
     SpecPromptInput,
     compile_attached_spec_prompt,
     compile_spec_prompt,
+    compile_topic_spec_prompt,
 )
 from education_pipeline.runs import (
     MANIFEST_SCHEMA_VERSION,
@@ -76,6 +77,7 @@ __all__ = [
     "TopicStore",
     "compile_attached_spec_prompt",
     "compile_spec_prompt",
+    "compile_topic_spec_prompt",
     "load_learner_profile",
     "load_model_catalog",
     "load_model_plan",

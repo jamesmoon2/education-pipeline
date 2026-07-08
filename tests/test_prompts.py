@@ -6,8 +6,10 @@ from education_pipeline import (
     ConfigError,
     ProfileStore,
     SpecPromptInput,
+    Topic,
     compile_attached_spec_prompt,
     compile_spec_prompt,
+    compile_topic_spec_prompt,
 )
 
 
@@ -104,6 +106,69 @@ def test_compile_spec_prompt_trims_topic_fields() -> None:
     assert "- Topic id: systems-thinking" in artifact.text
     assert "- Title: Systems Thinking" in artifact.text
     assert "- Topic brief: A public introduction." in artifact.text
+
+
+def test_compile_topic_spec_prompt_renders_rich_topic_fields() -> None:
+    topic = Topic(
+        id="systems-thinking",
+        title="Systems Thinking",
+        brief="A public introduction to feedback loops.",
+        audience="early-career analysts",
+        goals=("explain feedback loops", "identify system boundaries"),
+        scope_includes=("reinforcing and balancing loops",),
+        scope_excludes=("formal control theory",),
+        key_questions=("What makes a loop reinforcing?",),
+        prerequisites=("basic graphs",),
+        constraints=("no calculus",),
+        notes="Keep examples domain-neutral.",
+    )
+
+    artifact = compile_topic_spec_prompt(topic)
+
+    assert artifact.stage == "spec"
+    assert artifact.topic_id == "systems-thinking"
+    assert artifact.text.startswith("# Spec Stage Prompt\n")
+    assert "- Topic id: systems-thinking" in artifact.text
+    assert "- Title: Systems Thinking" in artifact.text
+    assert "- Topic brief: A public introduction to feedback loops." in artifact.text
+    assert "- Audience: early-career analysts" in artifact.text
+    assert "- Goals: explain feedback loops, identify system boundaries" in artifact.text
+    assert "- In scope: reinforcing and balancing loops" in artifact.text
+    assert "- Out of scope: formal control theory" in artifact.text
+    assert "- Key questions: What makes a loop reinforcing?" in artifact.text
+    assert "- Prerequisites: basic graphs" in artifact.text
+    assert "- Constraints: no calculus" in artifact.text
+    assert "- Notes: Keep examples domain-neutral." in artifact.text
+    # The shared authoring contract is still present.
+    assert "## Output Format" in artifact.text
+    assert "## Quality Bar" in artifact.text
+    assert "No learner profile is attached." in artifact.text
+
+
+def test_compile_topic_spec_prompt_minimal_topic_omits_absent_fields() -> None:
+    topic = Topic(id="minimal-topic", title="Minimal Topic")
+
+    artifact = compile_topic_spec_prompt(topic)
+
+    assert "- Topic id: minimal-topic" in artifact.text
+    assert "- Title: Minimal Topic" in artifact.text
+    assert "- Goals:" not in artifact.text
+    assert "- In scope:" not in artifact.text
+    assert "- Audience:" not in artifact.text
+
+
+def test_compile_topic_spec_prompt_includes_profile_context(tmp_path: Path) -> None:
+    store = ProfileStore(tmp_path)
+    store.save_profile_toml("visual-profile", PROFILE_TOML)
+    profile = store.load_profile("visual-profile")
+
+    artifact = compile_topic_spec_prompt(
+        Topic(id="systems-thinking", title="Systems Thinking"),
+        profile=profile,
+    )
+
+    assert "# Learner Profile Context" in artifact.text
+    assert "No learner profile is attached." not in artifact.text
 
 
 def test_compile_attached_spec_prompt_uses_snapshot_not_current_profile(tmp_path: Path) -> None:

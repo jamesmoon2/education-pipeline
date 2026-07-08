@@ -473,7 +473,8 @@ Add a project settings panel:
 2. Add topic artifact parsing/storage with fixture-only tests. Done: `Topic`,
    `parse_topic`/`load_topic`, and `TopicStore`.
 3. Wire stored topics into spec prompt compilation so the run writer can build a
-   prompt from a saved topic rather than loose keyword arguments.
+   prompt from a saved topic rather than loose keyword arguments. Done:
+   `compile_topic_spec_prompt` and `RunStore.write_topic_spec_prompt`.
 4. Thread attached profile context into outline, draft, QA, and repair prompt
    compilation as those stages are introduced, and generalize the run writer
    beyond the spec stage.
