@@ -33,6 +33,12 @@ def _drive_draft_to_approved(runs: RunStore, topic_id: str) -> None:
     runs.approve_stage(topic_id, "draft")
 
 
+def _drive_qa_to_approved(runs: RunStore, topic_id: str) -> None:
+    result = runs.write_qa_prompt(topic_id)
+    result.response_path.write_text("# QA Report\n", encoding="utf-8")
+    runs.approve_stage(topic_id, "qa")
+
+
 TOPIC_TOML = """\
 schema_version = 1
 id = "systems-thinking"
@@ -309,12 +315,49 @@ def test_write_qa_prompt_requires_approved_draft(tmp_path: Path) -> None:
         runs.write_qa_prompt("systems-thinking")
 
 
+def test_write_repair_prompt_uses_approved_draft_and_qa(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_spec_to_approved(runs, "systems-thinking")
+    _drive_outline_to_approved(runs, "systems-thinking")
+    runs.write_draft_prompt("systems-thinking").response_path.write_text(
+        "# Systems Thinking\n\n## Feedback loops\nA reinforcing loop amplifies change.\n",
+        encoding="utf-8",
+    )
+    runs.approve_stage("systems-thinking", "draft")
+    runs.write_qa_prompt("systems-thinking").response_path.write_text(
+        "# QA Report\n\n## Findings\n1. major - Add the boundaries module.\n",
+        encoding="utf-8",
+    )
+    runs.approve_stage("systems-thinking", "qa")
+
+    result = runs.write_repair_prompt("systems-thinking")
+
+    assert result.stage == "repair"
+    assert result.prompt_path == tmp_path / "runs" / "systems-thinking" / "prompts" / "repair.prompt.md"
+    prompt_text = result.prompt_path.read_text(encoding="utf-8")
+    assert "## Approved QA Findings" in prompt_text
+    assert "1. major - Add the boundaries module." in prompt_text
+    assert "A reinforcing loop amplifies change." in prompt_text
+
+
+def test_write_repair_prompt_requires_approved_qa(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_spec_to_approved(runs, "systems-thinking")
+    _drive_outline_to_approved(runs, "systems-thinking")
+    _drive_draft_to_approved(runs, "systems-thinking")
+
+    with pytest.raises(ConfigError, match="approved qa response not found"):
+        runs.write_repair_prompt("systems-thinking")
+
+
 def test_run_status_reports_pending_before_any_work(tmp_path: Path) -> None:
     status = RunStore(tmp_path).run_status("systems-thinking")
 
     assert isinstance(status, RunStatus)
     assert status.topic_id == "systems-thinking"
-    assert [s.stage for s in status.stages] == ["spec", "outline", "draft", "qa"]
+    assert [s.stage for s in status.stages] == ["spec", "outline", "draft", "qa", "repair"]
     assert all(
         not s.prompt_written and not s.response_ingested and not s.approved
         for s in status.stages
@@ -351,10 +394,11 @@ def test_run_status_reports_done_when_all_stages_approved(tmp_path: Path) -> Non
     _drive_spec_to_approved(runs, "systems-thinking")
     _drive_outline_to_approved(runs, "systems-thinking")
     _drive_draft_to_approved(runs, "systems-thinking")
+    _drive_qa_to_approved(runs, "systems-thinking")
 
-    qa = runs.write_qa_prompt("systems-thinking")
-    qa.response_path.write_text("# QA Report\n", encoding="utf-8")
-    runs.approve_stage("systems-thinking", "qa")
+    repair = runs.write_repair_prompt("systems-thinking")
+    repair.response_path.write_text("# Systems Thinking\n", encoding="utf-8")
+    runs.approve_stage("systems-thinking", "repair")
 
     status = runs.run_status("systems-thinking")
     assert all(s.approved for s in status.stages)
@@ -364,7 +408,7 @@ def test_run_status_reports_done_when_all_stages_approved(tmp_path: Path) -> Non
 
 def test_stage_status_rejects_unsupported_stage(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="unsupported run stage"):
-        RunStore(tmp_path).stage_status("systems-thinking", "repair")
+        RunStore(tmp_path).stage_status("systems-thinking", "finalize")
 
 
 def test_stage_status_returns_flags(tmp_path: Path) -> None:
@@ -403,4 +447,4 @@ def test_write_spec_prompt_rejects_unknown_stage_helper(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
 
     with pytest.raises(ConfigError, match="unsupported run stage"):
-        store.stage_paths("systems-thinking", "repair")
+        store.stage_paths("systems-thinking", "finalize")

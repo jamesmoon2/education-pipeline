@@ -21,6 +21,7 @@ from education_pipeline.prompts import (
     compile_draft_prompt,
     compile_outline_prompt,
     compile_qa_prompt,
+    compile_repair_prompt,
     compile_spec_prompt,
     compile_topic_spec_prompt,
 )
@@ -88,6 +89,7 @@ __all__ = [
     "compile_draft_prompt",
     "compile_outline_prompt",
     "compile_qa_prompt",
+    "compile_repair_prompt",
     "compile_spec_prompt",
     "compile_topic_spec_prompt",
     "load_learner_profile",

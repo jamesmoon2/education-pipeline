@@ -178,6 +178,41 @@ _QA_OUTPUT_AND_QUALITY_LINES = (
     "- Keep private learner details out of publishable report text unless explicitly allowed.",
 )
 
+_REPAIR_HEADER_LINES = (
+    "# Repair Stage Prompt",
+    "",
+    "You are repairing a course draft for a local-first education pipeline.",
+    "Apply the approved QA findings to the approved draft and return the corrected draft in full.",
+    "Change only what the findings require; preserve everything the review did not flag.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The approved QA findings, which define the required fixes.",
+    "4. The approved draft, which is the base to revise.",
+    "5. Topic requirements.",
+    "6. Learner profile context.",
+)
+
+_REPAIR_OUTPUT_AND_QUALITY_LINES = (
+    "## Output Format",
+    "Return the corrected draft as complete markdown, in the same structure as the draft to repair:",
+    "1. `# <course title>`",
+    "2. One section per module, in the same order, with the QA findings applied.",
+    "3. `## Downstream Prompt Notes`",
+    "",
+    "Return the whole corrected draft, not a diff or a summary of changes.",
+    "",
+    "## Quality Bar",
+    "- Resolve every blocker and major finding; address minor findings unless they conflict with a higher-priority requirement.",
+    "- Change only what the findings require; preserve unflagged content where possible.",
+    "- Keep the draft within the approved outline's module order and scope.",
+    "- Re-check that every outcome the QA marked missing or partial is now covered.",
+    "- Keep worked examples fully worked and visual aids realized.",
+    "- If a finding cannot be applied without violating a higher-priority requirement, note the conflict in `## Downstream Prompt Notes` instead of silently skipping it.",
+    "- Keep private learner details out of publishable draft text unless explicitly allowed.",
+)
+
 
 def compile_spec_prompt(spec_input: SpecPromptInput) -> PromptArtifact:
     """Compile a deterministic spec-stage prompt from loose topic fields."""
@@ -282,6 +317,38 @@ def compile_qa_prompt(
             ),
         ),
         output_and_quality_lines=_QA_OUTPUT_AND_QUALITY_LINES,
+        topic=topic,
+        profile=profile,
+    )
+
+
+def compile_repair_prompt(
+    topic: Topic,
+    *,
+    approved_draft: str,
+    approved_qa: str,
+    profile: LearnerProfile | None = None,
+) -> PromptArtifact:
+    """Compile the repair-stage prompt: apply approved QA findings to the draft."""
+
+    return _compile_stage_prompt(
+        stage="repair",
+        header_lines=_REPAIR_HEADER_LINES,
+        sections=(
+            (
+                "## Approved QA Findings",
+                "The required fixes. Apply them all, ordered by severity.",
+                "qa",
+                approved_qa,
+            ),
+            (
+                "## Draft To Repair",
+                "The base to revise. Keep everything the findings do not touch.",
+                "draft",
+                approved_draft,
+            ),
+        ),
+        output_and_quality_lines=_REPAIR_OUTPUT_AND_QUALITY_LINES,
         topic=topic,
         profile=profile,
     )

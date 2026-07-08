@@ -11,6 +11,7 @@ from education_pipeline import (
     compile_draft_prompt,
     compile_outline_prompt,
     compile_qa_prompt,
+    compile_repair_prompt,
     compile_spec_prompt,
     compile_topic_spec_prompt,
 )
@@ -41,6 +42,17 @@ APPROVED_DRAFT = """\
 
 ## Feedback loops
 A reinforcing loop amplifies change; a balancing loop resists it.
+"""
+
+
+APPROVED_QA = """\
+# QA Report: Systems Thinking
+
+## Verdict
+revise
+
+## Findings
+1. major - System boundaries module is missing.
 """
 
 
@@ -325,6 +337,53 @@ def test_compile_qa_prompt_includes_profile_context(tmp_path: Path) -> None:
         approved_spec=APPROVED_SPEC,
         approved_outline=APPROVED_OUTLINE,
         approved_draft=APPROVED_DRAFT,
+        profile=profile,
+    )
+
+    assert "# Learner Profile Context" in artifact.text
+    assert "No learner profile is attached." not in artifact.text
+
+
+def test_compile_repair_prompt_embeds_draft_and_findings() -> None:
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+
+    artifact = compile_repair_prompt(
+        topic,
+        approved_draft=APPROVED_DRAFT,
+        approved_qa=APPROVED_QA,
+    )
+
+    assert artifact.stage == "repair"
+    assert artifact.topic_id == "systems-thinking"
+    assert artifact.text.startswith("# Repair Stage Prompt\n")
+    assert "- Title: Systems Thinking" in artifact.text
+    assert "## Approved QA Findings" in artifact.text
+    assert "## Draft To Repair" in artifact.text
+    assert "1. major - System boundaries module is missing." in artifact.text
+    assert "A reinforcing loop amplifies change" in artifact.text
+    assert "## Output Format" in artifact.text
+    assert "## Quality Bar" in artifact.text
+    assert "No learner profile is attached." in artifact.text
+
+
+def test_compile_repair_prompt_requires_qa_text() -> None:
+    with pytest.raises(ConfigError, match="must be a non-empty string"):
+        compile_repair_prompt(
+            Topic(id="x", title="X"),
+            approved_draft=APPROVED_DRAFT,
+            approved_qa="   ",
+        )
+
+
+def test_compile_repair_prompt_includes_profile_context(tmp_path: Path) -> None:
+    store = ProfileStore(tmp_path)
+    store.save_profile_toml("visual-profile", PROFILE_TOML)
+    profile = store.load_profile("visual-profile")
+
+    artifact = compile_repair_prompt(
+        Topic(id="systems-thinking", title="Systems Thinking"),
+        approved_draft=APPROVED_DRAFT,
+        approved_qa=APPROVED_QA,
         profile=profile,
     )
 

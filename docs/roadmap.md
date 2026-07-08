@@ -47,14 +47,18 @@ Current status:
   prompt that embeds the approved spec, outline, and draft (via a multi-section
   builder) and asks for a findings report with a verdict, outcome coverage, and
   repair instructions.
+- Done: repair stage. `compile_repair_prompt` / `RunStore.write_repair_prompt`
+  build a prompt that applies the approved QA findings to the approved draft and
+  returns the corrected draft in full. This closes the authoring loop:
+  `spec -> outline -> draft -> qa -> repair` runs end to end through approvals.
 - Done: resumable run state. Every artifact (topic, profile snapshot, prompts,
   responses, approved copies, manifest events) is persisted per stage, and the
   writers refuse to clobber saved work by default. `RunStore.run_status` /
   `stage_status` / `list_run_ids` read only the workspace filesystem, so a fresh
   session (for example after running out of tokens) recovers exactly where work
   left off and `next_action` names the next step to take.
-- Next: extend prompt compilation and the run writer to the repair stage, which
-  consumes the approved draft plus the approved QA findings.
+- Next: add finalize and export stages, then optional CLI/UI surfaces to drive
+  the run loop without hand-calling the API.
 
 ## Phase 4: Model Plan UI
 
