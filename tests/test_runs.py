@@ -39,6 +39,20 @@ def _drive_qa_to_approved(runs: RunStore, topic_id: str) -> None:
     runs.approve_stage(topic_id, "qa")
 
 
+def _drive_repair_to_approved(runs: RunStore, topic_id: str, body: str = "# Systems Thinking\n") -> None:
+    result = runs.write_repair_prompt(topic_id)
+    result.response_path.write_text(body, encoding="utf-8")
+    runs.approve_stage(topic_id, "repair")
+
+
+def _drive_all_stages_to_approved(runs: RunStore, topic_id: str, repair_body: str = "# Systems Thinking\n") -> None:
+    _drive_spec_to_approved(runs, topic_id)
+    _drive_outline_to_approved(runs, topic_id)
+    _drive_draft_to_approved(runs, topic_id)
+    _drive_qa_to_approved(runs, topic_id)
+    _drive_repair_to_approved(runs, topic_id, repair_body)
+
+
 TOPIC_TOML = """\
 schema_version = 1
 id = "systems-thinking"
@@ -352,6 +366,67 @@ def test_write_repair_prompt_requires_approved_qa(tmp_path: Path) -> None:
         runs.write_repair_prompt("systems-thinking")
 
 
+def test_finalize_run_writes_final_guide(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_all_stages_to_approved(
+        runs, "systems-thinking", repair_body="# Systems Thinking\n\nCorrected content.\n"
+    )
+
+    final_path = runs.finalize_run("systems-thinking")
+
+    assert final_path == tmp_path / "runs" / "systems-thinking" / "final" / "guide.md"
+    assert final_path.read_text(encoding="utf-8") == "# Systems Thinking\n\nCorrected content.\n"
+    assert runs.is_finalized("systems-thinking") is True
+
+    events = runs.read_manifest("systems-thinking")["events"]
+    assert events[-1]["stage"] == "finalize"
+    assert events[-1]["action"] == "finalized"
+    assert events[-1]["final_file"] == "final/guide.md"
+
+
+def test_finalize_run_requires_approved_repair(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_spec_to_approved(runs, "systems-thinking")
+    _drive_outline_to_approved(runs, "systems-thinking")
+    _drive_draft_to_approved(runs, "systems-thinking")
+    _drive_qa_to_approved(runs, "systems-thinking")
+
+    with pytest.raises(ConfigError, match="approved repair response not found"):
+        runs.finalize_run("systems-thinking")
+
+
+def test_finalize_run_refuses_overwrite_without_opt_in(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_all_stages_to_approved(runs, "systems-thinking")
+    runs.finalize_run("systems-thinking")
+
+    with pytest.raises(ConfigError, match="refusing to overwrite"):
+        runs.finalize_run("systems-thinking")
+
+    assert runs.finalize_run("systems-thinking", overwrite=True).name == "guide.md"
+
+
+def test_run_status_next_action_is_finalize_then_done(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_all_stages_to_approved(runs, "systems-thinking")
+
+    status = runs.run_status("systems-thinking")
+    assert all(s.approved for s in status.stages)
+    assert status.finalized is False
+    assert status.next_action.action == "finalize"
+    assert status.next_action.stage is None
+
+    runs.finalize_run("systems-thinking")
+
+    status = runs.run_status("systems-thinking")
+    assert status.finalized is True
+    assert status.next_action.action == "done"
+
+
 def test_run_status_reports_pending_before_any_work(tmp_path: Path) -> None:
     status = RunStore(tmp_path).run_status("systems-thinking")
 
@@ -386,24 +461,6 @@ def test_run_status_advances_through_spec_substates(tmp_path: Path) -> None:
     status = runs.run_status("systems-thinking")
     assert status.stages[0].state == "approved"
     assert (status.next_action.stage, status.next_action.action) == ("outline", "write_prompt")
-
-
-def test_run_status_reports_done_when_all_stages_approved(tmp_path: Path) -> None:
-    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
-    _drive_spec_to_approved(runs, "systems-thinking")
-    _drive_outline_to_approved(runs, "systems-thinking")
-    _drive_draft_to_approved(runs, "systems-thinking")
-    _drive_qa_to_approved(runs, "systems-thinking")
-
-    repair = runs.write_repair_prompt("systems-thinking")
-    repair.response_path.write_text("# Systems Thinking\n", encoding="utf-8")
-    runs.approve_stage("systems-thinking", "repair")
-
-    status = runs.run_status("systems-thinking")
-    assert all(s.approved for s in status.stages)
-    assert status.next_action.stage is None
-    assert status.next_action.action == "done"
 
 
 def test_stage_status_rejects_unsupported_stage(tmp_path: Path) -> None:

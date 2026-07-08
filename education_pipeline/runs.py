@@ -34,6 +34,10 @@ _PROMPT_SUFFIX = ".prompt.md"
 _RESPONSE_SUFFIX = ".response.md"
 _STUB_SUFFIX = ".SAVE_RESPONSE_HERE.md"
 
+#: The stage whose approved output is assembled into the final guide.
+_FINAL_SOURCE_STAGE = "repair"
+_FINAL_FILENAME = "guide.md"
+
 _ARTIFACT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -99,6 +103,7 @@ class RunStatus:
 
     topic_id: str
     stages: tuple[StageStatus, ...]
+    finalized: bool
     next_action: NextAction
 
 
@@ -194,13 +199,20 @@ class RunStore:
 
         safe_id = _artifact_id(topic_id, "topic id")
         stages = tuple(self.stage_status(safe_id, stage) for stage in SUPPORTED_STAGES)
+        finalized = self.is_finalized(safe_id)
         return RunStatus(
             topic_id=safe_id,
             stages=stages,
-            next_action=self._next_action(safe_id, stages),
+            finalized=finalized,
+            next_action=self._next_action(safe_id, stages, finalized),
         )
 
-    def _next_action(self, topic_id: str, stages: tuple[StageStatus, ...]) -> NextAction:
+    def _next_action(
+        self,
+        topic_id: str,
+        stages: tuple[StageStatus, ...],
+        finalized: bool,
+    ) -> NextAction:
         for status in stages:
             if status.approved:
                 continue
@@ -227,11 +239,21 @@ class RunStore:
                 action="approve",
                 detail=f"Review and approve the {status.stage} response for {topic_id!r}.",
             )
+        if not finalized:
+            return NextAction(
+                topic_id=topic_id,
+                stage=None,
+                action="finalize",
+                detail=(
+                    f"Finalize {topic_id!r}: assemble the approved {_FINAL_SOURCE_STAGE} draft "
+                    f"into {self.final_path(topic_id)}."
+                ),
+            )
         return NextAction(
             topic_id=topic_id,
             stage=None,
             action="done",
-            detail=f"All supported stages are approved for {topic_id!r}.",
+            detail=f"Run {topic_id!r} is complete and finalized.",
         )
 
     def read_manifest(self, topic_id: str) -> dict:
@@ -278,6 +300,39 @@ class RunStore:
             files={"prompt_file": paths.prompt_path, "approved_file": paths.approved_path},
         )
         return paths.approved_path
+
+    def final_path(self, topic_id: str) -> Path:
+        """Path of the assembled final guide for a run."""
+
+        return self.run_dir(topic_id) / "final" / _FINAL_FILENAME
+
+    def is_finalized(self, topic_id: str) -> bool:
+        """Whether the run's final guide has been assembled."""
+
+        return self.final_path(topic_id).exists()
+
+    def finalize_run(self, topic_id: str, *, overwrite: bool = False) -> Path:
+        """Assemble the approved final-stage draft into the run's ``final`` guide.
+
+        This is a deterministic local step, not an LLM prompt stage: it copies the
+        approved repair output into ``final/guide.md`` and records the event.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        content = self.read_approved(safe_id, _FINAL_SOURCE_STAGE)
+        self.create_run(safe_id)
+        final = self.final_path(safe_id)
+        _write_text(final, content, overwrite=overwrite)
+        self._append_event(
+            safe_id,
+            stage="finalize",
+            action="finalized",
+            files={
+                "final_file": final,
+                "source_file": self.stage_paths(safe_id, _FINAL_SOURCE_STAGE).approved_path,
+            },
+        )
+        return final
 
     def write_spec_prompt(
         self,

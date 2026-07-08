@@ -51,14 +51,19 @@ Current status:
   build a prompt that applies the approved QA findings to the approved draft and
   returns the corrected draft in full. This closes the authoring loop:
   `spec -> outline -> draft -> qa -> repair` runs end to end through approvals.
+- Done: finalize step. `RunStore.finalize_run` is a deterministic local step (not
+  an LLM prompt stage) that assembles the approved repair draft into
+  `final/guide.md`, records a `finalized` manifest event, and flips
+  `run_status.finalized`; `next_action` reports `finalize` once every stage is
+  approved and `done` once the guide is written.
 - Done: resumable run state. Every artifact (topic, profile snapshot, prompts,
   responses, approved copies, manifest events) is persisted per stage, and the
   writers refuse to clobber saved work by default. `RunStore.run_status` /
   `stage_status` / `list_run_ids` read only the workspace filesystem, so a fresh
   session (for example after running out of tokens) recovers exactly where work
   left off and `next_action` names the next step to take.
-- Next: add finalize and export stages, then optional CLI/UI surfaces to drive
-  the run loop without hand-calling the API.
+- Next: add an export stage (render `final/guide.md` to other formats), then
+  optional CLI/UI surfaces to drive the run loop without hand-calling the API.
 
 ## Phase 4: Model Plan UI
 

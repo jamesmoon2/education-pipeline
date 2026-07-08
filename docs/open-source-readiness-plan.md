@@ -480,7 +480,9 @@ Add a project settings panel:
    beyond the spec stage. Done: outline, draft, QA, and repair stages. Each
    chains off approved upstream output via `RunStore.approve_stage`; QA and
    repair embed multiple approved artifacts through a shared multi-section
-   builder. `spec -> outline -> draft -> qa -> repair` now runs end to end.
+   builder. `spec -> outline -> draft -> qa -> repair` now runs end to end, and
+   `RunStore.finalize_run` deterministically assembles the approved repair draft
+   into `final/guide.md`.
 5. Make runs resumable so no work is lost across sessions. Done: all stage
    artifacts are persisted on disk, writers refuse to clobber saved work, and
    `RunStore.run_status` / `stage_status` / `list_run_ids` recover progress and
