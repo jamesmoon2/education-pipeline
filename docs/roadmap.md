@@ -18,6 +18,19 @@
 - Store profiles locally by default.
 - Thread profile context into prompts without publishing private details.
 
+Current status:
+
+- Done: learner profile parser and synthetic fixture.
+- Done: learning preferences, including visual-aid preferences.
+- Done: private prompt-context rendering and explicit public-summary guardrail.
+- Done: workspace-local profile storage and snapshot attachment to
+  `runs/<topic-id>/inputs/profile.toml`.
+- Done: spec prompt compilation from topic fields plus attached profile
+  snapshot.
+- In progress: stronger spec prompt contract and tests.
+- Next: add the generic stage/run prompt writer that creates run directories,
+  prompt files, response stubs, and manifest events.
+
 ## Phase 4: Model Plan UI
 
 - Add provider/runtime selection for Claude Code, Codex, and manual prompt-only

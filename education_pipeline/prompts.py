@@ -37,8 +37,15 @@ def compile_spec_prompt(spec_input: SpecPromptInput) -> PromptArtifact:
     lines = [
         "# Spec Stage Prompt",
         "",
-        "Create a durable course specification for the topic below.",
-        "The specification will guide outline, drafting, QA, repair, and export stages.",
+        "You are designing the course contract for a local-first education pipeline.",
+        "Create a durable specification for the topic below.",
+        "This is not the lesson draft. It is the planning contract that will guide outline, drafting, QA, repair, and export stages.",
+        "",
+        "Follow this priority order:",
+        "1. System, safety, schema, and runtime instructions.",
+        "2. The authoring contract in this prompt.",
+        "3. Topic requirements.",
+        "4. Learner profile context.",
         "",
         "## Topic",
         f"- Topic id: {topic_id}",
@@ -51,12 +58,30 @@ def compile_spec_prompt(spec_input: SpecPromptInput) -> PromptArtifact:
     lines.extend(
         [
             "",
-            "## Requirements",
-            "- Produce a clear learning contract, not lesson prose.",
-            "- Define intended learner outcomes, scope boundaries, prerequisites, and exclusions.",
-            "- Identify likely misconceptions and assessment checkpoints.",
-            "- Recommend where visual aids, worked examples, practice, and review should appear.",
+            "## Output Format",
+            "Return markdown with exactly these sections:",
+            "1. `# Course Specification: <title>`",
+            "2. `## Audience And Context`",
+            "3. `## Learning Outcomes`",
+            "4. `## Scope`",
+            "5. `## Prerequisites`",
+            "6. `## Teaching Approach`",
+            "7. `## Visual Aid Plan`",
+            "8. `## Practice And Assessment Plan`",
+            "9. `## Misconceptions And Failure Modes`",
+            "10. `## Privacy And Publication Notes`",
+            "11. `## Downstream Prompt Notes`",
+            "",
+            "## Quality Bar",
+            "- Write a clear learning contract, not lesson prose.",
+            "- Make outcomes observable: use verbs like explain, compare, diagnose, construct, evaluate, or apply.",
+            "- Separate in-scope material from exclusions so later stages do not drift.",
+            "- Identify prerequisite knowledge and what to briefly remediate.",
+            "- Name likely misconceptions, not generic difficulty.",
+            "- For visual learners, specify concrete flowcharts, concept maps, timelines, tables, diagrams, or annotated examples when useful.",
+            "- Place worked examples, practice, assessment, recap, and review deliberately.",
             "- Keep private learner details out of publishable course text unless explicitly allowed.",
+            "- If the learner profile conflicts with safety, schema, runtime, or authoring requirements, follow the higher-priority requirement and note the conflict briefly.",
         ]
     )
 
@@ -98,4 +123,4 @@ def compile_attached_spec_prompt(
 def _required_text(value: str, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"spec prompt {field_name} must be a non-empty string")
-    return value
+    return value.strip()

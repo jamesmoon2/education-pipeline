@@ -428,9 +428,12 @@ Add a project settings panel:
 
 ### Phase 4: Learner Profile Stage
 
-- Add profile artifacts and commands.
-- Add profile-to-topic attachment.
-- Compile profile context into spec/outline/draft/repair prompts.
+- Add profile artifacts and commands. Parser, fixture, and storage API are done;
+  CLI commands remain optional because the UI may call the API directly.
+- Add profile-to-topic attachment. Snapshot attachment to
+  `runs/<topic-id>/inputs/profile.toml` is done.
+- Compile profile context into spec/outline/draft/repair prompts. Spec prompt
+  compilation is done; outline/draft/repair prompt compilation remains.
 - Add profile privacy warnings.
 - Add dashboard UI for profile creation/selection.
 - Add tests for profile parsing, redaction, and prompt inclusion.
@@ -464,12 +467,15 @@ Add a project settings panel:
 
 ## Near-Term Next Steps
 
-1. Add tests around the current stage graph before changing it.
-2. Create the fresh `education-pipeline` repo and extraction manifest.
-3. Add model-plan/catalog design before wiring provider-specific UI.
-4. Implement the profile artifact model and parser.
-5. Add `contentgen profile create/show/import`.
-6. Thread an attached profile into prompt compilation.
-7. Add the profile and model-settings panels to the dashboard.
-8. Generalize the authoring contract and examples after the profile stage exists,
+1. Commit the spec prompt quality pass.
+2. Add the generic stage/run prompt writer:
+   `compile_prompt(workspace, topic_id, stage) -> PromptFile`.
+3. Add run directory creation, response stubs, and manifest event logging.
+4. Add topic artifact parsing/storage with fixture-only tests.
+5. Thread attached profile context into outline, draft, QA, and repair prompt
+   compilation as those stages are introduced.
+6. Add profile privacy warnings for UI/API consumers.
+7. Decide whether to add minimal CLI commands or go straight to UI surfaces.
+8. Add the profile and model-settings panels to the dashboard.
+9. Generalize the authoring contract and examples after the profile stage exists,
    because the profile fields will clarify what needs to be variable.

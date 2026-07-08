@@ -59,9 +59,15 @@ def test_compile_spec_prompt_without_profile_uses_accessible_defaults() -> None:
     assert artifact.stage == "spec"
     assert artifact.topic_id == "systems-thinking"
     assert artifact.text.startswith("# Spec Stage Prompt\n")
+    assert "You are designing the course contract for a local-first education pipeline." in artifact.text
+    assert "Follow this priority order:" in artifact.text
     assert "- Topic id: systems-thinking" in artifact.text
     assert "- Title: Systems Thinking" in artifact.text
     assert "- Topic brief: A public introduction to feedback loops and system boundaries." in artifact.text
+    assert "Return markdown with exactly these sections:" in artifact.text
+    assert "7. `## Visual Aid Plan`" in artifact.text
+    assert "9. `## Misconceptions And Failure Modes`" in artifact.text
+    assert "For visual learners, specify concrete flowcharts" in artifact.text
     assert "No learner profile is attached." in artifact.text
     assert "Keep private learner details out of publishable course text" in artifact.text
 
@@ -84,6 +90,20 @@ def test_compile_spec_prompt_includes_profile_context(tmp_path: Path) -> None:
     assert "- Preferred visual aids: flowcharts, concept maps" in artifact.text
     assert "- Diagram frequency: frequent" in artifact.text
     assert "- Include profile in published output: no" in artifact.text
+
+
+def test_compile_spec_prompt_trims_topic_fields() -> None:
+    artifact = compile_spec_prompt(
+        SpecPromptInput(
+            topic_id=" systems-thinking ",
+            title=" Systems Thinking ",
+            topic_brief=" A public introduction. ",
+        )
+    )
+
+    assert "- Topic id: systems-thinking" in artifact.text
+    assert "- Title: Systems Thinking" in artifact.text
+    assert "- Topic brief: A public introduction." in artifact.text
 
 
 def test_compile_attached_spec_prompt_uses_snapshot_not_current_profile(tmp_path: Path) -> None:
