@@ -27,9 +27,12 @@ Current status:
   `runs/<topic-id>/inputs/profile.toml`.
 - Done: spec prompt compilation from topic fields plus attached profile
   snapshot.
-- In progress: stronger spec prompt contract and tests.
-- Next: add the generic stage/run prompt writer that creates run directories,
-  prompt files, response stubs, and manifest events.
+- Done: stronger spec prompt contract and tests.
+- Done: the run prompt writer (`RunStore`) creates run directories, writes the
+  spec prompt, drops a `SAVE_RESPONSE_HERE` stub, and logs manifest events;
+  stubs never count as ingested responses.
+- Next: parse and store the topic artifact, then extend prompt compilation to
+  outline, draft, QA, and repair stages.
 
 ## Phase 4: Model Plan UI
 

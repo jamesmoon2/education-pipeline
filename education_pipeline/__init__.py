@@ -20,6 +20,14 @@ from education_pipeline.prompts import (
     compile_attached_spec_prompt,
     compile_spec_prompt,
 )
+from education_pipeline.runs import (
+    MANIFEST_SCHEMA_VERSION,
+    RUN_SUBDIRS,
+    SUPPORTED_STAGES,
+    PromptFile,
+    RunStore,
+    StagePaths,
+)
 from education_pipeline.profiles import (
     PROFILE_SCHEMA_VERSION,
     LearnerLocalization,
@@ -35,8 +43,11 @@ from education_pipeline.workspace import ProfileAttachment, ProfileStore
 
 __all__ = [
     "DEFAULT_STAGE_RECOMMENDATIONS",
+    "MANIFEST_SCHEMA_VERSION",
     "PROFILE_SCHEMA_VERSION",
+    "RUN_SUBDIRS",
     "STAGE_ORDER",
+    "SUPPORTED_STAGES",
     "ConfigError",
     "LearnerLocalization",
     "LearnerPreferences",
@@ -46,11 +57,14 @@ __all__ = [
     "ModelOption",
     "ModelPlan",
     "PromptArtifact",
+    "PromptFile",
     "ProfileAttachment",
     "ProfileStore",
     "Provider",
+    "RunStore",
     "SpecPromptInput",
     "StageModelPlan",
+    "StagePaths",
     "compile_attached_spec_prompt",
     "compile_spec_prompt",
     "load_learner_profile",
