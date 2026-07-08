@@ -5,11 +5,20 @@ import pytest
 
 from education_pipeline import (
     ConfigError,
+    NextAction,
     PromptFile,
     ProfileStore,
+    RunStatus,
     RunStore,
+    StageStatus,
     TopicStore,
 )
+
+
+def _drive_spec_to_approved(runs: RunStore, topic_id: str) -> None:
+    result = runs.write_spec_prompt(topic_id, title="Systems Thinking")
+    result.response_path.write_text("# Course Specification\n", encoding="utf-8")
+    runs.approve_stage(topic_id, "spec")
 
 
 TOPIC_TOML = """\
@@ -219,6 +228,84 @@ def test_write_outline_prompt_requires_approved_spec(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="approved spec response not found"):
         RunStore(tmp_path).write_outline_prompt("systems-thinking")
+
+
+def test_run_status_reports_pending_before_any_work(tmp_path: Path) -> None:
+    status = RunStore(tmp_path).run_status("systems-thinking")
+
+    assert isinstance(status, RunStatus)
+    assert status.topic_id == "systems-thinking"
+    assert [s.stage for s in status.stages] == ["spec", "outline"]
+    assert all(
+        not s.prompt_written and not s.response_ingested and not s.approved
+        for s in status.stages
+    )
+    assert status.stages[0].state == "pending"
+    assert status.next_action == NextAction(
+        topic_id="systems-thinking",
+        stage="spec",
+        action="write_prompt",
+        detail=status.next_action.detail,
+    )
+
+
+def test_run_status_advances_through_spec_substates(tmp_path: Path) -> None:
+    runs = RunStore(tmp_path)
+
+    result = runs.write_spec_prompt("systems-thinking", title="Systems Thinking")
+    action = runs.run_status("systems-thinking").next_action
+    assert (action.stage, action.action) == ("spec", "save_response")
+
+    result.response_path.write_text("# Course Specification\n", encoding="utf-8")
+    action = runs.run_status("systems-thinking").next_action
+    assert (action.stage, action.action) == ("spec", "approve")
+
+    runs.approve_stage("systems-thinking", "spec")
+    status = runs.run_status("systems-thinking")
+    assert status.stages[0].state == "approved"
+    assert (status.next_action.stage, status.next_action.action) == ("outline", "write_prompt")
+
+
+def test_run_status_reports_done_when_all_stages_approved(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_spec_to_approved(runs, "systems-thinking")
+
+    outline = runs.write_outline_prompt("systems-thinking")
+    outline.response_path.write_text("# Course Outline\n", encoding="utf-8")
+    runs.approve_stage("systems-thinking", "outline")
+
+    status = runs.run_status("systems-thinking")
+    assert all(s.approved for s in status.stages)
+    assert status.next_action.stage is None
+    assert status.next_action.action == "done"
+
+
+def test_stage_status_rejects_unsupported_stage(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="unsupported run stage"):
+        RunStore(tmp_path).stage_status("systems-thinking", "draft")
+
+
+def test_stage_status_returns_flags(tmp_path: Path) -> None:
+    runs = RunStore(tmp_path)
+    runs.write_spec_prompt("systems-thinking", title="Systems Thinking")
+
+    status = runs.stage_status("systems-thinking", "spec")
+
+    assert isinstance(status, StageStatus)
+    assert status.prompt_written is True
+    assert status.response_ingested is False
+    assert status.approved is False
+
+
+def test_list_run_ids_returns_started_runs(tmp_path: Path) -> None:
+    runs = RunStore(tmp_path)
+    assert runs.list_run_ids() == ()
+
+    runs.write_spec_prompt("beta-topic", title="Beta")
+    runs.write_spec_prompt("alpha-topic", title="Alpha")
+
+    assert runs.list_run_ids() == ("alpha-topic", "beta-topic")
 
 
 def test_run_store_rejects_path_traversal_topic_ids(tmp_path: Path) -> None:

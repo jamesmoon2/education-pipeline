@@ -60,6 +60,47 @@ class PromptFile:
 
 
 @dataclass(frozen=True)
+class StageStatus:
+    """Persisted progress for a single stage, derived from workspace files."""
+
+    stage: str
+    prompt_written: bool
+    response_ingested: bool
+    approved: bool
+
+    @property
+    def state(self) -> str:
+        """The furthest milestone this stage has durably reached."""
+
+        if self.approved:
+            return "approved"
+        if self.response_ingested:
+            return "response_ingested"
+        if self.prompt_written:
+            return "prompt_written"
+        return "pending"
+
+
+@dataclass(frozen=True)
+class NextAction:
+    """The next step needed to move a run forward, for resuming work."""
+
+    topic_id: str
+    stage: str | None
+    action: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class RunStatus:
+    """A resumable snapshot of a run's progress across supported stages."""
+
+    topic_id: str
+    stages: tuple[StageStatus, ...]
+    next_action: NextAction
+
+
+@dataclass(frozen=True)
 class RunStore:
     """Create run directories and write stage prompt/response artifacts."""
 
@@ -116,6 +157,80 @@ class RunStore:
                 },
             )
         return run
+
+    def list_run_ids(self) -> tuple[str, ...]:
+        """List topic ids that have a started run (an initialized manifest)."""
+
+        if not self.runs_dir.exists():
+            return ()
+        ids = [
+            path.name
+            for path in self.runs_dir.iterdir()
+            if path.is_dir()
+            and _is_artifact_id(path.name)
+            and (path / "manifest.json").is_file()
+        ]
+        return tuple(sorted(ids))
+
+    def stage_status(self, topic_id: str, stage: str) -> StageStatus:
+        """Report the persisted progress for one stage of a run."""
+
+        paths = self.stage_paths(topic_id, stage)
+        return StageStatus(
+            stage=paths.stage,
+            prompt_written=paths.prompt_path.exists(),
+            response_ingested=paths.response_path.exists(),
+            approved=paths.approved_path.exists(),
+        )
+
+    def run_status(self, topic_id: str) -> RunStatus:
+        """Report a resumable snapshot of a run across all supported stages.
+
+        Reads only the workspace filesystem, so a fresh session can recover
+        exactly where earlier work left off without losing anything.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        stages = tuple(self.stage_status(safe_id, stage) for stage in SUPPORTED_STAGES)
+        return RunStatus(
+            topic_id=safe_id,
+            stages=stages,
+            next_action=self._next_action(safe_id, stages),
+        )
+
+    def _next_action(self, topic_id: str, stages: tuple[StageStatus, ...]) -> NextAction:
+        for status in stages:
+            if status.approved:
+                continue
+            if not status.prompt_written:
+                return NextAction(
+                    topic_id=topic_id,
+                    stage=status.stage,
+                    action="write_prompt",
+                    detail=f"Write the {status.stage} prompt for {topic_id!r}.",
+                )
+            if not status.response_ingested:
+                response_path = self.stage_paths(topic_id, status.stage).response_path
+                return NextAction(
+                    topic_id=topic_id,
+                    stage=status.stage,
+                    action="save_response",
+                    detail=(
+                        f"Run the {status.stage} prompt and save the response to {response_path}."
+                    ),
+                )
+            return NextAction(
+                topic_id=topic_id,
+                stage=status.stage,
+                action="approve",
+                detail=f"Review and approve the {status.stage} response for {topic_id!r}.",
+            )
+        return NextAction(
+            topic_id=topic_id,
+            stage=None,
+            action="done",
+            detail=f"All supported stages are approved for {topic_id!r}.",
+        )
 
     def read_manifest(self, topic_id: str) -> dict:
         path = self.manifest_path(topic_id)
@@ -310,8 +425,12 @@ def _supported_stage(stage: str) -> str:
 
 
 def _artifact_id(value: str, context: str) -> str:
-    if not isinstance(value, str) or _ARTIFACT_ID_PATTERN.fullmatch(value) is None:
+    if not _is_artifact_id(value):
         raise ConfigError(
             f"{context} must match {_ARTIFACT_ID_PATTERN.pattern!r}; got {value!r}"
         )
     return value
+
+
+def _is_artifact_id(value: str) -> bool:
+    return isinstance(value, str) and _ARTIFACT_ID_PATTERN.fullmatch(value) is not None
