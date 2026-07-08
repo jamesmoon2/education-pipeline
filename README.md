@@ -29,6 +29,29 @@ Key principles:
 - learner/profile context without publishing private details by default
 - static HTML output
 
+## Command-Line Interface
+
+A dependency-free CLI (also available as `python -m education_pipeline`) drives a
+run end to end from a local workspace. It writes each stage's prompt to disk,
+tells you where to save the model's response, and gates each stage on your
+approval, so a run can be resumed at any time from the workspace alone.
+
+```bash
+education-pipeline -C ./workspace topic import topic.toml
+education-pipeline -C ./workspace advance systems-thinking   # writes the next prompt
+# ...run that prompt in your model, save the response to the printed path...
+education-pipeline -C ./workspace approve systems-thinking spec
+education-pipeline -C ./workspace advance systems-thinking   # writes the next prompt
+# ...repeat through outline, draft, qa, repair; advance finalizes automatically...
+education-pipeline -C ./workspace status systems-thinking
+education-pipeline -C ./workspace export systems-thinking --format html
+```
+
+Commands: `topic`/`profile` (`import`, `list`, `attach`, `show`), and
+`status`, `advance`, `approve`, `finalize`, `export`. A GUI over the same API is
+planned; the CLI is the supported surface for power users and for verifying the
+engine.
+
 ## Repository Boundary
 
 Generated runs, private topics, tuned prompt libraries, and real learner

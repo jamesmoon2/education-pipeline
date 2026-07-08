@@ -491,6 +491,10 @@ Add a project settings panel:
    fresh session resumes exactly where an earlier one stopped.
 6. Add profile privacy warnings for UI/API consumers.
 7. Decide whether to add minimal CLI commands or go straight to UI surfaces.
+   Done: a stdlib-only `education_pipeline.cli` (argparse) drives the full run
+   loop from the terminal (`topic`/`profile` import/list/attach, `status`,
+   `advance`, `approve`, `finalize`, `export`) and serves as an end-to-end check;
+   the GUI is still to come and will sit on the same API.
 8. Add the profile and model-settings panels to the dashboard.
 9. Generalize the authoring contract and examples after the profile stage exists,
    because the profile fields will clarify what needs to be variable.

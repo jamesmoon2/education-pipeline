@@ -72,8 +72,13 @@ Current status:
   `stage_status` / `list_run_ids` read only the workspace filesystem, so a fresh
   session (for example after running out of tokens) recovers exactly where work
   left off and `next_action` names the next step to take.
-- Next: optional CLI/UI surfaces to drive the run loop (over `advance` and
-  `run_status`) without hand-calling the API, plus profile privacy warnings.
+- Done: CLI. `education_pipeline.cli` (also `python -m education_pipeline` and the
+  `education-pipeline` console script) is a stdlib-only argparse wrapper over the
+  API: `topic`/`profile` import/list/attach, plus `status`, `advance`, `approve`,
+  `finalize`, and `export`. It drives a whole run from the terminal and doubles
+  as an end-to-end check of the engine.
+- Next: the GUI over the same API (`run_status`/`advance`/`approve`/`export`),
+  plus profile privacy warnings for API/UI consumers.
 
 ## Phase 4: Model Plan UI
 
