@@ -477,7 +477,9 @@ Add a project settings panel:
    `compile_topic_spec_prompt` and `RunStore.write_topic_spec_prompt`.
 4. Thread attached profile context into outline, draft, QA, and repair prompt
    compilation as those stages are introduced, and generalize the run writer
-   beyond the spec stage.
+   beyond the spec stage. In progress: outline stage done, with an approval step
+   (`RunStore.approve_stage`) that promotes an ingested response into `approved/`
+   for downstream consumption; draft/QA/repair remain.
 5. Add profile privacy warnings for UI/API consumers.
 6. Decide whether to add minimal CLI commands or go straight to UI surfaces.
 7. Add the profile and model-settings panels to the dashboard.

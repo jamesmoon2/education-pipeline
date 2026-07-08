@@ -12,6 +12,7 @@ from education_pipeline.config import ConfigError
 from education_pipeline.prompts import (
     PromptArtifact,
     SpecPromptInput,
+    compile_outline_prompt,
     compile_spec_prompt,
     compile_topic_spec_prompt,
 )
@@ -22,10 +23,10 @@ MANIFEST_SCHEMA_VERSION = 1
 
 RUN_SUBDIRS = ("inputs", "prompts", "responses", "approved", "reports", "final")
 
-#: Stages this writer can currently compile prompts for. Outline, draft, QA,
-#: repair, finalize, and export are intentionally omitted until their prompt
-#: compilers exist.
-SUPPORTED_STAGES = ("spec",)
+#: Stages this writer can currently compile prompts for. Draft, QA, repair,
+#: finalize, and export are intentionally omitted until their prompt compilers
+#: exist.
+SUPPORTED_STAGES = ("spec", "outline")
 
 _PROMPT_SUFFIX = ".prompt.md"
 _RESPONSE_SUFFIX = ".response.md"
@@ -43,6 +44,7 @@ class StagePaths:
     prompt_path: Path
     response_path: Path
     stub_path: Path
+    approved_path: Path
 
 
 @dataclass(frozen=True)
@@ -87,10 +89,14 @@ class RunStore:
             prompt_path=run / "prompts" / f"{safe_stage}{_PROMPT_SUFFIX}",
             response_path=run / "responses" / f"{safe_stage}{_RESPONSE_SUFFIX}",
             stub_path=run / "responses" / f"{safe_stage}{_STUB_SUFFIX}",
+            approved_path=run / "approved" / f"{safe_stage}.md",
         )
 
     def response_path(self, topic_id: str, stage: str) -> Path:
         return self.stage_paths(topic_id, stage).response_path
+
+    def approved_path(self, topic_id: str, stage: str) -> Path:
+        return self.stage_paths(topic_id, stage).approved_path
 
     def create_run(self, topic_id: str) -> Path:
         """Create the run directory tree and initialize an empty manifest."""
@@ -122,6 +128,39 @@ class RunStore:
         """Return True only when a real (non-stub) response file is present."""
 
         return self.stage_paths(topic_id, stage).response_path.exists()
+
+    def read_approved(self, topic_id: str, stage: str) -> str:
+        """Read the approved output for a stage, raising if it is absent."""
+
+        path = self.stage_paths(topic_id, stage).approved_path
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise ConfigError(f"approved {stage} response not found: {path}") from exc
+
+    def approve_stage(self, topic_id: str, stage: str, *, overwrite: bool = False) -> Path:
+        """Promote a stage's ingested response into the ``approved`` directory.
+
+        The approved copy is the canonical input for downstream stages. A stub
+        placeholder never counts as an ingested response, so approving before a
+        real response is saved raises.
+        """
+
+        paths = self.stage_paths(topic_id, stage)
+        if not paths.response_path.exists():
+            raise ConfigError(
+                f"no ingested response to approve for stage {paths.stage!r}: {paths.response_path}"
+            )
+
+        text = paths.response_path.read_text(encoding="utf-8")
+        _write_text(paths.approved_path, text, overwrite=overwrite)
+        self._append_event(
+            paths.topic_id,
+            stage=paths.stage,
+            action="response_approved",
+            files={"prompt_file": paths.prompt_path, "approved_file": paths.approved_path},
+        )
+        return paths.approved_path
 
     def write_spec_prompt(
         self,
@@ -167,6 +206,25 @@ class RunStore:
         artifact = compile_topic_spec_prompt(topic, profile)
         return self._write_prompt(artifact, overwrite=overwrite)
 
+    def write_outline_prompt(
+        self,
+        topic_id: str,
+        *,
+        overwrite: bool = False,
+    ) -> PromptFile:
+        """Compile and write the outline prompt from the approved spec.
+
+        Requires the spec stage to have been approved, and reuses the topic's
+        attached learner profile snapshot when one exists.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        topic = TopicStore(self.root).load_topic(safe_id)
+        approved_spec = self.read_approved(safe_id, "spec")
+        profile = self._load_attached_profile(safe_id)
+        artifact = compile_outline_prompt(topic, approved_spec, profile)
+        return self._write_prompt(artifact, overwrite=overwrite)
+
     def _write_prompt(self, artifact: PromptArtifact, *, overwrite: bool) -> PromptFile:
         paths = self.stage_paths(artifact.topic_id, artifact.stage)
         self.create_run(artifact.topic_id)
@@ -179,8 +237,7 @@ class RunStore:
             artifact.topic_id,
             stage=paths.stage,
             action="prompt_written",
-            prompt_path=paths.prompt_path,
-            response_path=paths.response_path,
+            files={"prompt_file": paths.prompt_path, "response_file": paths.response_path},
         )
         return PromptFile(
             stage=paths.stage,
@@ -203,20 +260,15 @@ class RunStore:
         *,
         stage: str,
         action: str,
-        prompt_path: Path,
-        response_path: Path,
+        files: dict[str, Path],
     ) -> None:
         run = self.run_dir(topic_id)
         manifest = self.read_manifest(topic_id)
-        manifest.setdefault("events", []).append(
-            {
-                "stage": stage,
-                "action": action,
-                "prompt_file": _relative_to(prompt_path, run),
-                "response_file": _relative_to(response_path, run),
-                "recorded_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
+        event: dict[str, str] = {"stage": stage, "action": action}
+        for label, path in files.items():
+            event[label] = _relative_to(path, run)
+        event["recorded_at"] = datetime.now(timezone.utc).isoformat()
+        manifest.setdefault("events", []).append(event)
         _write_manifest(run / "manifest.json", manifest)
 
 

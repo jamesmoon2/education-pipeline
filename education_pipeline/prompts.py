@@ -29,7 +29,7 @@ class SpecPromptInput:
     profile: LearnerProfile | None = None
 
 
-_HEADER_LINES = (
+_SPEC_HEADER_LINES = (
     "# Spec Stage Prompt",
     "",
     "You are designing the course contract for a local-first education pipeline.",
@@ -43,7 +43,7 @@ _HEADER_LINES = (
     "4. Learner profile context.",
 )
 
-_OUTPUT_AND_QUALITY_LINES = (
+_SPEC_OUTPUT_AND_QUALITY_LINES = (
     "## Output Format",
     "Return markdown with exactly these sections:",
     "1. `# Course Specification: <title>`",
@@ -70,6 +70,42 @@ _OUTPUT_AND_QUALITY_LINES = (
     "- If the learner profile conflicts with safety, schema, runtime, or authoring requirements, follow the higher-priority requirement and note the conflict briefly.",
 )
 
+_OUTLINE_HEADER_LINES = (
+    "# Outline Stage Prompt",
+    "",
+    "You are turning an approved course specification into a teachable module outline.",
+    "Design the sequence of modules that will be drafted, reviewed, and exported downstream.",
+    "This is not the lesson draft. It is the structural plan derived from the approved specification.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The approved specification.",
+    "4. Topic requirements.",
+    "5. Learner profile context.",
+)
+
+_OUTLINE_OUTPUT_AND_QUALITY_LINES = (
+    "## Output Format",
+    "Return markdown with exactly these sections:",
+    "1. `# Course Outline: <title>`",
+    "2. `## Sequence Rationale`",
+    "3. `## Modules`",
+    "4. `## Coverage Check`",
+    "5. `## Downstream Prompt Notes`",
+    "",
+    "Under `## Modules`, number each module and for each give: outcomes covered, key concepts, planned visual aids, worked examples, and a practice or checkpoint.",
+    "",
+    "## Quality Bar",
+    "- Cover every learning outcome from the approved specification; introduce no out-of-scope material.",
+    "- Order modules so prerequisites precede the modules that depend on them.",
+    "- Keep each module small enough to draft independently.",
+    "- Place visual aids and worked examples where the specification's visual aid plan calls for them.",
+    "- In `## Coverage Check`, map each specification outcome to the module that delivers it.",
+    "- Flag any gaps or contradictions in the specification instead of silently inventing scope.",
+    "- Keep private learner details out of publishable outline text unless explicitly allowed.",
+)
+
 
 def compile_spec_prompt(spec_input: SpecPromptInput) -> PromptArtifact:
     """Compile a deterministic spec-stage prompt from loose topic fields."""
@@ -85,7 +121,8 @@ def compile_spec_prompt(spec_input: SpecPromptInput) -> PromptArtifact:
     if spec_input.topic_brief is not None:
         topic_lines.append(f"- Topic brief: {_required_text(spec_input.topic_brief, 'topic_brief')}")
 
-    return _assemble_spec_prompt(topic_id, topic_lines, spec_input.profile)
+    lines = [*_SPEC_HEADER_LINES, "", *topic_lines, "", *_SPEC_OUTPUT_AND_QUALITY_LINES]
+    return _finalize("spec", topic_id, lines, spec_input.profile)
 
 
 def compile_topic_spec_prompt(
@@ -94,25 +131,33 @@ def compile_topic_spec_prompt(
 ) -> PromptArtifact:
     """Compile a spec-stage prompt from a structured :class:`Topic`."""
 
-    topic_id = _required_text(topic.id, "topic id")
-    title = _required_text(topic.title, "title")
+    topic_id, topic_lines = _topic_section_lines(topic)
+    lines = [*_SPEC_HEADER_LINES, "", *topic_lines, "", *_SPEC_OUTPUT_AND_QUALITY_LINES]
+    return _finalize("spec", topic_id, lines, profile)
 
-    topic_lines = [
-        "## Topic",
-        f"- Topic id: {topic_id}",
-        f"- Title: {title}",
+
+def compile_outline_prompt(
+    topic: Topic,
+    approved_spec: str,
+    profile: LearnerProfile | None = None,
+) -> PromptArtifact:
+    """Compile the outline-stage prompt from a topic and its approved spec."""
+
+    spec_text = _required_block(approved_spec, "approved specification")
+    topic_id, topic_lines = _topic_section_lines(topic)
+    lines = [
+        *_OUTLINE_HEADER_LINES,
+        "",
+        *topic_lines,
+        "",
+        "## Approved Specification",
+        "The following specification was approved upstream. Treat it as the binding contract for scope and outcomes.",
+        "",
+        spec_text.rstrip(),
+        "",
+        *_OUTLINE_OUTPUT_AND_QUALITY_LINES,
     ]
-    _append_value(topic_lines, "Topic brief", topic.brief)
-    _append_value(topic_lines, "Audience", topic.audience)
-    _append_list(topic_lines, "Goals", topic.goals)
-    _append_list(topic_lines, "In scope", topic.scope_includes)
-    _append_list(topic_lines, "Out of scope", topic.scope_excludes)
-    _append_list(topic_lines, "Key questions", topic.key_questions)
-    _append_list(topic_lines, "Prerequisites", topic.prerequisites)
-    _append_list(topic_lines, "Constraints", topic.constraints)
-    _append_value(topic_lines, "Notes", topic.notes)
-
-    return _assemble_spec_prompt(topic_id, topic_lines, profile)
+    return _finalize("outline", topic_id, lines, profile)
 
 
 def compile_attached_spec_prompt(
@@ -135,26 +180,43 @@ def compile_attached_spec_prompt(
     )
 
 
-def _assemble_spec_prompt(
+def _topic_section_lines(topic: Topic) -> tuple[str, list[str]]:
+    topic_id = _required_text(topic.id, "topic id")
+    title = _required_text(topic.title, "title")
+    lines = [
+        "## Topic",
+        f"- Topic id: {topic_id}",
+        f"- Title: {title}",
+    ]
+    _append_value(lines, "Topic brief", topic.brief)
+    _append_value(lines, "Audience", topic.audience)
+    _append_list(lines, "Goals", topic.goals)
+    _append_list(lines, "In scope", topic.scope_includes)
+    _append_list(lines, "Out of scope", topic.scope_excludes)
+    _append_list(lines, "Key questions", topic.key_questions)
+    _append_list(lines, "Prerequisites", topic.prerequisites)
+    _append_list(lines, "Constraints", topic.constraints)
+    _append_value(lines, "Notes", topic.notes)
+    return topic_id, lines
+
+
+def _finalize(
+    stage: str,
     topic_id: str,
-    topic_lines: list[str],
+    lines: list[str],
     profile: LearnerProfile | None,
 ) -> PromptArtifact:
-    lines = [*_HEADER_LINES, "", *topic_lines, "", *_OUTPUT_AND_QUALITY_LINES]
-
     if profile is not None:
-        lines.extend(["", render_profile_prompt_context(profile).rstrip()])
+        lines = [*lines, "", render_profile_prompt_context(profile).rstrip()]
     else:
-        lines.extend(
-            [
-                "",
-                "## Learner Profile Context",
-                "",
-                "No learner profile is attached. Use broadly accessible defaults and avoid assuming private learner context.",
-            ]
-        )
-
-    return PromptArtifact(stage="spec", topic_id=topic_id, text="\n".join(lines).strip() + "\n")
+        lines = [
+            *lines,
+            "",
+            "## Learner Profile Context",
+            "",
+            "No learner profile is attached. Use broadly accessible defaults and avoid assuming private learner context.",
+        ]
+    return PromptArtifact(stage=stage, topic_id=topic_id, text="\n".join(lines).strip() + "\n")
 
 
 def _append_value(lines: list[str], label: str, value: str | None) -> None:
@@ -171,3 +233,9 @@ def _required_text(value: str, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"spec prompt {field_name} must be a non-empty string")
     return value.strip()
+
+
+def _required_block(value: str, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"prompt {field_name} must be a non-empty string")
+    return value

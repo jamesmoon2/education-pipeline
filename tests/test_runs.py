@@ -169,6 +169,58 @@ def test_write_topic_spec_prompt_missing_topic_raises(tmp_path: Path) -> None:
         RunStore(tmp_path).write_topic_spec_prompt("systems-thinking")
 
 
+def test_approve_stage_promotes_ingested_response(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    result = store.write_spec_prompt("systems-thinking", title="Systems Thinking")
+    result.response_path.write_text("# Course Specification\n", encoding="utf-8")
+
+    approved_path = store.approve_stage("systems-thinking", "spec")
+
+    assert approved_path == tmp_path / "runs" / "systems-thinking" / "approved" / "spec.md"
+    assert approved_path.read_text(encoding="utf-8") == "# Course Specification\n"
+    assert store.read_approved("systems-thinking", "spec") == "# Course Specification\n"
+
+    events = store.read_manifest("systems-thinking")["events"]
+    assert events[-1]["stage"] == "spec"
+    assert events[-1]["action"] == "response_approved"
+    assert events[-1]["approved_file"] == "approved/spec.md"
+
+
+def test_approve_stage_requires_ingested_response(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    store.write_spec_prompt("systems-thinking", title="Systems Thinking")
+
+    with pytest.raises(ConfigError, match="no ingested response to approve"):
+        store.approve_stage("systems-thinking", "spec")
+
+
+def test_write_outline_prompt_uses_approved_spec_and_topic(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    spec = runs.write_topic_spec_prompt("systems-thinking")
+    spec.response_path.write_text(
+        "# Course Specification: Systems Thinking\n\n## Learning Outcomes\n- Explain loops.\n",
+        encoding="utf-8",
+    )
+    runs.approve_stage("systems-thinking", "spec")
+
+    result = runs.write_outline_prompt("systems-thinking")
+
+    assert result.stage == "outline"
+    assert result.prompt_path == tmp_path / "runs" / "systems-thinking" / "prompts" / "outline.prompt.md"
+    prompt_text = result.prompt_path.read_text(encoding="utf-8")
+    assert "## Approved Specification" in prompt_text
+    assert "- Explain loops." in prompt_text
+    assert "- Title: Systems Thinking" in prompt_text
+
+
+def test_write_outline_prompt_requires_approved_spec(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+
+    with pytest.raises(ConfigError, match="approved spec response not found"):
+        RunStore(tmp_path).write_outline_prompt("systems-thinking")
+
+
 def test_run_store_rejects_path_traversal_topic_ids(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
 
@@ -183,4 +235,4 @@ def test_write_spec_prompt_rejects_unknown_stage_helper(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
 
     with pytest.raises(ConfigError, match="unsupported run stage"):
-        store.stage_paths("systems-thinking", "outline")
+        store.stage_paths("systems-thinking", "draft")

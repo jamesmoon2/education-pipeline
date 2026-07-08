@@ -18,6 +18,7 @@ from education_pipeline.prompts import (
     PromptArtifact,
     SpecPromptInput,
     compile_attached_spec_prompt,
+    compile_outline_prompt,
     compile_spec_prompt,
     compile_topic_spec_prompt,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "Topic",
     "TopicStore",
     "compile_attached_spec_prompt",
+    "compile_outline_prompt",
     "compile_spec_prompt",
     "compile_topic_spec_prompt",
     "load_learner_profile",
