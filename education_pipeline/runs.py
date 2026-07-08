@@ -9,6 +9,11 @@ import json
 import re
 
 from education_pipeline.config import ConfigError
+from education_pipeline.export import (
+    EXPORT_FORMATS,
+    build_markdown_bundle,
+    render_markdown_to_html,
+)
 from education_pipeline.prompts import (
     PromptArtifact,
     SpecPromptInput,
@@ -352,6 +357,69 @@ class RunStore:
         """Path of the assembled final guide for a run."""
 
         return self.run_dir(topic_id) / "final" / _FINAL_FILENAME
+
+    def export_run(
+        self,
+        topic_id: str,
+        *,
+        format: str = "html",
+        overwrite: bool = False,
+    ) -> Path:
+        """Export the finalized guide to a distributable format.
+
+        This is an optional deterministic step after ``finalize_run``. ``format``
+        is ``"html"`` (a self-contained document) or ``"markdown"`` (the guide
+        with a front-matter provenance block). Both are written into ``final/``.
+        """
+
+        if format not in EXPORT_FORMATS:
+            supported = ", ".join(EXPORT_FORMATS)
+            raise ConfigError(f"unsupported export format {format!r}; supported: {supported}")
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        guide = self._read_final_guide(safe_id)
+        topic = TopicStore(self.root).load_topic(safe_id)
+
+        if format == "markdown":
+            content = build_markdown_bundle(guide, front_matter=self._export_front_matter(safe_id, topic))
+            export_path = self.final_path(safe_id).with_name("guide.bundle.md")
+        else:
+            content = render_markdown_to_html(guide, title=topic.title)
+            export_path = self.final_path(safe_id).with_name("guide.html")
+
+        _write_text(export_path, content, overwrite=overwrite)
+        self._append_event(
+            safe_id,
+            stage="export",
+            action="exported",
+            files={"export_file": export_path, "source_file": self.final_path(safe_id)},
+        )
+        return export_path
+
+    def _read_final_guide(self, topic_id: str) -> str:
+        path = self.final_path(topic_id)
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise ConfigError(
+                f"run {topic_id!r} is not finalized; run finalize_run first: {path}"
+            ) from exc
+
+    def _export_front_matter(self, topic_id: str, topic) -> dict[str, str]:
+        front_matter = {
+            "title": topic.title,
+            "topic_id": topic_id,
+            "source": "final/guide.md",
+            "generator": "education-pipeline",
+        }
+        events = self.read_manifest(topic_id).get("events", [])
+        finalized = next(
+            (event for event in reversed(events) if event.get("action") == "finalized"),
+            None,
+        )
+        if finalized is not None and finalized.get("recorded_at"):
+            front_matter["generated"] = finalized["recorded_at"]
+        return front_matter
 
     def is_finalized(self, topic_id: str) -> bool:
         """Whether the run's final guide has been assembled."""

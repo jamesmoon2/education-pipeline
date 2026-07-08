@@ -25,6 +25,11 @@ from education_pipeline.prompts import (
     compile_spec_prompt,
     compile_topic_spec_prompt,
 )
+from education_pipeline.export import (
+    EXPORT_FORMATS,
+    build_markdown_bundle,
+    render_markdown_to_html,
+)
 from education_pipeline.runs import (
     MANIFEST_SCHEMA_VERSION,
     RUN_SUBDIRS,
@@ -58,6 +63,7 @@ from education_pipeline.workspace import ProfileAttachment, ProfileStore, TopicS
 
 __all__ = [
     "DEFAULT_STAGE_RECOMMENDATIONS",
+    "EXPORT_FORMATS",
     "MANIFEST_SCHEMA_VERSION",
     "PROFILE_SCHEMA_VERSION",
     "RUN_SUBDIRS",
@@ -87,6 +93,7 @@ __all__ = [
     "StageStatus",
     "Topic",
     "TopicStore",
+    "build_markdown_bundle",
     "compile_attached_spec_prompt",
     "compile_draft_prompt",
     "compile_outline_prompt",
@@ -102,6 +109,7 @@ __all__ = [
     "parse_model_catalog",
     "parse_model_plan",
     "parse_topic",
+    "render_markdown_to_html",
     "render_profile_prompt_context",
     "render_profile_public_summary",
 ]

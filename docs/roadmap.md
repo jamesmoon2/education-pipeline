@@ -61,14 +61,19 @@ Current status:
   (saving a response, approving it). Called repeatedly it drives a run forward
   and resumes it from disk, so a fresh session picks up exactly where an earlier
   one stopped. This is the API a CLI or UI would sit on.
+- Done: export. `RunStore.export_run(topic_id, format=...)` is an optional
+  deterministic step after finalize. `format="markdown"` writes a
+  `final/guide.bundle.md` with a front-matter provenance block; `format="html"`
+  writes a self-contained `final/guide.html` via a stdlib-only Markdown-subset
+  renderer (`render_markdown_to_html`). Both formats stay dependency-free.
 - Done: resumable run state. Every artifact (topic, profile snapshot, prompts,
   responses, approved copies, manifest events) is persisted per stage, and the
   writers refuse to clobber saved work by default. `RunStore.run_status` /
   `stage_status` / `list_run_ids` read only the workspace filesystem, so a fresh
   session (for example after running out of tokens) recovers exactly where work
   left off and `next_action` names the next step to take.
-- Next: add an export stage (render `final/guide.md` to other formats), then
-  optional CLI/UI surfaces to drive the run loop without hand-calling the API.
+- Next: optional CLI/UI surfaces to drive the run loop (over `advance` and
+  `run_status`) without hand-calling the API, plus profile privacy warnings.
 
 ## Phase 4: Model Plan UI
 

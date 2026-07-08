@@ -535,6 +535,63 @@ def test_advance_drives_a_full_run_with_human_steps(tmp_path: Path) -> None:
     assert (tmp_path / "runs" / "systems-thinking" / "final" / "guide.md").exists()
 
 
+def test_export_run_writes_html(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_all_stages_to_approved(
+        runs, "systems-thinking", repair_body="# Systems Thinking\n\nCorrected content.\n"
+    )
+    runs.finalize_run("systems-thinking")
+
+    path = runs.export_run("systems-thinking", format="html")
+
+    assert path == tmp_path / "runs" / "systems-thinking" / "final" / "guide.html"
+    html = path.read_text(encoding="utf-8")
+    assert html.startswith("<!DOCTYPE html>")
+    assert "<h1>Systems Thinking</h1>" in html
+    assert "<p>Corrected content.</p>" in html
+
+    events = runs.read_manifest("systems-thinking")["events"]
+    assert events[-1]["stage"] == "export"
+    assert events[-1]["action"] == "exported"
+    assert events[-1]["export_file"] == "final/guide.html"
+
+
+def test_export_run_writes_markdown_bundle(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_all_stages_to_approved(runs, "systems-thinking", repair_body="# Systems Thinking\n")
+    runs.finalize_run("systems-thinking")
+
+    path = runs.export_run("systems-thinking", format="markdown")
+
+    assert path == tmp_path / "runs" / "systems-thinking" / "final" / "guide.bundle.md"
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("---\n")
+    assert "title: Systems Thinking\n" in text
+    assert "topic_id: systems-thinking\n" in text
+    assert "# Systems Thinking" in text
+
+
+def test_export_run_requires_finalized(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_all_stages_to_approved(runs, "systems-thinking")
+
+    with pytest.raises(ConfigError, match="not finalized"):
+        runs.export_run("systems-thinking", format="html")
+
+
+def test_export_run_rejects_unknown_format(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    _drive_all_stages_to_approved(runs, "systems-thinking")
+    runs.finalize_run("systems-thinking")
+
+    with pytest.raises(ConfigError, match="unsupported export format"):
+        runs.export_run("systems-thinking", format="pdf")
+
+
 def test_stage_status_rejects_unsupported_stage(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="unsupported run stage"):
         RunStore(tmp_path).stage_status("systems-thinking", "finalize")
