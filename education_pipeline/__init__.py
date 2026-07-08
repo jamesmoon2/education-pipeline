@@ -14,6 +14,12 @@ from education_pipeline.config import (
     parse_model_catalog,
     parse_model_plan,
 )
+from education_pipeline.prompts import (
+    PromptArtifact,
+    SpecPromptInput,
+    compile_attached_spec_prompt,
+    compile_spec_prompt,
+)
 from education_pipeline.profiles import (
     PROFILE_SCHEMA_VERSION,
     LearnerLocalization,
@@ -39,10 +45,14 @@ __all__ = [
     "ModelCatalog",
     "ModelOption",
     "ModelPlan",
+    "PromptArtifact",
     "ProfileAttachment",
     "ProfileStore",
     "Provider",
+    "SpecPromptInput",
     "StageModelPlan",
+    "compile_attached_spec_prompt",
+    "compile_spec_prompt",
     "load_learner_profile",
     "load_model_catalog",
     "load_model_plan",
