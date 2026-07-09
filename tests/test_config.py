@@ -110,3 +110,49 @@ def test_stage_level_provider_override_is_validated() -> None:
     assert plan.stage("qa").effort == "low"
     assert plan.stage("repair").provider == "manual"
     assert plan.stage("repair").model == "prompt-only"
+
+
+def test_model_option_parses_argv_model_and_extra_args():
+    catalog = parse_model_catalog(
+        {
+            "providers": [
+                {
+                    "id": "claude-code",
+                    "models": [
+                        {
+                            "id": "premium",
+                            "argv_model": "claude-opus-4-8",
+                            "extra_args": ["--reasoning", "high"],
+                            "note": "kept in metadata",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    option = catalog.providers["claude-code"].models["premium"]
+    assert option.argv_model == "claude-opus-4-8"
+    assert option.extra_args == ("--reasoning", "high")
+    assert option.metadata == {"note": "kept in metadata"}
+
+
+def test_model_option_argv_defaults_and_extra_args_type_checked():
+    catalog = parse_model_catalog(
+        {"providers": [{"id": "codex", "models": [{"id": "balanced"}]}]}
+    )
+    option = catalog.providers["codex"].models["balanced"]
+    assert option.argv_model is None
+    assert option.extra_args == ()
+
+    import pytest
+
+    from education_pipeline import ConfigError
+
+    with pytest.raises(ConfigError):
+        parse_model_catalog(
+            {
+                "providers": [
+                    {"id": "codex", "models": [{"id": "x", "extra_args": "not-a-list"}]}
+                ]
+            }
+        )
