@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+
+      - name: Import check
+        run: python -c "import education_pipeline"
+
+      - name: Unit tests
+        run: python -m pytest
+
+      - name: CLI smoke test
+        run: |
+          education-pipeline --help
+          python -m education_pipeline --help
+
+  artifact-leak:
+    name: no private artifacts committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if user workspace data is tracked
+        run: |
+          # These directories hold generated runs and private topics/profiles
+          # and must never be committed to the package repository.
+          leaked=$(git ls-files -- 'runs/**' 'topics/**' 'profiles/**' 'queue/**' '.remember/**')
+          if [ -n "$leaked" ]; then
+            echo "Private workspace artifacts committed to the repo:" >&2
+            echo "$leaked" >&2
+            exit 1
+          fi
+          echo "No private workspace artifacts tracked."

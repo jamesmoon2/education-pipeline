@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,13 +8,26 @@ version = "0.1.0"
 description = "Local-first, prompt-first tooling for building interactive education guides."
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "education-pipeline contributors" }]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "James Mooney" }]
+keywords = ["education", "prompt-engineering", "static-site", "cli", "local-first"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Education",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Topic :: Education",
+  "Topic :: Text Processing :: Markup :: HTML",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jamesmoon2/education-pipeline"
+Repository = "https://github.com/jamesmoon2/education-pipeline"
+Issues = "https://github.com/jamesmoon2/education-pipeline/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
