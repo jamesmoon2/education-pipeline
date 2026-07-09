@@ -353,6 +353,39 @@ class RunStore:
         )
         return paths.approved_path
 
+    def ingest_response(
+        self, topic_id: str, stage: str, text: str, *, force: bool = False
+    ) -> Path:
+        """Atomically land an executed provider response as the stage response.
+
+        The written file is byte-for-byte a hand-saved response. Empty or
+        whitespace-only output is rejected, and an existing response is never
+        clobbered unless ``force`` is set.
+        """
+
+        paths = self.stage_paths(topic_id, stage)
+        if not text.strip():
+            raise ConfigError(f"refusing to ingest empty response for stage {paths.stage!r}")
+        if paths.response_path.exists() and not force:
+            raise ConfigError(
+                f"response already ingested for stage {paths.stage!r}: {paths.response_path}"
+            )
+        _write_text_atomic(paths.response_path, text)
+        if paths.stub_path.exists():
+            paths.stub_path.unlink()
+        return paths.response_path
+
+    def append_manifest_event(self, topic_id: str, event: dict) -> None:
+        """Append an arbitrary event (with ``recorded_at``) to the run manifest."""
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        run = self.run_dir(safe_id)
+        manifest = self.read_manifest(safe_id)
+        entry = dict(event)
+        entry.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
+        manifest.setdefault("events", []).append(entry)
+        _write_manifest(run / "manifest.json", manifest)
+
     def final_path(self, topic_id: str) -> Path:
         """Path of the assembled final guide for a run."""
 
@@ -658,6 +691,22 @@ def _write_text(path: Path, text: str, *, overwrite: bool) -> None:
         raise ConfigError(f"refusing to overwrite existing file: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    import os
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=path.suffix)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def _supported_stage(stage: str) -> str:

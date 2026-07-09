@@ -634,3 +634,41 @@ def test_write_spec_prompt_rejects_unknown_stage_helper(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="unsupported run stage"):
         store.stage_paths("systems-thinking", "finalize")
+
+
+def test_ingest_response_writes_response_atomically(tmp_path):
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+    path = runs.ingest_response("systems-thinking", "draft", "# Draft body\n")
+    assert path == runs.response_path("systems-thinking", "draft")
+    assert path.read_text(encoding="utf-8") == "# Draft body\n"
+    assert runs.has_ingested_response("systems-thinking", "draft")
+
+
+def test_ingest_response_rejects_empty(tmp_path):
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+    with pytest.raises(ConfigError):
+        runs.ingest_response("systems-thinking", "draft", "   \n\t ")
+
+
+def test_ingest_response_refuses_clobber_unless_forced(tmp_path):
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+    runs.ingest_response("systems-thinking", "draft", "first\n")
+    with pytest.raises(ConfigError):
+        runs.ingest_response("systems-thinking", "draft", "second\n")
+    path = runs.ingest_response("systems-thinking", "draft", "second\n", force=True)
+    assert path.read_text(encoding="utf-8") == "second\n"
+
+
+def test_append_manifest_event_records_event(tmp_path):
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+    runs.append_manifest_event(
+        "systems-thinking", {"stage": "draft", "action": "job", "job_id": "j1"}
+    )
+    events = runs.read_manifest("systems-thinking")["events"]
+    assert events[-1]["action"] == "job"
+    assert events[-1]["job_id"] == "j1"
+    assert "recorded_at" in events[-1]
