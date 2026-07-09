@@ -9,14 +9,21 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import secrets
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
+from education_pipeline.providers import get_runner
+from education_pipeline.runs import RunStore
 
 JOB_STATUSES = (
     "queued",
@@ -204,3 +211,169 @@ def terminate_process(proc: subprocess.Popen, *, grace: float = 5.0) -> None:
         proc.wait(timeout=grace)
     except subprocess.TimeoutExpired:  # pragma: no cover - defensive
         pass
+
+
+MAX_LOG_BYTES = 10 * 1024 * 1024
+DEFAULT_TIMEOUT_SECONDS = 1800
+
+
+class JobRunner:
+    """Executes exactly one job: spawn provider, capture output, ingest response."""
+
+    def __init__(
+        self,
+        store: JobStore,
+        runs: RunStore,
+        catalog: ModelCatalog,
+        plan: ModelPlan,
+        *,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        force: bool = False,
+    ) -> None:
+        self.store = store
+        self.runs = runs
+        self.catalog = catalog
+        self.plan = plan
+        self.timeout = timeout
+        self.force = force
+
+    def execute(self, job: Job, cancel: threading.Event) -> Job:
+        job.status = "running"
+        job.started_at = _utcnow().isoformat()
+        self.store.save(job)
+        try:
+            runner = get_runner(job.provider)
+            if not runner.is_available():
+                return self._fail(job, f"provider {job.provider!r} is not available on PATH")
+
+            model = self._resolve_model(job)
+            plan = self.plan.stage(job.stage)
+            prompt_path = self.runs.stage_paths(job.topic_id, job.stage).prompt_path
+            if not prompt_path.exists():
+                return self._fail(job, f"prompt not written for stage {job.stage!r}")
+            invocation = runner.build_invocation(model, plan, prompt_path)
+            stdout, exit_code, timed_out, canceled = self._spawn(job, invocation, prompt_path, cancel)
+            job.exit_code = exit_code
+            if canceled:
+                return self._terminal(job, "canceled", error="canceled")
+            if timed_out:
+                return self._fail(job, "timeout")
+            if exit_code != 0:
+                return self._fail(job, f"provider exited with code {exit_code}")
+
+            parsed = runner.parse_response(stdout)
+            job.metadata.update(parsed.metadata)
+            response_path = self.runs.ingest_response(
+                job.topic_id, job.stage, parsed.text, force=self.force
+            )
+            job.response_path = str(response_path)
+            self.runs.append_manifest_event(
+                job.topic_id,
+                {
+                    "stage": job.stage,
+                    "action": "job",
+                    "job_id": job.id,
+                    "provider": job.provider,
+                    "model": job.model,
+                },
+            )
+            return self._terminal(job, "succeeded")
+        except ConfigError as exc:
+            return self._fail(job, str(exc))
+
+    def _resolve_model(self, job: Job):
+        provider = self.catalog.require_provider(job.provider)
+        if job.model is None:
+            from education_pipeline.config import ModelOption
+
+            return ModelOption(id="", label="")
+        try:
+            return provider.models[job.model]
+        except KeyError as exc:
+            raise ConfigError(
+                f"unknown model {job.model!r} for provider {job.provider!r}"
+            ) from exc
+
+    def _spawn(self, job, invocation, prompt_path, cancel):
+        log = self.store.log_path(job.topic_id, job.id)
+        env = dict(os.environ)
+        env.update(invocation.env)
+        with prompt_path.open("rb") as prompt_handle:
+            proc = subprocess.Popen(
+                invocation.argv,
+                stdin=prompt_handle,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+                **popen_kwargs(),
+            )
+        job.pid = proc.pid
+        self.store.save(job)
+
+        # Read stdout on a background thread: proc.stdout.read() blocks until the
+        # child writes or exits, so polling the deadline/cancel event *between*
+        # reads (as a plain loop would) can't react until the child produces
+        # output. A slow/hung child (e.g. FAKE_DELAY) would then stall the
+        # deadline check for the full delay instead of the configured timeout.
+        # Routing reads through a queue lets the main loop poll on a short
+        # interval and terminate promptly regardless of what the child is doing.
+        chunk_queue: queue.Queue = queue.Queue()
+
+        def _read_stdout() -> None:
+            assert proc.stdout is not None
+            try:
+                for chunk in iter(lambda: proc.stdout.read(4096), b""):
+                    chunk_queue.put(chunk)
+            finally:
+                chunk_queue.put(None)  # EOF sentinel
+
+        reader = threading.Thread(target=_read_stdout, daemon=True)
+        reader.start()
+
+        captured = bytearray()
+        written = 0
+        truncated = False
+        deadline = time.monotonic() + self.timeout
+        timed_out = False
+        canceled = False
+        poll_interval = 0.1
+        with log.open("wb") as log_handle:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                if cancel.is_set():
+                    canceled = True
+                    break
+                try:
+                    chunk = chunk_queue.get(timeout=min(poll_interval, remaining))
+                except queue.Empty:
+                    continue
+                if chunk is None:
+                    break  # EOF
+                if written < MAX_LOG_BYTES:
+                    room = MAX_LOG_BYTES - written
+                    log_handle.write(chunk[:room])
+                    written += min(len(chunk), room)
+                    if len(chunk) > room and not truncated:
+                        log_handle.write(b"\n...[output truncated]...\n")
+                        truncated = True
+                if len(captured) < MAX_LOG_BYTES:
+                    captured.extend(chunk[: MAX_LOG_BYTES - len(captured)])
+        if timed_out or canceled or proc.poll() is None:
+            terminate_process(proc)
+        exit_code = proc.wait()
+        reader.join(timeout=1)
+        return captured.decode("utf-8", errors="replace"), exit_code, timed_out, canceled
+
+    def _fail(self, job: Job, error: str) -> Job:
+        return self._terminal(job, "failed", error=error)
+
+    def _terminal(self, job: Job, status: str, *, error: str | None = None) -> Job:
+        job.status = status
+        job.error = error
+        job.ended_at = _utcnow().isoformat()
+        job.pid = None
+        self.store.save(job)
+        return job
