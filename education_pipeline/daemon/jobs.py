@@ -10,6 +10,9 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import signal
+import subprocess
+import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -158,3 +161,46 @@ class JobStore:
             handle.seek(offset)
             data = handle.read()
         return data, offset + len(data)
+
+
+def popen_kwargs() -> dict:
+    """Spawn flags that put the child in its own killable group, per platform."""
+
+    if sys.platform == "win32":  # pragma: no cover - exercised on Windows CI
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def terminate_process(proc: subprocess.Popen, *, grace: float = 5.0) -> None:
+    """Terminate a spawned provider process portably: TERM then KILL.
+
+    On POSIX the whole session/process-group is signalled (the child was spawned
+    with ``start_new_session=True``); on Windows ``Popen.terminate()`` /
+    ``kill()`` are used (no SIGTERM semantics).
+    """
+
+    if proc.poll() is not None:
+        return
+    try:
+        if sys.platform == "win32":  # pragma: no cover - exercised on Windows CI
+            proc.terminate()
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        proc.wait(timeout=grace)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if sys.platform == "win32":  # pragma: no cover - exercised on Windows CI
+            proc.kill()
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+        pass

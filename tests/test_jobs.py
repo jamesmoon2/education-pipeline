@@ -1,3 +1,6 @@
+import subprocess
+import sys
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -7,6 +10,8 @@ from education_pipeline.daemon.jobs import (
     Job,
     JobStore,
     new_job_id,
+    popen_kwargs,
+    terminate_process,
 )
 
 
@@ -62,3 +67,21 @@ def test_read_log_returns_bytes_from_offset(tmp_path):
     data, offset = store.read_log(job, 6)
     assert data == b"world"
     assert offset == 11
+
+
+def test_terminate_process_kills_a_running_child():
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], **popen_kwargs()
+    )
+    assert proc.poll() is None
+    terminate_process(proc, grace=2.0)
+    # after termination the process must be reaped with a non-None returncode
+    assert proc.poll() is not None
+
+
+def test_popen_kwargs_has_platform_group_flag():
+    kwargs = popen_kwargs()
+    if sys.platform == "win32":
+        assert "creationflags" in kwargs
+    else:
+        assert kwargs.get("start_new_session") is True
