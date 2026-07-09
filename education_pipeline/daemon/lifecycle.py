@@ -78,26 +78,32 @@ def is_pid_alive(pid: int) -> bool:
 
 
 def is_stale(record: dict) -> bool:
+    if not isinstance(record, dict):
+        return True
     pid = record.get("pid")
     return not isinstance(pid, int) or not is_pid_alive(pid)
 
 
 def claim_discovery(root: str | Path) -> bool:
-    """Try to become the workspace daemon. Remove a stale file first.
+    """Try to become the workspace daemon via an exclusive create.
 
-    Returns True if this caller now owns the discovery slot (via an exclusive
-    create), False if a live daemon already owns it.
+    Returns True if this caller now owns the discovery slot, False if a live
+    daemon (or an in-flight claimant) already owns it. A confirmed-stale file
+    (dead pid) is removed first so it can be reclaimed.
     """
-
     record = read_discovery(root)
     if record is not None and not is_stale(record):
         return False
-    remove_discovery(root)
+    if record is not None:  # parseable but stale (dead pid) — safe to reclaim
+        remove_discovery(root)
     path = discovery_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         return False
-    os.close(fd)
+    try:
+        os.write(fd, json.dumps({"pid": os.getpid()}).encode("utf-8"))
+    finally:
+        os.close(fd)
     return True

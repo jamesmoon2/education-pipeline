@@ -41,3 +41,20 @@ def test_claim_discovery_replaces_stale_and_blocks_live(tmp_path):
     # live: our own pid → not claimable by a second caller
     lifecycle.write_discovery(tmp_path, pid=os.getpid(), port=1, token="t", version="0.1.0")
     assert lifecycle.claim_discovery(tmp_path) is False
+
+
+def test_claim_discovery_empty_placeholder_blocks_second_claim(tmp_path):
+    # An in-flight claimant's empty/unparseable placeholder must block a racing caller.
+    path = lifecycle.discovery_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()  # empty file → unparseable
+    assert lifecycle.claim_discovery(tmp_path) is False
+
+
+def test_claim_discovery_pid_record_blocks_second_claim(tmp_path):
+    # First claimant wins and writes a parseable {"pid": <self>} record.
+    assert lifecycle.claim_discovery(tmp_path) is True
+    record = lifecycle.read_discovery(tmp_path)
+    assert record["pid"] == os.getpid()
+    # Second caller sees a live pid → loses.
+    assert lifecycle.claim_discovery(tmp_path) is False
