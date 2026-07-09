@@ -330,8 +330,18 @@ class JobRunner:
         reader = threading.Thread(target=_read_stdout, daemon=True)
         reader.start()
 
-        captured = bytearray()
-        written = 0
+        # Cap output at ~MAX_LOG_BYTES while preserving *both* ends: provider
+        # crash messages and JSON-close errors land at the tail, so a head-only
+        # cap would discard exactly the diagnostic bytes we most want. Stream
+        # live to the log until the head fills (most real runs finish far under
+        # this and stream fully live); after that, retain only a rolling tail of
+        # the most recent bytes and flush it, behind a truncation marker, at the
+        # end. Final on-disk size and in-memory footprint both stay bounded.
+        head_limit = MAX_LOG_BYTES // 2
+        tail_limit = MAX_LOG_BYTES - head_limit
+        head = bytearray()
+        tail = bytearray()
+        dropped = 0
         truncated = False
         deadline = time.monotonic() + self.timeout
         timed_out = False
@@ -352,19 +362,35 @@ class JobRunner:
                     continue
                 if chunk is None:
                     break  # EOF
-                if written < MAX_LOG_BYTES:
-                    room = MAX_LOG_BYTES - written
+                if len(head) < head_limit:
+                    room = head_limit - len(head)
                     log_handle.write(chunk[:room])
-                    written += min(len(chunk), room)
-                    if len(chunk) > room and not truncated:
-                        log_handle.write(b"\n...[output truncated]...\n")
-                        truncated = True
-                if len(captured) < MAX_LOG_BYTES:
-                    captured.extend(chunk[: MAX_LOG_BYTES - len(captured)])
+                    head.extend(chunk[:room])
+                    overflow = chunk[room:]
+                else:
+                    overflow = chunk
+                if overflow:
+                    truncated = True
+                    dropped += len(overflow)
+                    tail.extend(overflow)
+                    if len(tail) > tail_limit:
+                        del tail[: len(tail) - tail_limit]
+            if truncated:
+                # `dropped` counts everything past the head; the tail we are
+                # about to re-emit is not actually lost, so report only the gap.
+                omitted = dropped - len(tail)
+                log_handle.write(
+                    f"\n...[output truncated, {omitted} bytes omitted]...\n".encode("utf-8")
+                )
+                log_handle.write(tail)
         if timed_out or canceled or proc.poll() is None:
             terminate_process(proc)
         exit_code = proc.wait()
         reader.join(timeout=1)
+        # captured (fed to parse_response) is head + tail with NO marker — the
+        # marker must never poison JSON parsing. A valid response is far under
+        # the cap, so this only matters for degenerate runs.
+        captured = head + tail
         return captured.decode("utf-8", errors="replace"), exit_code, timed_out, canceled
 
     def _fail(self, job: Job, error: str) -> Job:

@@ -100,3 +100,34 @@ def test_execute_provider_unavailable_fails_before_spawn(tmp_path):
     done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, threading.Event())
     assert done.status == "failed"
     assert "gone" in (done.error or "")
+
+
+def test_execute_log_truncation_keeps_head_and_tail(tmp_path, monkeypatch):
+    import education_pipeline.daemon.jobs as jobs_mod
+
+    monkeypatch.setattr(jobs_mod, "MAX_LOG_BYTES", 200)
+    # Output far larger than the 200-byte cap, with distinct head/tail markers.
+    head_marker = "HEAD_START_" + "A" * 300
+    tail_marker = "Z" * 300 + "_TAIL_END"
+    monkeypatch.setenv("FAKE_STDOUT", head_marker + tail_marker)
+    runs, catalog, plan, store = _setup(tmp_path)
+    job = store.create("t", "draft", "fake", "m", None)
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, threading.Event())
+    assert done.status == "succeeded"
+    log_text = store.log_path("t", job.id).read_text(encoding="utf-8")
+    assert log_text.startswith("HEAD_START_")  # head retained
+    assert "output truncated" in log_text  # marker present
+    assert log_text.rstrip().endswith("_TAIL_END")  # tail retained
+    # bounded footprint: cap + a small allowance for the marker line
+    assert len(log_text.encode("utf-8")) <= 200 + 128
+
+
+def test_execute_cancel_marks_canceled_without_response(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_DELAY", "10")
+    runs, catalog, plan, store = _setup(tmp_path)
+    job = store.create("t", "draft", "fake", "m", None)
+    cancel = threading.Event()
+    cancel.set()  # already cancelled before spawn's read loop begins
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, cancel)
+    assert done.status == "canceled"
+    assert not runs.has_ingested_response("t", "draft")
