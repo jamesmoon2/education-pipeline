@@ -20,6 +20,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
 from education_pipeline.providers import get_runner
@@ -403,3 +404,114 @@ class JobRunner:
         job.pid = None
         self.store.save(job)
         return job
+
+
+class Worker:
+    """A single-worker job queue with FIFO ordering and crash recovery."""
+
+    def __init__(self, store: JobStore, runner_factory: Callable[[Job], JobRunner]) -> None:
+        self.store = store
+        self.runner_factory = runner_factory
+        self._queue: "queue.Queue[str | None]" = queue.Queue()
+        self._cancels: dict[str, threading.Event] = {}
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stopping = False
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, name="ep-worker", daemon=True)
+        self._thread.start()
+
+    def stop(self, finish_inflight: bool = True) -> None:
+        self._stopping = True
+        if not finish_inflight:
+            with self._lock:
+                for event in self._cancels.values():
+                    event.set()
+        self._queue.put(None)  # sentinel to wake the loop
+        if self._thread is not None:
+            self._thread.join(timeout=30)
+
+    def enqueue(self, job: Job) -> None:
+        existing = self.store.active_for(job.topic_id, job.stage)
+        if existing is not None and existing.id != job.id:
+            raise ConfigError(
+                f"a {existing.status} job already exists for {job.topic_id}/{job.stage}"
+            )
+        with self._lock:
+            self._cancels[job.id] = threading.Event()
+        self._queue.put(job.id)
+
+    def cancel(self, job_id: str) -> Job | None:
+        job = self.store.find(job_id)
+        if job is None or job.status in TERMINAL_STATUSES:
+            return job
+        with self._lock:
+            event = self._cancels.get(job_id)
+        if job.status == "queued":
+            job.status = "canceled"
+            job.ended_at = _utcnow().isoformat()
+            self.store.save(job)
+            if event is not None:
+                event.set()
+            return job
+        if event is not None:
+            event.set()
+        return self.store.find(job_id)
+
+    def reconcile(self) -> None:
+        for job in self.store.all_jobs():
+            if job.status == "running":
+                if job.pid and _pid_plausibly_alive(job.pid):
+                    _best_effort_kill(job.pid)
+                job.status = "interrupted"
+                job.error = "daemon restarted while job was running"
+                job.ended_at = _utcnow().isoformat()
+                job.pid = None
+                self.store.save(job)
+        for job in sorted(
+            (j for j in self.store.all_jobs() if j.status == "queued"), key=lambda j: j.id
+        ):
+            with self._lock:
+                self._cancels.setdefault(job.id, threading.Event())
+            self._queue.put(job.id)
+
+    def _loop(self) -> None:
+        while True:
+            job_id = self._queue.get()
+            if job_id is None:
+                return
+            job = self.store.find(job_id)
+            if job is None or job.status != "queued":
+                continue
+            with self._lock:
+                cancel = self._cancels.get(job_id, threading.Event())
+            if cancel.is_set():
+                job.status = "canceled"
+                job.ended_at = _utcnow().isoformat()
+                self.store.save(job)
+                continue
+            runner = self.runner_factory(job)
+            runner.execute(job, cancel)
+
+
+def _pid_plausibly_alive(pid: int) -> bool:
+    if sys.platform == "win32":  # pragma: no cover - Windows CI
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except OSError:
+        return False
+
+
+def _best_effort_kill(pid: int) -> None:
+    try:
+        if sys.platform == "win32":  # pragma: no cover - Windows CI
+            os.kill(pid, signal.SIGTERM)
+        else:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except OSError:
+        pass

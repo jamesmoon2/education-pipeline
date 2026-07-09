@@ -1,0 +1,118 @@
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from education_pipeline import RunStore, parse_model_catalog, parse_model_plan
+from education_pipeline.config import ConfigError
+from education_pipeline.daemon.jobs import Job, JobRunner, JobStore, Worker
+from education_pipeline.providers import Invocation, ProviderResponse, register_runner
+
+FAKE = Path(__file__).parent / "fake_provider.py"
+
+
+class FakeRunner:
+    provider_id = "fake"
+    executable = True
+
+    def is_available(self):
+        return True
+
+    def build_invocation(self, model, plan, prompt_path):
+        return Invocation(argv=[sys.executable, str(FAKE)])
+
+    def parse_response(self, stdout):
+        return ProviderResponse(text=stdout, metadata={})
+
+
+def _factory(tmp_path):
+    register_runner(FakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t")
+    p = runs.stage_paths("t", "draft").prompt_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("PROMPT", encoding="utf-8")
+    catalog = parse_model_catalog({"providers": [{"id": "fake", "models": [{"id": "m"}]}]})
+    plan = parse_model_plan({"provider": "fake", "stages": {"draft": {"model": "m"}}}, catalog)
+    store = JobStore(tmp_path)
+
+    def make(job):
+        return JobRunner(store, runs, catalog, plan, timeout=30)
+
+    return store, runs, make
+
+
+def _wait_terminal(store, job_id, timeout=10):
+    end = time.time() + timeout
+    while time.time() < end:
+        job = store.find(job_id)
+        if job and job.status in {"succeeded", "failed", "canceled", "interrupted"}:
+            return job
+        time.sleep(0.02)
+    raise AssertionError("job did not reach a terminal state")
+
+
+def test_worker_runs_enqueued_job_to_success(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_STDOUT", "OK\n")
+    store, runs, make = _factory(tmp_path)
+    worker = Worker(store, make)
+    worker.start()
+    try:
+        job = store.create("t", "draft", "fake", "m", None)
+        store.save(job)
+        worker.enqueue(job)
+        done = _wait_terminal(store, job.id)
+        assert done.status == "succeeded"
+    finally:
+        worker.stop()
+
+
+def test_worker_refuses_duplicate_active_job(tmp_path):
+    store, runs, make = _factory(tmp_path)
+    worker = Worker(store, make)
+    a = store.create("t", "draft", "fake", "m", None)
+    a.status = "queued"
+    store.save(a)
+    b = store.create("t", "draft", "fake", "m", None)
+    with pytest.raises(ConfigError):
+        worker.enqueue(b)
+
+
+def test_reconcile_reenqueues_queued_and_interrupts_running(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_STDOUT", "OK\n")
+    store, runs, make = _factory(tmp_path)
+    # a leftover running job from a previous life, with a dead pid
+    running = store.create("t", "draft", "fake", "m", None)
+    running.status = "running"
+    running.pid = 999999
+    store.save(running)
+    # a leftover queued job (different stage to dodge the duplicate guard)
+    queued = store.create("t", "spec", "fake", "m", None)
+    p = runs.stage_paths("t", "spec").prompt_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("PROMPT", encoding="utf-8")
+    queued.status = "queued"
+    store.save(queued)
+
+    worker = Worker(store, make)
+    worker.reconcile()
+    assert store.find(running.id).status == "interrupted"
+    assert not runs.has_ingested_response("t", "draft")
+    worker.start()
+    try:
+        done = _wait_terminal(store, queued.id)
+        assert done.status == "succeeded"
+    finally:
+        worker.stop()
+
+
+def test_cancel_queued_job_marks_canceled(tmp_path):
+    store, runs, make = _factory(tmp_path)
+    worker = Worker(store, make)  # not started, so the job stays queued
+    job = store.create("t", "draft", "fake", "m", None)
+    store.save(job)
+    worker.enqueue(job)
+    result = worker.cancel(job.id)
+    assert result.status == "canceled"
