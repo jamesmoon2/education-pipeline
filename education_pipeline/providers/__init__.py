@@ -91,3 +91,14 @@ def get_runner(provider_id: str) -> ProviderRunner:
 
 
 register_runner(ManualRunner())
+
+
+def _register_builtin_runners() -> None:
+    from education_pipeline.providers.claude_code import ClaudeCodeRunner
+    from education_pipeline.providers.codex import CodexRunner
+
+    register_runner(ClaudeCodeRunner())
+    register_runner(CodexRunner())
+
+
+_register_builtin_runners()
