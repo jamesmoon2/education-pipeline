@@ -6,6 +6,7 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+node_modules/
 
 # User workspace data. Public examples should live under examples/.
 runs/
