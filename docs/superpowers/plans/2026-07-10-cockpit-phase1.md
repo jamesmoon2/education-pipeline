@@ -20,7 +20,8 @@ Durable ledger: `.superpowers/sdd/progress.md` — trust it and `git log` over m
 | 9. usePolling hook | complete, review clean | `d7729f9` |
 | 10. Topic list page | complete, review clean | `6dd2166` |
 | 11. Job log view | complete, review clean | `3fe1b29` |
-| 12–14 (frontend) | not started | — |
+| 12. Run board + jobs panel | complete, review clean | `be74658` |
+| 13–14 (frontend) | not started | — |
 
 Backend suite at `56756de`: **195 passing, 0 failing.**
 
