@@ -6,7 +6,7 @@
 |------|-------|--------|
 | 1. JobStore.any_active_for | complete | 16c92a4 |
 | 2. write_api run actions | complete | 2256900 |
-| 3. write_api workspace imports | pending | — |
+| 3. write_api workspace imports | complete | f9e6110 |
 | 4. POST run-action routes | pending | — |
 | 5. POST import routes | pending | — |
 | 6. Download endpoints | pending | — |
@@ -21,7 +21,7 @@
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 3.
+To resume: continue with Task 4.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -604,7 +604,7 @@ git commit -m "feat(daemon): write_api run actions with typed 409 conflicts"
   - `attach_profile(profiles: ProfileStore, topic_id: str, profile_id: str, *, overwrite=True) -> dict` → `{"profile_id", "topic_id", "snapshot_path"}` (default `overwrite=True`, matching `edu profile attach`). Unknown profile → `NotFoundError`.
 - No job guard on any of these (they never touch run trees the worker writes; the snapshot lands in `inputs/`, which the worker only reads).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_write_api.py`:
 
@@ -662,12 +662,12 @@ def test_attach_unknown_profile_is_404(tmp_path):
         write_api.attach_profile(ProfileStore(tmp_path), "t", "ghost")
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_write_api.py -q -k "import or attach"`
 Expected: FAIL with `AttributeError: module ... has no attribute 'import_topic'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `education_pipeline/daemon/write_api.py`:
 
@@ -719,12 +719,12 @@ def attach_profile(
     }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_write_api.py -q`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/daemon/write_api.py tests/test_write_api.py
