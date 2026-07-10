@@ -104,10 +104,17 @@ def _make_handler(context: DaemonContext):
             return True
 
         def _read_body(self) -> dict:
-            length = int(self.headers.get("Content-Length", 0))
-            if not length:
+            raw_length = self.headers.get("Content-Length", 0)
+            try:
+                length = int(raw_length)
+            except (TypeError, ValueError):
+                raise ConfigError("invalid Content-Length header")
+            if length <= 0:
                 return {}
-            return json.loads(self.rfile.read(length) or b"{}")
+            try:
+                return json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                raise ConfigError("request body is not valid JSON")
 
         def do_GET(self):
             if not self._guard():

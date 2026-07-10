@@ -107,3 +107,33 @@ def test_enqueue_rejects_unknown_topic(server):
     status, body = _req(server, "POST", "/v1/jobs", body={"topic_id": "../evil", "stage": "draft"})
     assert status == 400
     assert "error" in body
+
+
+def _raw_post(port, path, raw_body, content_length):
+    conn = http.client.HTTPConnection("127.0.0.1", port)
+    conn.putrequest("POST", path)
+    conn.putheader("X-EP-Token", "secret-token")
+    conn.putheader("Content-Type", "application/json")
+    conn.putheader("Content-Length", content_length)
+    conn.endheaders()
+    conn.send(raw_body)
+    resp = conn.getresponse()
+    payload = json.loads(resp.read() or b"{}")
+    conn.close()
+    return resp.status, payload
+
+
+def test_malformed_json_body_returns_400(server):
+    body = b"{not valid json"
+    status, payload = _raw_post(server, "/v1/jobs", body, str(len(body)))
+    assert status == 400
+    assert payload["error"]["code"] == "bad_request"
+    # server survives: a well-formed request still succeeds afterward
+    status, health = _req(server, "GET", "/v1/health")
+    assert status == 200
+
+
+def test_non_numeric_content_length_returns_400(server):
+    status, payload = _raw_post(server, "/v1/jobs", b"{}", "notanumber")
+    assert status == 400
+    assert payload["error"]["code"] == "bad_request"
