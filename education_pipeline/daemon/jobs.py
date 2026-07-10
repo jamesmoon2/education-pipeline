@@ -263,7 +263,10 @@ class JobRunner:
                 return self._fail(job, "timeout")
             if exit_code != 0:
                 return self._fail(job, f"provider exited with code {exit_code}")
-            # NOTE(stdout_truncated): handled in FIX 2, added next.
+            if stdout_truncated:
+                # A middle-truncated response is worse than no response: never
+                # ingest it silently. Fail closed instead.
+                return self._fail(job, "response too large")
 
             parsed = runner.parse_response(stdout)
             job.metadata.update(parsed.metadata)

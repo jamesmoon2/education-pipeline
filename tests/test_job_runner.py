@@ -137,3 +137,26 @@ def test_execute_parses_stdout_only_not_stderr(tmp_path, monkeypatch):
     assert "REAL RESPONSE" in log_text
     assert "noisy progress" in log_text
 
+
+def test_execute_truncated_stdout_fails_instead_of_ingesting(tmp_path, monkeypatch):
+    import education_pipeline.daemon.jobs as jobs_mod
+
+    monkeypatch.setattr(jobs_mod, "MAX_LOG_BYTES", 100)
+    monkeypatch.setenv("FAKE_STDOUT", "X" * 500)
+    runs, catalog, plan, store = _setup(tmp_path)
+    job = store.create("t", "draft", "fake", "m", None)
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, threading.Event())
+    assert done.status == "failed"
+    assert done.error
+    assert not runs.has_ingested_response("t", "draft")
+
+
+def test_execute_cancel_marks_canceled_without_response(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_DELAY", "10")
+    runs, catalog, plan, store = _setup(tmp_path)
+    job = store.create("t", "draft", "fake", "m", None)
+    cancel = threading.Event()
+    cancel.set()  # already cancelled before spawn's read loop begins
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, cancel)
+    assert done.status == "canceled"
+    assert not runs.has_ingested_response("t", "draft")
