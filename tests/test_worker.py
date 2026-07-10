@@ -108,6 +108,21 @@ def test_reconcile_reenqueues_queued_and_interrupts_running(tmp_path, monkeypatc
         worker.stop()
 
 
+def test_enqueue_duplicate_rejection_leaves_no_orphaned_job_json(tmp_path):
+    store, runs, make = _factory(tmp_path)
+    worker = Worker(store, make)
+    a = store.create("t", "draft", "fake", "m", None)
+    worker.enqueue(a)  # succeeds: saves job.json and queues it atomically
+    b = store.create("t", "draft", "fake", "m", None)
+    with pytest.raises(ConfigError):
+        worker.enqueue(b)
+    ids = [j.id for j in store.list("t")]
+    assert a.id in ids
+    # the rejected job must never have gotten a job.json written (no orphan
+    # left wedging this topic/stage until a restart)
+    assert b.id not in ids
+
+
 def test_cancel_queued_job_marks_canceled(tmp_path):
     store, runs, make = _factory(tmp_path)
     worker = Worker(store, make)  # not started, so the job stays queued

@@ -469,14 +469,22 @@ class Worker:
             self._thread.join(timeout=30)
 
     def enqueue(self, job: Job) -> None:
-        existing = self.store.active_for(job.topic_id, job.stage)
-        if existing is not None and existing.id != job.id:
-            raise ConfigError(
-                f"a {existing.status} job already exists for {job.topic_id}/{job.stage}"
-            )
+        # Check + durable-save + queue insertion must be one atomic operation:
+        # otherwise two concurrent callers can both pass the duplicate check
+        # (neither job.json exists yet), both persist a "queued" record, and
+        # only one wins the queue slot — leaving the loser's job.json on disk
+        # with no queue entry, wedging this topic/stage until a restart. The
+        # rejected job here is never saved, so `active_for` (which scans
+        # job.json files) never sees it and no orphan is left behind.
         with self._lock:
+            existing = self.store.active_for(job.topic_id, job.stage)
+            if existing is not None and existing.id != job.id:
+                raise ConfigError(
+                    f"a {existing.status} job already exists for {job.topic_id}/{job.stage}"
+                )
+            self.store.save(job)
             self._cancels[job.id] = threading.Event()
-        self._queue.put(job.id)
+            self._queue.put(job.id)
 
     def cancel(self, job_id: str) -> Job | None:
         job = self.store.find(job_id)

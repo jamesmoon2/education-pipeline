@@ -57,7 +57,9 @@ class DaemonContext:
         provider = stage_plan.provider or self.plan.provider
         job = self.store.create(topic_id, target_stage, provider, stage_plan.model, stage_plan.effort)
         job.metadata["force"] = force
-        self.store.save(job)
+        # Do not pre-save here: Worker.enqueue performs the duplicate-active
+        # check, durable save, and queue insertion as one atomic operation
+        # under its lock, so a rejected job never gets a job.json written.
         self.worker.enqueue(job)
         return job
 
