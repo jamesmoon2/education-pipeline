@@ -73,6 +73,8 @@ def _live_record(root: str | Path) -> dict | None:
     record = lifecycle.read_discovery(root)
     if record is None or lifecycle.is_stale(record):
         return None
+    if "port" not in record or "token" not in record:
+        return None  # in-flight claim placeholder; daemon not ready yet
     return record
 
 

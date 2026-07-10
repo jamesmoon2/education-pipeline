@@ -23,3 +23,13 @@ def test_ensure_daemon_autostarts_and_reports_status(tmp_path):
 def test_ensure_daemon_no_autostart_raises_when_absent(tmp_path):
     with pytest.raises(DaemonError):
         ensure_daemon(tmp_path, autostart=False)
+
+
+def test_ensure_daemon_ignores_claim_placeholder(tmp_path):
+    # Simulate the window between a daemon claiming the workspace and it
+    # actually binding a port and writing the full discovery record: the
+    # placeholder record has only {"pid": <self>}, no "port"/"token". Since
+    # this is the current (alive) process, is_stale() would return False.
+    assert lifecycle.claim_discovery(tmp_path) is True
+    with pytest.raises(DaemonError):
+        ensure_daemon(tmp_path, autostart=False)
