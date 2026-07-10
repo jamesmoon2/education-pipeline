@@ -4,7 +4,7 @@
 
 | Task | State | Commit |
 |------|-------|--------|
-| 1. JobStore.any_active_for | pending | — |
+| 1. JobStore.any_active_for | complete | 16c92a4 |
 | 2. write_api run actions | pending | — |
 | 3. write_api workspace imports | pending | — |
 | 4. POST run-action routes | pending | — |
@@ -21,7 +21,7 @@
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 1.
+To resume: continue with Task 2.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -90,7 +90,7 @@ Frontend:
 - Consumes: existing `JobStore.list(topic_id)`, `TERMINAL_STATUSES`.
 - Produces: `JobStore.any_active_for(topic_id: str) -> Job | None` — the first non-terminal job for the topic across **all** stages, else `None`. Task 2's `write_api._require_no_active_job` calls this.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_jobs.py`:
 
@@ -119,12 +119,12 @@ def test_any_active_for_ignores_terminal_jobs(tmp_path):
     assert store.any_active_for("t") is None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_jobs.py -q -k any_active`
 Expected: FAIL with `AttributeError: 'JobStore' object has no attribute 'any_active_for'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `education_pipeline/daemon/jobs.py`, directly after `active_for` (after line 162):
 
@@ -138,12 +138,12 @@ In `education_pipeline/daemon/jobs.py`, directly after `active_for` (after line 
         return None
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_jobs.py -q`
 Expected: PASS (all)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/daemon/jobs.py tests/test_jobs.py
