@@ -8,7 +8,7 @@
 | 2. write_api run actions | complete | 2256900 |
 | 3. write_api workspace imports | complete | f9e6110 |
 | 4. POST run-action routes | complete | ac2fa37 |
-| 5. POST import routes | pending | — |
+| 5. POST import routes | complete | 13b4685 |
 | 6. Download endpoints | pending | — |
 | 7. Full-pipeline HTTP test | pending | — |
 | 8. Client apiPost/download | pending | — |
@@ -21,7 +21,7 @@
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 5.
+To resume: continue with Task 6.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -1008,7 +1008,7 @@ git commit -m "feat(daemon): POST run-action endpoints with 409 conflict mapping
   - `POST /v1/profiles` — `{"toml": str, "overwrite": false}` → `{"id"}`
   - `POST /v1/topics/{topic}/profile` — `{"profile_id": str, "overwrite": true}` → `{"profile_id", "topic_id", "snapshot_path"}`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_server.py`:
 
@@ -1058,12 +1058,12 @@ def test_attach_profile_endpoint(server):
     assert status == 400
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_server.py -q -k "import_topic or import_profile or attach_profile"`
 Expected: FAIL — 404 "unknown path"
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `_api_post_routes` (Task 4's method), insert before the trailing `self._error(404, "not_found", "unknown path")`:
 
@@ -1102,12 +1102,12 @@ In `_api_post_routes` (Task 4's method), insert before the trailing `self._error
                 )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_server.py -q`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/daemon/server.py tests/test_server.py
