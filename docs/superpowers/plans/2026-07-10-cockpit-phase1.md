@@ -22,7 +22,9 @@ Durable ledger: `.superpowers/sdd/progress.md` — trust it and `git log` over m
 | 11. Job log view | complete, review clean | `3fe1b29` |
 | 12. Run board + jobs panel | complete, review clean | `be74658` |
 | 13. Stage viewer page | complete, review clean | `69dc4af` |
-| 14 (frontend) | not started | — |
+| 14. E2E smoke test (Playwright) | complete, review clean; e2e passed | `0cca352` |
+
+**All 14 tasks complete.** Final whole-branch review pending, then branch completion.
 
 Backend suite at `56756de`: **195 passing, 0 failing.**
 
