@@ -7,7 +7,7 @@
 | 1. JobStore.any_active_for | complete | 16c92a4 |
 | 2. write_api run actions | complete | 2256900 |
 | 3. write_api workspace imports | complete | f9e6110 |
-| 4. POST run-action routes | pending | — |
+| 4. POST run-action routes | complete | ac2fa37 |
 | 5. POST import routes | pending | — |
 | 6. Download endpoints | pending | — |
 | 7. Full-pipeline HTTP test | pending | — |
@@ -21,7 +21,7 @@
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 4.
+To resume: continue with Task 5.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -750,7 +750,7 @@ git commit -m "feat(daemon): write_api workspace imports (topic, profile, attach
   - Error mapping: `NotFoundError` → 404 `not_found`; `ConflictError` → 409 with `exc.code`; `ConfigError` → 400 `bad_request`.
   - `_require_str(body: dict, key: str) -> str` helper (400 on non-string).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_server.py`:
 
@@ -864,12 +864,12 @@ def test_run_writes_blocked_while_job_active(server, monkeypatch):
     assert status == 200
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_server.py -q -k "advance or response_ingest or response_validation or approve_endpoint or finalize_and_export or job_active or write_endpoints"`
 Expected: FAIL — new routes 404 as "unknown path"
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `education_pipeline/daemon/server.py`:
 
@@ -981,12 +981,12 @@ def _require_str(body: dict, key: str) -> str:
 
 (A non-string `format` collapses to `""`, which `RunStore.export_path` rejects with the supported-formats `ConfigError` → 400.)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_server.py -q`
 Expected: PASS (all, including all pre-existing Phase 1 tests — the `/v1/jobs`, cancel, and shutdown routes must behave identically after the refactor)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/daemon/server.py tests/test_server.py
