@@ -12,7 +12,8 @@ Durable ledger: `.superpowers/sdd/progress.md` — trust it and `git log` over m
 | 1. Route-aware auth + `/v1/session` | complete, review clean | `6ccdce8` |
 | 2. Read-API module + topic/profile endpoints | complete, review clean | `1ca1483` |
 | 3. Run read endpoints | complete, review clean | `56756de` |
-| 4–14 | not started | — |
+| 4. Static-asset resolver | complete, review clean | `35c2cac` |
+| 5–14 | not started | — |
 
 Backend suite at `56756de`: **195 passing, 0 failing.**
 
