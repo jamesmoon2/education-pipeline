@@ -5,7 +5,7 @@
 | Task | State | Commit |
 |------|-------|--------|
 | 1. JobStore.any_active_for | complete | 16c92a4 |
-| 2. write_api run actions | pending | — |
+| 2. write_api run actions | complete | 2256900 |
 | 3. write_api workspace imports | pending | — |
 | 4. POST run-action routes | pending | — |
 | 5. POST import routes | pending | — |
@@ -21,7 +21,7 @@
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 2.
+To resume: continue with Task 3.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -172,7 +172,7 @@ git commit -m "feat(daemon): JobStore.any_active_for topic-wide active-job looku
   - `RunStore.export_path(topic_id: str, format: str) -> Path` — `final/guide.html` or `final/guide.bundle.md`; `ConfigError` on bad format. Used by Task 6's downloads too.
   - `read_api.require_run(runs: RunStore, topic_id: str) -> None` — raises `NotFoundError(f"no run started for topic: {topic_id}")` when no manifest.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_write_api.py`:
 
@@ -331,12 +331,12 @@ def test_export_path_names_and_bad_format(tmp_path):
         runs.export_path("t", "docx")
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_write_api.py tests/test_runs.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'education_pipeline.daemon.write_api'` and `AttributeError: ... export_path`
 
-- [ ] **Step 3: Implement `RunStore.export_path` and refactor `export_run`**
+- [x] **Step 3: Implement `RunStore.export_path` and refactor `export_run`**
 
 In `education_pipeline/runs.py`, add after `final_path` (after line 392):
 
@@ -384,7 +384,7 @@ with:
             content = render_markdown_to_html(guide, title=topic.title)
 ```
 
-- [ ] **Step 4: Add `require_run` to `read_api.py` and deduplicate**
+- [x] **Step 4: Add `require_run` to `read_api.py` and deduplicate**
 
 In `education_pipeline/daemon/read_api.py`, add after the `NotFoundError` class (line 16):
 
@@ -411,7 +411,7 @@ with:
 
 In `stage_content`, replace lines 89-90 (the identical two-line guard) with `require_run(runs, topic_id)`. Leave `manifest_payload`'s distinct message untouched.
 
-- [ ] **Step 5: Create `write_api.py`**
+- [x] **Step 5: Create `write_api.py`**
 
 Create `education_pipeline/daemon/write_api.py`:
 
@@ -576,12 +576,12 @@ def export_run(
 
 (Workspace imports are added to this module in Task 3; `TopicStore`/`ProfileStore`/`tomllib` imports are already in place for it.)
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/ -q`
 Expected: PASS (full backend suite — the `read_api` refactor must not break Phase 1 tests)
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add education_pipeline/daemon/write_api.py education_pipeline/daemon/read_api.py education_pipeline/runs.py tests/test_write_api.py tests/test_runs.py
