@@ -328,6 +328,38 @@ def _make_handler(context: DaemonContext):
                         overwrite=bool(body.get("overwrite")),
                     ),
                 )
+            if self.path == "/v1/topics":
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.import_topic(
+                        context.topics,
+                        _require_str(body, "toml"),
+                        overwrite=bool(body.get("overwrite")),
+                    ),
+                )
+            if self.path == "/v1/profiles":
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.import_profile(
+                        context.profiles,
+                        _require_str(body, "toml"),
+                        overwrite=bool(body.get("overwrite")),
+                    ),
+                )
+            m = re.match(r"^/v1/topics/([^/?]+)/profile$", self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.attach_profile(
+                        context.profiles,
+                        m.group(1),
+                        _require_str(body, "profile_id"),
+                        overwrite=bool(body.get("overwrite", True)),
+                    ),
+                )
             self._error(404, "not_found", "unknown path")
 
     return Handler

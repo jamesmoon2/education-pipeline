@@ -474,3 +474,48 @@ def test_run_writes_blocked_while_job_active(server, monkeypatch):
 
     status, body = _req(server, "POST", "/v1/runs/t/advance")
     assert status == 200
+
+
+def test_import_topic_endpoint(server):
+    toml = 'schema_version = 1\nid = "n1"\ntitle = "New One"\n'
+    status, body = _req(server, "POST", "/v1/topics", body={"toml": toml})
+    assert status == 200 and body == {"id": "n1", "title": "New One"}
+    status, body = _req(server, "POST", "/v1/topics", body={"toml": toml})
+    assert status == 409 and body["error"]["code"] == "already_exists"
+    status, _ = _req(server, "POST", "/v1/topics", body={"toml": toml, "overwrite": True})
+    assert status == 200
+    # imported topic is visible to the read API
+    status, body = _req(server, "GET", "/v1/topics/n1")
+    assert status == 200 and body["title"] == "New One"
+
+
+def test_import_topic_rejects_invalid_input(server):
+    status, _ = _req(server, "POST", "/v1/topics", body={"toml": "not = [valid"})
+    assert status == 400
+    status, _ = _req(server, "POST", "/v1/topics", body={"toml": 'schema_version = 1\ntitle = "No Id"\n'})
+    assert status == 400
+    status, _ = _req(server, "POST", "/v1/topics", body={"toml": 42})
+    assert status == 400
+
+
+def test_import_profile_endpoint(server):
+    toml = 'schema_version = 1\nid = "p2"\ntarget_learner = "new cohort"\n'
+    status, body = _req(server, "POST", "/v1/profiles", body={"toml": toml})
+    assert status == 200 and body == {"id": "p2"}
+    # fixture already created profile "p"
+    existing = 'schema_version = 1\nid = "p"\ntarget_learner = "changed"\n'
+    status, body = _req(server, "POST", "/v1/profiles", body={"toml": existing})
+    assert status == 409 and body["error"]["code"] == "already_exists"
+
+
+def test_attach_profile_endpoint(server):
+    status, body = _req(server, "POST", "/v1/topics/t/profile", body={"profile_id": "p"})
+    assert status == 200
+    assert body == {"profile_id": "p", "topic_id": "t", "snapshot_path": "inputs/profile.toml"}
+    # default overwrite=true: re-attaching refreshes the snapshot
+    status, _ = _req(server, "POST", "/v1/topics/t/profile", body={"profile_id": "p"})
+    assert status == 200
+    status, body = _req(server, "POST", "/v1/topics/t/profile", body={"profile_id": "ghost"})
+    assert status == 404
+    status, body = _req(server, "POST", "/v1/topics/t/profile", body={"profile_id": 7})
+    assert status == 400
