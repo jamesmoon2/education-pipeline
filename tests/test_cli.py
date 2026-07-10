@@ -248,3 +248,22 @@ def test_run_refuses_when_next_action_is_approval(tmp_path, capsys):
     code = _run(tmp_path, "run", "systems-thinking")
     assert code == 1
     _run(tmp_path, "daemon", "stop")
+
+
+def test_daemon_status_prints_cockpit_url(tmp_path, capsys, monkeypatch):
+    from education_pipeline import cli
+
+    monkeypatch.setattr(
+        cli,
+        "daemon_status",
+        lambda root: {
+            "running": True,
+            "pid": 123,
+            "port": 4242,
+            "version": "0.1.0",
+            "version_mismatch": False,
+        },
+    )
+    assert _run(tmp_path, "daemon", "status") == 0
+    out = capsys.readouterr().out
+    assert "http://127.0.0.1:4242/" in out

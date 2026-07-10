@@ -293,6 +293,9 @@ def _cmd_daemon_start(args: argparse.Namespace) -> int:
     client = ensure_daemon(root, autostart=True)
     health = client.health()
     print(f"daemon started (version {health['version']})")
+    record = lifecycle.read_discovery(root) or {}
+    if record.get("port"):
+        print(f"cockpit: http://127.0.0.1:{record['port']}/")
     return 0
 
 
@@ -319,6 +322,7 @@ def _cmd_daemon_status(args: argparse.Namespace) -> int:
     warn = "  [version mismatch: restart the daemon]" if status["version_mismatch"] else ""
     print(f"daemon: running  pid={status['pid']}  port={status['port']}  "
           f"version={status['version']}{warn}")
+    print(f"cockpit: http://127.0.0.1:{status['port']}/")
     return 0
 
 
