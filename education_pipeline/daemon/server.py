@@ -125,11 +125,27 @@ def _make_handler(context: DaemonContext):
                 raise ConfigError("request body is not valid JSON")
 
         def do_GET(self):
-            if not self._guard():
-                return
+            if not self._host_ok():
+                return self._error(400, "bad_host", "host not allowed")
+            path = self.path.split("?", 1)[0]
+            if path == "/v1/session":
+                # Token bootstrap for the browser SPA. Safe without auth on
+                # loopback: no CORS headers are ever sent, so a cross-origin
+                # page can issue this request but never read the response.
+                return self._send(
+                    200, {"token": context.token, "version": context.version}
+                )
+            if path.startswith("/v1/"):
+                if not self._authed():
+                    return self._error(401, "unauthorized", "missing or invalid token")
+                return self._api_get()
+            return self._error(404, "not_found", "unknown path")
+
+        def _api_get(self):
             if self.path.startswith("/v1/health"):
-                self._send(200, {"version": context.version, "started_at": None, "ok": True})
-                return
+                return self._send(
+                    200, {"version": context.version, "started_at": None, "ok": True}
+                )
             m = re.match(r"^/v1/jobs/([^/]+)/log(?:\?offset=(\d+))?$", self.path)
             if m:
                 job = context.store.find(m.group(1))
@@ -137,7 +153,10 @@ def _make_handler(context: DaemonContext):
                     return self._error(404, "not_found", "no such job")
                 offset = int(m.group(2) or 0)
                 data, next_offset = context.store.read_log(job, offset)
-                return self._send(200, {"data": data.decode("utf-8", "replace"), "offset": next_offset})
+                return self._send(
+                    200,
+                    {"data": data.decode("utf-8", "replace"), "offset": next_offset},
+                )
             m = re.match(r"^/v1/jobs/([^/]+)$", self.path)
             if m:
                 job = context.store.find(m.group(1))

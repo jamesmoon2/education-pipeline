@@ -167,3 +167,33 @@ def test_oversized_content_length_returns_400(server):
     # server survives: a well-formed request still succeeds afterward
     status, health = _req(server, "GET", "/v1/health")
     assert status == 200
+
+
+def test_session_returns_token_without_auth(server):
+    status, body = _req(server, "GET", "/v1/session", token=None)
+    assert status == 200
+    assert body["token"] == "secret-token"
+    assert body["version"] == "0.1.0"
+
+
+def test_session_rejects_bad_host(server):
+    conn = http.client.HTTPConnection("127.0.0.1", server)
+    conn.putrequest("GET", "/v1/session", skip_host=True)
+    conn.putheader("Host", "evil.example.com")
+    conn.endheaders()
+    resp = conn.getresponse()
+    conn.close()
+    assert resp.status == 400
+
+
+def test_non_api_path_is_not_unauthorized(server):
+    # Static serving lands in a later task; until then unknown non-/v1 paths
+    # must 404 (or 503), never 401 — the browser has no token yet.
+    status, _ = _req(server, "GET", "/favicon.ico", token=None)
+    assert status in (404, 503)
+
+
+def test_api_get_still_requires_token(server):
+    status, body = _req(server, "GET", "/v1/jobs", token=None)
+    assert status == 401
+    assert body["error"]["code"] == "unauthorized"
