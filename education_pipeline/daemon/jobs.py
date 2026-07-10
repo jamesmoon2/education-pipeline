@@ -253,7 +253,9 @@ class JobRunner:
             if not prompt_path.exists():
                 return self._fail(job, f"prompt not written for stage {job.stage!r}")
             invocation = runner.build_invocation(model, plan, prompt_path)
-            stdout, exit_code, timed_out, canceled = self._spawn(job, invocation, prompt_path, cancel)
+            stdout, stdout_truncated, exit_code, timed_out, canceled = self._spawn(
+                job, invocation, prompt_path, cancel
+            )
             job.exit_code = exit_code
             if canceled:
                 return self._terminal(job, "canceled", error="canceled")
@@ -261,6 +263,7 @@ class JobRunner:
                 return self._fail(job, "timeout")
             if exit_code != 0:
                 return self._fail(job, f"provider exited with code {exit_code}")
+            # NOTE(stdout_truncated): handled in FIX 2, added next.
 
             parsed = runner.parse_response(stdout)
             job.metadata.update(parsed.metadata)
@@ -304,34 +307,45 @@ class JobRunner:
                 invocation.argv,
                 stdin=prompt_handle,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.PIPE,
                 env=env,
                 **popen_kwargs(),
             )
         job.pid = proc.pid
         self.store.save(job)
 
-        # Read stdout on a background thread: proc.stdout.read() blocks until the
-        # child writes or exits, so polling the deadline/cancel event *between*
-        # reads (as a plain loop would) can't react until the child produces
-        # output. A slow/hung child (e.g. FAKE_DELAY) would then stall the
-        # deadline check for the full delay instead of the configured timeout.
-        # Routing reads through a queue lets the main loop poll on a short
-        # interval and terminate promptly regardless of what the child is doing.
+        # Providers (e.g. Codex) write progress to stderr and the final answer
+        # to stdout; others (e.g. Claude) write JSON straight to stdout. Either
+        # way the RESPONSE must be parsed from stdout only — mixing stderr in
+        # would corrupt it. The LOG stays a combined, human-facing artifact.
+        #
+        # Both pipes are drained on their own background threads and pushed to
+        # a shared queue tagged with their stream name. This is required, not
+        # just convenient: if we only read stdout while the child fills the
+        # stderr pipe buffer (or vice versa), the child blocks forever once
+        # that OS pipe buffer fills — a classic two-pipe deadlock. Routing both
+        # reads through a queue also lets the main loop poll the deadline/cancel
+        # event on a short interval regardless of what the child is doing.
         chunk_queue: queue.Queue = queue.Queue()
 
-        def _read_stdout() -> None:
-            assert proc.stdout is not None
+        def _reader(stream_name: str, stream) -> None:
             try:
-                for chunk in iter(lambda: proc.stdout.read(4096), b""):
-                    chunk_queue.put(chunk)
+                for chunk in iter(lambda: stream.read(4096), b""):
+                    chunk_queue.put((stream_name, chunk))
             finally:
-                chunk_queue.put(None)  # EOF sentinel
+                chunk_queue.put((stream_name, None))  # EOF sentinel
 
-        reader = threading.Thread(target=_read_stdout, daemon=True)
-        reader.start()
+        assert proc.stdout is not None and proc.stderr is not None
+        stdout_reader = threading.Thread(
+            target=_reader, args=("stdout", proc.stdout), daemon=True
+        )
+        stderr_reader = threading.Thread(
+            target=_reader, args=("stderr", proc.stderr), daemon=True
+        )
+        stdout_reader.start()
+        stderr_reader.start()
 
-        # Cap output at ~MAX_LOG_BYTES while preserving *both* ends: provider
+        # Cap the LOG at ~MAX_LOG_BYTES while preserving *both* ends: provider
         # crash messages and JSON-close errors land at the tail, so a head-only
         # cap would discard exactly the diagnostic bytes we most want. Stream
         # live to the log until the head fills (most real runs finish far under
@@ -344,12 +358,19 @@ class JobRunner:
         tail = bytearray()
         dropped = 0
         truncated = False
+
+        # The RESPONSE capture is stdout only, bounded separately, and fails
+        # closed (see `stdout_truncated`) instead of silently truncating.
+        stdout_capture = bytearray()
+        stdout_truncated = False
+
         deadline = time.monotonic() + self.timeout
         timed_out = False
         canceled = False
         poll_interval = 0.1
+        eof_seen = {"stdout": False, "stderr": False}
         with log.open("wb") as log_handle:
-            while True:
+            while not (eof_seen["stdout"] and eof_seen["stderr"]):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     timed_out = True
@@ -358,11 +379,12 @@ class JobRunner:
                     canceled = True
                     break
                 try:
-                    chunk = chunk_queue.get(timeout=min(poll_interval, remaining))
+                    stream_name, chunk = chunk_queue.get(timeout=min(poll_interval, remaining))
                 except queue.Empty:
                     continue
                 if chunk is None:
-                    break  # EOF
+                    eof_seen[stream_name] = True
+                    continue
                 if len(head) < head_limit:
                     room = head_limit - len(head)
                     log_handle.write(chunk[:room])
@@ -376,6 +398,14 @@ class JobRunner:
                     tail.extend(overflow)
                     if len(tail) > tail_limit:
                         del tail[: len(tail) - tail_limit]
+                if stream_name == "stdout":
+                    if len(stdout_capture) < MAX_LOG_BYTES:
+                        room = MAX_LOG_BYTES - len(stdout_capture)
+                        stdout_capture.extend(chunk[:room])
+                        if len(chunk) > room:
+                            stdout_truncated = True
+                    else:
+                        stdout_truncated = True
             if truncated:
                 # `dropped` counts everything past the head; the tail we are
                 # about to re-emit is not actually lost, so report only the gap.
@@ -387,12 +417,15 @@ class JobRunner:
         if timed_out or canceled or proc.poll() is None:
             terminate_process(proc)
         exit_code = proc.wait()
-        reader.join(timeout=1)
-        # captured (fed to parse_response) is head + tail with NO marker — the
-        # marker must never poison JSON parsing. A valid response is far under
-        # the cap, so this only matters for degenerate runs.
-        captured = head + tail
-        return captured.decode("utf-8", errors="replace"), exit_code, timed_out, canceled
+        stdout_reader.join(timeout=1)
+        stderr_reader.join(timeout=1)
+        return (
+            stdout_capture.decode("utf-8", errors="replace"),
+            stdout_truncated,
+            exit_code,
+            timed_out,
+            canceled,
+        )
 
     def _fail(self, job: Job, error: str) -> Job:
         return self._terminal(job, "failed", error=error)
