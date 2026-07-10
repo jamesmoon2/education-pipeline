@@ -172,6 +172,23 @@ def _make_handler(context: DaemonContext):
                 return self._send(
                     200, read_api.get_profile(context.profiles, m.group(1))
                 )
+            if self.path == "/v1/runs":
+                return self._send(200, read_api.list_runs(context.runs))
+            m = re.match(r"^/v1/runs/([^/?]+)/manifest$", self.path)
+            if m:
+                return self._send(
+                    200, read_api.manifest_payload(context.runs, m.group(1))
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)$", self.path)
+            if m:
+                return self._send(
+                    200, read_api.stage_content(context.runs, m.group(1), m.group(2))
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)$", self.path)
+            if m:
+                return self._send(
+                    200, read_api.run_status_payload(context.runs, m.group(1))
+                )
             m = re.match(r"^/v1/jobs/([^/]+)/log(?:\?offset=(\d+))?$", self.path)
             if m:
                 job = context.store.find(m.group(1))

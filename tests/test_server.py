@@ -253,3 +253,49 @@ def test_profiles_list_and_get(server):
     assert 'target_learner = "team cohort"' in body["toml"]
     status, body = _req(server, "GET", "/v1/profiles/nope")
     assert status == 404
+
+
+def test_runs_list(server):
+    status, body = _req(server, "GET", "/v1/runs")
+    assert status == 200
+    assert body["runs"] == ["t"]
+
+
+def test_run_status_endpoint(server):
+    status, body = _req(server, "GET", "/v1/runs/t")
+    assert status == 200
+    assert body["topic_id"] == "t"
+    assert body["finalized"] is False
+    draft = next(s for s in body["stages"] if s["stage"] == "draft")
+    assert draft["state"] == "prompt_written"  # fixture wrote the draft prompt
+    assert body["next_action"]["action"] == "write_prompt"
+
+
+def test_run_status_unknown_topic_is_404(server):
+    status, body = _req(server, "GET", "/v1/runs/nope")
+    assert status == 404
+
+
+def test_stage_content_returns_prompt_and_nulls(server):
+    status, body = _req(server, "GET", "/v1/runs/t/stages/draft")
+    assert status == 200
+    assert body == {
+        "topic_id": "t",
+        "stage": "draft",
+        "prompt": "PROMPT",
+        "response": None,
+        "approved": None,
+    }
+
+
+def test_stage_content_bad_stage_is_400(server):
+    status, body = _req(server, "GET", "/v1/runs/t/stages/banana")
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
+def test_manifest_endpoint(server):
+    status, body = _req(server, "GET", "/v1/runs/t/manifest")
+    assert status == 200
+    assert body["topic_id"] == "t"
+    assert isinstance(body["events"], list)

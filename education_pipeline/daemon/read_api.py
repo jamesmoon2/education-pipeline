@@ -79,3 +79,30 @@ def run_status_payload(runs: RunStore, topic_id: str) -> dict:
             "detail": status.next_action.detail,
         },
     }
+
+
+def list_runs(runs: RunStore) -> dict:
+    return {"runs": list(runs.list_run_ids())}
+
+
+def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
+    if not runs.manifest_path(topic_id).is_file():
+        raise NotFoundError(f"no run started for topic: {topic_id}")
+    paths = runs.stage_paths(topic_id, stage)  # ConfigError on bad stage -> 400
+
+    def _read(path):
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    return {
+        "topic_id": paths.topic_id,
+        "stage": paths.stage,
+        "prompt": _read(paths.prompt_path),
+        "response": _read(paths.response_path),
+        "approved": _read(paths.approved_path),
+    }
+
+
+def manifest_payload(runs: RunStore, topic_id: str) -> dict:
+    if not runs.manifest_path(topic_id).is_file():
+        raise NotFoundError(f"no run manifest for topic: {topic_id}")
+    return runs.read_manifest(topic_id)
