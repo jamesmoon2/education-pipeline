@@ -1,4 +1,5 @@
 import { Link, Route, Routes } from "react-router-dom";
+import RunBoardPage from "./pages/RunBoardPage";
 import TopicListPage from "./pages/TopicListPage";
 
 export default function App() {
@@ -12,6 +13,7 @@ export default function App() {
       <main>
         <Routes>
           <Route path="/" element={<TopicListPage />} />
+          <Route path="/topics/:topicId" element={<RunBoardPage />} />
         </Routes>
       </main>
     </div>
