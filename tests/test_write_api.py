@@ -134,3 +134,56 @@ def test_job_active_blocks_run_mutations_but_not_export(tmp_path):
     job.status = "canceled"
     jobs.save(job)
     assert write_api.advance_run(runs, jobs, "t")["performed"] is None
+
+
+def test_import_topic_derives_id_and_refuses_clobber(tmp_path):
+    from education_pipeline.workspace import TopicStore
+
+    topics = TopicStore(tmp_path)
+    toml = 'schema_version = 1\nid = "n1"\ntitle = "New One"\n'
+    assert write_api.import_topic(topics, toml) == {"id": "n1", "title": "New One"}
+    with pytest.raises(write_api.ConflictError) as exc:
+        write_api.import_topic(topics, toml)
+    assert exc.value.code == "already_exists"
+    assert write_api.import_topic(topics, toml, overwrite=True)["id"] == "n1"
+
+
+def test_import_topic_rejects_bad_toml_and_missing_id(tmp_path):
+    from education_pipeline.workspace import TopicStore
+
+    topics = TopicStore(tmp_path)
+    with pytest.raises(ConfigError):
+        write_api.import_topic(topics, "not = [valid")
+    with pytest.raises(ConfigError):
+        write_api.import_topic(topics, 'schema_version = 1\ntitle = "No Id"\n')
+
+
+def test_import_profile(tmp_path):
+    from education_pipeline.workspace import ProfileStore
+
+    profiles = ProfileStore(tmp_path)
+    toml = 'schema_version = 1\nid = "p1"\ntarget_learner = "team cohort"\n'
+    assert write_api.import_profile(profiles, toml) == {"id": "p1"}
+    with pytest.raises(write_api.ConflictError) as exc:
+        write_api.import_profile(profiles, toml)
+    assert exc.value.code == "already_exists"
+
+
+def test_attach_profile_defaults_to_overwrite(tmp_path):
+    from education_pipeline.workspace import ProfileStore
+
+    profiles = ProfileStore(tmp_path)
+    write_api.import_profile(
+        profiles, 'schema_version = 1\nid = "p1"\ntarget_learner = "team cohort"\n'
+    )
+    result = write_api.attach_profile(profiles, "t", "p1")
+    assert result == {"profile_id": "p1", "topic_id": "t", "snapshot_path": "inputs/profile.toml"}
+    # re-attach refreshes the snapshot without an explicit flag
+    assert write_api.attach_profile(profiles, "t", "p1")["snapshot_path"] == "inputs/profile.toml"
+
+
+def test_attach_unknown_profile_is_404(tmp_path):
+    from education_pipeline.workspace import ProfileStore
+
+    with pytest.raises(NotFoundError):
+        write_api.attach_profile(ProfileStore(tmp_path), "t", "ghost")

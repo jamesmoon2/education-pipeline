@@ -154,3 +154,50 @@ def export_run(
         "format": format,
         "export_path": _run_relative(runs, topic_id, path),
     }
+
+
+def _parse_toml_id(toml_text: str, kind: str) -> str:
+    try:
+        data = tomllib.loads(toml_text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"invalid TOML in {kind} import: {exc}") from exc
+    artifact_id = data.get("id")
+    if not isinstance(artifact_id, str) or not artifact_id:
+        raise ConfigError(f"{kind} TOML must define a string 'id'")
+    return artifact_id
+
+
+def import_topic(topics: TopicStore, toml_text: str, *, overwrite: bool = False) -> dict:
+    topic_id = _parse_toml_id(toml_text, "topic")
+    if topics.topic_path(topic_id).is_file() and not overwrite:
+        raise ConflictError(
+            "already_exists",
+            f"topic {topic_id!r} already exists; retry with overwrite to replace it",
+        )
+    topic = topics.save_topic_toml(topic_id, toml_text, overwrite=overwrite)
+    return {"id": topic.id, "title": topic.title}
+
+
+def import_profile(profiles: ProfileStore, toml_text: str, *, overwrite: bool = False) -> dict:
+    profile_id = _parse_toml_id(toml_text, "profile")
+    if profiles.profile_path(profile_id).is_file() and not overwrite:
+        raise ConflictError(
+            "already_exists",
+            f"profile {profile_id!r} already exists; retry with overwrite to replace it",
+        )
+    profile = profiles.save_profile_toml(profile_id, toml_text, overwrite=overwrite)
+    return {"id": profile.id}
+
+
+def attach_profile(
+    profiles: ProfileStore, topic_id: str, profile_id: str, *, overwrite: bool = True
+) -> dict:
+    if not profiles.profile_path(profile_id).is_file():
+        raise NotFoundError(f"no such profile: {profile_id}")
+    attachment = profiles.attach_profile_to_topic(profile_id, topic_id, overwrite=overwrite)
+    run_dir = profiles.runs_dir / attachment.topic_id
+    return {
+        "profile_id": attachment.profile_id,
+        "topic_id": attachment.topic_id,
+        "snapshot_path": attachment.snapshot_path.relative_to(run_dir).as_posix(),
+    }
