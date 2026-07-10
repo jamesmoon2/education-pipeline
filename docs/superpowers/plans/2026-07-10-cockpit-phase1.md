@@ -17,7 +17,8 @@ Durable ledger: `.superpowers/sdd/progress.md` — trust it and `git log` over m
 | 6. CLI prints cockpit URL | complete, review clean | `5cc6869` |
 | 7. web/ scaffold (Vite+React+TS) | complete, review clean | `4b617e0` |
 | 8. API types + client | complete, review clean (approved test type-fix) | `612ce2f` |
-| 9–14 (frontend) | not started | — |
+| 9. usePolling hook | complete, review clean | `d7729f9` |
+| 10–14 (frontend) | not started | — |
 
 Backend suite at `56756de`: **195 passing, 0 failing.**
 
