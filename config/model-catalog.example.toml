@@ -22,6 +22,7 @@ label = "Balanced"
 description = "Project-local alias for the default balanced Claude Code model."
 quality = "balanced"
 default_effort = "medium"
+argv_model = "claude-sonnet-5"
 
 [[providers.models]]
 id = "premium-reasoning"
@@ -29,6 +30,8 @@ label = "Premium reasoning"
 description = "Project-local alias for harder outline, repair, and design stages."
 quality = "premium"
 default_effort = "high"
+argv_model = "claude-opus-4-8"
+extra_args = ["--reasoning", "high"]
 
 [[providers]]
 id = "codex"
@@ -41,6 +44,7 @@ label = "Balanced"
 description = "Project-local alias for the default balanced Codex model."
 quality = "balanced"
 default_effort = "medium"
+argv_model = "gpt-5.4-codex"
 
 [[providers.models]]
 id = "fast-check"
@@ -48,3 +52,4 @@ label = "Fast check"
 description = "Project-local alias for inexpensive mechanical review stages."
 quality = "fast"
 default_effort = "low"
+argv_model = "gpt-5.4-codex-mini"

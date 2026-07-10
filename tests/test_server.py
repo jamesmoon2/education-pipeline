@@ -123,6 +123,23 @@ def _raw_post(port, path, raw_body, content_length):
     return resp.status, payload
 
 
+def test_bad_token_rejected(server):
+    status, body = _req(server, "GET", "/v1/health", token="wrong")
+    assert status == 401
+    assert body["error"]["code"] == "unauthorized"
+
+
+def test_bad_host_rejected(server):
+    conn = http.client.HTTPConnection("127.0.0.1", server)
+    conn.putrequest("GET", "/v1/health", skip_host=True)
+    conn.putheader("Host", "evil.example.com")
+    conn.putheader("X-EP-Token", "secret-token")
+    conn.endheaders()
+    resp = conn.getresponse()
+    conn.close()
+    assert resp.status == 400
+
+
 def test_malformed_json_body_returns_400(server):
     body = b"{not valid json"
     status, payload = _raw_post(server, "/v1/jobs", body, str(len(body)))
