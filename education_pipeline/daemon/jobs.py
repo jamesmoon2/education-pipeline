@@ -191,6 +191,15 @@ def terminate_process(proc: subprocess.Popen, *, grace: float = 5.0) -> None:
         return
     try:
         if sys.platform == "win32":  # pragma: no cover - exercised on Windows CI
+            # KNOWN LIMITATION: this only signals the root process. Unlike the
+            # POSIX branch (which kills the whole process group via
+            # start_new_session=True + os.killpg), Popen.terminate()/kill() on
+            # Windows do not tear down a child-spawned process tree. A
+            # provider that forks its own children can leave them running. A
+            # full fix needs a Job Object (CreateJobObject +
+            # AssignProcessToJobObject with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+            # or shelling out to `taskkill /T /F /PID <pid>`. Not implemented;
+            # this platform is not covered by CI.
             proc.terminate()
         else:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)

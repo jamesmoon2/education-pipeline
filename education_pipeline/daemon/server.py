@@ -20,6 +20,7 @@ from education_pipeline.daemon.jobs import Job, JobStore, Worker
 from education_pipeline.runs import RunStore, SUPPORTED_STAGES
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
+MAX_REQUEST_BODY_BYTES = 1024 * 1024  # 1 MiB; job POST bodies are tiny
 
 
 @dataclass
@@ -113,6 +114,11 @@ def _make_handler(context: DaemonContext):
                 raise ConfigError("invalid Content-Length header")
             if length <= 0:
                 return {}
+            if length > MAX_REQUEST_BODY_BYTES:
+                raise ConfigError(
+                    f"request body of {length} bytes exceeds the "
+                    f"{MAX_REQUEST_BODY_BYTES}-byte cap"
+                )
             try:
                 return json.loads(self.rfile.read(length) or b"{}")
             except json.JSONDecodeError:

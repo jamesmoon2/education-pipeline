@@ -154,3 +154,16 @@ def test_non_numeric_content_length_returns_400(server):
     status, payload = _raw_post(server, "/v1/jobs", b"{}", "notanumber")
     assert status == 400
     assert payload["error"]["code"] == "bad_request"
+
+
+def test_oversized_content_length_returns_400(server):
+    # Declare a body far exceeding the server's cap; the server must reject
+    # based on the header alone (job POST bodies are tiny), not attempt to
+    # read gigabytes into memory.
+    oversized = 2 * 1024 * 1024  # 2 MiB > the 1 MiB cap
+    status, payload = _raw_post(server, "/v1/jobs", b"{}", str(oversized))
+    assert status == 400
+    assert payload["error"]["code"] == "bad_request"
+    # server survives: a well-formed request still succeeds afterward
+    status, health = _req(server, "GET", "/v1/health")
+    assert status == 200
