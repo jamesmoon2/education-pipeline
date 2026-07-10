@@ -391,6 +391,15 @@ class RunStore:
 
         return self.run_dir(topic_id) / "final" / _FINAL_FILENAME
 
+    def export_path(self, topic_id: str, format: str) -> Path:
+        """Path an export of ``format`` is (or would be) written to."""
+
+        if format not in EXPORT_FORMATS:
+            supported = ", ".join(EXPORT_FORMATS)
+            raise ConfigError(f"unsupported export format {format!r}; supported: {supported}")
+        name = "guide.bundle.md" if format == "markdown" else "guide.html"
+        return self.final_path(topic_id).with_name(name)
+
     def export_run(
         self,
         topic_id: str,
@@ -405,20 +414,15 @@ class RunStore:
         with a front-matter provenance block). Both are written into ``final/``.
         """
 
-        if format not in EXPORT_FORMATS:
-            supported = ", ".join(EXPORT_FORMATS)
-            raise ConfigError(f"unsupported export format {format!r}; supported: {supported}")
-
         safe_id = _artifact_id(topic_id, "topic id")
+        export_path = self.export_path(safe_id, format)
         guide = self._read_final_guide(safe_id)
         topic = TopicStore(self.root).load_topic(safe_id)
 
         if format == "markdown":
             content = build_markdown_bundle(guide, front_matter=self._export_front_matter(safe_id, topic))
-            export_path = self.final_path(safe_id).with_name("guide.bundle.md")
         else:
             content = render_markdown_to_html(guide, title=topic.title)
-            export_path = self.final_path(safe_id).with_name("guide.html")
 
         _write_text(export_path, content, overwrite=overwrite)
         self._append_event(

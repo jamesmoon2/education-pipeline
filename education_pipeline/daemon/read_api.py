@@ -16,6 +16,13 @@ class NotFoundError(Exception):
     """A referenced workspace resource does not exist."""
 
 
+def require_run(runs: RunStore, topic_id: str) -> None:
+    """Raise :class:`NotFoundError` unless a run manifest exists for the topic."""
+
+    if not runs.manifest_path(topic_id).is_file():
+        raise NotFoundError(f"no run started for topic: {topic_id}")
+
+
 def list_topics(topics: TopicStore, runs: RunStore) -> dict:
     entries = []
     for topic_id in topics.list_topic_ids():
@@ -56,8 +63,7 @@ def get_profile(profiles: ProfileStore, profile_id: str) -> dict:
 
 
 def run_status_payload(runs: RunStore, topic_id: str) -> dict:
-    if not runs.manifest_path(topic_id).is_file():
-        raise NotFoundError(f"no run started for topic: {topic_id}")
+    require_run(runs, topic_id)
     status = runs.run_status(topic_id)
     return {
         "topic_id": status.topic_id,
@@ -86,8 +92,7 @@ def list_runs(runs: RunStore) -> dict:
 
 
 def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
-    if not runs.manifest_path(topic_id).is_file():
-        raise NotFoundError(f"no run started for topic: {topic_id}")
+    require_run(runs, topic_id)
     paths = runs.stage_paths(topic_id, stage)  # ConfigError on bad stage -> 400
 
     def _read(path):

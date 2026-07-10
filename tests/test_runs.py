@@ -672,3 +672,16 @@ def test_append_manifest_event_records_event(tmp_path):
     assert events[-1]["action"] == "job"
     assert events[-1]["job_id"] == "j1"
     assert "recorded_at" in events[-1]
+
+
+def test_export_path_names_and_bad_format(tmp_path):
+    from education_pipeline.config import ConfigError
+    from education_pipeline.runs import RunStore
+
+    runs = RunStore(tmp_path)
+    assert runs.export_path("t", "html").name == "guide.html"
+    assert runs.export_path("t", "markdown").name == "guide.bundle.md"
+    import pytest
+
+    with pytest.raises(ConfigError):
+        runs.export_path("t", "docx")
