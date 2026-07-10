@@ -120,3 +120,150 @@ def test_profile_attach_threads_into_spec_prompt(tmp_path: Path) -> None:
     prompt = (ws / "runs" / "systems-thinking" / "prompts" / "spec.prompt.md").read_text()
     assert "# Learner Profile Context" in prompt
     assert "- Professional experience: early-career analysts" in prompt
+
+
+def _seed_topic_to_draft(ws: Path):
+    """Advance a run so the next action is 'save_response' for the draft stage."""
+    from education_pipeline import RunStore
+    from education_pipeline.topics import load_topic
+    from education_pipeline.workspace import TopicStore
+
+    ws.mkdir(parents=True, exist_ok=True)
+    topic_toml = ws / "_seed-topic.toml"
+    _write(topic_toml, TOPIC_TOML)
+    topic = load_topic(topic_toml)
+    TopicStore(ws).import_topic(topic.id, topic_toml, overwrite=True)
+
+    runs = RunStore(ws)
+    runs.create_run("systems-thinking")
+    # spec -> approved
+    runs.write_spec_prompt("systems-thinking", title="Systems Thinking")
+    runs.response_path("systems-thinking", "spec").write_text("# Spec\n", encoding="utf-8")
+    runs.approve_stage("systems-thinking", "spec")
+    # outline -> approved
+    runs.write_outline_prompt("systems-thinking")
+    runs.response_path("systems-thinking", "outline").write_text("# Outline\n", encoding="utf-8")
+    runs.approve_stage("systems-thinking", "outline")
+    # draft prompt written, no response yet -> next action is save_response(draft)
+    runs.write_draft_prompt("systems-thinking")
+
+
+def test_daemon_status_reports_stopped(tmp_path, capsys):
+    assert _run(tmp_path, "daemon", "status") == 0
+    assert "stopped" in capsys.readouterr().out.lower()
+
+
+def test_run_wait_executes_and_lands_response(tmp_path, monkeypatch):
+    import sys
+
+    from education_pipeline.providers import Invocation, ProviderResponse, register_runner
+
+    class FakeRunner:
+        provider_id = "fake"
+        executable = True
+
+        def is_available(self):
+            return True
+
+        def build_invocation(self, model, plan, prompt_path):
+            fake = Path(__file__).parent / "fake_provider.py"
+            return Invocation(argv=[sys.executable, str(fake)])
+
+        def parse_response(self, stdout):
+            return ProviderResponse(text=stdout, metadata={})
+
+    register_runner(FakeRunner())
+    monkeypatch.setenv("FAKE_STDOUT", "# Generated draft\n")
+
+    # `ensure_daemon` normally autostarts the daemon as a separate OS process
+    # (a fresh interpreter that only knows the built-in providers), which
+    # can't see the FakeRunner registered above in this test process. Run the
+    # real daemon code path (`serve()`) in a background thread of this
+    # process instead, so the shared provider registry includes "fake". Only
+    # redirect the specific daemon-spawn argv -- the worker's own
+    # subprocess.Popen calls (to run fake_provider.py per job) must go
+    # through unmodified, since client.py's `subprocess` is the same module
+    # object used by the daemon's job runner.
+    import subprocess
+    import threading
+
+    from education_pipeline.daemon import serve
+
+    real_popen = subprocess.Popen
+
+    def _thread_popen(argv, **kwargs):
+        if len(argv) >= 3 and argv[1:3] == ["-m", "education_pipeline.daemon"]:
+            root = argv[-1]
+            ready = threading.Event()
+            threading.Thread(
+                target=serve, args=(root,), kwargs={"ready": ready}, daemon=True
+            ).start()
+            # `serve()` sets this only after writing the full discovery record
+            # (with port), avoiding a race against the placeholder pid-only
+            # record `claim_discovery` writes first.
+            ready.wait(timeout=5)
+            return None
+        return real_popen(argv, **kwargs)
+
+    monkeypatch.setattr("education_pipeline.client.subprocess.Popen", _thread_popen)
+
+    # workspace config points the plan's draft stage at the fake provider
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "model-catalog.toml").write_text(
+        '[[providers]]\nid = "fake"\n[[providers.models]]\nid = "m"\n', encoding="utf-8"
+    )
+    (cfg / "model-plan.toml").write_text(
+        'provider = "fake"\n[stages.draft]\nmodel = "m"\n', encoding="utf-8"
+    )
+    _seed_topic_to_draft(tmp_path)
+    code = _run(tmp_path, "run", "systems-thinking", "--wait")
+    assert code == 0
+    from education_pipeline import RunStore
+
+    assert RunStore(tmp_path).response_path("systems-thinking", "draft").read_text(
+        encoding="utf-8"
+    ) == "# Generated draft\n"
+    _run(tmp_path, "daemon", "stop")
+
+
+def test_run_refuses_when_next_action_is_approval(tmp_path, capsys):
+    from education_pipeline import RunStore
+    from education_pipeline.topics import load_topic
+    from education_pipeline.workspace import TopicStore
+
+    topic_toml = tmp_path / "_seed-topic.toml"
+    _write(topic_toml, TOPIC_TOML)
+    topic = load_topic(topic_toml)
+    TopicStore(tmp_path).import_topic(topic.id, topic_toml, overwrite=True)
+
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+    runs.write_spec_prompt("systems-thinking", title="Systems Thinking")
+    runs.response_path("systems-thinking", "spec").write_text("# Spec\n", encoding="utf-8")
+    runs.approve_stage("systems-thinking", "spec")
+    runs.write_outline_prompt("systems-thinking")
+    runs.response_path("systems-thinking", "outline").write_text("# Outline\n", encoding="utf-8")
+    # next action is 'approve' outline, not 'save_response'
+    code = _run(tmp_path, "run", "systems-thinking")
+    assert code == 1
+    _run(tmp_path, "daemon", "stop")
+
+
+def test_daemon_status_prints_cockpit_url(tmp_path, capsys, monkeypatch):
+    from education_pipeline import cli
+
+    monkeypatch.setattr(
+        cli,
+        "daemon_status",
+        lambda root: {
+            "running": True,
+            "pid": 123,
+            "port": 4242,
+            "version": "0.1.0",
+            "version_mismatch": False,
+        },
+    )
+    assert _run(tmp_path, "daemon", "status") == 0
+    out = capsys.readouterr().out
+    assert "http://127.0.0.1:4242/" in out
