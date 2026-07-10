@@ -1,5 +1,6 @@
 import { Link, Route, Routes } from "react-router-dom";
 import RunBoardPage from "./pages/RunBoardPage";
+import StageViewerPage from "./pages/StageViewerPage";
 import TopicListPage from "./pages/TopicListPage";
 
 export default function App() {
@@ -14,6 +15,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<TopicListPage />} />
           <Route path="/topics/:topicId" element={<RunBoardPage />} />
+          <Route path="/topics/:topicId/stages/:stage" element={<StageViewerPage />} />
         </Routes>
       </main>
     </div>
