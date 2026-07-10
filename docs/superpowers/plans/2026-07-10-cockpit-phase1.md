@@ -11,13 +11,12 @@ Durable ledger: `.superpowers/sdd/progress.md` — trust it and `git log` over m
 |---|---|---|
 | 1. Route-aware auth + `/v1/session` | complete, review clean | `6ccdce8` |
 | 2. Read-API module + topic/profile endpoints | complete, review clean | `1ca1483` |
-| 3. Run read endpoints | implemented + committed; **task review not yet run** | `56756de` |
+| 3. Run read endpoints | complete, review clean | `56756de` |
 | 4–14 | not started | — |
 
 Backend suite at `56756de`: **195 passing, 0 failing.**
 
-**To resume:** run the task review for Task 3 (`scripts/review-package 1ca1483 56756de`, then dispatch the
-task-reviewer prompt), then continue with Task 4. Do not re-dispatch Tasks 1–3.
+**To resume:** continue with Task 4 (static-asset resolver). Do not re-dispatch Tasks 1–3.
 
 ---
 
