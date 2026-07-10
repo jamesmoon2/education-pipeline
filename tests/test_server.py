@@ -365,3 +365,112 @@ def test_no_dist_returns_503(server):
     status, body = _req(server, "GET", "/", token=None)
     assert status == 503
     assert body["error"]["code"] == "ui_unavailable"
+
+
+def test_write_endpoints_require_token(server):
+    status, body = _req(server, "POST", "/v1/runs/t/advance", token=None)
+    assert status == 401
+    status, body = _req(server, "POST", "/v1/runs/t/stages/spec/response", token=None, body={"text": "x"})
+    assert status == 401
+
+
+def test_advance_writes_spec_prompt_and_returns_status(server):
+    status, body = _req(server, "POST", "/v1/runs/t/advance")
+    assert status == 200
+    assert body["performed"] == "write_prompt"
+    assert body["status"]["next_action"]["action"] == "save_response"
+    assert body["status"]["next_action"]["stage"] == "spec"
+    # single-step: calling again at a human step is a no-op
+    status, body = _req(server, "POST", "/v1/runs/t/advance")
+    assert status == 200 and body["performed"] is None
+
+
+def test_response_ingest_conflict_and_force(server):
+    status, body = _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "R1"})
+    assert status == 200
+    assert body["topic_id"] == "t" and body["stage"] == "draft"
+    assert body["response_path"] == "responses/draft.response.md"
+    assert body["status"]["stages"][2]["response_ingested"] is True
+    status, body = _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "R2"})
+    assert status == 409 and body["error"]["code"] == "already_exists"
+    status, _ = _req(
+        server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "R2", "force": True}
+    )
+    assert status == 200
+
+
+def test_response_validation_errors(server):
+    status, body = _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "  "})
+    assert status == 400
+    status, body = _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": 42})
+    assert status == 400
+    status, body = _req(server, "POST", "/v1/runs/t/stages/bogus/response", body={"text": "x"})
+    assert status == 400
+    status, body = _req(server, "POST", "/v1/runs/ghost/stages/draft/response", body={"text": "x"})
+    assert status == 404 and body["error"]["code"] == "not_found"
+
+
+def test_approve_endpoint_conflict_codes(server):
+    status, body = _req(server, "POST", "/v1/runs/t/stages/qa/approve")
+    assert status == 409 and body["error"]["code"] == "not_ready"
+    _req(server, "POST", "/v1/runs/t/stages/qa/response", body={"text": "QA"})
+    status, body = _req(server, "POST", "/v1/runs/t/stages/qa/approve")
+    assert status == 200 and body["approved_path"] == "approved/qa.md"
+    status, body = _req(server, "POST", "/v1/runs/t/stages/qa/approve")
+    assert status == 409 and body["error"]["code"] == "already_exists"
+    status, _ = _req(server, "POST", "/v1/runs/t/stages/qa/approve", body={"overwrite": True})
+    assert status == 200
+
+
+def test_finalize_and_export_endpoints(server):
+    status, body = _req(server, "POST", "/v1/runs/t/finalize")
+    assert status == 409 and body["error"]["code"] == "not_ready"
+    status, body = _req(server, "POST", "/v1/runs/t/export", body={"format": "html"})
+    assert status == 409 and body["error"]["code"] == "not_ready"
+
+    _req(server, "POST", "/v1/runs/t/stages/repair/response", body={"text": "FINAL BODY"})
+    _req(server, "POST", "/v1/runs/t/stages/repair/approve")
+    status, body = _req(server, "POST", "/v1/runs/t/finalize")
+    assert status == 200 and body["final_path"] == "final/guide.md"
+    status, body = _req(server, "POST", "/v1/runs/t/finalize")
+    assert status == 409 and body["error"]["code"] == "already_exists"
+
+    status, body = _req(server, "POST", "/v1/runs/t/export", body={"format": "docx"})
+    assert status == 400
+    status, body = _req(server, "POST", "/v1/runs/t/export", body={"format": "html"})
+    assert status == 200
+    assert body == {"topic_id": "t", "format": "html", "export_path": "final/guide.html"}
+    status, body = _req(server, "POST", "/v1/runs/t/export", body={"format": "html"})
+    assert status == 409 and body["error"]["code"] == "already_exists"
+    status, _ = _req(server, "POST", "/v1/runs/t/export", body={"format": "html", "overwrite": True})
+    assert status == 200
+
+
+def test_run_writes_blocked_while_job_active(server, monkeypatch):
+    import time
+
+    monkeypatch.setenv("FAKE_DELAY", "5")
+    status, job = _req(server, "POST", "/v1/jobs", body={"topic_id": "t", "stage": "draft"})
+    assert status == 200
+
+    for method_path, body in (
+        ("/v1/runs/t/advance", None),
+        ("/v1/runs/t/stages/draft/response", {"text": "R"}),
+        ("/v1/runs/t/stages/draft/approve", None),
+        ("/v1/runs/t/finalize", None),
+    ):
+        status, resp = _req(server, "POST", method_path, body=body)
+        assert status == 409, method_path
+        assert resp["error"]["code"] == "job_active", method_path
+
+    status, _ = _req(server, "POST", f"/v1/jobs/{job['id']}/cancel")
+    assert status == 200
+    for _ in range(200):
+        status, current = _req(server, "GET", f"/v1/jobs/{job['id']}")
+        if current["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
+            break
+        time.sleep(0.02)
+    assert current["status"] == "canceled"
+
+    status, body = _req(server, "POST", "/v1/runs/t/advance")
+    assert status == 200

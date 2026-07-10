@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
-from education_pipeline.daemon import read_api
+from education_pipeline.daemon import read_api, write_api
 from education_pipeline.daemon.jobs import Job, JobStore, Worker
 from education_pipeline.daemon.static import resolve_static
 from education_pipeline.runs import RunStore, SUPPORTED_STAGES
@@ -24,6 +24,13 @@ from education_pipeline.workspace import ProfileStore, TopicStore
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
 MAX_REQUEST_BODY_BYTES = 1024 * 1024  # 1 MiB; job POST bodies are tiny
+
+
+def _require_str(body: dict, key: str) -> str:
+    value = body.get(key)
+    if not isinstance(value, str):
+        raise ConfigError(f"body field {key!r} must be a string")
+    return value
 
 
 @dataclass
@@ -237,24 +244,90 @@ def _make_handler(context: DaemonContext):
             if not self._guard():
                 return
             try:
-                if self.path == "/v1/jobs":
-                    body = self._read_body()
-                    job = context.enqueue_stage(
-                        body.get("topic_id", ""), body.get("stage"), bool(body.get("force"))
-                    )
-                    return self._send(200, job.to_dict())
-                m = re.match(r"^/v1/jobs/([^/]+)/cancel$", self.path)
-                if m:
-                    job = context.worker.cancel(m.group(1))
-                    if job is None:
-                        return self._error(404, "not_found", "no such job")
-                    return self._send(200, job.to_dict())
-                if self.path == "/v1/shutdown":
-                    self._send(200, {"ok": True})
-                    context.on_shutdown()
-                    return
+                return self._api_post_routes()
+            except read_api.NotFoundError as exc:
+                return self._error(404, "not_found", str(exc))
+            except write_api.ConflictError as exc:
+                return self._error(409, exc.code, str(exc))
             except ConfigError as exc:
                 return self._error(400, "bad_request", str(exc))
+
+        def _api_post_routes(self):
+            if self.path == "/v1/jobs":
+                body = self._read_body()
+                job = context.enqueue_stage(
+                    body.get("topic_id", ""), body.get("stage"), bool(body.get("force"))
+                )
+                return self._send(200, job.to_dict())
+            m = re.match(r"^/v1/jobs/([^/]+)/cancel$", self.path)
+            if m:
+                job = context.worker.cancel(m.group(1))
+                if job is None:
+                    return self._error(404, "not_found", "no such job")
+                return self._send(200, job.to_dict())
+            if self.path == "/v1/shutdown":
+                self._send(200, {"ok": True})
+                context.on_shutdown()
+                return
+            m = re.match(r"^/v1/runs/([^/?]+)/advance$", self.path)
+            if m:
+                self._read_body()  # enforce the JSON/size rules even for an empty body
+                return self._send(
+                    200, write_api.advance_run(context.runs, context.store, m.group(1))
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/response$", self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.ingest_response(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        m.group(2),
+                        _require_str(body, "text"),
+                        force=bool(body.get("force")),
+                    ),
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/approve$", self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.approve_stage(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        m.group(2),
+                        overwrite=bool(body.get("overwrite")),
+                    ),
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/finalize$", self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.finalize_run(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        overwrite=bool(body.get("overwrite")),
+                    ),
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/export$", self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.export_run(
+                        context.runs,
+                        m.group(1),
+                        format=body.get("format", "html")
+                        if isinstance(body.get("format", "html"), str)
+                        else "",
+                        overwrite=bool(body.get("overwrite")),
+                    ),
+                )
             self._error(404, "not_found", "unknown path")
 
     return Handler
