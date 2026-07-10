@@ -151,6 +151,23 @@ def test_execute_truncated_stdout_fails_instead_of_ingesting(tmp_path, monkeypat
     assert not runs.has_ingested_response("t", "draft")
 
 
+def test_execute_survives_manifest_event_append_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_STDOUT", "GENERATED\n")
+    runs, catalog, plan, store = _setup(tmp_path)
+    job = store.create("t", "draft", "fake", "m", None)
+
+    def _boom(self, *args, **kwargs):
+        raise RuntimeError("manifest disk full")
+
+    monkeypatch.setattr(type(runs), "append_manifest_event", _boom)
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, threading.Event())
+    # The response already landed durably; a manifest-event append failure
+    # must not downgrade an already-committed success.
+    assert done.status == "succeeded"
+    assert runs.response_path("t", "draft").read_text(encoding="utf-8") == "GENERATED\n"
+    assert "manifest disk full" in str(done.metadata.get("manifest_event_error", ""))
+
+
 def test_execute_cancel_marks_canceled_without_response(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_DELAY", "10")
     runs, catalog, plan, store = _setup(tmp_path)

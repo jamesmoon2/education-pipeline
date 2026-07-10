@@ -274,16 +274,21 @@ class JobRunner:
                 job.topic_id, job.stage, parsed.text, force=self.force
             )
             job.response_path = str(response_path)
-            self.runs.append_manifest_event(
-                job.topic_id,
-                {
-                    "stage": job.stage,
-                    "action": "job",
-                    "job_id": job.id,
-                    "provider": job.provider,
-                    "model": job.model,
-                },
-            )
+            try:
+                self.runs.append_manifest_event(
+                    job.topic_id,
+                    {
+                        "stage": job.stage,
+                        "action": "job",
+                        "job_id": job.id,
+                        "provider": job.provider,
+                        "model": job.model,
+                    },
+                )
+            except Exception as exc:
+                # The response already landed durably; a manifest-event append
+                # failure must not downgrade an already-committed success.
+                job.metadata["manifest_event_error"] = str(exc)
             return self._terminal(job, "succeeded")
         except ConfigError as exc:
             return self._fail(job, str(exc))
