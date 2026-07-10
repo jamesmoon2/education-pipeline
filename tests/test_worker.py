@@ -123,6 +123,57 @@ def test_enqueue_duplicate_rejection_leaves_no_orphaned_job_json(tmp_path):
     assert b.id not in ids
 
 
+class BrokenExecutableRunner(FakeRunner):
+    provider_id = "fake"
+
+    def build_invocation(self, model, plan, prompt_path):
+        return Invocation(argv=["/no/such/executable-ep-daemon-test"])
+
+
+def test_worker_survives_unexpected_exception_in_job_execution(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_STDOUT", "OK\n")
+    store, runs, make = _factory(tmp_path)
+    register_runner(BrokenExecutableRunner())
+
+    broken_catalog = parse_model_catalog({"providers": [{"id": "fake", "models": [{"id": "m"}]}]})
+    broken_plan = parse_model_plan(
+        {"provider": "fake", "stages": {"draft": {"model": "m"}}}, broken_catalog
+    )
+    healthy_catalog = parse_model_catalog({"providers": [{"id": "fake", "models": [{"id": "m"}]}]})
+    healthy_plan = parse_model_plan(
+        {"provider": "fake", "stages": {"spec": {"model": "m"}}}, healthy_catalog
+    )
+    p = runs.stage_paths("t", "spec").prompt_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("PROMPT", encoding="utf-8")
+
+    def make_by_stage(job):
+        # draft: build_invocation points at a nonexistent executable, so
+        # subprocess.Popen raises FileNotFoundError inside JobRunner.execute.
+        if job.stage == "draft":
+            return JobRunner(store, runs, broken_catalog, broken_plan, timeout=30)
+        return JobRunner(store, runs, healthy_catalog, healthy_plan, timeout=30)
+
+    worker = Worker(store, make_by_stage)
+    worker.start()
+    try:
+        broken_job = store.create("t", "draft", "fake", "m", None)
+        worker.enqueue(broken_job)
+        done = _wait_terminal(store, broken_job.id)
+        assert done.status == "failed"
+
+        # A subsequent job (different stage, healthy runner) processed by the
+        # SAME worker thread must still run to completion, proving the loop
+        # survived the earlier crash instead of dying.
+        register_runner(FakeRunner())
+        healthy_job = store.create("t", "spec", "fake", "m", None)
+        worker.enqueue(healthy_job)
+        done2 = _wait_terminal(store, healthy_job.id)
+        assert done2.status == "succeeded"
+    finally:
+        worker.stop()
+
+
 def test_cancel_queued_job_marks_canceled(tmp_path):
     store, runs, make = _factory(tmp_path)
     worker = Worker(store, make)  # not started, so the job stays queued

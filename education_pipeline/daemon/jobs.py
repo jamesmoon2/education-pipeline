@@ -292,6 +292,15 @@ class JobRunner:
             return self._terminal(job, "succeeded")
         except ConfigError as exc:
             return self._fail(job, str(exc))
+        except Exception as exc:
+            # A non-ConfigError exception (Popen raising FileNotFoundError/
+            # OSError, os.replace failing, a parser raising ValueError, ...)
+            # must not propagate out of execute(): Worker._loop calls this
+            # directly on its single worker thread, so an uncaught exception
+            # here would kill that thread and permanently wedge the daemon.
+            if job.pid:
+                _best_effort_kill(job.pid)
+            return self._fail(job, f"unexpected error: {exc}")
 
     def _resolve_model(self, job: Job):
         provider = self.catalog.require_provider(job.provider)
@@ -541,7 +550,21 @@ class Worker:
                 self.store.save(job)
                 continue
             runner = self.runner_factory(job)
-            runner.execute(job, cancel)
+            try:
+                runner.execute(job, cancel)
+            except Exception as exc:
+                # Defense in depth: JobRunner.execute already catches broad
+                # exceptions internally, but if anything still escapes (e.g. a
+                # broken runner_factory, or a bug in execute itself), the
+                # single worker thread must survive it rather than dying and
+                # wedging every subsequent job permanently.
+                fresh = self.store.find(job_id) or job
+                if fresh.status not in TERMINAL_STATUSES:
+                    fresh.status = "failed"
+                    fresh.error = f"worker loop error: {exc}"
+                    fresh.ended_at = _utcnow().isoformat()
+                    fresh.pid = None
+                    self.store.save(fresh)
 
 
 def _pid_plausibly_alive(pid: int) -> bool:
