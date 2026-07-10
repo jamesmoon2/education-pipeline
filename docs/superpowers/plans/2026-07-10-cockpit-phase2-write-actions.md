@@ -1,5 +1,28 @@
 # Cockpit Phase 2 (Write Actions) Implementation Plan
 
+## Execution status
+
+| Task | State | Commit |
+|------|-------|--------|
+| 1. JobStore.any_active_for | pending | — |
+| 2. write_api run actions | pending | — |
+| 3. write_api workspace imports | pending | — |
+| 4. POST run-action routes | pending | — |
+| 5. POST import routes | pending | — |
+| 6. Download endpoints | pending | — |
+| 7. Full-pipeline HTTP test | pending | — |
+| 8. Client apiPost/download | pending | — |
+| 9. useAction hook | pending | — |
+| 10. Run board primary action | pending | — |
+| 11. Export controls | pending | — |
+| 12. Stage viewer actions | pending | — |
+| 13. Jobs panel cancel | pending | — |
+| 14. Topic list imports/attach | pending | — |
+| 15. E2E full run | pending | — |
+| 16. Deferred hygiene | pending | — |
+
+To resume: continue with Task 1.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Every human step of a run — importing topics/profiles, advancing, pasting/approving responses, running providers, finalizing, exporting, downloading — works from the browser, with success/error feedback mapped from the daemon's error envelope.
