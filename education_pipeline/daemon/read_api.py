@@ -1,0 +1,81 @@
+"""Read-only JSON payload builders for the cockpit /v1 API.
+
+Pure functions: stores in, JSON-serializable dicts out. Raise
+:class:`NotFoundError` for missing resources (HTTP 404) and let
+``ConfigError`` propagate for invalid input (HTTP 400).
+"""
+
+from __future__ import annotations
+
+from education_pipeline.config import ConfigError
+from education_pipeline.runs import RunStore
+from education_pipeline.workspace import ProfileStore, TopicStore
+
+
+class NotFoundError(Exception):
+    """A referenced workspace resource does not exist."""
+
+
+def list_topics(topics: TopicStore, runs: RunStore) -> dict:
+    entries = []
+    for topic_id in topics.list_topic_ids():
+        title: str | None = None
+        error: str | None = None
+        try:
+            title = topics.load_topic(topic_id).title
+        except ConfigError as exc:
+            error = str(exc)
+        run = (
+            run_status_payload(runs, topic_id)
+            if runs.manifest_path(topic_id).is_file()
+            else None
+        )
+        entries.append({"id": topic_id, "title": title, "error": error, "run": run})
+    return {"topics": entries}
+
+
+def get_topic(topics: TopicStore, topic_id: str) -> dict:
+    if not topics.topic_path(topic_id).is_file():
+        raise NotFoundError(f"no such topic: {topic_id}")
+    title: str | None = None
+    try:
+        title = topics.load_topic(topic_id).title
+    except ConfigError:
+        pass  # surface the raw TOML even if it no longer parses
+    return {"id": topic_id, "title": title, "toml": topics.read_topic_toml(topic_id)}
+
+
+def list_profiles(profiles: ProfileStore) -> dict:
+    return {"profiles": list(profiles.list_profile_ids())}
+
+
+def get_profile(profiles: ProfileStore, profile_id: str) -> dict:
+    if not profiles.profile_path(profile_id).is_file():
+        raise NotFoundError(f"no such profile: {profile_id}")
+    return {"id": profile_id, "toml": profiles.read_profile_toml(profile_id)}
+
+
+def run_status_payload(runs: RunStore, topic_id: str) -> dict:
+    if not runs.manifest_path(topic_id).is_file():
+        raise NotFoundError(f"no run started for topic: {topic_id}")
+    status = runs.run_status(topic_id)
+    return {
+        "topic_id": status.topic_id,
+        "finalized": status.finalized,
+        "stages": [
+            {
+                "stage": s.stage,
+                "state": s.state,
+                "prompt_written": s.prompt_written,
+                "response_ingested": s.response_ingested,
+                "approved": s.approved,
+            }
+            for s in status.stages
+        ],
+        "next_action": {
+            "topic_id": status.next_action.topic_id,
+            "stage": status.next_action.stage,
+            "action": status.next_action.action,
+            "detail": status.next_action.detail,
+        },
+    }

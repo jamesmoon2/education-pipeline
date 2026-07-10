@@ -9,6 +9,7 @@ from education_pipeline import RunStore, parse_model_catalog, parse_model_plan
 from education_pipeline.daemon.jobs import JobRunner, JobStore, Worker
 from education_pipeline.daemon.server import DaemonContext, build_server
 from education_pipeline.providers import Invocation, ProviderResponse, register_runner
+from education_pipeline.workspace import ProfileStore, TopicStore
 
 FAKE = Path(__file__).parent / "fake_provider.py"
 
@@ -38,6 +39,17 @@ def server(tmp_path, monkeypatch):
     p = runs.stage_paths("t", "draft").prompt_path
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("PROMPT", encoding="utf-8")
+    topics_dir = tmp_path / "topics"
+    topics_dir.mkdir(parents=True, exist_ok=True)
+    (topics_dir / "t.toml").write_text(
+        'schema_version = 1\nid = "t"\ntitle = "Test Topic"\n', encoding="utf-8"
+    )
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    (profiles_dir / "p.toml").write_text(
+        'schema_version = 1\nid = "p"\ntarget_learner = "team cohort"\n',
+        encoding="utf-8",
+    )
     catalog = parse_model_catalog({"providers": [{"id": "fake", "models": [{"id": "m"}]}]})
     plan = parse_model_plan({"provider": "fake", "stages": {"draft": {"model": "m"}}}, catalog)
     store = JobStore(tmp_path)
@@ -51,6 +63,8 @@ def server(tmp_path, monkeypatch):
         version="0.1.0",
         catalog=catalog,
         plan=plan,
+        topics=TopicStore(tmp_path),
+        profiles=ProfileStore(tmp_path),
         on_shutdown=lambda: None,
     )
     srv = build_server(context)
@@ -197,3 +211,45 @@ def test_api_get_still_requires_token(server):
     status, body = _req(server, "GET", "/v1/jobs", token=None)
     assert status == 401
     assert body["error"]["code"] == "unauthorized"
+
+
+def test_topics_list_includes_title_and_run(server):
+    status, body = _req(server, "GET", "/v1/topics")
+    assert status == 200
+    (entry,) = body["topics"]
+    assert entry["id"] == "t"
+    assert entry["title"] == "Test Topic"
+    assert entry["error"] is None
+    # the fixture created a run for "t"; spec prompt not written yet
+    assert entry["run"]["next_action"]["action"] == "write_prompt"
+    assert entry["run"]["next_action"]["stage"] == "spec"
+
+
+def test_topics_list_requires_token(server):
+    status, _ = _req(server, "GET", "/v1/topics", token=None)
+    assert status == 401
+
+
+def test_topic_get_returns_toml(server):
+    status, body = _req(server, "GET", "/v1/topics/t")
+    assert status == 200
+    assert body["id"] == "t"
+    assert body["title"] == "Test Topic"
+    assert 'title = "Test Topic"' in body["toml"]
+
+
+def test_topic_get_unknown_is_404(server):
+    status, body = _req(server, "GET", "/v1/topics/nope")
+    assert status == 404
+    assert body["error"]["code"] == "not_found"
+
+
+def test_profiles_list_and_get(server):
+    status, body = _req(server, "GET", "/v1/profiles")
+    assert status == 200
+    assert body["profiles"] == ["p"]
+    status, body = _req(server, "GET", "/v1/profiles/p")
+    assert status == 200
+    assert 'target_learner = "team cohort"' in body["toml"]
+    status, body = _req(server, "GET", "/v1/profiles/nope")
+    assert status == 404

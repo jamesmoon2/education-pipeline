@@ -16,8 +16,10 @@ from pathlib import Path
 from typing import Callable
 
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
+from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import Job, JobStore, Worker
 from education_pipeline.runs import RunStore, SUPPORTED_STAGES
+from education_pipeline.workspace import ProfileStore, TopicStore
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
 MAX_REQUEST_BODY_BYTES = 1024 * 1024  # 1 MiB; job POST bodies are tiny
@@ -33,6 +35,8 @@ class DaemonContext:
     version: str
     catalog: ModelCatalog
     plan: ModelPlan
+    topics: TopicStore
+    profiles: ProfileStore
     on_shutdown: Callable[[], None]
 
     def enqueue_stage(self, topic_id: str, stage: str | None, force: bool) -> Job:
@@ -142,9 +146,31 @@ def _make_handler(context: DaemonContext):
             return self._error(404, "not_found", "unknown path")
 
         def _api_get(self):
+            try:
+                return self._api_get_routes()
+            except read_api.NotFoundError as exc:
+                return self._error(404, "not_found", str(exc))
+            except ConfigError as exc:
+                return self._error(400, "bad_request", str(exc))
+
+        def _api_get_routes(self):
             if self.path.startswith("/v1/health"):
                 return self._send(
                     200, {"version": context.version, "started_at": None, "ok": True}
+                )
+            if self.path == "/v1/topics":
+                return self._send(
+                    200, read_api.list_topics(context.topics, context.runs)
+                )
+            m = re.match(r"^/v1/topics/([^/?]+)$", self.path)
+            if m:
+                return self._send(200, read_api.get_topic(context.topics, m.group(1)))
+            if self.path == "/v1/profiles":
+                return self._send(200, read_api.list_profiles(context.profiles))
+            m = re.match(r"^/v1/profiles/([^/?]+)$", self.path)
+            if m:
+                return self._send(
+                    200, read_api.get_profile(context.profiles, m.group(1))
                 )
             m = re.match(r"^/v1/jobs/([^/]+)/log(?:\?offset=(\d+))?$", self.path)
             if m:

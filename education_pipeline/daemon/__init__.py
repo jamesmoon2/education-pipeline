@@ -24,6 +24,7 @@ from education_pipeline.daemon.jobs import (
 )
 from education_pipeline.daemon.server import DaemonContext, build_server
 from education_pipeline.runs import RunStore
+from education_pipeline.workspace import ProfileStore, TopicStore
 
 _PACKAGE_CONFIG = Path(__file__).resolve().parents[2] / "config"
 
@@ -75,6 +76,8 @@ def serve(
             version=__version__,
             catalog=catalog,
             plan=plan,
+            topics=TopicStore(root),
+            profiles=ProfileStore(root),
             on_shutdown=shutdown.set,
         )
         server = build_server(context)
