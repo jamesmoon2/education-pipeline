@@ -558,8 +558,10 @@ class Worker:
                 job.ended_at = _utcnow().isoformat()
                 self.store.save(job)
                 continue
-            runner = self.runner_factory(job)
             try:
+                # runner_factory is inside the try so a factory that raises
+                # (e.g. bad config building the JobRunner) can't kill the loop.
+                runner = self.runner_factory(job)
                 runner.execute(job, cancel)
             except Exception as exc:
                 # Defense in depth: JobRunner.execute already catches broad

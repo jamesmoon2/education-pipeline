@@ -174,6 +174,37 @@ def test_worker_survives_unexpected_exception_in_job_execution(tmp_path, monkeyp
         worker.stop()
 
 
+def test_worker_survives_raising_runner_factory(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_STDOUT", "OK\n")
+    store, runs, make = _factory(tmp_path)
+    catalog = parse_model_catalog({"providers": [{"id": "fake", "models": [{"id": "m"}]}]})
+    plan = parse_model_plan({"provider": "fake", "stages": {"spec": {"model": "m"}}}, catalog)
+    p = runs.stage_paths("t", "spec").prompt_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("PROMPT", encoding="utf-8")
+
+    def make_by_stage(job):
+        # The factory itself raises for the draft job (e.g. bad config building
+        # the JobRunner) — this must not kill the worker thread.
+        if job.stage == "draft":
+            raise RuntimeError("boom building runner")
+        return JobRunner(store, runs, catalog, plan, timeout=30)
+
+    worker = Worker(store, make_by_stage)
+    worker.start()
+    try:
+        broken_job = store.create("t", "draft", "fake", "m", None)
+        worker.enqueue(broken_job)
+        done = _wait_terminal(store, broken_job.id)
+        assert done.status == "failed"
+        # A later healthy job on the SAME worker still runs, proving survival.
+        healthy_job = store.create("t", "spec", "fake", "m", None)
+        worker.enqueue(healthy_job)
+        assert _wait_terminal(store, healthy_job.id).status == "succeeded"
+    finally:
+        worker.stop()
+
+
 def test_cancel_queued_job_marks_canceled(tmp_path):
     store, runs, make = _factory(tmp_path)
     worker = Worker(store, make)  # not started, so the job stays queued
