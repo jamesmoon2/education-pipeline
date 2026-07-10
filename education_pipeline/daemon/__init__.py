@@ -23,6 +23,7 @@ from education_pipeline.daemon.jobs import (
     Worker,
 )
 from education_pipeline.daemon.server import DaemonContext, build_server
+from education_pipeline.daemon.static import default_web_dist
 from education_pipeline.runs import RunStore
 from education_pipeline.workspace import ProfileStore, TopicStore
 
@@ -79,6 +80,7 @@ def serve(
             topics=TopicStore(root),
             profiles=ProfileStore(root),
             on_shutdown=shutdown.set,
+            web_dist=default_web_dist(),
         )
         server = build_server(context)
         lifecycle.write_discovery(root, pid=os.getpid(), port=server.server_port, token=token,

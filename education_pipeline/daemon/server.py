@@ -18,6 +18,7 @@ from typing import Callable
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
 from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import Job, JobStore, Worker
+from education_pipeline.daemon.static import resolve_static
 from education_pipeline.runs import RunStore, SUPPORTED_STAGES
 from education_pipeline.workspace import ProfileStore, TopicStore
 
@@ -38,6 +39,7 @@ class DaemonContext:
     topics: TopicStore
     profiles: ProfileStore
     on_shutdown: Callable[[], None]
+    web_dist: Path | None = None
 
     def enqueue_stage(self, topic_id: str, stage: str | None, force: bool) -> Job:
         # Validate topic against the workspace (reuses safe-id logic in RunStore).
@@ -143,7 +145,26 @@ def _make_handler(context: DaemonContext):
                 if not self._authed():
                     return self._error(401, "unauthorized", "missing or invalid token")
                 return self._api_get()
-            return self._error(404, "not_found", "unknown path")
+            return self._static_get()
+
+        def _static_get(self):
+            dist = context.web_dist
+            if dist is None:
+                return self._error(
+                    503,
+                    "ui_unavailable",
+                    "web UI not built; run `npm run build` in web/ or set EP_WEB_DIST",
+                )
+            static = resolve_static(dist, self.path)
+            if static is None:
+                return self._error(404, "not_found", "unknown path")
+            body = static.path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", static.content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", static.cache_control)
+            self.end_headers()
+            self.wfile.write(body)
 
         def _api_get(self):
             try:

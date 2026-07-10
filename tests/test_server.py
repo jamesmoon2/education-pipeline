@@ -28,14 +28,11 @@ class FakeRunner:
         return ProviderResponse(text=stdout, metadata={})
 
 
-@pytest.fixture
-def server(tmp_path, monkeypatch):
+def _start_server(tmp_path, monkeypatch, web_dist=None):
     monkeypatch.setenv("FAKE_STDOUT", "GENERATED\n")
     register_runner(FakeRunner())
     runs = RunStore(tmp_path)
     runs.create_run("t")
-    # drive to the point where draft is the "save_response" next action:
-    # write the draft prompt so next_action == save_response for draft
     p = runs.stage_paths("t", "draft").prompt_path
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("PROMPT", encoding="utf-8")
@@ -66,15 +63,32 @@ def server(tmp_path, monkeypatch):
         topics=TopicStore(tmp_path),
         profiles=ProfileStore(tmp_path),
         on_shutdown=lambda: None,
+        web_dist=web_dist,
     )
     srv = build_server(context)
-    port = srv.server_port
     import threading
 
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
     worker.start()
-    yield port
+    return srv, worker
+
+
+@pytest.fixture
+def server(tmp_path, monkeypatch):
+    srv, worker = _start_server(tmp_path, monkeypatch)
+    yield srv.server_port
+    worker.stop()
+    srv.shutdown()
+
+
+@pytest.fixture
+def ui_server(tmp_path, monkeypatch):
+    dist = tmp_path / "webdist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html>cockpit</html>", encoding="utf-8")
+    (dist / "assets" / "app-abc.js").write_text("js", encoding="utf-8")
+    srv, worker = _start_server(tmp_path, monkeypatch, web_dist=dist)
+    yield srv.server_port
     worker.stop()
     srv.shutdown()
 
@@ -299,3 +313,55 @@ def test_manifest_endpoint(server):
     assert status == 200
     assert body["topic_id"] == "t"
     assert isinstance(body["events"], list)
+
+
+def _raw_get(port, path, host=None):
+    conn = http.client.HTTPConnection("127.0.0.1", port)
+    if host is None:
+        conn.request("GET", path)
+    else:
+        conn.putrequest("GET", path, skip_host=True)
+        conn.putheader("Host", host)
+        conn.endheaders()
+    resp = conn.getresponse()
+    body = resp.read()
+    headers = dict(resp.getheaders())
+    conn.close()
+    return resp.status, body, headers
+
+
+def test_index_served_without_token(ui_server):
+    status, body, headers = _raw_get(ui_server, "/")
+    assert status == 200
+    assert b"cockpit" in body
+    assert headers["Content-Type"] == "text/html; charset=utf-8"
+    assert headers["Cache-Control"] == "no-store"
+    assert not any(h.lower().startswith("access-control") for h in headers)
+
+
+def test_asset_served_with_immutable_cache(ui_server):
+    status, _, headers = _raw_get(ui_server, "/assets/app-abc.js")
+    assert status == 200
+    assert "immutable" in headers["Cache-Control"]
+
+
+def test_spa_route_serves_index(ui_server):
+    status, body, _ = _raw_get(ui_server, "/topics/t/stages/draft")
+    assert status == 200
+    assert b"cockpit" in body
+
+
+def test_static_traversal_rejected(ui_server):
+    status, _, _ = _raw_get(ui_server, "/../topics/t.toml")
+    assert status == 404
+
+
+def test_static_still_checks_host(ui_server):
+    status, _, _ = _raw_get(ui_server, "/", host="evil.example.com")
+    assert status == 400
+
+
+def test_no_dist_returns_503(server):
+    status, body = _req(server, "GET", "/", token=None)
+    assert status == 503
+    assert body["error"]["code"] == "ui_unavailable"
