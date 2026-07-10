@@ -1,4 +1,5 @@
 import { Link, Route, Routes } from "react-router-dom";
+import TopicListPage from "./pages/TopicListPage";
 
 export default function App() {
   return (
@@ -10,7 +11,7 @@ export default function App() {
       </header>
       <main>
         <Routes>
-          <Route path="/" element={<p>Cockpit is running. Pages arrive in later tasks.</p>} />
+          <Route path="/" element={<TopicListPage />} />
         </Routes>
       </main>
     </div>
