@@ -52,6 +52,20 @@ Commands: `topic`/`profile` (`import`, `list`, `attach`, `show`), and
 planned; the CLI is the supported surface for power users and for verifying the
 engine.
 
+### Executing a stage through a provider
+
+Instead of copying a prompt into a model UI, run it through a configured
+provider (Claude Code or Codex):
+
+    education-pipeline -C ./ws run systems-thinking --wait   # runs the next stage
+    education-pipeline -C ./ws jobs systems-thinking          # list jobs
+    education-pipeline -C ./ws logs <job-id> -f               # follow output
+    education-pipeline -C ./ws daemon status                  # daemon health
+
+`run` executes exactly the run's next stage and stops for your approval; it
+never auto-approves. The first `run` auto-starts a local, loopback-only daemon
+(opt out with `--no-autostart`); stop it with `daemon stop`.
+
 ## Repository Boundary
 
 Generated runs, private topics, tuned prompt libraries, and real learner

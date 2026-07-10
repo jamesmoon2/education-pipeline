@@ -47,6 +47,8 @@ class ModelOption:
     description: str = ""
     quality: str | None = None
     default_effort: str | None = None
+    argv_model: str | None = None
+    extra_args: tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -230,17 +232,26 @@ def _parse_models(raw_provider: Mapping[str, Any], provider_id: str) -> Mapping[
         description = _optional_string(raw_model, "description", "", context)
         quality = _optional_string(raw_model, "quality", None, context)
         default_effort = _optional_string(raw_model, "default_effort", None, context)
-        metadata = {
-            key: value
-            for key, value in raw_model.items()
-            if key not in {"id", "label", "description", "quality", "default_effort"}
+        argv_model = _optional_string(raw_model, "argv_model", None, context)
+        extra_args = _parse_extra_args(raw_model, context)
+        reserved = {
+            "id",
+            "label",
+            "description",
+            "quality",
+            "default_effort",
+            "argv_model",
+            "extra_args",
         }
+        metadata = {key: value for key, value in raw_model.items() if key not in reserved}
         models[model_id] = ModelOption(
             id=model_id,
             label=label,
             description=description,
             quality=quality,
             default_effort=default_effort,
+            argv_model=argv_model,
+            extra_args=extra_args,
             metadata=metadata,
         )
 
@@ -268,3 +279,12 @@ def _optional_string(
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{context} field {key!r} must be a non-empty string when set")
     return value
+
+
+def _parse_extra_args(data: Mapping[str, Any], context: str) -> tuple[str, ...]:
+    value = data.get("extra_args")
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ConfigError(f"{context} field 'extra_args' must be a list of strings")
+    return tuple(value)

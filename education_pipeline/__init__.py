@@ -1,5 +1,7 @@
 """Public package for local-first education guide generation."""
 
+__version__ = "0.1.0"
+
 from education_pipeline.config import (
     DEFAULT_STAGE_RECOMMENDATIONS,
     STAGE_ORDER,
@@ -63,6 +65,7 @@ from education_pipeline.workspace import ProfileAttachment, ProfileStore, TopicS
 
 __all__ = [
     "DEFAULT_STAGE_RECOMMENDATIONS",
+    "__version__",
     "EXPORT_FORMATS",
     "MANIFEST_SCHEMA_VERSION",
     "PROFILE_SCHEMA_VERSION",
