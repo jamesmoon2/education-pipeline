@@ -7,6 +7,8 @@ Pure functions: stores in, JSON-serializable dicts out. Raise
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from education_pipeline.config import ConfigError
 from education_pipeline.runs import RunStore
 from education_pipeline.workspace import ProfileStore, TopicStore
@@ -111,3 +113,17 @@ def manifest_payload(runs: RunStore, topic_id: str) -> dict:
     if not runs.manifest_path(topic_id).is_file():
         raise NotFoundError(f"no run manifest for topic: {topic_id}")
     return runs.read_manifest(topic_id)
+
+
+def final_download_path(runs: RunStore, topic_id: str) -> Path:
+    path = runs.final_path(topic_id)  # ConfigError on a bad id -> 400
+    if not path.is_file():
+        raise NotFoundError(f"run {topic_id!r} is not finalized")
+    return path
+
+
+def export_download_path(runs: RunStore, topic_id: str, format: str) -> Path:
+    path = runs.export_path(topic_id, format)  # ConfigError on bad format -> 400
+    if not path.is_file():
+        raise NotFoundError(f"no {format} export produced for topic {topic_id!r}")
+    return path

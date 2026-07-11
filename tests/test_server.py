@@ -519,3 +519,52 @@ def test_attach_profile_endpoint(server):
     assert status == 404
     status, body = _req(server, "POST", "/v1/topics/t/profile", body={"profile_id": 7})
     assert status == 400
+
+
+def _raw_download(port, path, token="secret-token"):
+    conn = http.client.HTTPConnection("127.0.0.1", port)
+    headers = {}
+    if token is not None:
+        headers["X-EP-Token"] = token
+    conn.request("GET", path, headers=headers)
+    resp = conn.getresponse()
+    data = resp.read()
+    headers_out = {k.lower(): v for k, v in resp.getheaders()}
+    conn.close()
+    return resp.status, headers_out, data
+
+
+def _finalize_t_over_http(port):
+    _req(port, "POST", "/v1/runs/t/stages/repair/response", body={"text": "FINAL BODY"})
+    _req(port, "POST", "/v1/runs/t/stages/repair/approve")
+    _req(port, "POST", "/v1/runs/t/finalize")
+
+
+def test_final_download(server):
+    status, _, _ = _raw_download(server, "/v1/runs/t/final/download")
+    assert status == 404
+    _finalize_t_over_http(server)
+    status, headers, data = _raw_download(server, "/v1/runs/t/final/download")
+    assert status == 200
+    assert headers["content-type"] == "text/markdown; charset=utf-8"
+    assert headers["content-disposition"] == 'attachment; filename="t-guide.md"'
+    assert data.decode("utf-8") == "FINAL BODY"
+
+
+def test_export_download(server):
+    _finalize_t_over_http(server)
+    _req(server, "POST", "/v1/runs/t/export", body={"format": "html"})
+    status, headers, data = _raw_download(server, "/v1/runs/t/exports/html/download")
+    assert status == 200
+    assert headers["content-type"] == "text/html; charset=utf-8"
+    assert headers["content-disposition"] == 'attachment; filename="t-guide.html"'
+    assert b"FINAL BODY" in data
+    status, _, _ = _raw_download(server, "/v1/runs/t/exports/markdown/download")
+    assert status == 404
+    status, _, _ = _raw_download(server, "/v1/runs/t/exports/docx/download")
+    assert status == 400
+
+
+def test_downloads_require_token(server):
+    status, _, _ = _raw_download(server, "/v1/runs/t/final/download", token=None)
+    assert status == 401

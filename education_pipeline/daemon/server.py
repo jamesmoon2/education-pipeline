@@ -107,6 +107,15 @@ def _make_handler(context: DaemonContext):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_file(self, path, content_type: str, filename: str) -> None:
+            body = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.end_headers()
+            self.wfile.write(body)
+
         def _error(self, status: int, code: str, message: str) -> None:
             self._send(status, {"error": {"code": code, "message": message}})
 
@@ -211,6 +220,24 @@ def _make_handler(context: DaemonContext):
             if m:
                 return self._send(
                     200, read_api.stage_content(context.runs, m.group(1), m.group(2))
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/final/download$", self.path)
+            if m:
+                topic_id = m.group(1)
+                path = read_api.final_download_path(context.runs, topic_id)
+                return self._send_file(
+                    path, "text/markdown; charset=utf-8", f"{topic_id}-guide.md"
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/exports/([^/?]+)/download$", self.path)
+            if m:
+                topic_id, fmt = m.group(1), m.group(2)
+                path = read_api.export_download_path(context.runs, topic_id, fmt)
+                if fmt == "html":
+                    return self._send_file(
+                        path, "text/html; charset=utf-8", f"{topic_id}-guide.html"
+                    )
+                return self._send_file(
+                    path, "text/markdown; charset=utf-8", f"{topic_id}-guide.bundle.md"
                 )
             m = re.match(r"^/v1/runs/([^/?]+)$", self.path)
             if m:
