@@ -9,7 +9,7 @@
 | 3. write_api workspace imports | complete | f9e6110 |
 | 4. POST run-action routes | complete | ac2fa37 |
 | 5. POST import routes | complete | 13b4685 |
-| 6. Download endpoints | pending | — |
+| 6. Download endpoints | complete | 0492407 |
 | 7. Full-pipeline HTTP test | pending | — |
 | 8. Client apiPost/download | pending | — |
 | 9. useAction hook | pending | — |
@@ -21,7 +21,7 @@
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 6.
+To resume: continue with Task 7.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -1132,7 +1132,7 @@ git commit -m "feat(daemon): topic/profile import and attach endpoints"
   - `GET /v1/runs/{topic}/exports/{format}/download` → `html` as `text/html; charset=utf-8` filename `{topic}-guide.html`; `markdown` as `text/markdown; charset=utf-8` filename `{topic}-guide.bundle.md`.
   - Both require the token (they are under `/v1/`, so the existing `do_GET` auth gate already applies). Only these two fixed paths inside `final/` are ever served — no client-supplied filenames.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_server.py`:
 
@@ -1186,12 +1186,12 @@ def test_downloads_require_token(server):
     assert status == 401
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_server.py -q -k download`
 Expected: FAIL — routes fall through to 404 even after finalize / 401 test may pass already; the 200 assertions fail
 
-- [ ] **Step 3: Implement the resolvers in `read_api.py`**
+- [x] **Step 3: Implement the resolvers in `read_api.py`**
 
 Append to `education_pipeline/daemon/read_api.py` (add `from pathlib import Path` to imports):
 
@@ -1210,7 +1210,7 @@ def export_download_path(runs: RunStore, topic_id: str, format: str) -> Path:
     return path
 ```
 
-- [ ] **Step 4: Implement `_send_file` and the GET routes**
+- [x] **Step 4: Implement `_send_file` and the GET routes**
 
 In `server.py`, add next to `_send` (after line 101):
 
@@ -1250,12 +1250,12 @@ In `_api_get_routes`, insert **before** the `^/v1/runs/([^/?]+)$` match (line 20
 
 (The filename embeds only the regex-captured topic id, which `RunStore.final_path` has already validated against `_ARTIFACT_ID_PATTERN` — quotes/CR/LF can never appear.)
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_server.py -q`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add education_pipeline/daemon/read_api.py education_pipeline/daemon/server.py tests/test_server.py
