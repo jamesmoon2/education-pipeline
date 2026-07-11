@@ -389,4 +389,33 @@ def _make_handler(context: DaemonContext):
                 )
             self._error(404, "not_found", "unknown path")
 
+        def do_PUT(self):
+            if not self._guard():
+                return
+            try:
+                return self._api_put_routes()
+            except read_api.NotFoundError as exc:
+                return self._error(404, "not_found", str(exc))
+            except write_api.ConflictError as exc:
+                return self._error(409, exc.code, str(exc))
+            except ConfigError as exc:
+                return self._error(400, "bad_request", str(exc))
+
+        def _api_put_routes(self):
+            m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/response$", self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.edit_response(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        m.group(2),
+                        _require_str(body, "text"),
+                        base_sha256=_require_str(body, "base_sha256"),
+                    ),
+                )
+            self._error(404, "not_found", "unknown path")
+
     return Handler
