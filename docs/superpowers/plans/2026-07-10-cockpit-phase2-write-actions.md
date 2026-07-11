@@ -11,7 +11,7 @@
 | 5. POST import routes | complete | 13b4685 |
 | 6. Download endpoints | complete | 0492407 |
 | 7. Full-pipeline HTTP test | complete | 3f861da |
-| 8. Client apiPost/download | pending | — |
+| 8. Client apiPost/download | complete | 4d37e02 |
 | 9. useAction hook | pending | — |
 | 10. Run board primary action | pending | — |
 | 11. Export controls | pending | — |
@@ -21,7 +21,7 @@
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 8.
+To resume: continue with Task 9.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -1356,7 +1356,7 @@ git commit -m "test(daemon): full spec-to-export pipeline over HTTP with manifes
   - `postAdvance(topicId)`, `postResponse(topicId, stage, text, force=false)`, `postApprove(topicId, stage, overwrite=false)`, `postFinalize(topicId, overwrite=false)`, `postExport(topicId, format, overwrite=false)`, `importTopic(toml, overwrite=false)`, `importProfile(toml, overwrite=false)`, `attachProfile(topicId, profileId)`, `enqueueJob(topicId, stage?)`, `cancelJob(jobId)`, `downloadFinal(topicId)`, `downloadExport(topicId, format)`.
   - Types: `ExportFormat`, `AdvanceResult`, `ResponseResult`, `ApproveResult`, `FinalizeResult`, `ExportResult`, `ImportTopicResult`, `ImportProfileResult`, `AttachProfileResult`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `web/src/api/client.test.ts` (extend the existing `mockFetch`-style setup; add these imports at the top: `apiPost`, `download`, `postResponse` from `./client`, and `afterEach` already imported):
 
@@ -1488,12 +1488,12 @@ describe("download", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run (from `web/`): `npm test`
 Expected: FAIL — `apiPost`/`download`/`postResponse` not exported
 
-- [ ] **Step 3: Add the types**
+- [x] **Step 3: Add the types**
 
 Append to `web/src/api/types.ts`:
 
@@ -1547,7 +1547,7 @@ export interface AttachProfileResult {
 }
 ```
 
-- [ ] **Step 4: Refactor `client.ts` around a shared `request` and add the helpers**
+- [x] **Step 4: Refactor `client.ts` around a shared `request` and add the helpers**
 
 In `web/src/api/client.ts`, extend the type-only import to include the new types, then replace the existing `api` function (lines 50-68) with:
 
@@ -1664,12 +1664,12 @@ export const downloadExport = (topicId: string, format: ExportFormat) =>
   );
 ```
 
-- [ ] **Step 5: Run tests + typecheck**
+- [x] **Step 5: Run tests + typecheck**
 
 Run (from `web/`): `npm test && npm run build`
 Expected: PASS / clean build
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add web/src/api/types.ts web/src/api/client.ts web/src/api/client.test.ts
