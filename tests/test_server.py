@@ -299,7 +299,21 @@ def test_stage_content_returns_prompt_and_nulls(server):
         "prompt": "PROMPT",
         "response": None,
         "approved": None,
+        "response_sha256": None,
     }
+
+
+def test_stage_content_includes_response_sha256(server):
+    import hashlib
+
+    status, body = _req(server, "GET", "/v1/runs/t/stages/draft")
+    assert status == 200
+    assert body["response_sha256"] is None
+
+    _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "BODY"})
+    status, body = _req(server, "GET", "/v1/runs/t/stages/draft")
+    assert status == 200
+    assert body["response_sha256"] == hashlib.sha256(b"BODY").hexdigest()
 
 
 def test_stage_content_bad_stage_is_400(server):

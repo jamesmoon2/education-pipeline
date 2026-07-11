@@ -7,6 +7,7 @@ Pure functions: stores in, JSON-serializable dicts out. Raise
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from education_pipeline.config import ConfigError
@@ -100,12 +101,18 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
     def _read(path):
         return path.read_text(encoding="utf-8") if path.is_file() else None
 
+    response_sha256 = (
+        hashlib.sha256(paths.response_path.read_bytes()).hexdigest()
+        if paths.response_path.is_file()
+        else None
+    )
     return {
         "topic_id": paths.topic_id,
         "stage": paths.stage,
         "prompt": _read(paths.prompt_path),
         "response": _read(paths.response_path),
         "approved": _read(paths.approved_path),
+        "response_sha256": response_sha256,
     }
 
 
