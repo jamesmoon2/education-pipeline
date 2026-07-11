@@ -1,20 +1,35 @@
 import { useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiRequestError, getRunStatus } from "../api/client";
+import { ApiRequestError, getRunStatus, postAdvance } from "../api/client";
 import JobsPanel from "../components/JobsPanel";
+import PrimaryAction from "../components/PrimaryAction";
+import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 
 export default function RunBoardPage() {
   const { topicId } = useParams<{ topicId: string }>();
   const fetchStatus = useCallback(() => getRunStatus(topicId!), [topicId]);
-  const { data: status, error } = usePolling(fetchStatus, 5_000);
+  const { data: status, error, refresh } = usePolling(fetchStatus, 5_000);
+  const start = useAction(refresh);
 
   if (error instanceof ApiRequestError && error.status === 404) {
     return (
-      <p>
-        No run started for <strong>{topicId}</strong> yet. Start one with{" "}
-        <code>edu advance {topicId}</code>.
-      </p>
+      <div>
+        <p>
+          No run started for <strong>{topicId}</strong> yet.
+        </p>
+        <button
+          disabled={start.busy}
+          onClick={() =>
+            start.run(() => postAdvance(topicId!), { successMessage: "Run started." })
+          }
+        >
+          Advance
+        </button>
+        {start.feedback && (
+          <p className={start.isError ? "error" : "success"}>{start.feedback}</p>
+        )}
+      </div>
     );
   }
   if (error) return <p className="error">Failed to load run: {error.message}</p>;
@@ -26,6 +41,7 @@ export default function RunBoardPage() {
       <p className="next-action">
         <strong>Next:</strong> {status.next_action.detail}
       </p>
+      <PrimaryAction status={status} onChanged={refresh} />
       <table>
         <thead>
           <tr>
