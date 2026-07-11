@@ -12,7 +12,7 @@
 | 6. Download endpoints | complete | 0492407 |
 | 7. Full-pipeline HTTP test | complete | 3f861da |
 | 8. Client apiPost/download | complete | 4d37e02 |
-| 9. useAction hook | pending | — |
+| 9. useAction hook | complete | d7db814 |
 | 10. Run board primary action | pending | — |
 | 11. Export controls | pending | — |
 | 12. Stage viewer actions | pending | — |
@@ -21,7 +21,7 @@
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 9.
+To resume: continue with Task 10.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -1688,7 +1688,7 @@ git commit -m "feat(web): apiPost/download client helpers and write-action types
 - Consumes: `ApiRequestError` from `../api/client`.
 - Produces: `useAction(onSuccess?: () => void)` returning `{ busy: boolean; feedback: string | null; isError: boolean; run }` where `run<T>(fn: () => Promise<T>, opts?: { retryWithOverwrite?: () => Promise<T>; successMessage?: string }): Promise<void>`. On a `409 already_exists` with a `retryWithOverwrite` supplied, shows `window.confirm("<message>\n\nOverwrite?")` and retries on OK. Every UI task consumes this.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `web/src/hooks/useAction.test.ts`:
 
@@ -1773,12 +1773,12 @@ describe("useAction", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run (from `web/`): `npm test`
 Expected: FAIL — cannot resolve `./useAction`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `web/src/hooks/useAction.ts`:
 
@@ -1835,12 +1835,12 @@ export function useAction(onSuccess?: () => void) {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run (from `web/`): `npm test`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/hooks/useAction.ts web/src/hooks/useAction.test.ts
