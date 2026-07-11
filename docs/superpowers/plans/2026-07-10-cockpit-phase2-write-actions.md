@@ -16,12 +16,12 @@
 | 10. Run board primary action | complete | bd0d7c4 |
 | 11. Export controls | complete | 9371979 |
 | 12. Stage viewer actions | complete | cd53cdd |
-| 13. Jobs panel cancel | pending | — |
+| 13. Jobs panel cancel | complete | ee56da6 |
 | 14. Topic list imports/attach | pending | — |
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 13.
+To resume: continue with Task 14.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -2626,7 +2626,7 @@ git commit -m "feat(web): stage viewer paste/approve actions with ARIA tab roles
 - Consumes: `cancelJob` (Task 8), `useAction` (Task 9). The 2-second `usePolling` tick picks up the resulting status change; no manual refresh plumbing needed.
 - Produces: a **cancel** button on queued/running rows.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `web/src/components/JobsPanel.test.tsx`:
 
@@ -2688,12 +2688,12 @@ describe("JobsPanel cancel", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run (from `web/`): `npm test`
 Expected: FAIL — no cancel button
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `web/src/components/JobsPanel.tsx`:
 
@@ -2731,12 +2731,12 @@ In `web/src/components/JobsPanel.tsx`:
       )}
 ```
 
-- [ ] **Step 4: Run tests + build**
+- [x] **Step 4: Run tests + build**
 
 Run (from `web/`): `npm test && npm run build`
 Expected: PASS / clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/components/JobsPanel.tsx web/src/components/JobsPanel.test.tsx
