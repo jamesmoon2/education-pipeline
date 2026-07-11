@@ -14,14 +14,14 @@
 | 8. Client apiPost/download | complete | 4d37e02 |
 | 9. useAction hook | complete | d7db814 |
 | 10. Run board primary action | complete | bd0d7c4 |
-| 11. Export controls | pending | — |
+| 11. Export controls | complete | 9371979 |
 | 12. Stage viewer actions | pending | — |
 | 13. Jobs panel cancel | pending | — |
 | 14. Topic list imports/attach | pending | — |
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 11.
+To resume: continue with Task 12.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -2270,7 +2270,7 @@ git commit -m "feat(web): run-board primary action driven by next_action"
 - Consumes: `postExport`, `downloadFinal`, `downloadExport` (Task 8), `useAction` (Task 9), `ExportFormat` type.
 - Produces: `ExportControls({ topicId }: { topicId: string })` — format select (html default), Export button (overwrite-confirm retry), and three download buttons: "Download final guide", "Download html export", "Download markdown export". A not-yet-produced export surfaces its 404 envelope message inline ("no html export produced…"), which tells the user to export first — the API has no export-listing endpoint, so buttons are always shown.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `web/src/components/ExportControls.test.tsx`:
 
@@ -2339,12 +2339,12 @@ describe("ExportControls", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run (from `web/`): `npm test`
 Expected: FAIL — stub renders none of the controls
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Replace `web/src/components/ExportControls.tsx` with:
 
@@ -2408,12 +2408,12 @@ export default function ExportControls({ topicId }: { topicId: string }) {
 }
 ```
 
-- [ ] **Step 4: Run tests + build**
+- [x] **Step 4: Run tests + build**
 
 Run (from `web/`): `npm test && npm run build`
 Expected: PASS / clean
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/components/ExportControls.tsx web/src/components/ExportControls.test.tsx
