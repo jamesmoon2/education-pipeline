@@ -27,3 +27,29 @@ pre.content, pre.log {
   white-space: pre-wrap;
 }
 pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.85em; }
+
+/* Phase 3: response editor */
+.editor-panes {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+.editor-panes label {
+  flex: 1;
+  min-width: 0;
+}
+.editor-panes textarea {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.editor-panes .preview,
+.editor-panes .content {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+.editor-controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
