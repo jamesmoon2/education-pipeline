@@ -1,6 +1,8 @@
 import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiRequestError, getStageContent } from "../api/client";
+import { ApiRequestError, getStageContent, postApprove } from "../api/client";
+import ResponseForm from "../components/ResponseForm";
+import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 
 const TABS = ["prompt", "response", "approved"] as const;
@@ -12,8 +14,10 @@ export default function StageViewerPage() {
     () => getStageContent(topicId!, stage!),
     [topicId, stage],
   );
-  const { data, error } = usePolling(fetchContent, 5_000);
+  const { data, error, refresh } = usePolling(fetchContent, 5_000);
   const [tab, setTab] = useState<Tab>("prompt");
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const approve = useAction(refresh);
 
   if (error instanceof ApiRequestError && error.status === 404) {
     return (
@@ -33,10 +37,12 @@ export default function StageViewerPage() {
       <h2>
         {topicId} / {data.stage}
       </h2>
-      <nav className="tabs">
+      <nav className="tabs" role="tablist">
         {TABS.map((t) => (
           <button
             key={t}
+            role="tab"
+            aria-selected={t === tab}
             className={t === tab ? "tab active" : "tab"}
             onClick={() => setTab(t)}
           >
@@ -46,6 +52,37 @@ export default function StageViewerPage() {
         ))}
       </nav>
       <pre className="content">{data[tab] ?? `(no ${tab} yet)`}</pre>
+      {data.response === null && (
+        <div>
+          <button onClick={() => setPasteOpen((open) => !open)}>Paste response…</button>
+          {pasteOpen && (
+            <ResponseForm
+              topicId={topicId!}
+              stage={data.stage}
+              onDone={() => {
+                setPasteOpen(false);
+                refresh();
+              }}
+            />
+          )}
+        </div>
+      )}
+      {data.response !== null && data.approved === null && (
+        <button
+          disabled={approve.busy}
+          onClick={() =>
+            approve.run(() => postApprove(topicId!, data.stage), {
+              retryWithOverwrite: () => postApprove(topicId!, data.stage, true),
+              successMessage: `Approved ${data.stage}.`,
+            })
+          }
+        >
+          Approve {data.stage}
+        </button>
+      )}
+      {approve.feedback && (
+        <p className={approve.isError ? "error" : "success"}>{approve.feedback}</p>
+      )}
     </div>
   );
 }
