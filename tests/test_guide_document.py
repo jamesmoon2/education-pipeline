@@ -80,6 +80,50 @@ def test_fixture_renders_every_educational_field_and_block_type() -> None:
     assert "Loading course…" in document and "data-guide-shell hidden" in document
 
 
+def test_interactive_scaffolding_present_for_each_block_type() -> None:
+    document = assemble_guide_document(guide())
+    # Knowledge check: native inputs, submit/retry controls, live region, explanation hook.
+    assert 'data-role="kc-choice"' in document and 'data-correct="true"' in document
+    assert 'data-role="kc-submit"' in document and 'data-role="kc-retry"' in document
+    assert 'data-role="kc-result"' in document and 'data-role="kc-explanation"' in document
+    assert 'data-mode="single"' in document and 'data-mode="multiple"' in document
+    assert 'data-retry="true"' in document
+    # Worked reveal: step-by-step reveal controls plus a live region.
+    assert 'data-role="reveal-step"' in document and 'data-role="wr-reveal-next"' in document
+    assert 'data-role="wr-show-all"' in document and 'data-role="wr-reset"' in document
+    assert 'data-role="wr-live"' in document and 'data-role="wr-conclusion"' in document
+    # Scenario: single-decision radios, submit/retry, feedback and debrief hooks.
+    assert 'data-role="sc-choice"' in document and 'data-quality="best"' in document
+    assert 'data-role="sc-submit"' in document and 'data-role="sc-result"' in document
+    assert 'data-role="sc-debrief"' in document
+    # Reflection: textarea, skip/reset controls, status live region, local-only note.
+    assert 'data-role="reflection-input"' in document
+    assert 'data-role="rf-skip"' in document and 'data-role="rf-reset"' in document
+    assert 'data-role="rf-status"' in document
+    assert "stored only in this browser" in document
+    # Navigation, progress, and course controls scaffolding.
+    assert 'data-role="nav-link"' in document and 'data-role="progress-summary"' in document
+    assert 'data-role="prev-section"' in document and 'data-role="next-section"' in document
+    assert 'data-role="mark-complete"' in document and 'data-role="section-status"' in document
+    assert 'data-role="theme-select"' in document and 'data-role="reset-progress"' in document
+    assert 'data-role="storage-notice"' in document and 'data-role="nav-announcement"' in document
+    for block_type in ("knowledge_check", "worked_reveal", "scenario", "reflection"):
+        assert f'class="block {block_type}" id=' in document
+    assert len(re.findall(r'class="block \w+" id="[a-z0-9-]+" data-interactive="true"', document)) == 5
+
+
+def test_print_visible_content_survives_progressive_disclosure_markup() -> None:
+    """Every educational field must appear as literal text regardless of the
+    runtime's later CSS-driven hiding, since print/no-JS must show everything."""
+    document = assemble_guide_document(guide())
+    assert "Answer: correct" in document and "Answer: incorrect" in document
+    assert "Explanation:" in document and "Success increases learning" in document
+    assert "Choose the quantity" in document and "The loop reinforces growth" in document
+    assert "weak: This treats visible damage" in document and "best: This exposes both reinforcing" in document
+    assert "Debrief:" in document and "A thoughtful intervention begins" in document
+    assert "Draft a private loop map" in document  # reflection placeholder attribute
+
+
 def test_unknown_schema_runtime_and_mode_fail_closed() -> None:
     value = guide()
     with pytest.raises(GuideDocumentError, match="schema"):
