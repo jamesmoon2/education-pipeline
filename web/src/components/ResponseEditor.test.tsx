@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ResponseEditor from "./ResponseEditor";
@@ -107,12 +107,21 @@ describe("ResponseEditor", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
     expect(postPreview).toHaveBeenCalledWith("original body");
+    // Flush the immediate toggle fetch's promise resolution (setPreviewHtml)
+    // inside act before moving on, so it never settles unobserved later.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Rendered")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Edit response for repair"), {
       target: { value: "# typed" },
     });
     expect(postPreview).not.toHaveBeenCalledWith("# typed");
-    await vi.advanceTimersByTimeAsync(500);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
     expect(postPreview).toHaveBeenCalledWith("# typed");
   });
 
