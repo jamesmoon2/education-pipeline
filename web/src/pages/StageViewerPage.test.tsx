@@ -29,6 +29,7 @@ describe("StageViewerPage", () => {
       prompt: "# the prompt",
       response: "# the response",
       approved: null,
+      response_sha256: null,
     });
     renderAt("/topics/t/stages/draft");
     expect(await screen.findByText("# the prompt")).toBeInTheDocument();
@@ -45,6 +46,7 @@ describe("StageViewerPage", () => {
       prompt: "# prompt",
       response: null,
       approved: null,
+      response_sha256: null,
     });
     vi.mocked(postResponse).mockResolvedValue({} as never);
     renderAt("/topics/t/stages/draft");
@@ -62,6 +64,7 @@ describe("StageViewerPage", () => {
       prompt: "# prompt",
       response: "response body",
       approved: null,
+      response_sha256: "hash-1",
     });
     vi.mocked(postApprove).mockResolvedValue({} as never);
     renderAt("/topics/t/stages/draft");
@@ -77,6 +80,7 @@ describe("StageViewerPage", () => {
       prompt: "# prompt",
       response: "response body",
       approved: "response body",
+      response_sha256: "hash-1",
     });
     renderAt("/topics/t/stages/draft");
     expect(await screen.findByRole("tab", { name: /prompt/ })).toBeInTheDocument();

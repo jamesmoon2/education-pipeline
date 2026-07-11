@@ -2,6 +2,7 @@ import type {
   AdvanceResult,
   ApproveResult,
   AttachProfileResult,
+  EditResponseResult,
   ExportFormat,
   ExportResult,
   FinalizeResult,
@@ -9,6 +10,7 @@ import type {
   ImportTopicResult,
   Job,
   LogChunk,
+  PreviewResult,
   ResponseResult,
   RunStatus,
   Session,
@@ -94,6 +96,14 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   });
 }
 
+export async function apiPut<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export async function download(path: string, filename: string): Promise<void> {
   const token = await getToken();
   const resp = await fetch(path, { headers: { "X-EP-Token": token } });
@@ -147,6 +157,18 @@ export const postResponse = (topicId: string, stage: string, text: string, force
     `/v1/runs/${encodeURIComponent(topicId)}/stages/${encodeURIComponent(stage)}/response`,
     { text, force },
   );
+export const putResponse = (
+  topicId: string,
+  stage: string,
+  text: string,
+  baseSha256: string,
+) =>
+  apiPut<EditResponseResult>(
+    `/v1/runs/${encodeURIComponent(topicId)}/stages/${encodeURIComponent(stage)}/response`,
+    { text, base_sha256: baseSha256 },
+  );
+export const postPreview = (text: string) =>
+  apiPost<PreviewResult>("/v1/preview", { text });
 export const postApprove = (topicId: string, stage: string, overwrite = false) =>
   apiPost<ApproveResult>(
     `/v1/runs/${encodeURIComponent(topicId)}/stages/${encodeURIComponent(stage)}/approve`,
