@@ -17,7 +17,7 @@ from .document import (
     render_guide_markdown,
 )
 from .reports import Finding, ValidationReport, ValidationSummary, canonical_report_bytes
-from .validation import validate_guide
+from .validation import ValidationContext, validate_guide
 from .waivers import Waiver, WaiverResult, WaiverSet, apply_waivers
 
 __all__ = [
@@ -30,6 +30,7 @@ __all__ = [
     "ParseResult",
     "ValidationReport",
     "ValidationSummary",
+    "ValidationContext",
     "Waiver",
     "WaiverResult",
     "WaiverSet",
