@@ -375,15 +375,8 @@
       const initialHash = location.hash.slice(1);
       const restored = State.get().lastSection;
       if (initialHash) {
-        const sectionId = resolveOwningSectionId(initialHash);
-        if (sectionId) {
-          goToTarget(initialHash);
-        } else {
-          show(first());
-          announce(
-            `The link "#${initialHash}" does not match a section in this course. Showing the first section instead.`
-          );
-        }
+        if (resolveOwningSectionId(initialHash)) goToTarget(initialHash);
+        else handleUnknownFragment(initialHash);
         return;
       }
       let startId = first();

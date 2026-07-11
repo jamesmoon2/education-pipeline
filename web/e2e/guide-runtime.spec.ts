@@ -294,3 +294,101 @@ for (const transport of TRANSPORTS) {
     });
   });
 }
+
+// ---------------------------------------------------------------------------
+// Keyboard-only interaction paths (real key presses; no click/check/fill).
+// The mouse paths above already run on both transports, so one transport
+// (HTTP) keeps runtime cost sane. The knowledge-check keyboard path is
+// covered per-transport above.
+// ---------------------------------------------------------------------------
+
+test.describe("guide runtime keyboard-only operation (http)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+  });
+
+  test("worked reveal: reveal steps, show all, and reset by keyboard", async ({ page }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const wr = page.locator("article.worked_reveal").first();
+    const steps = wr.locator('[data-role="reveal-step"]');
+    const conclusion = wr.locator('[data-role="wr-conclusion"]');
+
+    await wr.locator('[data-role="wr-reveal-next"]').focus();
+    await page.keyboard.press("Enter");
+    await expect(steps.nth(0)).toBeVisible();
+    await expect(steps.nth(1)).toBeHidden();
+
+    await page.keyboard.press("Enter");
+    await expect(steps.nth(1)).toBeVisible();
+
+    await wr.locator('[data-role="wr-show-all"]').focus();
+    await page.keyboard.press("Space");
+    await expect(steps.last()).toBeVisible();
+    await expect(conclusion).toBeVisible();
+
+    await wr.locator('[data-role="wr-reset"]').focus();
+    await page.keyboard.press("Enter");
+    await expect(steps.nth(0)).toBeHidden();
+    await expect(conclusion).toBeHidden();
+  });
+
+  test("scenario: choose with arrow keys, submit with Enter, feedback and debrief appear", async ({
+    page,
+  }) => {
+    await gotoSection(page, "garden-decision");
+    const sc = page.locator("article.scenario").first();
+    const debrief = sc.locator('[data-role="sc-debrief"]');
+
+    // Enter the radio group and move to the second choice ("best") with the
+    // arrow key, which checks it natively.
+    await sc.locator('[data-role="sc-choice"]').first().focus();
+    await page.keyboard.press("Space");
+    await page.keyboard.press("ArrowDown");
+    await expect(sc.locator('[data-role="sc-choice"][data-quality="best"]')).toBeChecked();
+
+    // Tab out of the radio group onto the enabled submit button and activate it.
+    await page.keyboard.press("Tab");
+    await expect(sc.locator('[data-role="sc-submit"]')).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    await expect(sc.locator('[data-role="sc-result"]')).toContainText("best");
+    await expect(debrief).toBeVisible();
+    await expect(debrief).toContainText("A thoughtful intervention begins");
+  });
+
+  test("reflection: type a note by keyboard, blur saves, and skip is keyboard-operable", async ({
+    page,
+  }) => {
+    await gotoSection(page, "garden-decision");
+    const rf = page.locator("article.reflection").first();
+    const textarea = rf.locator('[data-role="reflection-input"]');
+    const status = rf.locator('[data-role="rf-status"]');
+
+    await textarea.focus();
+    await page.keyboard.type("A keyboard-typed reflection note.");
+    // Tab away: blur triggers the save.
+    await page.keyboard.press("Tab");
+    await expect(status).toHaveText("Saved locally.");
+    await expect(textarea).toHaveValue("A keyboard-typed reflection note.");
+
+    await rf.locator('[data-role="rf-skip"]').focus();
+    await page.keyboard.press("Enter");
+    await expect(status).toHaveText("Skipped.");
+  });
+
+  test("navigation: next and previous section controls work by keyboard", async ({ page }) => {
+    const currentSection = page.locator('section[data-role="guide-section"].is-current');
+    const firstSection = page.locator('section[data-role="guide-section"]').first();
+    await expect(firstSection).toHaveClass(/is-current/);
+
+    await currentSection.locator('[data-role="next-section"]').focus();
+    await page.keyboard.press("Enter");
+    await expect(firstSection).not.toHaveClass(/is-current/);
+    await expect(page).toHaveURL(/#recognize-loop-types$/);
+
+    await currentSection.locator('[data-role="prev-section"]').focus();
+    await page.keyboard.press("Enter");
+    await expect(firstSection).toHaveClass(/is-current/);
+    await expect(page).toHaveURL(/#feedback-foundations$/);
+  });
+});

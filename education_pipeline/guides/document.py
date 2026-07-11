@@ -143,7 +143,7 @@ def _kc_block(b: object, ids: frozenset[str]) -> str:
         for c in b.choices
     )
     return (
-        f'<h4>{html.escape(b.prompt)}</h4>'
+        f'<h3>{html.escape(b.prompt)}</h3>'
         f'<div class="choice-group" role="group" aria-label="Answer choices">'
         f'<ul class="choices">{choices}</ul>'
         f'</div>'
@@ -164,7 +164,7 @@ def _wr_block(b: object, ids: frozenset[str]) -> str:
         for i, s in enumerate(b.steps, 1)
     )
     return (
-        f'<h4>{html.escape(b.prompt)}</h4>'
+        f'<h3>{html.escape(b.prompt)}</h3>'
         f'<div class="wr-controls">'
         f'<button type="button" class="wr-reveal" data-role="wr-reveal-next">Reveal first step</button>'
         f'<button type="button" class="wr-show-all" data-role="wr-show-all">Show all</button>'
@@ -191,7 +191,7 @@ def _sc_block(b: object, ids: frozenset[str]) -> str:
         for c in b.choices
     )
     return (
-        f'<h4>{html.escape(b.prompt)}</h4>'
+        f'<h3>{html.escape(b.prompt)}</h3>'
         f'<div class="choice-group" role="group" aria-label="Scenario choices">'
         f'<ul class="scenario-choices">{choices}</ul>'
         f'</div>'
@@ -209,7 +209,7 @@ def _rf_block(b: object, ids: frozenset[str]) -> str:
     guidance = f'<p class="guidance">{html.escape(b.guidance)}</p>' if b.guidance else ""
     placeholder = f' placeholder="{html.escape(b.placeholder, quote=True)}"' if b.placeholder else ""
     return (
-        f'<h4 id="{label_id}">{html.escape(b.prompt)}</h4>'
+        f'<h3 id="{label_id}">{html.escape(b.prompt)}</h3>'
         f'{guidance}'
         f'<p class="local-data-note">Notes are stored only in this browser, for this file, and are never included in print or export.</p>'
         f'<textarea class="reflection-input" data-role="reflection-input" aria-labelledby="{label_id}"{placeholder} rows="4"></textarea>'
@@ -228,7 +228,7 @@ def _block(block: object, ids: frozenset[str]) -> str:
     b = block
     extra = ""
     if b.type == "rich_text": body = render_guide_markdown(b.markdown, ids)
-    elif b.type == "callout": body = (f"<h4>{html.escape(b.title or b.kind.title())}</h4>" + render_guide_markdown(b.markdown, ids))
+    elif b.type == "callout": body = (f"<h3>{html.escape(b.title or b.kind.title())}</h3>" + render_guide_markdown(b.markdown, ids))
     elif b.type == "knowledge_check":
         extra = f' data-mode="{html.escape(b.mode, quote=True)}" data-retry="{"true" if b.retry else "false"}"'
         body = _kc_block(b, ids)
