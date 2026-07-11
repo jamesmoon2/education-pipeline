@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useState } from "react";
-import { getJobs } from "../api/client";
+import { cancelJob, getJobs } from "../api/client";
+import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 import JobLogView from "./JobLogView";
 
@@ -9,6 +10,7 @@ export default function JobsPanel({ topicId }: { topicId: string }) {
   const fetchJobs = useCallback(() => getJobs(topicId), [topicId]);
   const { data, error } = usePolling(fetchJobs, 2_000);
   const [openJobId, setOpenJobId] = useState<string | null>(null);
+  const cancel = useAction();
 
   if (error) return <p className="error">Failed to load jobs: {error.message}</p>;
   if (!data) return <p>Loading jobs…</p>;
@@ -46,6 +48,18 @@ export default function JobsPanel({ topicId }: { topicId: string }) {
                     >
                       {openJobId === job.id ? "hide log" : "log"}
                     </button>
+                    {ACTIVE_STATUSES.has(job.status) && (
+                      <button
+                        disabled={cancel.busy}
+                        onClick={() =>
+                          cancel.run(() => cancelJob(job.id), {
+                            successMessage: `Canceling ${job.id}.`,
+                          })
+                        }
+                      >
+                        cancel
+                      </button>
+                    )}
                   </td>
                 </tr>
                 {openJobId === job.id ? (
@@ -59,6 +73,9 @@ export default function JobsPanel({ topicId }: { topicId: string }) {
             ))}
           </tbody>
         </table>
+      )}
+      {cancel.feedback && (
+        <p className={cancel.isError ? "error" : "success"}>{cancel.feedback}</p>
       )}
     </section>
   );
