@@ -17,11 +17,11 @@
 | 11. Export controls | complete | 9371979 |
 | 12. Stage viewer actions | complete | cd53cdd |
 | 13. Jobs panel cancel | complete | ee56da6 |
-| 14. Topic list imports/attach | pending | — |
+| 14. Topic list imports/attach | complete | 178ae81 |
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 14.
+To resume: continue with Task 15.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -2759,7 +2759,7 @@ git commit -m "feat(web): cancel button for active jobs"
   - `AttachProfileControl({ topicId, profiles, onDone })` — select (accessible name `Attach profile to {topicId}`) + "Attach" button; renders nothing when no profiles exist.
   - Topic list toolbar with "Import topic…" / "Import profile…" (visible even when the list is empty) and a per-row Attach column.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `web/src/pages/TopicListPage.test.tsx`, extend the `vi.mock("../api/client", ...)` factory with `getProfiles: vi.fn(), importTopic: vi.fn(), importProfile: vi.fn(), attachProfile: vi.fn()`, import them plus `userEvent`, and append:
 
@@ -2820,12 +2820,12 @@ In `web/src/pages/TopicListPage.test.tsx`, extend the `vi.mock("../api/client", 
 
 (Note: `userEvent.type` into a textarea treats `[` and `{` as special keybind characters — that is why the test TOML strings above avoid them. Keep it that way, or use `paste` instead of `type`.)
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run (from `web/`): `npm test`
 Expected: FAIL — no toolbar buttons
 
-- [ ] **Step 3: Implement the components**
+- [x] **Step 3: Implement the components**
 
 Create `web/src/components/ImportForm.tsx`:
 
@@ -2916,7 +2916,7 @@ export default function AttachProfileControl({
 }
 ```
 
-- [ ] **Step 4: Rework the topic list page**
+- [x] **Step 4: Rework the topic list page**
 
 Replace `web/src/pages/TopicListPage.tsx` with:
 
@@ -2994,12 +2994,12 @@ export default function TopicListPage() {
 
 (The empty-state copy changes from the CLI hint to "Import one above." — update the pre-existing empty-state test's assertion accordingly, and its mock must now also resolve `getProfiles`.)
 
-- [ ] **Step 5: Run tests + build**
+- [x] **Step 5: Run tests + build**
 
 Run (from `web/`): `npm test && npm run build`
 Expected: PASS / clean
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add web/src/components/ImportForm.tsx web/src/components/AttachProfileControl.tsx web/src/pages/TopicListPage.tsx web/src/pages/TopicListPage.test.tsx
