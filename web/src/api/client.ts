@@ -1,6 +1,15 @@
 import type {
+  AdvanceResult,
+  ApproveResult,
+  AttachProfileResult,
+  ExportFormat,
+  ExportResult,
+  FinalizeResult,
+  ImportProfileResult,
+  ImportTopicResult,
   Job,
   LogChunk,
+  ResponseResult,
   RunStatus,
   Session,
   StageContent,
@@ -47,9 +56,15 @@ export function resetSessionForTests(): void {
   tokenPromise = null;
 }
 
-export async function api<T>(path: string): Promise<T> {
+async function request<T>(
+  path: string,
+  init: { method?: string; headers?: Record<string, string>; body?: string } = {},
+): Promise<T> {
   const token = await getToken();
-  const resp = await fetch(path, { headers: { "X-EP-Token": token } });
+  const resp = await fetch(path, {
+    ...init,
+    headers: { ...(init.headers ?? {}), "X-EP-Token": token },
+  });
   let body: unknown = {};
   try {
     body = await resp.json();
@@ -67,6 +82,46 @@ export async function api<T>(path: string): Promise<T> {
   return body as T;
 }
 
+export async function api<T>(path: string): Promise<T> {
+  return request<T>(path);
+}
+
+export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function download(path: string, filename: string): Promise<void> {
+  const token = await getToken();
+  const resp = await fetch(path, { headers: { "X-EP-Token": token } });
+  if (!resp.ok) {
+    let body: unknown = {};
+    try {
+      body = await resp.json();
+    } catch {
+      // non-JSON body; fall through to the generic error below
+    }
+    const err = (body as { error?: { code: string; message: string } }).error;
+    throw new ApiRequestError(
+      resp.status,
+      err?.code ?? "unknown",
+      err?.message ?? `HTTP ${resp.status}`,
+    );
+  }
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const getTopics = () => api<{ topics: TopicSummary[] }>("/v1/topics");
 export const getTopic = (id: string) =>
   api<TopicDetail>(`/v1/topics/${encodeURIComponent(id)}`);
@@ -82,3 +137,44 @@ export const getJobs = (topicId?: string) =>
   );
 export const getJobLog = (jobId: string, offset: number) =>
   api<LogChunk>(`/v1/jobs/${encodeURIComponent(jobId)}/log?offset=${offset}`);
+
+export const getProfiles = () => api<{ profiles: string[] }>("/v1/profiles");
+
+export const postAdvance = (topicId: string) =>
+  apiPost<AdvanceResult>(`/v1/runs/${encodeURIComponent(topicId)}/advance`, {});
+export const postResponse = (topicId: string, stage: string, text: string, force = false) =>
+  apiPost<ResponseResult>(
+    `/v1/runs/${encodeURIComponent(topicId)}/stages/${encodeURIComponent(stage)}/response`,
+    { text, force },
+  );
+export const postApprove = (topicId: string, stage: string, overwrite = false) =>
+  apiPost<ApproveResult>(
+    `/v1/runs/${encodeURIComponent(topicId)}/stages/${encodeURIComponent(stage)}/approve`,
+    { overwrite },
+  );
+export const postFinalize = (topicId: string, overwrite = false) =>
+  apiPost<FinalizeResult>(`/v1/runs/${encodeURIComponent(topicId)}/finalize`, { overwrite });
+export const postExport = (topicId: string, format: ExportFormat, overwrite = false) =>
+  apiPost<ExportResult>(`/v1/runs/${encodeURIComponent(topicId)}/export`, {
+    format,
+    overwrite,
+  });
+export const importTopic = (toml: string, overwrite = false) =>
+  apiPost<ImportTopicResult>("/v1/topics", { toml, overwrite });
+export const importProfile = (toml: string, overwrite = false) =>
+  apiPost<ImportProfileResult>("/v1/profiles", { toml, overwrite });
+export const attachProfile = (topicId: string, profileId: string) =>
+  apiPost<AttachProfileResult>(`/v1/topics/${encodeURIComponent(topicId)}/profile`, {
+    profile_id: profileId,
+  });
+export const enqueueJob = (topicId: string, stage?: string) =>
+  apiPost<Job>("/v1/jobs", stage ? { topic_id: topicId, stage } : { topic_id: topicId });
+export const cancelJob = (jobId: string) =>
+  apiPost<Job>(`/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+export const downloadFinal = (topicId: string) =>
+  download(`/v1/runs/${encodeURIComponent(topicId)}/final/download`, `${topicId}-guide.md`);
+export const downloadExport = (topicId: string, format: ExportFormat) =>
+  download(
+    `/v1/runs/${encodeURIComponent(topicId)}/exports/${format}/download`,
+    format === "html" ? `${topicId}-guide.html` : `${topicId}-guide.bundle.md`,
+  );
