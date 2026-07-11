@@ -14,6 +14,13 @@ This repository is being extracted as a fresh public project from a private
 education-content factory. It intentionally starts with no generated courses,
 private prompts, learner profiles, or run artifacts.
 
+The pipeline engine, CLI, local provider daemon, and browser-based cockpit are
+implemented. The next product milestone is a versioned interactive-guide schema
+and maintained runtime so the pipeline's primary output is a polished,
+personalized interactive course rather than only rendered prose. See
+[`docs/product-requirements.md`](docs/product-requirements.md) for the
+authoritative whole-product direction and prioritized roadmap.
+
 ## Planned Workflow
 
 ```text
@@ -48,9 +55,9 @@ education-pipeline -C ./workspace export systems-thinking --format html
 ```
 
 Commands: `topic`/`profile` (`import`, `list`, `attach`, `show`), and
-`status`, `advance`, `approve`, `finalize`, `export`. A GUI over the same API is
-planned; the CLI is the supported surface for power users and for verifying the
-engine.
+`status`, `advance`, `approve`, `finalize`, `export`. The local browser cockpit
+runs over the same API; the CLI remains the supported power-user surface and an
+end-to-end way to verify the engine.
 
 ### Executing a stage through a provider
 

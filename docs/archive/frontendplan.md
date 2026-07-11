@@ -1,4 +1,7 @@
-# Frontend Plan — Education Pipeline Cockpit
+# Archived Frontend Plan — Education Pipeline Cockpit
+
+> Archived on 2026-07-11 after all three cockpit phases merged. The current
+> whole-product direction lives in `../product-requirements.md`.
 
 A local web app ("cockpit") over the existing education-pipeline workspace and
 loopback daemon. It drives a run end to end: import context, advance stages,
