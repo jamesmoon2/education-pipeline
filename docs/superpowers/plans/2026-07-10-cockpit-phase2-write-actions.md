@@ -19,9 +19,9 @@
 | 13. Jobs panel cancel | complete | ee56da6 |
 | 14. Topic list imports/attach | complete | 178ae81 |
 | 15. E2E full run | complete | 6444052 |
-| 16. Deferred hygiene | pending | — |
+| 16. Deferred hygiene | complete | 87bef9c |
 
-To resume: continue with Task 16.
+To resume: all 16 tasks complete; final whole-branch review in progress.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -3114,7 +3114,7 @@ git commit -m "test(web): e2e full browser run from import to download"
 
 These are the actionable Minor findings deferred at Phase 1 final review. The remaining roll-up items stay consciously deferred: `smoke.spec.ts stdio: "inherit"` noise (harmless), pure coverage-gap items on Phase 1 code not touched here, and the two dead-logic/brief-mandated shapes in `static.py`/`read_api.py` (the `read_api` guard duplication and the `edu advance` CLI-string finding are already resolved by Tasks 2 and 10).
 
-- [ ] **Step 1: Router future flags**
+- [x] **Step 1: Router future flags**
 
 In `web/src/main.tsx`, change line 9 from `<BrowserRouter>` to:
 
@@ -3124,7 +3124,7 @@ In `web/src/main.tsx`, change line 9 from `<BrowserRouter>` to:
 
 Run (from `web/`): `npm run build` → clean. (Page tests using `MemoryRouter` may still print the warnings; that is acceptable — the finding targeted the app shell.)
 
-- [ ] **Step 2: `.woff` content type**
+- [x] **Step 2: `.woff` content type**
 
 In `education_pipeline/daemon/static.py`, in `_CONTENT_TYPES` (line 16), add directly above the `.woff2` entry (line 27):
 
@@ -3134,7 +3134,7 @@ In `education_pipeline/daemon/static.py`, in `_CONTENT_TYPES` (line 16), add dir
 
 Run: `python3 -m pytest tests/test_static.py -q` → PASS.
 
-- [ ] **Step 3: De-flake the JobLogView accumulation test**
+- [x] **Step 3: De-flake the JobLogView accumulation test**
 
 In `web/src/components/JobLogView.test.tsx`, the "accumulates chunks" test races a real 1000ms poll timer against `findByText`'s default 1000ms timeout. Change line 25 from:
 
@@ -3150,7 +3150,7 @@ to:
 
 (Test-file-only, behavior-preserving; assertions unchanged.)
 
-- [ ] **Step 4: Cover the usePolling visibility clause**
+- [x] **Step 4: Cover the usePolling visibility clause**
 
 Append to `web/src/hooks/usePolling.test.ts` (add `renderHook`/`waitFor` imports from `@testing-library/react` and `afterEach` from `vitest` if not already imported):
 
@@ -3182,12 +3182,12 @@ describe("usePolling visibility", () => {
 
 Run (from `web/`): `npm test` → PASS.
 
-- [ ] **Step 5: npm audit fix**
+- [x] **Step 5: npm audit fix**
 
 Run (from `web/`): `npm audit fix` then `npm test && npm run build && npm run e2e`.
 Expected: tests/build/e2e still green. If `npm audit fix` would require breaking major bumps (`--force`), do **not** force — record the remaining advisories in the commit message and move on (they are build-time dev deps only).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add web/src/main.tsx education_pipeline/daemon/static.py web/src/components/JobLogView.test.tsx web/src/hooks/usePolling.test.ts web/package.json web/package-lock.json
