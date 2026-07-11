@@ -30,6 +30,7 @@ from education_pipeline.prompts import (
 from education_pipeline.export import (
     EXPORT_FORMATS,
     build_markdown_bundle,
+    render_html_body,
     render_markdown_to_html,
 )
 from education_pipeline.runs import (
@@ -112,6 +113,7 @@ __all__ = [
     "parse_model_catalog",
     "parse_model_plan",
     "parse_topic",
+    "render_html_body",
     "render_markdown_to_html",
     "render_profile_prompt_context",
     "render_profile_public_summary",

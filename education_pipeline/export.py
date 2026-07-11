@@ -54,7 +54,7 @@ def build_markdown_bundle(markdown_text: str, *, front_matter: Mapping[str, str]
 def render_markdown_to_html(markdown_text: str, *, title: str) -> str:
     """Render a Markdown subset into a self-contained HTML document."""
 
-    body = _render_blocks(markdown_text)
+    body = render_html_body(markdown_text)
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
@@ -71,7 +71,14 @@ def render_markdown_to_html(markdown_text: str, *, title: str) -> str:
     )
 
 
-def _render_blocks(markdown_text: str) -> str:
+def render_html_body(markdown_text: str) -> str:
+    """Render a Markdown subset into body-only HTML markup.
+
+    All content is HTML-escaped by the inline renderers and no scripts are
+    ever emitted, so the output is safe to inject into an authed same-origin
+    page (the cockpit preview) as well as the full export document.
+    """
+
     lines = markdown_text.replace("\r\n", "\n").split("\n")
     parts: list[str] = []
     i = 0

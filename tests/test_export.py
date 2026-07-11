@@ -1,4 +1,8 @@
-from education_pipeline import build_markdown_bundle, render_markdown_to_html
+from education_pipeline import (
+    build_markdown_bundle,
+    render_html_body,
+    render_markdown_to_html,
+)
 
 
 def test_render_headings_and_paragraph() -> None:
@@ -73,3 +77,20 @@ def test_build_markdown_bundle_prepends_front_matter() -> None:
     assert bundle.rstrip().endswith("Body.")
     # Front matter is closed before the body begins.
     assert bundle.index("---\n", 3) < bundle.index("# Guide")
+
+
+def test_render_html_body_renders_body_only_markup() -> None:
+    html = render_html_body("# Title\n\nSome **bold** text.")
+
+    assert "<h1>Title</h1>" in html
+    assert "<strong>bold</strong>" in html
+    assert "<!DOCTYPE" not in html
+    assert "<body>" not in html
+    assert "<style>" not in html
+
+
+def test_render_html_body_escapes_script_input() -> None:
+    html = render_html_body("<script>alert(1)</script>")
+
+    assert "<script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
