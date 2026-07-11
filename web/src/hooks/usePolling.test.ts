@@ -1,4 +1,4 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { usePolling } from "./usePolling";
 
@@ -68,5 +68,29 @@ describe("usePolling", () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
     expect(fetcher.mock.calls.length).toBe(callsAtUnmount);
+  });
+});
+
+describe("usePolling visibility", () => {
+  const setVisibility = (state: DocumentVisibilityState) =>
+    Object.defineProperty(document, "visibilityState", {
+      value: state,
+      configurable: true,
+    });
+
+  afterEach(() => {
+    setVisibility("visible");
+  });
+
+  it("skips ticks while hidden and resumes on visibilitychange", async () => {
+    const fetcher = vi.fn().mockResolvedValue("x");
+    setVisibility("hidden");
+    renderHook(() => usePolling(fetcher, 60_000));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetcher).not.toHaveBeenCalled();
+
+    setVisibility("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
   });
 });

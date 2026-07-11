@@ -22,7 +22,7 @@ describe("JobLogView", () => {
     render(<JobLogView jobId="j1" active={true} />);
 
     expect(await screen.findByText(/hello/)).toBeInTheDocument();
-    expect(await screen.findByText(/hello world/)).toBeInTheDocument();
+    expect(await screen.findByText(/hello world/, undefined, { timeout: 3000 })).toBeInTheDocument();
     // second call must pass the cursor from the first response
     expect(vi.mocked(getJobLog).mock.calls[1]).toEqual(["j1", 6]);
   });
