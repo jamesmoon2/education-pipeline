@@ -10,7 +10,7 @@
 | 4. POST run-action routes | complete | ac2fa37 |
 | 5. POST import routes | complete | 13b4685 |
 | 6. Download endpoints | complete | 0492407 |
-| 7. Full-pipeline HTTP test | pending | — |
+| 7. Full-pipeline HTTP test | complete | 3f861da |
 | 8. Client apiPost/download | pending | — |
 | 9. useAction hook | pending | — |
 | 10. Run board primary action | pending | — |
@@ -21,7 +21,7 @@
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 7.
+To resume: continue with Task 8.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -1272,7 +1272,7 @@ git commit -m "feat(daemon): authed download endpoints for final guide and expor
 **Interfaces:**
 - Consumes: every endpoint from Tasks 4-6 plus Phase 1's manifest endpoint. No production code.
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 Append to `tests/test_server.py`:
 
@@ -1323,12 +1323,12 @@ def test_full_pipeline_over_http(server):
         assert headers["content-type"] == ctype, path
 ```
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 Run: `python3 -m pytest tests/test_server.py::test_full_pipeline_over_http -v`
 Expected: PASS (if it fails, the defect is in Tasks 2-6 — fix there, not here)
 
-- [ ] **Step 3: Run the whole backend suite and commit**
+- [x] **Step 3: Run the whole backend suite and commit**
 
 Run: `python3 -m pytest tests/ -q`
 Expected: PASS
