@@ -7,6 +7,9 @@ import pytest
 from education_pipeline import (
     AdvanceResult,
     ConfigError,
+    ContentContract,
+    GUIDE_V1_CONTENT_TYPE,
+    MARKDOWN_CONTENT_TYPE,
     NextAction,
     PromptFile,
     ProfileStore,
@@ -95,6 +98,56 @@ def test_run_store_creates_run_directories(tmp_path: Path) -> None:
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["topic_id"] == "systems-thinking"
     assert manifest["events"] == []
+
+
+def test_absent_content_contract_is_legacy_without_manifest_mutation(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    store.create_run("systems-thinking")
+    before = store.manifest_path("systems-thinking").read_bytes()
+
+    assert store.content_contract("systems-thinking") == ContentContract.legacy_markdown()
+    assert store.stage_paths("systems-thinking", "draft").content_type == MARKDOWN_CONTENT_TYPE
+    assert store.manifest_path("systems-thinking").read_bytes() == before
+
+
+def test_explicit_guide_contract_round_trips_and_selects_json_artifacts(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    contract = ContentContract.interactive_guide_v1()
+    store.create_run("systems-thinking", content_contract=contract)
+
+    assert store.content_contract("systems-thinking") == contract
+    draft = store.stage_paths("systems-thinking", "draft")
+    assert draft.response_path.name == "draft.response.json"
+    assert draft.approved_path.name == "draft.json"
+    assert draft.content_type == GUIDE_V1_CONTENT_TYPE
+    assert store.stage_paths("systems-thinking", "qa").content_type == MARKDOWN_CONTENT_TYPE
+
+
+def test_content_contract_is_immutable_and_unsupported_contracts_fail_closed(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    store.create_run("systems-thinking")
+
+    with pytest.raises(ConfigError, match="immutable content contract"):
+        store.create_run(
+            "systems-thinking",
+            content_contract=ContentContract.interactive_guide_v1(),
+        )
+    with pytest.raises(ConfigError, match="unsupported content contract"):
+        store.create_run(
+            "other",
+            content_contract=ContentContract("interactive_guide", "2.0"),
+        )
+
+
+def test_manifest_events_record_current_artifact_hashes(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    result = store.write_spec_prompt("systems-thinking", title="Systems Thinking")
+
+    event = store.read_manifest("systems-thinking")["events"][-1]
+    assert event["prompt_file_sha256"] == hashlib.sha256(
+        result.prompt_path.read_bytes()
+    ).hexdigest()
+    assert "response_file_sha256" not in event
 
 
 def test_write_spec_prompt_writes_prompt_and_response_stub(tmp_path: Path) -> None:

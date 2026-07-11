@@ -44,11 +44,38 @@ _PROMPT_SUFFIX = ".prompt.md"
 _RESPONSE_SUFFIX = ".response.md"
 _STUB_SUFFIX = ".SAVE_RESPONSE_HERE.md"
 
+MARKDOWN_CONTENT_TYPE = "text/markdown"
+GUIDE_V1_CONTENT_TYPE = (
+    "application/vnd.education-pipeline.guide+json;version=1.0"
+)
+
 #: The stage whose approved output is assembled into the final guide.
 _FINAL_SOURCE_STAGE = "repair"
 _FINAL_FILENAME = "guide.md"
 
 _ARTIFACT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+@dataclass(frozen=True)
+class ContentContract:
+    """Immutable content format recorded by a run manifest."""
+
+    kind: str
+    schema_version: str | None = None
+
+    @classmethod
+    def legacy_markdown(cls) -> ContentContract:
+        return cls(kind="legacy_markdown")
+
+    @classmethod
+    def interactive_guide_v1(cls) -> ContentContract:
+        return cls(kind="interactive_guide", schema_version="1.0")
+
+    def to_manifest(self) -> dict[str, str]:
+        value = {"kind": self.kind}
+        if self.schema_version is not None:
+            value["schema_version"] = self.schema_version
+        return value
 
 
 @dataclass(frozen=True)
@@ -61,6 +88,7 @@ class StagePaths:
     response_path: Path
     stub_path: Path
     approved_path: Path
+    content_type: str = MARKDOWN_CONTENT_TYPE
 
 
 @dataclass(frozen=True)
@@ -149,15 +177,33 @@ class RunStore:
     def stage_paths(self, topic_id: str, stage: str) -> StagePaths:
         safe_id = _artifact_id(topic_id, "topic id")
         safe_stage = _supported_stage(stage)
+        contract = self.content_contract(safe_id)
+        is_guide_json = contract.kind == "interactive_guide" and safe_stage in {
+            "draft",
+            "repair",
+        }
+        suffix = ".json" if is_guide_json else ".md"
+        response_suffix = f".response{suffix}"
+        stub_suffix = f".SAVE_RESPONSE_HERE{suffix}"
         run = self.runs_dir / safe_id
         return StagePaths(
             stage=safe_stage,
             topic_id=safe_id,
             prompt_path=run / "prompts" / f"{safe_stage}{_PROMPT_SUFFIX}",
-            response_path=run / "responses" / f"{safe_stage}{_RESPONSE_SUFFIX}",
-            stub_path=run / "responses" / f"{safe_stage}{_STUB_SUFFIX}",
-            approved_path=run / "approved" / f"{safe_stage}.md",
+            response_path=run / "responses" / f"{safe_stage}{response_suffix}",
+            stub_path=run / "responses" / f"{safe_stage}{stub_suffix}",
+            approved_path=run / "approved" / f"{safe_stage}{suffix}",
+            content_type=GUIDE_V1_CONTENT_TYPE if is_guide_json else MARKDOWN_CONTENT_TYPE,
         )
+
+    def content_contract(self, topic_id: str) -> ContentContract:
+        """Return the validated manifest contract without mutating legacy runs."""
+
+        path = self.manifest_path(topic_id)
+        if not path.exists():
+            return ContentContract.legacy_markdown()
+        manifest = self.read_manifest(topic_id)
+        return _parse_content_contract(manifest.get("content_contract"))
 
     def response_path(self, topic_id: str, stage: str) -> Path:
         return self.stage_paths(topic_id, stage).response_path
@@ -165,22 +211,34 @@ class RunStore:
     def approved_path(self, topic_id: str, stage: str) -> Path:
         return self.stage_paths(topic_id, stage).approved_path
 
-    def create_run(self, topic_id: str) -> Path:
+    def create_run(
+        self,
+        topic_id: str,
+        *,
+        content_contract: ContentContract | None = None,
+    ) -> Path:
         """Create the run directory tree and initialize an empty manifest."""
 
         run = self.run_dir(topic_id)
+        requested = content_contract or ContentContract.legacy_markdown()
+        _validate_content_contract(requested)
         for subdir in RUN_SUBDIRS:
             (run / subdir).mkdir(parents=True, exist_ok=True)
 
         manifest_path = run / "manifest.json"
         if not manifest_path.exists():
-            _write_manifest(
-                manifest_path,
-                {
-                    "schema_version": MANIFEST_SCHEMA_VERSION,
-                    "topic_id": run.name,
-                    "events": [],
-                },
+            manifest = {
+                "schema_version": MANIFEST_SCHEMA_VERSION,
+                "topic_id": run.name,
+                "events": [],
+            }
+            if content_contract is not None:
+                manifest["content_contract"] = requested.to_manifest()
+            _write_manifest(manifest_path, manifest)
+        elif content_contract is not None and self.content_contract(run.name) != requested:
+            raise ConfigError(
+                f"run {run.name!r} already has immutable content contract "
+                f"{self.content_contract(run.name)!r}; requested {requested!r}"
             )
         return run
 
@@ -703,6 +761,8 @@ class RunStore:
         event: dict[str, str] = {"stage": stage, "action": action}
         for label, path in files.items():
             event[label] = _relative_to(path, run)
+            if path.is_file():
+                event[f"{label}_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
         event["recorded_at"] = datetime.now(timezone.utc).isoformat()
         manifest.setdefault("events", []).append(event)
         _write_manifest(run / "manifest.json", manifest)
@@ -759,6 +819,40 @@ def _supported_stage(stage: str) -> str:
         known = ", ".join(SUPPORTED_STAGES)
         raise ConfigError(f"unsupported run stage {stage!r}; supported stages: {known}")
     return stage
+
+
+def _parse_content_contract(value: object) -> ContentContract:
+    if value is None:
+        return ContentContract.legacy_markdown()
+    if not isinstance(value, dict):
+        raise ConfigError("run manifest content_contract must be an object")
+    unknown = set(value) - {"kind", "schema_version"}
+    if unknown:
+        raise ConfigError(
+            "run manifest content_contract has unsupported fields: "
+            + ", ".join(sorted(unknown))
+        )
+    kind = value.get("kind")
+    schema_version = value.get("schema_version")
+    if not isinstance(kind, str) or (
+        schema_version is not None and not isinstance(schema_version, str)
+    ):
+        raise ConfigError("run manifest content_contract fields must be strings")
+    contract = ContentContract(kind=kind, schema_version=schema_version)
+    _validate_content_contract(contract)
+    return contract
+
+
+def _validate_content_contract(contract: ContentContract) -> None:
+    if contract == ContentContract.legacy_markdown():
+        return
+    if contract == ContentContract.interactive_guide_v1():
+        return
+    raise ConfigError(
+        "unsupported content contract "
+        f"{contract.kind!r} schema {contract.schema_version!r}; supported contracts are "
+        "legacy_markdown and interactive_guide schema '1.0'"
+    )
 
 
 def _artifact_id(value: str, context: str) -> str:
