@@ -21,7 +21,7 @@
 | 15. E2E full run | complete | 6444052 |
 | 16. Deferred hygiene | complete | 87bef9c |
 
-To resume: all 16 tasks complete; final whole-branch review in progress.
+To resume: COMPLETE. All 16 tasks done; final whole-branch review passed 2026-07-10 (242 pytest, 41 web tests, build clean, e2e 2/2, plus manager's browser-driven overwrite-confirm/double-export and download-content check). Branch ready to merge.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
