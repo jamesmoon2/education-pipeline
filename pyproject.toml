@@ -38,6 +38,9 @@ education-pipeline = "education_pipeline.cli:main"
 [tool.setuptools.packages.find]
 include = ["education_pipeline*"]
 
+[tool.setuptools.package-data]
+"education_pipeline.guide_runtime" = ["assets/runtime.js", "assets/runtime.css"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
