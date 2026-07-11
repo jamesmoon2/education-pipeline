@@ -246,4 +246,41 @@ describe("StageViewerPage", () => {
       screen.queryByRole("button", { name: "Diff against draft" }),
     ).not.toBeInTheDocument();
   });
+
+  it("disables tab switching while the editor is open", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "draft",
+      prompt: "# prompt",
+      response: "response body",
+      approved: null,
+      response_sha256: "sha-1",
+    });
+    renderAt("/topics/t/stages/draft");
+    await userEvent.click(await screen.findByRole("tab", { name: /^response/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    expect(screen.getByRole("tab", { name: /prompt/ })).toBeDisabled();
+    // the buffer survives an attempted tab click
+    await userEvent.click(screen.getByRole("tab", { name: /prompt/ }));
+    expect(screen.getByLabelText("Edit response for draft")).toHaveValue("response body");
+  });
+
+  it("closes the diff toggle when the draft fetch fails", async () => {
+    vi.mocked(getStageContent).mockImplementation(async (_topic, stage) => {
+      if (stage === "draft") throw new Error("boom");
+      return {
+        topic_id: "t",
+        stage: "repair",
+        prompt: null,
+        response: "body",
+        approved: null,
+        response_sha256: "sha-r",
+      };
+    });
+    renderAt("/topics/t/stages/repair");
+    await userEvent.click(await screen.findByRole("button", { name: "Diff against draft" }));
+    expect(await screen.findByRole("button", { name: "Diff against draft" })).toBeInTheDocument();
+    expect(document.querySelector(".diff")).toBeNull();
+  });
 });

@@ -53,8 +53,12 @@ export default function StageViewerPage() {
     const next = !diffOpen;
     setDiffOpen(next);
     if (next && draftApproved === null) {
-      const draft = await getStageContent(topicId!, "draft");
-      setDraftApproved(draft.approved ?? "");
+      try {
+        const draft = await getStageContent(topicId!, "draft");
+        setDraftApproved(draft.approved ?? "");
+      } catch {
+        setDiffOpen(false);
+      }
     }
   };
 
@@ -73,6 +77,7 @@ export default function StageViewerPage() {
             role="tab"
             aria-selected={t === tab}
             className={t === tab ? "tab active" : "tab"}
+            disabled={editing}
             onClick={() => setTab(t)}
           >
             {t}
