@@ -18,10 +18,10 @@
 | 12. Stage viewer actions | complete | cd53cdd |
 | 13. Jobs panel cancel | complete | ee56da6 |
 | 14. Topic list imports/attach | complete | 178ae81 |
-| 15. E2E full run | pending | — |
+| 15. E2E full run | complete | 6444052 |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 15.
+To resume: continue with Task 16.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -3016,7 +3016,7 @@ git commit -m "feat(web): topic/profile TOML import and profile attach on the to
 **Interfaces:**
 - Consumes: the whole Phase 2 surface, a real daemon, a real `web/dist` build. Pattern copied from `web/e2e/smoke.spec.ts` (daemon spawn + discovery-file wait), but with an **empty** workspace so the UI does all the work.
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 Create `web/e2e/full-run.spec.ts`:
 
@@ -3084,17 +3084,17 @@ test("full write flow: import → advance/paste/approve ×5 → finalize → exp
 });
 ```
 
-- [ ] **Step 2: Build and run E2E**
+- [x] **Step 2: Build and run E2E**
 
 Run (from `web/`): `npm run build && npm run e2e`
 Expected: 2 passed (smoke + full-run). If the smoke test's assertions changed pages break (they shouldn't — Task 10/12/14 kept the read surface), fix the page, not the smoke test.
 
-- [ ] **Step 3: Run everything**
+- [x] **Step 3: Run everything**
 
 Run: `python3 -m pytest tests/ -q` and (from `web/`) `npm test`
 Expected: PASS across the board
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add web/e2e/full-run.spec.ts
