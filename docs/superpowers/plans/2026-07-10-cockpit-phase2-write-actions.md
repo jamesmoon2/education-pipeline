@@ -15,13 +15,13 @@
 | 9. useAction hook | complete | d7db814 |
 | 10. Run board primary action | complete | bd0d7c4 |
 | 11. Export controls | complete | 9371979 |
-| 12. Stage viewer actions | pending | — |
+| 12. Stage viewer actions | complete | cd53cdd |
 | 13. Jobs panel cancel | pending | — |
 | 14. Topic list imports/attach | pending | — |
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 12.
+To resume: continue with Task 13.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -2432,7 +2432,7 @@ git commit -m "feat(web): export controls with format select and authed download
 - Consumes: `ResponseForm` (Task 10), `postApprove` (Task 8), `useAction` (Task 9), `usePolling`'s `refresh`.
 - Produces: on the stage viewer — "Paste response…" (opens `ResponseForm`) when `response === null`; "Approve {stage}" when `response !== null && approved === null` (the preferred review-then-approve UX). Also applies the Phase 1 deferred a11y finding: tabs get `role="tab"`, `aria-selected`, and the nav gets `role="tablist"`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Update `web/src/pages/StageViewerPage.test.tsx`. It currently has one test that renders inline and clicks tabs via `getByRole("button", ...)`. Three coordinated changes:
 
@@ -2502,12 +2502,12 @@ function renderAt(path: string) {
   });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run (from `web/`): `npm test`
 Expected: FAIL — no such buttons / no `tab` role
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Replace `web/src/pages/StageViewerPage.tsx` with:
 
@@ -2602,12 +2602,12 @@ export default function StageViewerPage() {
 }
 ```
 
-- [ ] **Step 4: Run tests + build**
+- [x] **Step 4: Run tests + build**
 
 Run (from `web/`): `npm test && npm run build`
 Expected: PASS (including the pre-existing StageViewerPage test — the tab buttons still render their text)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/pages/StageViewerPage.tsx web/src/pages/StageViewerPage.test.tsx
