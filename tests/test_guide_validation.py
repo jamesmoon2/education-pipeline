@@ -6,7 +6,7 @@ from pathlib import Path
 
 from education_pipeline.guides import normalize_guide, parse_guide
 from education_pipeline.guides.reports import canonical_report_bytes
-from education_pipeline.guides.validation import RULES, validate_guide
+from education_pipeline.guides.validation import RULES, ValidationContext, validate_guide
 
 FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.guide.json"
 
@@ -93,3 +93,51 @@ def test_complete_milestone_rule_catalog_is_declared() -> None:
         "runtime.asset_mismatch", "a11y.control_label_missing", "a11y.heading_order",
     }
     assert required <= RULES.keys()
+
+
+def test_raw_size_limit_runs_before_parsing() -> None:
+    report = validate_guide(b" " * 2_000_001)
+    assert [x.rule_id for x in report.findings] == ["schema.size_limit"]
+
+
+def test_source_reference_diagnostic_uses_source_rule() -> None:
+    data = json.loads(FIXTURE.read_text())
+    data["modules"][0]["sections"][0]["blocks"][0]["source_ids"] = ["missing-source"]
+    assert "source.unknown_reference" in {x.rule_id for x in validate_guide(json.dumps(data)).findings}
+
+
+def test_source_policy_and_all_static_runtime_invariants_are_executable() -> None:
+    context = ValidationContext(
+        sources_required=True,
+        render_succeeded=False,
+        assets_match=False,
+        controls_have_labels=False,
+        heading_order_valid=False,
+    )
+    ids = {x.rule_id for x in validate_guide(guide(), context=context).findings}
+    assert {
+        "source.missing_for_required_claim",
+        "runtime.render_failed",
+        "runtime.asset_mismatch",
+        "a11y.control_label_missing",
+        "a11y.heading_order",
+    } <= ids
+
+
+def test_parser_backed_outcome_pedagogy_and_content_rules_are_mapped() -> None:
+    data = json.loads(FIXTURE.read_text())
+    data["outcomes"].append({"id": "extra-outcome", "text": "An extra outcome"})
+    data["modules"][0]["sections"][0]["blocks"][0]["markdown"] = "x" * 20_001
+    ids = {x.rule_id for x in validate_guide(json.dumps(data)).findings}
+    assert {"outcome.unassigned", "outcome.untaught", "outcome.unassessed", "content.excessive_length"} <= ids
+
+
+def test_parser_diagnostics_map_to_catalog_specific_rule_ids() -> None:
+    data = json.loads(FIXTURE.read_text())
+    blocks = [block for module in data["modules"] for section in module["sections"] for block in section["blocks"]]
+    reveal = next(block for block in blocks if block["type"] == "worked_reveal")
+    reveal["steps"] = reveal["steps"][:1]
+    rich = next(block for block in blocks if block["type"] == "rich_text")
+    rich["markdown"] = "[unsafe](javascript:alert(1))"
+    ids = {x.rule_id for x in validate_guide(json.dumps(data)).findings}
+    assert {"worked_reveal.too_few_steps", "link.unsafe_scheme"} <= ids

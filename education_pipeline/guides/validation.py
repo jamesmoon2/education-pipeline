@@ -6,10 +6,9 @@ from dataclasses import dataclass, fields, is_dataclass
 import hashlib
 import re
 from typing import Iterable
-from urllib.parse import urlsplit
 
-from .canonical import canonical_guide_bytes, guide_sha256
-from .model import Guide, KnowledgeCheck, Scenario, WorkedReveal
+from .canonical import guide_sha256
+from .model import Callout, Guide, KnowledgeCheck, RichText, Scenario, WorkedReveal
 from .parse import ParseDiagnostic, normalize_guide, parse_guide
 from .reports import Finding, ValidationReport
 
@@ -20,6 +19,17 @@ class Rule:
     blocking: bool
     waivable: bool
     remediation: str
+
+
+@dataclass(frozen=True)
+class ValidationContext:
+    """Deterministic contract and static-runtime observations for validation."""
+
+    sources_required: bool = False
+    render_succeeded: bool = True
+    assets_match: bool = True
+    controls_have_labels: bool = True
+    heading_order_valid: bool = True
 
 
 RULES = {
@@ -84,6 +94,12 @@ def _finding(rule_id: str, path: str, message: str, identity: str = "", related_
 
 def _diagnostic_finding(item: ParseDiagnostic, private_values: tuple[str, ...]) -> Finding:
     rule_id = item.code
+    if rule_id == "schema.unknown_reference" and "/source_ids/" in item.path:
+        rule_id = "source.unknown_reference"
+    elif rule_id == "schema.cardinality" and item.path.endswith("/steps"):
+        rule_id = "worked_reveal.too_few_steps"
+    elif rule_id == "link.unsafe_target":
+        rule_id = "link.unsafe_scheme"
     if rule_id == "source.invalid_url":
         pass
     elif rule_id not in RULES:
@@ -113,7 +129,13 @@ def _text_fields(value: object, path: str = "") -> Iterable[tuple[str, str]]:
         yield path, value
 
 
-def validate_guide(value: Guide | str | bytes, *, phase: str = "final", private_values: Iterable[str] = ()) -> ValidationReport:
+def validate_guide(
+    value: Guide | str | bytes,
+    *,
+    phase: str = "final",
+    private_values: Iterable[str] = (),
+    context: ValidationContext = ValidationContext(),
+) -> ValidationReport:
     """Return a canonical, timestamp-free report for a guide or raw guide JSON."""
     supplied_private = tuple(
         " ".join(item.split())
@@ -125,6 +147,10 @@ def validate_guide(value: Guide | str | bytes, *, phase: str = "final", private_
         guide = value
     else:
         raw = value.encode("utf-8") if isinstance(value, str) else value
+        if len(raw) > 2_000_000:
+            digest = hashlib.sha256(raw).hexdigest()
+            finding = _finding("schema.size_limit", "", "Guide exceeds the 2,000,000-byte validation limit.")
+            return ValidationReport("1.0", phase, digest, (finding,))
         parsed = parse_guide(value)
         if not parsed.ok:
             digest = hashlib.sha256(raw).hexdigest()
@@ -176,4 +202,15 @@ def validate_guide(value: Guide | str | bytes, *, phase: str = "final", private_
                     findings.append(_finding("scenario.invalid_quality_set", path, "Scenario must contain exactly one best choice.", block.id, (block.id,)))
                 elif isinstance(block, WorkedReveal) and len(block.steps) < 2:
                     findings.append(_finding("worked_reveal.too_few_steps", path, "Worked reveal has fewer than two steps.", block.id, (block.id,)))
+                if context.sources_required and isinstance(block, (RichText, Callout)) and not block.source_ids:
+                    findings.append(_finding("source.missing_for_required_claim", path, "Source-required content has no source reference.", block.id, (block.id,)))
+    static_checks = (
+        (context.render_succeeded, "runtime.render_failed", "Static guide rendering failed."),
+        (context.assets_match, "runtime.asset_mismatch", "Packaged runtime assets do not match the expected assets."),
+        (context.controls_have_labels, "a11y.control_label_missing", "A static interactive control has no accessible label."),
+        (context.heading_order_valid, "a11y.heading_order", "The rendered static heading order is not logical."),
+    )
+    for passed, rule_id, message in static_checks:
+        if not passed:
+            findings.append(_finding(rule_id, "/modules", message))
     return ValidationReport(guide.schema_version, phase, guide_sha256(guide), tuple(findings))
