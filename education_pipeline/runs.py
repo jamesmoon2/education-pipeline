@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import hashlib
 import json
 import re
 
@@ -25,6 +26,10 @@ from education_pipeline.prompts import (
     compile_topic_spec_prompt,
 )
 from education_pipeline.workspace import ProfileStore, TopicStore
+
+
+class StaleContentError(Exception):
+    """The response file changed on disk since the client loaded it."""
 
 
 MANIFEST_SCHEMA_VERSION = 1
@@ -373,6 +378,42 @@ class RunStore:
         _write_text_atomic(paths.response_path, text)
         if paths.stub_path.exists():
             paths.stub_path.unlink()
+        return paths.response_path
+
+    def edit_response(
+        self, topic_id: str, stage: str, text: str, *, base_sha256: str
+    ) -> Path:
+        """Guarded read-modify-write of an existing stage response.
+
+        Unlike ``ingest_response`` (wholesale create/replace), editing
+        presupposes content: the response file must exist and its current
+        bytes must hash to ``base_sha256``, otherwise the file changed since
+        the caller loaded it and :class:`StaleContentError` is raised. On a
+        match the new text is written atomically and a ``response_edited``
+        manifest event is recorded — an in-browser edit is an authored change
+        worth auditing.
+        """
+
+        paths = self.stage_paths(topic_id, stage)
+        if not text.strip():
+            raise ConfigError(f"refusing to save empty response for stage {paths.stage!r}")
+        if not paths.response_path.exists():
+            raise ConfigError(
+                f"no response to edit for stage {paths.stage!r}: {paths.response_path}"
+            )
+        current = hashlib.sha256(paths.response_path.read_bytes()).hexdigest()
+        if current != base_sha256:
+            raise StaleContentError(
+                f"the {paths.stage} response changed on disk since it was loaded; "
+                "reload the current content before saving"
+            )
+        _write_text_atomic(paths.response_path, text)
+        self._append_event(
+            paths.topic_id,
+            stage=paths.stage,
+            action="response_edited",
+            files={"response_file": paths.response_path},
+        )
         return paths.response_path
 
     def append_manifest_event(self, topic_id: str, event: dict) -> None:

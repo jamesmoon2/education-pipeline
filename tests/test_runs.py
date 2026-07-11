@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from education_pipeline import (
     ProfileStore,
     RunStatus,
     RunStore,
+    StaleContentError,
     StageStatus,
     TopicStore,
 )
@@ -685,3 +687,68 @@ def test_export_path_names_and_bad_format(tmp_path):
 
     with pytest.raises(ConfigError):
         runs.export_path("t", "docx")
+
+
+def _response_sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_edit_response_rewrites_content_and_records_event(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    store.create_run("t")
+    path = store.ingest_response("t", "draft", "old body\n")
+
+    result = store.edit_response(
+        "t", "draft", "new body\n", base_sha256=_response_sha(path)
+    )
+
+    assert result == path
+    assert path.read_text(encoding="utf-8") == "new body\n"
+    assert _response_sha(path) == hashlib.sha256(b"new body\n").hexdigest()
+    events = store.read_manifest("t")["events"]
+    edited = [e for e in events if e["action"] == "response_edited"]
+    assert len(edited) == 1
+    assert edited[0]["stage"] == "draft"
+    assert edited[0]["response_file"] == "responses/draft.response.md"
+    assert edited[0]["recorded_at"]
+
+
+def test_edit_response_rejects_stale_hash(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    store.create_run("t")
+    path = store.ingest_response("t", "draft", "old body\n")
+    loaded_sha = _response_sha(path)
+    path.write_text("changed by someone else\n", encoding="utf-8")
+
+    with pytest.raises(StaleContentError):
+        store.edit_response("t", "draft", "my edit\n", base_sha256=loaded_sha)
+
+    # The concurrent edit is never overwritten.
+    assert path.read_text(encoding="utf-8") == "changed by someone else\n"
+
+
+def test_edit_response_requires_existing_response(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    store.create_run("t")
+
+    with pytest.raises(ConfigError):
+        store.edit_response("t", "draft", "text\n", base_sha256="0" * 64)
+
+
+def test_edit_response_rejects_empty_text(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    store.create_run("t")
+    path = store.ingest_response("t", "draft", "old body\n")
+
+    with pytest.raises(ConfigError):
+        store.edit_response("t", "draft", "   \n", base_sha256=_response_sha(path))
+
+
+def test_edit_response_rejects_bad_stage_and_topic(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    store.create_run("t")
+
+    with pytest.raises(ConfigError):
+        store.edit_response("t", "bogus", "text\n", base_sha256="0" * 64)
+    with pytest.raises(ConfigError):
+        store.edit_response("../evil", "draft", "text\n", base_sha256="0" * 64)

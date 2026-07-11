@@ -42,6 +42,7 @@ from education_pipeline.runs import (
     PromptFile,
     RunStatus,
     RunStore,
+    StaleContentError,
     StagePaths,
     StageStatus,
 )
@@ -95,6 +96,7 @@ __all__ = [
     "StageModelPlan",
     "StagePaths",
     "StageStatus",
+    "StaleContentError",
     "Topic",
     "TopicStore",
     "build_markdown_bundle",
