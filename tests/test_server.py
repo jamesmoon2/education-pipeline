@@ -365,3 +365,252 @@ def test_no_dist_returns_503(server):
     status, body = _req(server, "GET", "/", token=None)
     assert status == 503
     assert body["error"]["code"] == "ui_unavailable"
+
+
+def test_write_endpoints_require_token(server):
+    status, body = _req(server, "POST", "/v1/runs/t/advance", token=None)
+    assert status == 401
+    status, body = _req(server, "POST", "/v1/runs/t/stages/spec/response", token=None, body={"text": "x"})
+    assert status == 401
+
+
+def test_advance_writes_spec_prompt_and_returns_status(server):
+    status, body = _req(server, "POST", "/v1/runs/t/advance")
+    assert status == 200
+    assert body["performed"] == "write_prompt"
+    assert body["status"]["next_action"]["action"] == "save_response"
+    assert body["status"]["next_action"]["stage"] == "spec"
+    # single-step: calling again at a human step is a no-op
+    status, body = _req(server, "POST", "/v1/runs/t/advance")
+    assert status == 200 and body["performed"] is None
+
+
+def test_response_ingest_conflict_and_force(server):
+    status, body = _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "R1"})
+    assert status == 200
+    assert body["topic_id"] == "t" and body["stage"] == "draft"
+    assert body["response_path"] == "responses/draft.response.md"
+    assert body["status"]["stages"][2]["response_ingested"] is True
+    status, body = _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "R2"})
+    assert status == 409 and body["error"]["code"] == "already_exists"
+    status, _ = _req(
+        server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "R2", "force": True}
+    )
+    assert status == 200
+
+
+def test_response_validation_errors(server):
+    status, body = _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "  "})
+    assert status == 400
+    status, body = _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": 42})
+    assert status == 400
+    status, body = _req(server, "POST", "/v1/runs/t/stages/bogus/response", body={"text": "x"})
+    assert status == 400
+    status, body = _req(server, "POST", "/v1/runs/ghost/stages/draft/response", body={"text": "x"})
+    assert status == 404 and body["error"]["code"] == "not_found"
+
+
+def test_approve_endpoint_conflict_codes(server):
+    status, body = _req(server, "POST", "/v1/runs/t/stages/qa/approve")
+    assert status == 409 and body["error"]["code"] == "not_ready"
+    _req(server, "POST", "/v1/runs/t/stages/qa/response", body={"text": "QA"})
+    status, body = _req(server, "POST", "/v1/runs/t/stages/qa/approve")
+    assert status == 200 and body["approved_path"] == "approved/qa.md"
+    status, body = _req(server, "POST", "/v1/runs/t/stages/qa/approve")
+    assert status == 409 and body["error"]["code"] == "already_exists"
+    status, _ = _req(server, "POST", "/v1/runs/t/stages/qa/approve", body={"overwrite": True})
+    assert status == 200
+
+
+def test_finalize_and_export_endpoints(server):
+    status, body = _req(server, "POST", "/v1/runs/t/finalize")
+    assert status == 409 and body["error"]["code"] == "not_ready"
+    status, body = _req(server, "POST", "/v1/runs/t/export", body={"format": "html"})
+    assert status == 409 and body["error"]["code"] == "not_ready"
+
+    _req(server, "POST", "/v1/runs/t/stages/repair/response", body={"text": "FINAL BODY"})
+    _req(server, "POST", "/v1/runs/t/stages/repair/approve")
+    status, body = _req(server, "POST", "/v1/runs/t/finalize")
+    assert status == 200 and body["final_path"] == "final/guide.md"
+    status, body = _req(server, "POST", "/v1/runs/t/finalize")
+    assert status == 409 and body["error"]["code"] == "already_exists"
+
+    status, body = _req(server, "POST", "/v1/runs/t/export", body={"format": "docx"})
+    assert status == 400
+    status, body = _req(server, "POST", "/v1/runs/t/export", body={"format": "html"})
+    assert status == 200
+    assert body == {"topic_id": "t", "format": "html", "export_path": "final/guide.html"}
+    status, body = _req(server, "POST", "/v1/runs/t/export", body={"format": "html"})
+    assert status == 409 and body["error"]["code"] == "already_exists"
+    status, _ = _req(server, "POST", "/v1/runs/t/export", body={"format": "html", "overwrite": True})
+    assert status == 200
+
+
+def test_run_writes_blocked_while_job_active(server, monkeypatch):
+    import time
+
+    monkeypatch.setenv("FAKE_DELAY", "5")
+    status, job = _req(server, "POST", "/v1/jobs", body={"topic_id": "t", "stage": "draft"})
+    assert status == 200
+
+    for method_path, body in (
+        ("/v1/runs/t/advance", None),
+        ("/v1/runs/t/stages/draft/response", {"text": "R"}),
+        ("/v1/runs/t/stages/draft/approve", None),
+        ("/v1/runs/t/finalize", None),
+    ):
+        status, resp = _req(server, "POST", method_path, body=body)
+        assert status == 409, method_path
+        assert resp["error"]["code"] == "job_active", method_path
+
+    status, _ = _req(server, "POST", f"/v1/jobs/{job['id']}/cancel")
+    assert status == 200
+    for _ in range(200):
+        status, current = _req(server, "GET", f"/v1/jobs/{job['id']}")
+        if current["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
+            break
+        time.sleep(0.02)
+    assert current["status"] == "canceled"
+
+    status, body = _req(server, "POST", "/v1/runs/t/advance")
+    assert status == 200
+
+
+def test_import_topic_endpoint(server):
+    toml = 'schema_version = 1\nid = "n1"\ntitle = "New One"\n'
+    status, body = _req(server, "POST", "/v1/topics", body={"toml": toml})
+    assert status == 200 and body == {"id": "n1", "title": "New One"}
+    status, body = _req(server, "POST", "/v1/topics", body={"toml": toml})
+    assert status == 409 and body["error"]["code"] == "already_exists"
+    status, _ = _req(server, "POST", "/v1/topics", body={"toml": toml, "overwrite": True})
+    assert status == 200
+    # imported topic is visible to the read API
+    status, body = _req(server, "GET", "/v1/topics/n1")
+    assert status == 200 and body["title"] == "New One"
+
+
+def test_import_topic_rejects_invalid_input(server):
+    status, _ = _req(server, "POST", "/v1/topics", body={"toml": "not = [valid"})
+    assert status == 400
+    status, _ = _req(server, "POST", "/v1/topics", body={"toml": 'schema_version = 1\ntitle = "No Id"\n'})
+    assert status == 400
+    status, _ = _req(server, "POST", "/v1/topics", body={"toml": 42})
+    assert status == 400
+
+
+def test_import_profile_endpoint(server):
+    toml = 'schema_version = 1\nid = "p2"\ntarget_learner = "new cohort"\n'
+    status, body = _req(server, "POST", "/v1/profiles", body={"toml": toml})
+    assert status == 200 and body == {"id": "p2"}
+    # fixture already created profile "p"
+    existing = 'schema_version = 1\nid = "p"\ntarget_learner = "changed"\n'
+    status, body = _req(server, "POST", "/v1/profiles", body={"toml": existing})
+    assert status == 409 and body["error"]["code"] == "already_exists"
+
+
+def test_attach_profile_endpoint(server):
+    status, body = _req(server, "POST", "/v1/topics/t/profile", body={"profile_id": "p"})
+    assert status == 200
+    assert body == {"profile_id": "p", "topic_id": "t", "snapshot_path": "inputs/profile.toml"}
+    # default overwrite=true: re-attaching refreshes the snapshot
+    status, _ = _req(server, "POST", "/v1/topics/t/profile", body={"profile_id": "p"})
+    assert status == 200
+    status, body = _req(server, "POST", "/v1/topics/t/profile", body={"profile_id": "ghost"})
+    assert status == 404
+    status, body = _req(server, "POST", "/v1/topics/t/profile", body={"profile_id": 7})
+    assert status == 400
+
+
+def _raw_download(port, path, token="secret-token"):
+    conn = http.client.HTTPConnection("127.0.0.1", port)
+    headers = {}
+    if token is not None:
+        headers["X-EP-Token"] = token
+    conn.request("GET", path, headers=headers)
+    resp = conn.getresponse()
+    data = resp.read()
+    headers_out = {k.lower(): v for k, v in resp.getheaders()}
+    conn.close()
+    return resp.status, headers_out, data
+
+
+def _finalize_t_over_http(port):
+    _req(port, "POST", "/v1/runs/t/stages/repair/response", body={"text": "FINAL BODY"})
+    _req(port, "POST", "/v1/runs/t/stages/repair/approve")
+    _req(port, "POST", "/v1/runs/t/finalize")
+
+
+def test_final_download(server):
+    status, _, _ = _raw_download(server, "/v1/runs/t/final/download")
+    assert status == 404
+    _finalize_t_over_http(server)
+    status, headers, data = _raw_download(server, "/v1/runs/t/final/download")
+    assert status == 200
+    assert headers["content-type"] == "text/markdown; charset=utf-8"
+    assert headers["content-disposition"] == 'attachment; filename="t-guide.md"'
+    assert data.decode("utf-8") == "FINAL BODY"
+
+
+def test_export_download(server):
+    _finalize_t_over_http(server)
+    _req(server, "POST", "/v1/runs/t/export", body={"format": "html"})
+    status, headers, data = _raw_download(server, "/v1/runs/t/exports/html/download")
+    assert status == 200
+    assert headers["content-type"] == "text/html; charset=utf-8"
+    assert headers["content-disposition"] == 'attachment; filename="t-guide.html"'
+    assert b"FINAL BODY" in data
+    status, _, _ = _raw_download(server, "/v1/runs/t/exports/markdown/download")
+    assert status == 404
+    status, _, _ = _raw_download(server, "/v1/runs/t/exports/docx/download")
+    assert status == 400
+
+
+def test_downloads_require_token(server):
+    status, _, _ = _raw_download(server, "/v1/runs/t/final/download", token=None)
+    assert status == 401
+
+
+def test_full_pipeline_over_http(server):
+    toml = 'schema_version = 1\nid = "full"\ntitle = "Full Pipeline"\n'
+    status, body = _req(server, "POST", "/v1/topics", body={"toml": toml})
+    assert (status, body) == (200, {"id": "full", "title": "Full Pipeline"})
+
+    for stage in ("spec", "outline", "draft", "qa", "repair"):
+        status, body = _req(server, "POST", "/v1/runs/full/advance")
+        assert status == 200 and body["performed"] == "write_prompt", stage
+        assert body["status"]["next_action"]["stage"] == stage
+        status, _ = _req(
+            server,
+            "POST",
+            f"/v1/runs/full/stages/{stage}/response",
+            body={"text": f"{stage} response"},
+        )
+        assert status == 200, stage
+        status, _ = _req(server, "POST", f"/v1/runs/full/stages/{stage}/approve")
+        assert status == 200, stage
+
+    status, body = _req(server, "POST", "/v1/runs/full/advance")
+    assert status == 200 and body["performed"] == "finalize"
+    assert body["status"]["finalized"] is True
+    assert body["status"]["next_action"]["action"] == "done"
+
+    for fmt in ("html", "markdown"):
+        status, _ = _req(server, "POST", "/v1/runs/full/export", body={"format": fmt})
+        assert status == 200, fmt
+
+    status, manifest = _req(server, "GET", "/v1/runs/full/manifest")
+    assert status == 200
+    actions = [event["action"] for event in manifest["events"]]
+    assert actions.count("prompt_written") == 5
+    assert actions.count("response_approved") == 5
+    assert actions.count("finalized") == 1
+    assert actions.count("exported") == 2
+
+    for path, ctype in (
+        ("/v1/runs/full/final/download", "text/markdown; charset=utf-8"),
+        ("/v1/runs/full/exports/html/download", "text/html; charset=utf-8"),
+        ("/v1/runs/full/exports/markdown/download", "text/markdown; charset=utf-8"),
+    ):
+        status, headers, _ = _raw_download(server, path)
+        assert status == 200, path
+        assert headers["content-type"] == ctype, path

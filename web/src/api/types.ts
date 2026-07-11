@@ -71,3 +71,51 @@ export interface LogChunk {
   data: string;
   offset: number;
 }
+
+export type ExportFormat = "html" | "markdown";
+
+export interface AdvanceResult {
+  performed: "write_prompt" | "finalize" | null;
+  status: RunStatus;
+}
+
+export interface ResponseResult {
+  topic_id: string;
+  stage: string;
+  response_path: string;
+  status: RunStatus;
+}
+
+export interface ApproveResult {
+  topic_id: string;
+  stage: string;
+  approved_path: string;
+  status: RunStatus;
+}
+
+export interface FinalizeResult {
+  topic_id: string;
+  final_path: string;
+  status: RunStatus;
+}
+
+export interface ExportResult {
+  topic_id: string;
+  format: ExportFormat;
+  export_path: string;
+}
+
+export interface ImportTopicResult {
+  id: string;
+  title: string;
+}
+
+export interface ImportProfileResult {
+  id: string;
+}
+
+export interface AttachProfileResult {
+  profile_id: string;
+  topic_id: string;
+  snapshot_path: string;
+}

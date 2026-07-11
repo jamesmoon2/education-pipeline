@@ -161,6 +161,14 @@ class JobStore:
                 return job
         return None
 
+    def any_active_for(self, topic_id: str) -> Job | None:
+        """The first queued/running job for the topic across all stages, if any."""
+
+        for job in self.list(topic_id):
+            if job.status not in TERMINAL_STATUSES:
+                return job
+        return None
+
     def read_log(self, job: Job, offset: int = 0) -> tuple[bytes, int]:
         path = self.job_dir(job.topic_id, job.id) / "output.log"
         if not path.exists():

@@ -85,3 +85,27 @@ def test_popen_kwargs_has_platform_group_flag():
         assert "creationflags" in kwargs
     else:
         assert kwargs.get("start_new_session") is True
+
+
+def test_any_active_for_matches_any_stage(tmp_path):
+    from education_pipeline.daemon.jobs import JobStore
+
+    store = JobStore(tmp_path)
+    job = store.create("t", "draft", "fake", None, None)
+    store.save(job)
+
+    found = store.any_active_for("t")
+    assert found is not None and found.id == job.id
+    # a different stage still counts: the guard is topic-wide
+    assert store.any_active_for("t").stage == "draft"
+    assert store.any_active_for("other") is None
+
+
+def test_any_active_for_ignores_terminal_jobs(tmp_path):
+    from education_pipeline.daemon.jobs import JobStore
+
+    store = JobStore(tmp_path)
+    job = store.create("t", "spec", "fake", None, None)
+    job.status = "succeeded"
+    store.save(job)
+    assert store.any_active_for("t") is None

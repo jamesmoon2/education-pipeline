@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import type { RunStatus } from "../api/types";
@@ -11,10 +12,19 @@ vi.mock("../api/client", async () => {
     getRunStatus: vi.fn(),
     getJobs: vi.fn(),
     getJobLog: vi.fn(),
+    postAdvance: vi.fn(),
+    postApprove: vi.fn(),
+    postFinalize: vi.fn(),
+    postResponse: vi.fn(),
+    postExport: vi.fn(),
+    enqueueJob: vi.fn(),
+    downloadFinal: vi.fn(),
+    downloadExport: vi.fn(),
+    cancelJob: vi.fn(),
   };
 });
 
-import { ApiRequestError, getJobs, getRunStatus } from "../api/client";
+import { ApiRequestError, getJobs, getRunStatus, postAdvance } from "../api/client";
 
 const status: RunStatus = {
   topic_id: "t",
@@ -82,5 +92,27 @@ describe("RunBoardPage", () => {
     vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
     renderAt("/topics/t");
     expect(await screen.findByText(/No run started/)).toBeInTheDocument();
+  });
+
+  it("renders the primary action for the current next_action", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue(status); // fixture action: save_response
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+    expect(
+      await screen.findByRole("button", { name: "Run with provider" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Paste response…" })).toBeInTheDocument();
+  });
+
+  it("offers Advance to start a run on the 404 branch", async () => {
+    vi.mocked(getRunStatus).mockRejectedValue(
+      new ApiRequestError(404, "not_found", "no run started for topic: t"),
+    );
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    vi.mocked(postAdvance).mockResolvedValue({ performed: "write_prompt", status });
+    renderAt("/topics/t");
+    const advance = await screen.findByRole("button", { name: "Advance" });
+    await userEvent.click(advance);
+    expect(postAdvance).toHaveBeenCalledWith("t");
   });
 });
