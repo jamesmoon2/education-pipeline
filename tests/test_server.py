@@ -568,3 +568,49 @@ def test_export_download(server):
 def test_downloads_require_token(server):
     status, _, _ = _raw_download(server, "/v1/runs/t/final/download", token=None)
     assert status == 401
+
+
+def test_full_pipeline_over_http(server):
+    toml = 'schema_version = 1\nid = "full"\ntitle = "Full Pipeline"\n'
+    status, body = _req(server, "POST", "/v1/topics", body={"toml": toml})
+    assert (status, body) == (200, {"id": "full", "title": "Full Pipeline"})
+
+    for stage in ("spec", "outline", "draft", "qa", "repair"):
+        status, body = _req(server, "POST", "/v1/runs/full/advance")
+        assert status == 200 and body["performed"] == "write_prompt", stage
+        assert body["status"]["next_action"]["stage"] == stage
+        status, _ = _req(
+            server,
+            "POST",
+            f"/v1/runs/full/stages/{stage}/response",
+            body={"text": f"{stage} response"},
+        )
+        assert status == 200, stage
+        status, _ = _req(server, "POST", f"/v1/runs/full/stages/{stage}/approve")
+        assert status == 200, stage
+
+    status, body = _req(server, "POST", "/v1/runs/full/advance")
+    assert status == 200 and body["performed"] == "finalize"
+    assert body["status"]["finalized"] is True
+    assert body["status"]["next_action"]["action"] == "done"
+
+    for fmt in ("html", "markdown"):
+        status, _ = _req(server, "POST", "/v1/runs/full/export", body={"format": fmt})
+        assert status == 200, fmt
+
+    status, manifest = _req(server, "GET", "/v1/runs/full/manifest")
+    assert status == 200
+    actions = [event["action"] for event in manifest["events"]]
+    assert actions.count("prompt_written") == 5
+    assert actions.count("response_approved") == 5
+    assert actions.count("finalized") == 1
+    assert actions.count("exported") == 2
+
+    for path, ctype in (
+        ("/v1/runs/full/final/download", "text/markdown; charset=utf-8"),
+        ("/v1/runs/full/exports/html/download", "text/html; charset=utf-8"),
+        ("/v1/runs/full/exports/markdown/download", "text/markdown; charset=utf-8"),
+    ):
+        status, headers, _ = _raw_download(server, path)
+        assert status == 200, path
+        assert headers["content-type"] == ctype, path
