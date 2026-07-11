@@ -13,7 +13,7 @@
 | 7. Full-pipeline HTTP test | complete | 3f861da |
 | 8. Client apiPost/download | complete | 4d37e02 |
 | 9. useAction hook | complete | d7db814 |
-| 10. Run board primary action | pending | — |
+| 10. Run board primary action | complete | bd0d7c4 |
 | 11. Export controls | pending | — |
 | 12. Stage viewer actions | pending | — |
 | 13. Jobs panel cancel | pending | — |
@@ -21,7 +21,7 @@
 | 15. E2E full run | pending | — |
 | 16. Deferred hygiene | pending | — |
 
-To resume: continue with Task 10.
+To resume: continue with Task 11.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -1863,7 +1863,7 @@ git commit -m "feat(web): useAction hook with overwrite-confirm retry"
   - `ResponseForm({ topicId, stage, onDone }: { topicId: string; stage: string; onDone: () => void })` — textarea labelled `Response for {stage}` + "Save response" button; `force` retry on conflict. Reused by Task 12's stage viewer.
   - RunBoardPage renders `PrimaryAction` and, on the 404 no-run branch, an **Advance** button that starts the run (`POST .../advance` works on a fresh topic, matching `edu advance`). This replaces the `edu advance {topicId}` CLI hint — resolving the Phase 1 Minor finding about that string.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `web/src/components/PrimaryAction.test.tsx`:
 
@@ -2018,12 +2018,12 @@ In `web/src/pages/RunBoardPage.test.tsx`, extend the `vi.mock` factory's returne
   });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run (from `web/`): `npm test`
 Expected: FAIL — `PrimaryAction` unresolved
 
-- [ ] **Step 3: Implement the components**
+- [x] **Step 3: Implement the components**
 
 Create `web/src/components/ResponseForm.tsx`:
 
@@ -2168,7 +2168,7 @@ export default function ExportControls({ topicId }: { topicId: string }) {
 }
 ```
 
-- [ ] **Step 4: Wire the run board**
+- [x] **Step 4: Wire the run board**
 
 Replace `web/src/pages/RunBoardPage.tsx` with:
 
@@ -2246,12 +2246,12 @@ export default function RunBoardPage() {
 }
 ```
 
-- [ ] **Step 5: Run tests + build**
+- [x] **Step 5: Run tests + build**
 
 Run (from `web/`): `npm test && npm run build`
 Expected: PASS / clean
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add web/src/components/PrimaryAction.tsx web/src/components/ResponseForm.tsx web/src/components/ExportControls.tsx web/src/components/PrimaryAction.test.tsx web/src/pages/RunBoardPage.tsx web/src/pages/RunBoardPage.test.tsx
