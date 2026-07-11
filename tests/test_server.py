@@ -752,3 +752,52 @@ def test_full_pipeline_over_http(server):
         status, headers, _ = _raw_download(server, path)
         assert status == 200, path
         assert headers["content-type"] == ctype, path
+
+
+def test_preview_renders_markdown_body(server):
+    status, body = _req(
+        server, "POST", "/v1/preview", body={"text": "# Hi\n\nSome **bold** text."}
+    )
+    assert status == 200
+    assert "<h1>Hi</h1>" in body["html"]
+    assert "<strong>bold</strong>" in body["html"]
+    assert "<!DOCTYPE" not in body["html"]
+
+
+def test_preview_escapes_script_input(server):
+    status, body = _req(
+        server, "POST", "/v1/preview", body={"text": "<script>alert(1)</script>"}
+    )
+    assert status == 200
+    assert "<script>" not in body["html"]
+    assert "&lt;script&gt;" in body["html"]
+
+
+def test_preview_missing_text_is_400(server):
+    status, _ = _req(server, "POST", "/v1/preview", body={})
+    assert status == 400
+    status, _ = _req(server, "POST", "/v1/preview", body={"text": 42})
+    assert status == 400
+
+
+def test_preview_requires_token(server):
+    status, _ = _req(server, "POST", "/v1/preview", token=None, body={"text": "x"})
+    assert status == 401
+
+
+def test_preview_not_blocked_by_active_job(server, monkeypatch):
+    import time
+
+    monkeypatch.setenv("FAKE_DELAY", "5")
+    status, job = _req(server, "POST", "/v1/jobs", body={"topic_id": "t", "stage": "draft"})
+    assert status == 200
+
+    status, body = _req(server, "POST", "/v1/preview", body={"text": "# still works"})
+    assert status == 200 and "<h1>still works</h1>" in body["html"]
+
+    _req(server, "POST", f"/v1/jobs/{job['id']}/cancel")
+    for _ in range(200):
+        status, current = _req(server, "GET", f"/v1/jobs/{job['id']}")
+        if current["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
+            break
+        time.sleep(0.02)
