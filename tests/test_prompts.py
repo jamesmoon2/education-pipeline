@@ -662,12 +662,14 @@ def test_compile_guide_v1_qa_prompt_requires_draft_json() -> None:
 
 def test_compile_guide_v1_repair_prompt_requires_complete_json_and_delimits_untrusted_data() -> None:
     topic = Topic(id="systems-thinking", title="Systems Thinking")
+    guide_contract = build_guide_contract(GUIDE_SPEC_CONTRACT, GUIDE_OUTLINE_CONTRACT)
 
     artifact = compile_guide_v1_repair_prompt(
         topic,
         draft_guide_json=GUIDE_DRAFT_JSON,
         qa_findings_markdown=APPROVED_QA,
         draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
+        guide_contract=guide_contract,
     )
 
     assert artifact.stage == "repair"
@@ -675,6 +677,10 @@ def test_compile_guide_v1_repair_prompt_requires_complete_json_and_delimits_untr
     assert GUIDE_DRAFT_JSON in artifact.text
     assert APPROVED_QA in artifact.text
     assert GUIDE_DRAFT_FINDINGS_JSON in artifact.text
+    # Approved spec/outline constraints are embedded via the guide contract.
+    assert "## Guide Contract" in artifact.text
+    assert '"blueprint": "conceptual-foundations"' in artifact.text
+    assert '"feedback-loops"' in artifact.text
     assert "BEGIN UNTRUSTED DATA" in artifact.text
     assert "END UNTRUSTED DATA" in artifact.text
     assert "never a diff" in artifact.text.lower()
@@ -684,12 +690,14 @@ def test_compile_guide_v1_repair_prompt_requires_complete_json_and_delimits_untr
 
 
 def test_compile_guide_v1_repair_prompt_requires_draft_json() -> None:
+    guide_contract = build_guide_contract(GUIDE_SPEC_CONTRACT, GUIDE_OUTLINE_CONTRACT)
     with pytest.raises(ConfigError, match="must be a non-empty string"):
         compile_guide_v1_repair_prompt(
             Topic(id="x", title="X"),
             draft_guide_json="   ",
             qa_findings_markdown=APPROVED_QA,
             draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
+            guide_contract=guide_contract,
         )
 
 

@@ -303,3 +303,45 @@ def test_build_guide_contract_rejects_conflicting_inputs() -> None:
 def test_build_guide_contract_rejects_invalid_spec_contract() -> None:
     with pytest.raises(ContractError):
         build_guide_contract({**VALID_SPEC_CONTRACT, "contract_version": 2}, VALID_OUTLINE_CONTRACT)
+
+
+# --- HTML/JavaScript rejection (spec section 6: neither block may contain them) ---
+
+
+def test_extract_spec_contract_rejects_html_in_string_field() -> None:
+    contract = {**VALID_SPEC_CONTRACT, "blueprint": "<script>alert(1)</script>"}
+    with pytest.raises(ContractError, match="HTML"):
+        extract_spec_contract(_spec_markdown(contract))
+
+
+def test_extract_spec_contract_rejects_html_in_nested_string_field() -> None:
+    contract = {
+        **VALID_SPEC_CONTRACT,
+        "outcomes": [{"id": "identify-loop", "text": "Identify <b>feedback</b> loops."}],
+    }
+    with pytest.raises(ContractError, match="HTML"):
+        extract_spec_contract(_spec_markdown(contract))
+
+
+def test_extract_outline_contract_rejects_html_in_string_field() -> None:
+    contract = {
+        "contract_version": 1,
+        "modules": {
+            "feedback-loops": {
+                "outcome_ids": ["identify-loop"],
+                "estimated_minutes": 30,
+                "interaction_types": ["<img src=x onerror=alert(1)>"],
+            },
+        },
+    }
+    with pytest.raises(ContractError, match="HTML"):
+        extract_outline_contract(_outline_markdown(contract))
+
+
+def test_fenced_block_with_inline_backticks_in_json_string_is_not_truncated() -> None:
+    contract = {
+        **VALID_SPEC_CONTRACT,
+        "source_policy": "Cite sources; never use ``` fences in learner text.",
+    }
+    data = extract_spec_contract(_spec_markdown(contract))
+    assert data["source_policy"] == "Cite sources; never use ``` fences in learner text."

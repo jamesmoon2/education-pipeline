@@ -656,6 +656,7 @@ def compile_guide_v1_repair_prompt(
     draft_guide_json: str,
     qa_findings_markdown: str,
     draft_findings_json: str,
+    guide_contract: bytes,
     profile: LearnerProfile | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 repair-stage prompt.
@@ -663,17 +664,27 @@ def compile_guide_v1_repair_prompt(
     Requires returning one complete guide JSON object (never a diff),
     resolving every blocking deterministic finding and every blocker/major
     QA finding, while preserving stable IDs and valid unflagged structure.
-    The approved QA findings, deterministic findings, and draft are
-    delimited as untrusted data, same as the QA prompt.
+    ``guide_contract`` is the canonical payload bytes from
+    :func:`education_pipeline.guides.contract.build_guide_contract` and
+    embeds the approved spec/outline constraints to prevent drift. The
+    approved QA findings, deterministic findings, and draft are delimited
+    as untrusted data, same as the QA prompt.
     """
 
     _required_block(draft_guide_json, "draft guide JSON")
     _required_block(qa_findings_markdown, "QA findings")
     _required_block(draft_findings_json, "draft findings")
+    contract_text = guide_contract.decode("utf-8")
     return _compile_stage_prompt(
         stage="repair",
         header_lines=_REPAIR_HEADER_LINES,
         sections=(
+            (
+                "## Guide Contract",
+                "The following machine-readable contract was derived from the approved specification and outline. Its constraints are binding; the repaired guide must not drift outside them.",
+                "guide contract",
+                contract_text,
+            ),
             (
                 "## Approved Model-QA Findings",
                 "The required fixes from model QA. Resolve every blocker and major finding.",

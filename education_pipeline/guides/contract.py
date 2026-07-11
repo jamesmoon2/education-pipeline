@@ -13,7 +13,7 @@ import json
 import re
 from typing import Any, Mapping
 
-from .parse import BLOCK_TYPES, ID_RE
+from .parse import BLOCK_TYPES, ID_RE, RAW_HTML_RE
 
 SPEC_CONTRACT_INFO_STRING = "education-pipeline-contract+json"
 OUTLINE_CONTRACT_INFO_STRING = "education-pipeline-outline+json"
@@ -37,7 +37,9 @@ _OUTLINE_CONTRACT_FIELDS = {"contract_version", "modules"}
 
 _MODULE_PLAN_FIELDS = {"outcome_ids", "estimated_minutes", "interaction_types"}
 
-_FENCE_RE = re.compile(r"```([^\n`]*)\n(.*?)\n```", re.S)
+_FENCE_RE = re.compile(r"^```([^\n`]*)\n(.*?)\n```[ \t]*$", re.S | re.M)
+
+_JAVASCRIPT_RE = re.compile(r"javascript\s*:", re.I)
 
 
 class ContractError(ValueError):
@@ -96,11 +98,35 @@ def _require_id(value: Any, *, field: str) -> str:
     return value
 
 
+def _reject_html_or_javascript(value: Any, *, block_label: str, path: str = "") -> None:
+    """Reject raw HTML tags or JavaScript in any string within a contract block.
+
+    Spec section 6: neither contract block may contain implementation
+    HTML/JavaScript. Reuses the parser's ``RAW_HTML_RE`` so both layers agree
+    on what counts as raw HTML.
+    """
+
+    if isinstance(value, str):
+        if RAW_HTML_RE.search(value) or _JAVASCRIPT_RE.search(value):
+            raise ContractError(
+                f"{block_label} field {path or 'value'!s} must not contain HTML or JavaScript; "
+                f"the block is a plain data contract, got {value!r}"
+            )
+    elif isinstance(value, dict):
+        for key, child in value.items():
+            _reject_html_or_javascript(key, block_label=block_label, path=f"{path}/{key}")
+            _reject_html_or_javascript(child, block_label=block_label, path=f"{path}/{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_html_or_javascript(child, block_label=block_label, path=f"{path}/{index}")
+
+
 def validate_spec_contract(data: Mapping[str, Any]) -> None:
     """Validate a spec-contract block. Raises :class:`ContractError` on any defect."""
 
     if not isinstance(data, dict):
         raise ContractError("spec contract must be a JSON object")
+    _reject_html_or_javascript(data, block_label="spec contract")
 
     unknown = set(data) - _SPEC_CONTRACT_FIELDS
     if unknown:
@@ -173,6 +199,7 @@ def validate_outline_contract(data: Mapping[str, Any]) -> None:
 
     if not isinstance(data, dict):
         raise ContractError("outline contract must be a JSON object")
+    _reject_html_or_javascript(data, block_label="outline contract")
 
     unknown = set(data) - _OUTLINE_CONTRACT_FIELDS
     if unknown:
