@@ -6,6 +6,7 @@ import {
   getStageContent,
   postApprove,
 } from "../api/client";
+import DiffView from "../components/DiffView";
 import ResponseEditor from "../components/ResponseEditor";
 import ResponseForm from "../components/ResponseForm";
 import { useAction } from "../hooks/useAction";
@@ -26,6 +27,9 @@ export default function StageViewerPage() {
   const [tab, setTab] = useState<Tab>("prompt");
   const [pasteOpen, setPasteOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [compare, setCompare] = useState(false);
+  const [diffOpen, setDiffOpen] = useState(false);
+  const [draftApproved, setDraftApproved] = useState<string | null>(null);
   const approve = useAction(refresh);
 
   if (error instanceof ApiRequestError && error.status === 404) {
@@ -44,6 +48,15 @@ export default function StageViewerPage() {
     data.response !== null &&
     (data.approved === null || data.approved !== data.response);
   const showEditor = editing && canEdit && tab === "response";
+
+  const toggleDiff = async () => {
+    const next = !diffOpen;
+    setDiffOpen(next);
+    if (next && draftApproved === null) {
+      const draft = await getStageContent(topicId!, "draft");
+      setDraftApproved(draft.approved ?? "");
+    }
+  };
 
   return (
     <div>
@@ -67,6 +80,16 @@ export default function StageViewerPage() {
           </button>
         ))}
       </nav>
+      <div className="view-toggles">
+        <button onClick={() => setCompare((c) => !c)}>
+          {compare ? "Single pane" : "Compare prompt ↔ response"}
+        </button>
+        {data.stage === "repair" && (
+          <button onClick={() => void toggleDiff()}>
+            {diffOpen ? "Hide diff" : "Diff against draft"}
+          </button>
+        )}
+      </div>
       {showEditor ? (
         <ResponseEditor
           topicId={topicId!}
@@ -79,8 +102,16 @@ export default function StageViewerPage() {
           }}
           onClose={() => setEditing(false)}
         />
+      ) : compare ? (
+        <div className="compare">
+          <pre className="content">{data.prompt ?? "(no prompt yet)"}</pre>
+          <pre className="content">{data.response ?? "(no response yet)"}</pre>
+        </div>
       ) : (
         <pre className="content">{data[tab] ?? `(no ${tab} yet)`}</pre>
+      )}
+      {diffOpen && draftApproved !== null && (
+        <DiffView a={draftApproved} b={data.response ?? ""} />
       )}
       {tab === "response" && canEdit && !editing && (
         <button onClick={() => setEditing(true)}>Edit</button>
