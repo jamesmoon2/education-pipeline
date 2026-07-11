@@ -7,12 +7,13 @@ carry a precise conflict code; the store call remains the authority and its
 
 - :class:`read_api.NotFoundError` -> HTTP 404
 - :class:`ConflictError` -> HTTP 409 (codes: ``already_exists``, ``not_ready``,
-  ``job_active``)
+  ``job_active``, ``stale_content``)
 - ``ConfigError`` propagates -> HTTP 400
 """
 
 from __future__ import annotations
 
+import hashlib
 import tomllib
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from education_pipeline.config import ConfigError
 from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
-from education_pipeline.runs import RunStore
+from education_pipeline.runs import RunStore, StaleContentError
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 
@@ -79,6 +80,36 @@ def ingest_response(
         "stage": paths.stage,
         "response_path": _run_relative(runs, topic_id, path),
         "status": read_api.run_status_payload(runs, topic_id),
+    }
+
+
+def edit_response(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    stage: str,
+    text: str,
+    *,
+    base_sha256: str,
+) -> dict:
+    read_api.require_run(runs, topic_id)
+    _require_no_active_job(jobs, topic_id)
+    paths = runs.stage_paths(topic_id, stage)
+    if not paths.response_path.exists():
+        raise ConflictError(
+            "stale_content",
+            f"the {paths.stage} response no longer exists on disk; "
+            "reload the current stage content",
+        )
+    try:
+        path = runs.edit_response(topic_id, stage, text, base_sha256=base_sha256)
+    except StaleContentError as exc:
+        raise ConflictError("stale_content", str(exc)) from exc
+    return {
+        "topic_id": paths.topic_id,
+        "stage": paths.stage,
+        "response_path": _run_relative(runs, topic_id, path),
+        "response_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
 
 

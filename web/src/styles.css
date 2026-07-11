@@ -27,3 +27,70 @@ pre.content, pre.log {
   white-space: pre-wrap;
 }
 pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.85em; }
+
+/* Phase 3: response editor */
+.editor-panes {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+.editor-panes label {
+  flex: 1;
+  min-width: 0;
+}
+.editor-panes textarea {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.editor-panes .preview,
+.editor-panes .content {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+.editor-controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+/* Phase 3: compare and diff views */
+.view-toggles {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+.compare {
+  display: flex;
+  gap: 1rem;
+}
+.compare .content {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+.diff {
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 0.4rem 0;
+  margin: 0.5rem 0;
+}
+.diff-line {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0 0.75rem;
+  white-space: pre;
+}
+.diff-marker {
+  user-select: none;
+  width: 1ch;
+}
+.diff-added {
+  background: #e6ffec;
+}
+.diff-removed {
+  background: #ffebe9;
+}

@@ -30,6 +30,7 @@ from education_pipeline.prompts import (
 from education_pipeline.export import (
     EXPORT_FORMATS,
     build_markdown_bundle,
+    render_html_body,
     render_markdown_to_html,
 )
 from education_pipeline.runs import (
@@ -41,6 +42,7 @@ from education_pipeline.runs import (
     PromptFile,
     RunStatus,
     RunStore,
+    StaleContentError,
     StagePaths,
     StageStatus,
 )
@@ -94,6 +96,7 @@ __all__ = [
     "StageModelPlan",
     "StagePaths",
     "StageStatus",
+    "StaleContentError",
     "Topic",
     "TopicStore",
     "build_markdown_bundle",
@@ -112,6 +115,7 @@ __all__ = [
     "parse_model_catalog",
     "parse_model_plan",
     "parse_topic",
+    "render_html_body",
     "render_markdown_to_html",
     "render_profile_prompt_context",
     "render_profile_public_summary",

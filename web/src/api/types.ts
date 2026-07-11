@@ -50,6 +50,7 @@ export interface StageContent {
   prompt: string | null;
   response: string | null;
   approved: string | null;
+  response_sha256: string | null;
 }
 
 export interface Job {
@@ -118,4 +119,15 @@ export interface AttachProfileResult {
   profile_id: string;
   topic_id: string;
   snapshot_path: string;
+}
+
+export interface EditResponseResult {
+  topic_id: string;
+  stage: string;
+  response_path: string;
+  response_sha256: string;
+}
+
+export interface PreviewResult {
+  html: string;
 }

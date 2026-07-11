@@ -4,7 +4,9 @@ import {
   api,
   apiPost,
   download,
+  postPreview,
   postResponse,
+  putResponse,
   resetSessionForTests,
 } from "./client";
 
@@ -185,5 +187,81 @@ describe("download", () => {
     expect(err).toBeInstanceOf(ApiRequestError);
     expect(err.status).toBe(404);
     expect(err.code).toBe("not_found");
+  });
+});
+
+describe("apiPut", () => {
+  afterEach(() => {
+    resetSessionForTests();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("putResponse sends a JSON PUT with text and base_sha256", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/t/stages/draft/response": {
+        status: 200,
+        body: {
+          topic_id: "t",
+          stage: "draft",
+          response_path: "responses/draft.response.md",
+          response_sha256: "hash-2",
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await putResponse("t", "draft", "new body", "hash-1");
+
+    expect(result.response_sha256).toBe("hash-2");
+    const call = fetchMock.mock.calls.find(
+      ([u]) => String(u) === "/v1/runs/t/stages/draft/response",
+    );
+    const init = call![1] as RequestInit;
+    expect(init.method).toBe("PUT");
+    expect(init.headers).toMatchObject({
+      "X-EP-Token": "tok",
+      "Content-Type": "application/json",
+    });
+    expect(JSON.parse(init.body as string)).toEqual({
+      text: "new body",
+      base_sha256: "hash-1",
+    });
+  });
+
+  it("surfaces the stale_content conflict code", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchWithInit({
+        "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+        "/v1/runs/t/stages/draft/response": {
+          status: 409,
+          body: { error: { code: "stale_content", message: "changed on disk" } },
+        },
+      }),
+    );
+    const err = (await putResponse("t", "draft", "x", "old").catch(
+      (e: unknown) => e,
+    )) as ApiRequestError;
+    expect(err).toBeInstanceOf(ApiRequestError);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe("stale_content");
+  });
+
+  it("postPreview posts text and returns html", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/preview": { status: 200, body: { html: "<h1>Hi</h1>" } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await postPreview("# Hi");
+
+    expect(result.html).toBe("<h1>Hi</h1>");
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/preview");
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({
+      text: "# Hi",
+    });
   });
 });

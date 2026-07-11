@@ -299,7 +299,21 @@ def test_stage_content_returns_prompt_and_nulls(server):
         "prompt": "PROMPT",
         "response": None,
         "approved": None,
+        "response_sha256": None,
     }
+
+
+def test_stage_content_includes_response_sha256(server):
+    import hashlib
+
+    status, body = _req(server, "GET", "/v1/runs/t/stages/draft")
+    assert status == 200
+    assert body["response_sha256"] is None
+
+    _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "BODY"})
+    status, body = _req(server, "GET", "/v1/runs/t/stages/draft")
+    assert status == 200
+    assert body["response_sha256"] == hashlib.sha256(b"BODY").hexdigest()
 
 
 def test_stage_content_bad_stage_is_400(server):
@@ -565,6 +579,130 @@ def test_export_download(server):
     assert status == 400
 
 
+def _sha_hex(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def test_edit_response_put_happy_path(server):
+    _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "V1"})
+    status, body = _req(
+        server,
+        "PUT",
+        "/v1/runs/t/stages/draft/response",
+        body={"text": "V2", "base_sha256": _sha_hex("V1")},
+    )
+    assert status == 200
+    assert body == {
+        "topic_id": "t",
+        "stage": "draft",
+        "response_path": "responses/draft.response.md",
+        "response_sha256": _sha_hex("V2"),
+    }
+    # follow-up GET shows the new content and the new hash
+    status, got = _req(server, "GET", "/v1/runs/t/stages/draft")
+    assert got["response"] == "V2"
+    assert got["response_sha256"] == _sha_hex("V2")
+
+
+def test_edit_response_put_requires_token(server):
+    status, _ = _req(
+        server,
+        "PUT",
+        "/v1/runs/t/stages/draft/response",
+        token=None,
+        body={"text": "x", "base_sha256": "0" * 64},
+    )
+    assert status == 401
+
+
+def test_edit_response_put_unknown_topic_is_404(server):
+    status, body = _req(
+        server,
+        "PUT",
+        "/v1/runs/ghost/stages/draft/response",
+        body={"text": "x", "base_sha256": "0" * 64},
+    )
+    assert status == 404 and body["error"]["code"] == "not_found"
+
+
+def test_edit_response_put_missing_fields_are_400(server):
+    _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "V1"})
+    status, _ = _req(server, "PUT", "/v1/runs/t/stages/draft/response", body={"text": "x"})
+    assert status == 400
+    status, _ = _req(
+        server, "PUT", "/v1/runs/t/stages/draft/response", body={"base_sha256": "0" * 64}
+    )
+    assert status == 400
+    status, _ = _req(
+        server,
+        "PUT",
+        "/v1/runs/t/stages/bogus/response",
+        body={"text": "x", "base_sha256": "0" * 64},
+    )
+    assert status == 400
+
+
+def test_edit_response_put_stale_after_external_write(server, tmp_path):
+    _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "V1"})
+    loaded_sha = _sha_hex("V1")
+    response_file = tmp_path / "runs" / "t" / "responses" / "draft.response.md"
+    response_file.write_text("EXTERNAL EDIT", encoding="utf-8")
+
+    status, body = _req(
+        server,
+        "PUT",
+        "/v1/runs/t/stages/draft/response",
+        body={"text": "V2", "base_sha256": loaded_sha},
+    )
+    assert status == 409
+    assert body["error"]["code"] == "stale_content"
+    assert "draft" in body["error"]["message"]
+    # the envelope carries no file content and the external edit is intact
+    assert "EXTERNAL EDIT" not in json.dumps(body)
+    assert response_file.read_text(encoding="utf-8") == "EXTERNAL EDIT"
+
+
+def test_edit_response_put_missing_file_is_stale(server):
+    status, body = _req(
+        server,
+        "PUT",
+        "/v1/runs/t/stages/qa/response",
+        body={"text": "x", "base_sha256": "0" * 64},
+    )
+    assert status == 409 and body["error"]["code"] == "stale_content"
+
+
+def test_edit_response_put_blocked_while_job_active(server, monkeypatch):
+    import time
+
+    _req(server, "POST", "/v1/runs/t/stages/draft/response", body={"text": "V1"})
+    monkeypatch.setenv("FAKE_DELAY", "5")
+    status, job = _req(server, "POST", "/v1/jobs", body={"topic_id": "t", "stage": "draft"})
+    assert status == 200
+
+    status, body = _req(
+        server,
+        "PUT",
+        "/v1/runs/t/stages/draft/response",
+        body={"text": "V2", "base_sha256": _sha_hex("V1")},
+    )
+    assert status == 409 and body["error"]["code"] == "job_active"
+
+    _req(server, "POST", f"/v1/jobs/{job['id']}/cancel")
+    for _ in range(200):
+        status, current = _req(server, "GET", f"/v1/jobs/{job['id']}")
+        if current["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
+            break
+        time.sleep(0.02)
+
+
+def test_put_unknown_path_is_404(server):
+    status, body = _req(server, "PUT", "/v1/nope", body={"text": "x"})
+    assert status == 404
+
+
 def test_downloads_require_token(server):
     status, _, _ = _raw_download(server, "/v1/runs/t/final/download", token=None)
     assert status == 401
@@ -614,3 +752,52 @@ def test_full_pipeline_over_http(server):
         status, headers, _ = _raw_download(server, path)
         assert status == 200, path
         assert headers["content-type"] == ctype, path
+
+
+def test_preview_renders_markdown_body(server):
+    status, body = _req(
+        server, "POST", "/v1/preview", body={"text": "# Hi\n\nSome **bold** text."}
+    )
+    assert status == 200
+    assert "<h1>Hi</h1>" in body["html"]
+    assert "<strong>bold</strong>" in body["html"]
+    assert "<!DOCTYPE" not in body["html"]
+
+
+def test_preview_escapes_script_input(server):
+    status, body = _req(
+        server, "POST", "/v1/preview", body={"text": "<script>alert(1)</script>"}
+    )
+    assert status == 200
+    assert "<script>" not in body["html"]
+    assert "&lt;script&gt;" in body["html"]
+
+
+def test_preview_missing_text_is_400(server):
+    status, _ = _req(server, "POST", "/v1/preview", body={})
+    assert status == 400
+    status, _ = _req(server, "POST", "/v1/preview", body={"text": 42})
+    assert status == 400
+
+
+def test_preview_requires_token(server):
+    status, _ = _req(server, "POST", "/v1/preview", token=None, body={"text": "x"})
+    assert status == 401
+
+
+def test_preview_not_blocked_by_active_job(server, monkeypatch):
+    import time
+
+    monkeypatch.setenv("FAKE_DELAY", "5")
+    status, job = _req(server, "POST", "/v1/jobs", body={"topic_id": "t", "stage": "draft"})
+    assert status == 200
+
+    status, body = _req(server, "POST", "/v1/preview", body={"text": "# still works"})
+    assert status == 200 and "<h1>still works</h1>" in body["html"]
+
+    _req(server, "POST", f"/v1/jobs/{job['id']}/cancel")
+    for _ in range(200):
+        status, current = _req(server, "GET", f"/v1/jobs/{job['id']}")
+        if current["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
+            break
+        time.sleep(0.02)

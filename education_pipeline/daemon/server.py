@@ -19,6 +19,7 @@ from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
 from education_pipeline.daemon import read_api, write_api
 from education_pipeline.daemon.jobs import Job, JobStore, Worker
 from education_pipeline.daemon.static import resolve_static
+from education_pipeline.export import render_html_body
 from education_pipeline.runs import RunStore, SUPPORTED_STAGES
 from education_pipeline.workspace import ProfileStore, TopicStore
 
@@ -280,6 +281,11 @@ def _make_handler(context: DaemonContext):
                 return self._error(400, "bad_request", str(exc))
 
         def _api_post_routes(self):
+            if self.path == "/v1/preview":
+                body = self._read_body()
+                return self._send(
+                    200, {"html": render_html_body(_require_str(body, "text"))}
+                )
             if self.path == "/v1/jobs":
                 body = self._read_body()
                 job = context.enqueue_stage(
@@ -385,6 +391,35 @@ def _make_handler(context: DaemonContext):
                         m.group(1),
                         _require_str(body, "profile_id"),
                         overwrite=bool(body.get("overwrite", True)),
+                    ),
+                )
+            self._error(404, "not_found", "unknown path")
+
+        def do_PUT(self):
+            if not self._guard():
+                return
+            try:
+                return self._api_put_routes()
+            except read_api.NotFoundError as exc:
+                return self._error(404, "not_found", str(exc))
+            except write_api.ConflictError as exc:
+                return self._error(409, exc.code, str(exc))
+            except ConfigError as exc:
+                return self._error(400, "bad_request", str(exc))
+
+        def _api_put_routes(self):
+            m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/response$", self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.edit_response(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        m.group(2),
+                        _require_str(body, "text"),
+                        base_sha256=_require_str(body, "base_sha256"),
                     ),
                 )
             self._error(404, "not_found", "unknown path")
