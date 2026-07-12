@@ -452,8 +452,13 @@ reached the usability or release quality required below.
 
 ### P0 — Define and prove the interactive-course contract
 
-This is the next product milestone and the largest gap between the current
-pipeline and the product promise.
+**Status: Delivered 2026-07-11** (closeout evidence in
+[`docs/superpowers/plans/2026-07-11-interactive-guide-v1.md`](superpowers/plans/2026-07-11-interactive-guide-v1.md)
+§12 and `docs/testing/2026-07-11-interactive-guide-v1-acceptance.md`). Course
+brief and blueprint schemas were delivered only to the depth the acceptance
+fixture requires; deeper blueprint work remains under "P1 — Blueprint-driven
+pedagogy". Remaining manual accessibility items were waived by the owner and
+are tracked for the post-milestone audit.
 
 Milestone specifications:
 

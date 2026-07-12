@@ -104,3 +104,16 @@ audit.
 Template: `interactive-guide-v1-manual-acceptance.md` in this directory. A
 human pass should copy that template into a new dated entry; this record does
 not check any of its boxes on a human's behalf.
+
+## Owner sign-off (2026-07-11)
+
+The project owner manually exercised the cockpit and export during this
+session: drove a full run and a paused editing run in the browser, used the
+side-by-side prompt/response comparison, confirmed the exported guide is a
+working standalone HTML file, and downloaded the canonical JSON. The owner
+then **explicitly accepted the milestone with the remaining human-required
+items waived without execution** (screen-reader smoke pass, formal manual
+keyboard checklist pass, real print dialog, real-device reflow). These items
+were not performed; the waiver, not their completion, is what closes the
+blocker. They remain recommended before a public release and are flagged for
+the Chunk 09 audit.
