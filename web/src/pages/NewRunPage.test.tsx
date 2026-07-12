@@ -5,18 +5,22 @@ import { describe, expect, it, vi } from "vitest";
 import type { CatalogProvider, PlanPayload, ProviderAvailability, RunStatus } from "../api/types";
 import NewRunPage from "./NewRunPage";
 
-vi.mock("../api/client", () => ({
-  createTopic: vi.fn(),
-  importTopic: vi.fn(),
-  getProfiles: vi.fn(),
-  attachProfile: vi.fn(),
-  postAdvance: vi.fn(),
-  getRunStatus: vi.fn(),
-  getConfigProviders: vi.fn(),
-  getConfigCatalog: vi.fn(),
-  getRunPlan: vi.fn(),
-  putRunPlan: vi.fn(),
-}));
+vi.mock("../api/client", async () => {
+  const actual = await vi.importActual<typeof import("../api/client")>("../api/client");
+  return {
+    ApiRequestError: actual.ApiRequestError,
+    createTopic: vi.fn(),
+    importTopic: vi.fn(),
+    getProfiles: vi.fn(),
+    attachProfile: vi.fn(),
+    postAdvance: vi.fn(),
+    getRunStatus: vi.fn(),
+    getConfigProviders: vi.fn(),
+    getConfigCatalog: vi.fn(),
+    getRunPlan: vi.fn(),
+    putRunPlan: vi.fn(),
+  };
+});
 
 import {
   attachProfile,
@@ -157,6 +161,27 @@ describe("NewRunPage", () => {
 
     expect(attachProfile).not.toHaveBeenCalled();
     expect(await screen.findByText("Model plan for this run")).toBeInTheDocument();
+  });
+
+  it("stays on the profile step and shows the error when run initialization fails", async () => {
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    vi.mocked(createTopic).mockResolvedValue({ id: "t3", title: "T3" });
+    vi.mocked(postAdvance).mockRejectedValue(new Error("run init failed: boom"));
+    setupPlanMocks();
+
+    render(
+      <MemoryRouter>
+        <NewRunPage />
+      </MemoryRouter>,
+    );
+
+    await userEvent.type(screen.getByLabelText("Topic id"), "t3");
+    await userEvent.type(screen.getByLabelText("Title"), "T3");
+    await userEvent.click(screen.getByRole("button", { name: "Create topic" }));
+
+    expect(await screen.findByText(/run init failed: boom/)).toBeInTheDocument();
+    // The wizard must NOT have advanced to the plan step.
+    expect(screen.queryByText("Model plan for this run")).toBeNull();
   });
 
   it("initializes the run and renders the plan review with a Go to run board link", async () => {

@@ -137,6 +137,25 @@ describe("PlanStageRow", () => {
     });
   });
 
+  it("does not duplicate the manual option when the catalog already defines one", () => {
+    const onChange = vi.fn();
+    const catalogWithManual: CatalogProvider[] = [
+      ...catalog,
+      { id: "manual", label: "manual", description: "", models: [] },
+    ];
+    render(
+      <PlanStageRow
+        stage={outlineStage}
+        catalog={catalogWithManual}
+        providers={providers}
+        onChange={onChange}
+      />,
+    );
+    const providerSelect = screen.getByLabelText("Provider for outline");
+    const manualOptions = within(providerSelect).getAllByRole("option", { name: "manual" });
+    expect(manualOptions).toHaveLength(1);
+  });
+
   it("emits an override when the effort changes, using default to mean unset", async () => {
     const onChange = vi.fn();
     render(

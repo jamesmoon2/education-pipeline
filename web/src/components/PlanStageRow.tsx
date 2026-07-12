@@ -81,7 +81,9 @@ export default function PlanStageRow({
               </option>
             );
           })}
-          <option value={MANUAL_PROVIDER}>manual</option>
+          {!catalog.some((provider) => provider.id === MANUAL_PROVIDER) && (
+            <option value={MANUAL_PROVIDER}>manual</option>
+          )}
         </select>
       </label>
       <label>

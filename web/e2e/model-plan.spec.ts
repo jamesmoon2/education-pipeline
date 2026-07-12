@@ -164,7 +164,10 @@ test("mixed-provider run configured entirely in the cockpit", async ({ page }) =
   await expect(outlineRow.getByRole("alert")).not.toBeVisible();
 
   await draftRow.getByLabel("Provider for draft").selectOption({ label: "Codex" });
-  await qaRow.getByLabel("Provider for qa").selectOption({ label: "manual" });
+  // Catalog defines its own "manual" provider (label "Manual prompt
+  // workflow") -- select by value, since the row no longer renders a
+  // duplicate generic-labeled "manual" option alongside it.
+  await qaRow.getByLabel("Provider for qa").selectOption({ value: "manual" });
 
   // Step 4: drive the run — provider stages via the run button, manual stage
   // via the existing response paste flow.

@@ -42,7 +42,7 @@ export default function NewRunPage() {
     // Wait for postAdvance (run init) to complete before rendering
     // RunPlanPanel, which fetches the run's plan — rendering it early would
     // race the run-init call against the daemon's "no run started" 404.
-    await advanceAction.run(async () => {
+    const succeeded = await advanceAction.run(async () => {
       await postAdvance(topicId);
       try {
         const status = await getRunStatus(topicId);
@@ -51,7 +51,12 @@ export default function NewRunPage() {
         setNextStage(null);
       }
     });
-    setStep("plan");
+    // Only advance the wizard when run init actually succeeded — otherwise
+    // stay put so the error banner (rendered by the current step) is visible
+    // instead of the wizard silently moving on to a run that never started.
+    if (succeeded) {
+      setStep("plan");
+    }
   };
 
   const afterTopicCreated = async (createdTopicId: string) => {
@@ -115,6 +120,10 @@ export default function NewRunPage() {
   return (
     <div className="new-run-page">
       <h2>Create your first course</h2>
+
+      {advanceAction.feedback && advanceAction.isError && (
+        <p className="error">{advanceAction.feedback}</p>
+      )}
 
       {step === "topic" && (
         <section aria-labelledby="new-run-topic-heading">
@@ -224,9 +233,6 @@ export default function NewRunPage() {
       {step === "plan" && createdId && (
         <section aria-labelledby="new-run-plan-heading">
           <h3 id="new-run-plan-heading">Review the model plan</h3>
-          {advanceAction.feedback && advanceAction.isError && (
-            <p className="error">{advanceAction.feedback}</p>
-          )}
           <RunPlanPanel topicId={createdId} nextStage={nextStage} />
           <p>
             <Link to={`/topics/${createdId}`}>Go to run board</Link>

@@ -4,6 +4,9 @@ import type { CatalogProvider, PlanPayload, PlanStage, ProviderAvailability, Sta
 import PlanStageRow from "./PlanStageRow";
 
 const MANUAL_PROVIDER = "manual";
+// Mirrors LOCAL_ONLY_STAGES in PlanStageRow.tsx: stages the run engine
+// drives locally, never through a model provider.
+const LOCAL_ONLY_STAGES = new Set(["finalize", "export"]);
 
 function describeEffective(stage: PlanStage): string {
   const parts = [stage.provider ?? MANUAL_PROVIDER];
@@ -67,15 +70,21 @@ export default function RunPlanPanel({
       <h3 id="run-plan-heading">Model plan for this run</h3>
       {nextStagePlan && (
         <p className="run-plan-next">
-          <strong>{`Next: ${nextStagePlan.stage} — ${describeEffective(nextStagePlan)}`}</strong>
-          {nextStagePlan.provider === MANUAL_PROVIDER || nextStagePlan.provider === null ? (
-            <span> — manual — you run the prompt yourself</span>
-          ) : nextStagePlan.command ? (
+          {LOCAL_ONLY_STAGES.has(nextStagePlan.stage) ? (
+            <strong>{`Next: ${nextStagePlan.stage} — runs locally, no model`}</strong>
+          ) : (
             <>
-              {" "}
-              runs locally as: <code>{nextStagePlan.command.join(" ")}</code>
+              <strong>{`Next: ${nextStagePlan.stage} — ${describeEffective(nextStagePlan)}`}</strong>
+              {nextStagePlan.provider === MANUAL_PROVIDER || nextStagePlan.provider === null ? (
+                <span> — you run the prompt yourself</span>
+              ) : nextStagePlan.command ? (
+                <>
+                  {" "}
+                  runs locally as: <code>{nextStagePlan.command.join(" ")}</code>
+                </>
+              ) : null}
             </>
-          ) : null}
+          )}
         </p>
       )}
       {rowError && <p className="error">{rowError}</p>}

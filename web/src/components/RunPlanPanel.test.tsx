@@ -115,6 +115,21 @@ describe("RunPlanPanel", () => {
     draft.provider = "manual";
     draft.command = null;
     setup(plan);
-    expect(await screen.findByText(/manual — you run the prompt yourself/)).toBeInTheDocument();
+    const heading = await screen.findByText(/Next: draft/);
+    const nextLine = heading.closest("p")!;
+    expect(nextLine).toHaveTextContent("you run the prompt yourself");
+    // "manual" must appear exactly once in the next-stage line, not doubled
+    // (describeEffective already renders the provider name "manual").
+    const occurrences = nextLine.textContent!.match(/manual/g) ?? [];
+    expect(occurrences).toHaveLength(1);
+  });
+
+  it("renders a local-stage line (not provider/model text) when the next stage is finalize", async () => {
+    const plan = makePlan();
+    setup(plan, "finalize");
+    const heading = await screen.findByText(/Next: finalize/);
+    const nextLine = heading.closest("p")!;
+    expect(nextLine).toHaveTextContent("Next: finalize — runs locally, no model");
+    expect(nextLine).not.toHaveTextContent("claude-code");
   });
 });
