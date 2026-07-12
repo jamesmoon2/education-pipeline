@@ -593,6 +593,27 @@ def test_do_post_contract_error_from_export_returns_422_not_500(server, monkeypa
     assert body["error"]["code"] == "guide_not_renderable"
 
 
+def test_do_post_guide_parse_error_from_finalize_returns_422_not_500(server, monkeypatch):
+    """normalize_guide -- the very function named in the comment above the
+    do_POST (GuideDocumentError, ContractError) except arm -- actually raises
+    GuideParseError, not those two. Before this fix GuideParseError was
+    missing from that tuple, so it fell through to a plausible-looking 500
+    internal exactly like the faults the tuple was added to catch."""
+    from education_pipeline.daemon import server as server_mod
+    from education_pipeline.guides import GuideParseError
+    from education_pipeline.guides.parse import ParseDiagnostic
+
+    def _raise(*args, **kwargs):
+        raise GuideParseError(
+            (ParseDiagnostic(code="bad_shape", path="$", message="guide cannot be parsed"),)
+        )
+
+    monkeypatch.setattr(server_mod.write_api, "finalize_run", _raise)
+    status, body = _req(server, "POST", "/v1/runs/t/finalize", body={})
+    assert status == 422
+    assert body["error"]["code"] == "guide_not_renderable"
+
+
 def test_do_put_guide_document_error_returns_422_not_500(server, monkeypatch):
     """Same coherent-taxonomy requirement on the PUT verb: a GuideDocumentError
     escaping a PUT route (e.g. a future update_run_plan-adjacent path) must
@@ -602,6 +623,29 @@ def test_do_put_guide_document_error_returns_422_not_500(server, monkeypatch):
 
     def _raise(*args, **kwargs):
         raise GuideDocumentError("guide cannot be rendered")
+
+    monkeypatch.setattr(server_mod.write_api, "edit_response", _raise)
+    status, body = _req(
+        server,
+        "PUT",
+        "/v1/runs/t/stages/draft/response",
+        body={"text": "x", "base_sha256": "0" * 64},
+    )
+    assert status == 422
+    assert body["error"]["code"] == "guide_not_renderable"
+
+
+def test_do_put_guide_parse_error_returns_422_not_500(server, monkeypatch):
+    """Same GuideParseError coherent-taxonomy requirement on the PUT verb,
+    mirroring test_do_post_guide_parse_error_from_finalize_returns_422_not_500."""
+    from education_pipeline.daemon import server as server_mod
+    from education_pipeline.guides import GuideParseError
+    from education_pipeline.guides.parse import ParseDiagnostic
+
+    def _raise(*args, **kwargs):
+        raise GuideParseError(
+            (ParseDiagnostic(code="bad_shape", path="$", message="guide cannot be parsed"),)
+        )
 
     monkeypatch.setattr(server_mod.write_api, "edit_response", _raise)
     status, body = _req(
@@ -1146,8 +1190,9 @@ def test_create_waiver_over_http_with_corrupt_element_returns_400_not_dropped_co
     )
     assert status == 400
     assert body["error"]["code"] == "bad_request"
-    # the corrupt file on disk is untouched: no .tmp orphan, no partial write
-    assert not waivers_path.with_name(waivers_path.name + ".tmp").exists()
+    # the corrupt file on disk is untouched: no orphaned mkstemp temp file
+    # (``.tmp-<random>.json``, per ``_write_bytes_atomic``), no partial write
+    assert not list(waivers_path.parent.glob(f".tmp-*{waivers_path.suffix}"))
     assert json.loads(waivers_path.read_text(encoding="utf-8"))["waivers"] == [1, 2, 3]
 
 
@@ -1201,10 +1246,11 @@ def test_create_waiver_never_persists_a_file_its_own_loader_rejects(server, tmp_
         assert {w.finding_id for w in loaded.waivers} >= {finding["id"]}
     else:
         # The endpoint refused instead: the pre-existing file must be left
-        # untouched (no partial write, no .tmp orphan).
+        # untouched (no partial write, no orphaned mkstemp temp file, per
+        # ``_write_bytes_atomic``'s ``.tmp-<random>.json`` naming).
         assert status == 400
         assert waivers_path.read_text(encoding="utf-8") == before
-        assert not waivers_path.with_name(waivers_path.name + ".tmp").exists()
+        assert not list(waivers_path.parent.glob(f".tmp-*{waivers_path.suffix}"))
 
 
 def test_get_waivers_over_http_with_corrupt_file_returns_400_not_200(server, tmp_path):

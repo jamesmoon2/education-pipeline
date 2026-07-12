@@ -29,6 +29,7 @@ from education_pipeline.export import render_html_body
 from education_pipeline.guides import (
     ContractError,
     GuideDocumentError,
+    GuideParseError,
     assemble_guide_document,
     normalize_guide,
     parse_guide,
@@ -172,13 +173,14 @@ def _make_handler(context: DaemonContext):
             if getattr(self, "_response_started", False):
                 # A status line (and possibly a partial body) already went
                 # out on this connection — appending a second status line
-                # would corrupt an in-flight keep-alive response. The only
-                # route that can reach _last_resort after a response has
-                # started is /v1/shutdown, which sends its 200 first and
-                # only then calls context.on_shutdown(). That call is safe
-                # to guard around because on_shutdown is threading.Event.set
-                # (see daemon/__init__.py), which cannot raise — not because
-                # the socket is somehow already dead by then.
+                # would corrupt an in-flight keep-alive response, so there is
+                # nothing safe left to send. This flag is set inside
+                # send_response(), before send_header/end_headers/wfile.write
+                # run, so ANY route can land here: the ordinary case is a
+                # client disconnecting mid-response (e.g. BrokenPipeError from
+                # self.wfile.write on a plain /v1/health call), not something
+                # specific to /v1/shutdown. The best available response is to
+                # log the traceback (above) and give up on this connection.
                 return
             try:
                 # The message echoes str(exc), which can include filesystem
@@ -405,7 +407,7 @@ def _make_handler(context: DaemonContext):
                 return self._error(409, exc.code, str(exc))
             except write_api.UnprocessableError as exc:
                 return self._error(422, exc.code, str(exc), exc.details)
-            except (GuideDocumentError, ContractError) as exc:
+            except (GuideDocumentError, ContractError, GuideParseError) as exc:
                 # Same fault class as the /v1/guide-preview 422 below (both
                 # are raised by normalize_guide/assemble_guide_document, e.g.
                 # from finalize_run/export_run): a guide that is safe input
@@ -611,7 +613,7 @@ def _make_handler(context: DaemonContext):
                 return self._error(409, exc.code, str(exc))
             except write_api.UnprocessableError as exc:
                 return self._error(422, exc.code, str(exc), exc.details)
-            except (GuideDocumentError, ContractError) as exc:
+            except (GuideDocumentError, ContractError, GuideParseError) as exc:
                 # Keep the error taxonomy coherent across verbs: see the
                 # matching arm in do_POST for why this maps to 422
                 # guide_not_renderable rather than a bare 500.

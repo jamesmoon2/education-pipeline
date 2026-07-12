@@ -119,7 +119,7 @@ def create_waiver(
     # run raced on an unserialized load-mutate-write with a shared hardcoded
     # temp filename, producing both lost updates and FileNotFoundError from a
     # colliding ``.tmp`` rename. ``record_waiver`` uses RunStore's per-topic
-    # ``_manifest_lock`` (serialization) and ``_write_bytes_atomic``
+    # ``_manifest_write_lock`` (serialization) and ``_write_bytes_atomic``
     # (collision-free ``mkstemp`` temp names) -- the same tools that already
     # protect manifest read-modify-write cycles -- so this is a single,
     # reused critical section rather than a divergent one. It also reuses

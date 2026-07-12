@@ -192,7 +192,7 @@ class RunStore:
     # object.__setattr__ because the dataclass is frozen. Annotated as ClassVar
     # so the dataclass machinery does not treat them as fields (which would
     # pull them into __init__/__repr__/__eq__ and require defaults).
-    _manifest_locks: ClassVar[dict[str, threading.RLock]]
+    _manifest_locks: ClassVar[dict[str, threading.Lock]]
     _manifest_locks_guard: ClassVar[threading.Lock]
 
     def __init__(self, root: str | Path) -> None:
@@ -200,29 +200,44 @@ class RunStore:
         object.__setattr__(self, "_manifest_locks", {})
         object.__setattr__(self, "_manifest_locks_guard", threading.Lock())
 
-    def _manifest_lock(self, topic_id: str) -> threading.RLock:
-        """Return the per-topic lock guarding manifest read-modify-write cycles.
+    def _manifest_write_lock(self, topic_id: str) -> threading.Lock:
+        """Return the per-topic lock serializing writes to this run's manifest
+        and waivers file.
 
         Serialization is scoped to this ``RunStore`` instance only: it
         protects concurrent threads (e.g. daemon workers) sharing one
         ``RunStore`` over the same workspace from racing on the same run's
-        manifest. Two ``RunStore`` instances over the same workspace share no
-        locks, and cross-process concurrency (e.g. concurrent CLI invocations)
-        is out of scope here. Callers must share a single ``RunStore`` per
-        workspace to get this guarantee.
+        manifest or waivers file. Two ``RunStore`` instances over the same
+        workspace share no locks, and cross-process concurrency (e.g.
+        concurrent CLI invocations) is out of scope here. Callers must share
+        a single ``RunStore`` per workspace to get this guarantee.
 
-        This is a ``threading.RLock``, deliberately: a method that takes this
-        lock and then calls another lock-taking helper on the same thread
-        (e.g. a manifest-event writer that itself calls
-        ``append_manifest_event``) must not deadlock. A plain ``Lock`` would
-        block forever on that second acquisition, silently, with no
-        diagnosable error.
+        This is a plain, non-reentrant ``threading.Lock``, deliberately: the
+        invariant is exactly one manifest (or waivers) read-modify-write
+        cycle per critical section. Reentrancy would let a method take this
+        lock, call another lock-taking method on the same thread, and have
+        that inner call perform its own read-modify-write and write the file
+        -- only for the outer method to then overwrite the file again from
+        its now-stale in-memory snapshot, silently discarding the inner
+        call's update. A plain lock instead makes any such nesting deadlock
+        immediately and loudly, which is far preferable to a silent lost
+        update.
+
+        To compose two writes into a single critical section, do NOT call a
+        public lock-taking method (e.g. :meth:`append_manifest_event`,
+        :meth:`record_stage_provenance`) from inside another one -- that is
+        exactly the nested-acquire hazard above, and will deadlock by
+        design. Instead take this lock once and call the unlocked
+        ``_locked`` primitive(s) directly (e.g.
+        :meth:`_append_manifest_event_locked`,
+        :meth:`_record_stage_provenance_locked`), which assume the caller
+        already holds the lock and perform a single read-modify-write.
         """
 
         with self._manifest_locks_guard:
             existing = self._manifest_locks.get(topic_id)
             if existing is None:
-                existing = threading.RLock()
+                existing = threading.Lock()
                 self._manifest_locks[topic_id] = existing
             return existing
 
@@ -325,7 +340,7 @@ class RunStore:
             (run / subdir).mkdir(parents=True, exist_ok=True)
 
         manifest_path = run / "manifest.json"
-        with self._manifest_lock(run.name):
+        with self._manifest_write_lock(run.name):
             if not manifest_path.exists():
                 requested = (
                     content_contract
@@ -763,16 +778,35 @@ class RunStore:
         return paths.response_path
 
     def append_manifest_event(self, topic_id: str, event: dict) -> None:
-        """Append an arbitrary event (with ``recorded_at``) to the run manifest."""
+        """Append an arbitrary event (with ``recorded_at``) to the run manifest.
+
+        Thin lock-taking wrapper around :meth:`_append_manifest_event_locked`.
+        Do not call this from inside another ``_manifest_write_lock``-holding
+        method on the same thread -- that will deadlock by design (the lock
+        is not reentrant). Compose by calling
+        :meth:`_append_manifest_event_locked` directly instead.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        with self._manifest_write_lock(safe_id):
+            self._append_manifest_event_locked(safe_id, event)
+
+    def _append_manifest_event_locked(self, topic_id: str, event: dict) -> None:
+        """Unlocked read-modify-write of one manifest event.
+
+        Caller must already hold ``_manifest_write_lock(topic_id)``. Exists
+        so callers that need to compose this write with another manifest
+        mutation in a single critical section can do so without re-entering
+        the lock.
+        """
 
         safe_id = _artifact_id(topic_id, "topic id")
         run = self.run_dir(safe_id)
-        with self._manifest_lock(safe_id):
-            manifest = self.read_manifest(safe_id)
-            entry = dict(event)
-            entry.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
-            manifest.setdefault("events", []).append(entry)
-            _write_manifest(run / "manifest.json", manifest)
+        manifest = self.read_manifest(safe_id)
+        entry = dict(event)
+        entry.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
+        manifest.setdefault("events", []).append(entry)
+        _write_manifest(run / "manifest.json", manifest)
 
     def record_stage_provenance(
         self,
@@ -787,23 +821,60 @@ class RunStore:
     ) -> None:
         """Append the effective provider/model/effort that ran a stage to
         manifest["stage_provenance"] (created as [] when missing). Append-only;
-        re-running a stage appends a new entry rather than replacing the last."""
+        re-running a stage appends a new entry rather than replacing the last.
+
+        Thin lock-taking wrapper around
+        :meth:`_record_stage_provenance_locked`. Do not call this from
+        inside another ``_manifest_write_lock``-holding method on the same
+        thread -- that will deadlock by design. Compose by calling
+        :meth:`_record_stage_provenance_locked` directly instead.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        with self._manifest_write_lock(safe_id):
+            self._record_stage_provenance_locked(
+                safe_id,
+                stage,
+                provider=provider,
+                model=model,
+                effort=effort,
+                source=source,
+                job_id=job_id,
+            )
+
+    def _record_stage_provenance_locked(
+        self,
+        topic_id: str,
+        stage: str,
+        *,
+        provider: str,
+        model: str | None,
+        effort: str | None,
+        source: str,
+        job_id: str | None = None,
+    ) -> None:
+        """Unlocked read-modify-write appending one stage-provenance entry.
+
+        Caller must already hold ``_manifest_write_lock(topic_id)``. Exists
+        so callers that need to compose this write with another manifest
+        mutation in a single critical section can do so without re-entering
+        the lock.
+        """
 
         safe_id = _artifact_id(topic_id, "topic id")
         run = self.run_dir(safe_id)
-        with self._manifest_lock(safe_id):
-            manifest = self.read_manifest(safe_id)
-            entry = {
-                "stage": stage,
-                "provider": provider,
-                "model": model,
-                "effort": effort,
-                "source": source,
-                "job_id": job_id,
-                "recorded_at": datetime.now(timezone.utc).isoformat(),
-            }
-            manifest.setdefault("stage_provenance", []).append(entry)
-            _write_manifest(run / "manifest.json", manifest)
+        manifest = self.read_manifest(safe_id)
+        entry = {
+            "stage": stage,
+            "provider": provider,
+            "model": model,
+            "effort": effort,
+            "source": source,
+            "job_id": job_id,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        manifest.setdefault("stage_provenance", []).append(entry)
+        _write_manifest(run / "manifest.json", manifest)
 
     def final_path(self, topic_id: str) -> Path:
         """Path of the assembled final guide for a run (legacy ``final/guide.md``)."""
@@ -1541,7 +1612,7 @@ class RunStore:
         so two concurrent requests waiving different findings on the same run
         must not race on load-mutate-write, and the write itself must not
         collide with a second writer's temp file. This uses
-        :meth:`_manifest_lock` (per-topic serialization, shared with the
+        :meth:`_manifest_write_lock` (per-topic serialization, shared with the
         manifest read-modify-write helpers) and :func:`_write_bytes_atomic`
         (collision-free ``mkstemp`` temp names) rather than a second,
         hand-rolled locking/temp-file scheme.
@@ -1553,7 +1624,7 @@ class RunStore:
 
         safe_id = _artifact_id(topic_id, "topic id")
         path = self.waivers_path(safe_id)
-        with self._manifest_lock(safe_id):
+        with self._manifest_write_lock(safe_id):
             existing_set = self._load_waiver_set(safe_id)
             existing: list[dict] = []
             if existing_set is not None and existing_set.guide_sha256 == guide_sha256:
@@ -1662,7 +1733,7 @@ class RunStore:
     ) -> None:
         safe_id = _artifact_id(topic_id, "topic id")
         run = self.run_dir(safe_id)
-        with self._manifest_lock(safe_id):
+        with self._manifest_write_lock(safe_id):
             manifest = self.read_manifest(safe_id)
             event: dict[str, str] = {"stage": stage, "action": action}
             for label, path in files.items():

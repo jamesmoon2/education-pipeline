@@ -487,37 +487,73 @@ def test_concurrent_record_waiver_calls_all_survive(tmp_path: Path) -> None:
     json.loads(store.waivers_path("waiver-race-topic").read_text(encoding="utf-8"))
 
 
-def test_manifest_lock_is_reentrant_same_thread(tmp_path: Path) -> None:
-    """Wave 2's findings/quality-report writer is expected to append manifest
-    events from a new RunStore method that itself takes ``_manifest_lock``
-    and then calls an existing lock-taking helper (e.g.
-    ``append_manifest_event``). A non-reentrant lock would deadlock the
-    daemon thread the first time that happens -- silently, forever. Pin the
-    fix: the same thread must be able to acquire the per-topic manifest lock
-    twice without blocking.
+def test_manifest_write_lock_is_not_reentrant(tmp_path: Path) -> None:
+    """``_manifest_write_lock`` must be a plain, non-reentrant lock: a second
+    acquisition on the SAME thread must block (never silently succeed).
+    Reentrancy would let a method take the lock, call another
+    lock-taking method on the same thread, and have that inner call's
+    read-modify-write get silently clobbered by the outer method's later
+    write of its now-stale in-memory manifest snapshot -- a lost update
+    with no error raised. A plain lock instead fails loud (blocks/deadlocks)
+    the moment nesting is attempted, which is far preferable. This pins the
+    revert away from ``threading.RLock``.
     """
-    store = _create_legacy_run(tmp_path, "reentrant-lock-topic")
-    lock = store._manifest_lock("reentrant-lock-topic")
-
-    reacquired = threading.Event()
-
-    def acquire_nested() -> None:
-        with lock:
-            reacquired.set()
+    store = _create_legacy_run(tmp_path, "non-reentrant-lock-topic")
+    lock = store._manifest_write_lock("non-reentrant-lock-topic")
 
     with lock:
-        thread = threading.Thread(target=acquire_nested)
-        thread.start()
         # A non-reentrant lock blocks even on the SAME thread if re-entered
-        # directly; to specifically exercise "the exact same thread acquires
-        # it twice" (what a nested method call does), reacquire directly here
-        # rather than only via a second thread.
-        acquired_again = lock.acquire(timeout=2)
-        assert acquired_again, "manifest lock must be reentrant on the same thread"
-        lock.release()
+        # directly -- this is exactly what a nested lock-taking method call
+        # would do, and it must NOT succeed.
+        acquired_again = lock.acquire(timeout=0.2)
+        assert not acquired_again, "manifest write lock must not be reentrant"
 
-    thread.join(timeout=2)
-    assert reacquired.is_set()
+
+def test_composed_manifest_write_via_locked_primitives_preserves_both_writes(
+    tmp_path: Path,
+) -> None:
+    """Pins the correct composition shape from Finding 1: a method that takes
+    ``_manifest_write_lock`` once and then calls the unlocked ``_locked``
+    primitives (``_append_manifest_event_locked``,
+    ``_record_stage_provenance_locked``) performs exactly one manifest
+    read-modify-write cycle per critical section, so composing a manifest
+    event with a stage-provenance entry never loses either write -- this is
+    the shape Wave 2's findings/quality-report writer needs to use.
+    """
+    store = _create_legacy_run(tmp_path, "composed-write-topic")
+    topic_id = "composed-write-topic"
+
+    def compose(n: int) -> None:
+        with store._manifest_write_lock(topic_id):
+            store._append_manifest_event_locked(topic_id, {"action": f"composed-evt-{n}"})
+            store._record_stage_provenance_locked(
+                topic_id,
+                "spec",
+                provider="claude-code",
+                model="claude-x",
+                effort=f"composed-effort-{n}",
+                source="provider",
+                job_id=f"composed-job-{n}",
+            )
+
+    count = 30
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(compose, range(count)))
+
+    manifest = store.read_manifest(topic_id)
+    events = [
+        e["action"] for e in manifest["events"] if e.get("action", "").startswith("composed-evt-")
+    ]
+    assert sorted(events) == sorted(f"composed-evt-{n}" for n in range(count))
+
+    provenance = manifest["stage_provenance"]
+    assert len(provenance) == count
+    assert sorted(p["effort"] for p in provenance) == sorted(
+        f"composed-effort-{n}" for n in range(count)
+    )
+
+    # File must still be valid JSON (no torn write, no lost update).
+    json.loads(store.manifest_path(topic_id).read_text(encoding="utf-8"))
 
 
 def test_write_spec_prompt_writes_prompt_and_response_stub(tmp_path: Path) -> None:

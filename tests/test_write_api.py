@@ -534,9 +534,11 @@ def test_waiver_rejects_element_level_corrupt_waivers_list(tmp_path, corrupt_wai
         )
 
     # The write must be atomic: a raised guard must leave no partial write and
-    # no .tmp orphan, and the original corrupt file must be untouched.
+    # no orphaned mkstemp temp file (``.tmp-<random>.json``, per
+    # ``_write_bytes_atomic``), and the original corrupt file must be
+    # untouched.
     path = runs.waivers_path("t")
-    assert not path.with_name(path.name + ".tmp").exists()
+    assert not list(path.parent.glob(f".tmp-*{path.suffix}"))
     persisted = json.loads(path.read_text(encoding="utf-8"))
     assert persisted["waivers"] == corrupt_waivers_list
 
