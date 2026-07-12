@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from education_pipeline import RunStore
+from education_pipeline import ContentContract, RunStore
 from education_pipeline.cli import main
 
 
@@ -52,6 +52,7 @@ def test_topic_import_and_list(tmp_path: Path, capsys: pytest.CaptureFixture[str
 def test_status_reports_next_action(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     ws = tmp_path / "ws"
     _run(ws, "topic", "import", str(_write(tmp_path / "topic.toml", TOPIC_TOML)))
+    _run(ws, "create", "systems-thinking", "--legacy-markdown")
     capsys.readouterr()
 
     assert _run(ws, "status", "systems-thinking") == 0
@@ -63,6 +64,7 @@ def test_status_reports_next_action(tmp_path: Path, capsys: pytest.CaptureFixtur
 def test_advance_writes_prompt(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     ws = tmp_path / "ws"
     _run(ws, "topic", "import", str(_write(tmp_path / "topic.toml", TOPIC_TOML)))
+    _run(ws, "create", "systems-thinking", "--legacy-markdown")
     capsys.readouterr()
 
     assert _run(ws, "advance", "systems-thinking") == 0
@@ -73,6 +75,7 @@ def test_advance_writes_prompt(tmp_path: Path, capsys: pytest.CaptureFixture[str
 def test_full_flow_drives_run_to_export(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     _run(ws, "topic", "import", str(_write(tmp_path / "topic.toml", TOPIC_TOML)))
+    _run(ws, "create", "systems-thinking", "--legacy-markdown")
     runs = RunStore(ws)
 
     for _ in range(50):
@@ -114,6 +117,7 @@ def test_profile_attach_threads_into_spec_prompt(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     _run(ws, "profile", "import", str(_write(tmp_path / "profile.toml", PROFILE_TOML)))
     _run(ws, "topic", "import", str(_write(tmp_path / "topic.toml", TOPIC_TOML)))
+    _run(ws, "create", "systems-thinking", "--legacy-markdown")
     assert _run(ws, "profile", "attach", "visual-profile", "systems-thinking") == 0
 
     assert _run(ws, "advance", "systems-thinking") == 0
@@ -135,7 +139,7 @@ def _seed_topic_to_draft(ws: Path):
     TopicStore(ws).import_topic(topic.id, topic_toml, overwrite=True)
 
     runs = RunStore(ws)
-    runs.create_run("systems-thinking")
+    runs.create_run("systems-thinking", content_contract=ContentContract.legacy_markdown())
     # spec -> approved
     runs.write_spec_prompt("systems-thinking", title="Systems Thinking")
     runs.response_path("systems-thinking", "spec").write_text("# Spec\n", encoding="utf-8")
@@ -238,7 +242,7 @@ def test_run_refuses_when_next_action_is_approval(tmp_path, capsys):
     TopicStore(tmp_path).import_topic(topic.id, topic_toml, overwrite=True)
 
     runs = RunStore(tmp_path)
-    runs.create_run("systems-thinking")
+    runs.create_run("systems-thinking", content_contract=ContentContract.legacy_markdown())
     runs.write_spec_prompt("systems-thinking", title="Systems Thinking")
     runs.response_path("systems-thinking", "spec").write_text("# Spec\n", encoding="utf-8")
     runs.approve_stage("systems-thinking", "spec")
@@ -248,6 +252,46 @@ def test_run_refuses_when_next_action_is_approval(tmp_path, capsys):
     code = _run(tmp_path, "run", "systems-thinking")
     assert code == 1
     _run(tmp_path, "daemon", "stop")
+
+
+def test_create_command_defaults_to_interactive_guide(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    assert _run(ws, "create", "systems-thinking") == 0
+    out = capsys.readouterr().out
+    assert "created run systems-thinking (interactive_guide 1.0)" in out
+    runs = RunStore(ws)
+    assert runs.content_contract("systems-thinking") == ContentContract.interactive_guide_v1()
+    assert runs.read_manifest("systems-thinking")["content_contract"] == {
+        "kind": "interactive_guide",
+        "schema_version": "1.0",
+    }
+
+
+def test_create_command_legacy_markdown(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    assert _run(ws, "create", "systems-thinking", "--legacy-markdown") == 0
+    out = capsys.readouterr().out
+    assert "created run systems-thinking (legacy_markdown)" in out
+    runs = RunStore(ws)
+    assert runs.content_contract("systems-thinking") == ContentContract.legacy_markdown()
+    assert runs.read_manifest("systems-thinking")["content_contract"] == {
+        "kind": "legacy_markdown"
+    }
+
+
+def test_create_command_conflicting_contract_exits_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    assert _run(ws, "create", "systems-thinking") == 0
+    capsys.readouterr()
+    assert _run(ws, "create", "systems-thinking", "--legacy-markdown") == 1
+    err = capsys.readouterr().err
+    assert "immutable content contract" in err
 
 
 def test_daemon_status_prints_cockpit_url(tmp_path, capsys, monkeypatch):

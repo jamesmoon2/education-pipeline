@@ -31,7 +31,22 @@ from education_pipeline.guides import (
 )
 
 
+def _create_legacy_run(tmp_path: Path, topic_id: str = "systems-thinking") -> RunStore:
+    """Create an explicit legacy Markdown run (post Wave 4 Slice C default flip)."""
+
+    runs = RunStore(tmp_path)
+    runs.create_run(topic_id, content_contract=ContentContract.legacy_markdown())
+    return runs
+
+
+def _ensure_legacy_run(runs: RunStore, topic_id: str) -> None:
+    """Opt a run into the explicit legacy path before driving Markdown stages."""
+
+    runs.create_run(topic_id, content_contract=ContentContract.legacy_markdown())
+
+
 def _drive_spec_to_approved(runs: RunStore, topic_id: str) -> None:
+    _ensure_legacy_run(runs, topic_id)
     result = runs.write_spec_prompt(topic_id, title="Systems Thinking")
     result.response_path.write_text("# Course Specification\n", encoding="utf-8")
     runs.approve_stage(topic_id, "spec")
@@ -257,16 +272,53 @@ def test_run_store_creates_run_directories(tmp_path: Path) -> None:
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["topic_id"] == "systems-thinking"
     assert manifest["events"] == []
+    assert manifest["content_contract"] == {
+        "kind": "interactive_guide",
+        "schema_version": "1.0",
+    }
+    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1()
+    draft = store.stage_paths("systems-thinking", "draft")
+    assert draft.response_path.name == "draft.response.json"
+    assert draft.approved_path.name == "draft.json"
+    assert draft.content_type == GUIDE_V1_CONTENT_TYPE
+
+
+def test_explicit_legacy_create_writes_legacy_contract(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    store.create_run("systems-thinking", content_contract=ContentContract.legacy_markdown())
+
+    manifest = store.read_manifest("systems-thinking")
+    assert manifest["content_contract"] == {"kind": "legacy_markdown"}
+    assert store.content_contract("systems-thinking") == ContentContract.legacy_markdown()
+    draft = store.stage_paths("systems-thinking", "draft")
+    assert draft.response_path.name == "draft.response.md"
+    assert draft.content_type == MARKDOWN_CONTENT_TYPE
 
 
 def test_absent_content_contract_is_legacy_without_manifest_mutation(tmp_path: Path) -> None:
+    """Pre-existing manifests without content_contract remain legacy and are not mutated."""
+
     store = RunStore(tmp_path)
-    store.create_run("systems-thinking")
+    run_dir = store.run_dir("systems-thinking")
+    for subdir in ("inputs", "prompts", "responses", "approved", "reports", "final"):
+        (run_dir / subdir).mkdir(parents=True, exist_ok=True)
+    bare = {
+        "schema_version": 1,
+        "topic_id": "systems-thinking",
+        "events": [],
+    }
+    store.manifest_path("systems-thinking").write_text(
+        json.dumps(bare, indent=2) + "\n", encoding="utf-8"
+    )
     before = store.manifest_path("systems-thinking").read_bytes()
+
+    # create_run with no contract must not rewrite an existing bare manifest
+    store.create_run("systems-thinking")
 
     assert store.content_contract("systems-thinking") == ContentContract.legacy_markdown()
     assert store.stage_paths("systems-thinking", "draft").content_type == MARKDOWN_CONTENT_TYPE
     assert store.manifest_path("systems-thinking").read_bytes() == before
+    assert "content_contract" not in store.read_manifest("systems-thinking")
 
 
 def test_explicit_guide_contract_round_trips_and_selects_json_artifacts(tmp_path: Path) -> None:
@@ -284,12 +336,12 @@ def test_explicit_guide_contract_round_trips_and_selects_json_artifacts(tmp_path
 
 def test_content_contract_is_immutable_and_unsupported_contracts_fail_closed(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
-    store.create_run("systems-thinking")
+    store.create_run("systems-thinking")  # default → interactive_guide 1.0
 
     with pytest.raises(ConfigError, match="immutable content contract"):
         store.create_run(
             "systems-thinking",
-            content_contract=ContentContract.interactive_guide_v1(),
+            content_contract=ContentContract.legacy_markdown(),
         )
     with pytest.raises(ConfigError, match="unsupported content contract"):
         store.create_run(
@@ -299,7 +351,7 @@ def test_content_contract_is_immutable_and_unsupported_contracts_fail_closed(tmp
 
 
 def test_manifest_events_record_current_artifact_hashes(tmp_path: Path) -> None:
-    store = RunStore(tmp_path)
+    store = _create_legacy_run(tmp_path)
     result = store.write_spec_prompt("systems-thinking", title="Systems Thinking")
 
     event = store.read_manifest("systems-thinking")["events"][-1]
@@ -310,7 +362,7 @@ def test_manifest_events_record_current_artifact_hashes(tmp_path: Path) -> None:
 
 
 def test_write_spec_prompt_writes_prompt_and_response_stub(tmp_path: Path) -> None:
-    store = RunStore(tmp_path)
+    store = _create_legacy_run(tmp_path)
 
     result = store.write_spec_prompt("systems-thinking", title="Systems Thinking")
 
@@ -339,7 +391,7 @@ def test_write_spec_prompt_uses_attached_profile_snapshot(tmp_path: Path) -> Non
     profiles.save_profile_toml("visual-profile", PROFILE_TOML)
     profiles.attach_profile_to_topic("visual-profile", "systems-thinking")
 
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     result = runs.write_spec_prompt("systems-thinking", title="Systems Thinking")
 
     prompt_text = result.prompt_path.read_text(encoding="utf-8")
@@ -349,7 +401,7 @@ def test_write_spec_prompt_uses_attached_profile_snapshot(tmp_path: Path) -> Non
 
 
 def test_write_spec_prompt_records_manifest_event(tmp_path: Path) -> None:
-    store = RunStore(tmp_path)
+    store = _create_legacy_run(tmp_path)
 
     store.write_spec_prompt("systems-thinking", title="Systems Thinking")
 
@@ -364,7 +416,7 @@ def test_write_spec_prompt_records_manifest_event(tmp_path: Path) -> None:
 
 
 def test_write_spec_prompt_refuses_overwrite_without_opt_in(tmp_path: Path) -> None:
-    store = RunStore(tmp_path)
+    store = _create_legacy_run(tmp_path)
     store.write_spec_prompt("systems-thinking", title="Systems Thinking")
 
     with pytest.raises(ConfigError, match="refusing to overwrite"):
@@ -377,7 +429,7 @@ def test_write_spec_prompt_refuses_overwrite_without_opt_in(tmp_path: Path) -> N
 
 
 def test_has_ingested_response_ignores_stub(tmp_path: Path) -> None:
-    store = RunStore(tmp_path)
+    store = _create_legacy_run(tmp_path)
     result = store.write_spec_prompt("systems-thinking", title="Systems Thinking")
 
     assert store.has_ingested_response("systems-thinking", "spec") is False
@@ -391,7 +443,7 @@ def test_write_topic_spec_prompt_uses_stored_topic(tmp_path: Path) -> None:
     topics = TopicStore(tmp_path)
     topics.save_topic_toml("systems-thinking", TOPIC_TOML)
 
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     result = runs.write_topic_spec_prompt("systems-thinking")
 
     assert isinstance(result, PromptFile)
@@ -413,7 +465,7 @@ def test_write_topic_spec_prompt_uses_attached_profile_snapshot(tmp_path: Path) 
     profiles.attach_profile_to_topic("visual-profile", "systems-thinking")
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
 
-    result = RunStore(tmp_path).write_topic_spec_prompt("systems-thinking")
+    result = _create_legacy_run(tmp_path).write_topic_spec_prompt("systems-thinking")
 
     prompt_text = result.prompt_path.read_text(encoding="utf-8")
     assert "# Learner Profile Context" in prompt_text
@@ -426,7 +478,7 @@ def test_write_topic_spec_prompt_missing_topic_raises(tmp_path: Path) -> None:
 
 
 def test_approve_stage_promotes_ingested_response(tmp_path: Path) -> None:
-    store = RunStore(tmp_path)
+    store = _create_legacy_run(tmp_path)
     result = store.write_spec_prompt("systems-thinking", title="Systems Thinking")
     result.response_path.write_text("# Course Specification\n", encoding="utf-8")
 
@@ -443,7 +495,7 @@ def test_approve_stage_promotes_ingested_response(tmp_path: Path) -> None:
 
 
 def test_approve_stage_requires_ingested_response(tmp_path: Path) -> None:
-    store = RunStore(tmp_path)
+    store = _create_legacy_run(tmp_path)
     store.write_spec_prompt("systems-thinking", title="Systems Thinking")
 
     with pytest.raises(ConfigError, match="no ingested response to approve"):
@@ -452,7 +504,7 @@ def test_approve_stage_requires_ingested_response(tmp_path: Path) -> None:
 
 def test_write_outline_prompt_uses_approved_spec_and_topic(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     spec = runs.write_topic_spec_prompt("systems-thinking")
     spec.response_path.write_text(
         "# Course Specification: Systems Thinking\n\n## Learning Outcomes\n- Explain loops.\n",
@@ -479,7 +531,7 @@ def test_write_outline_prompt_requires_approved_spec(tmp_path: Path) -> None:
 
 def test_write_draft_prompt_uses_approved_outline(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_spec_to_approved(runs, "systems-thinking")
 
     outline = runs.write_outline_prompt("systems-thinking")
@@ -501,7 +553,7 @@ def test_write_draft_prompt_uses_approved_outline(tmp_path: Path) -> None:
 
 def test_write_draft_prompt_requires_approved_outline(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_spec_to_approved(runs, "systems-thinking")
 
     with pytest.raises(ConfigError, match="approved outline response not found"):
@@ -510,7 +562,7 @@ def test_write_draft_prompt_requires_approved_outline(tmp_path: Path) -> None:
 
 def test_write_qa_prompt_uses_approved_artifacts(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_spec_to_approved(runs, "systems-thinking")
     runs.write_outline_prompt("systems-thinking").response_path.write_text(
         "# Course Outline: Systems Thinking\n\n## Modules\n1. Feedback loops\n",
@@ -536,7 +588,7 @@ def test_write_qa_prompt_uses_approved_artifacts(tmp_path: Path) -> None:
 
 def test_write_qa_prompt_requires_approved_draft(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_spec_to_approved(runs, "systems-thinking")
     _drive_outline_to_approved(runs, "systems-thinking")
 
@@ -546,7 +598,7 @@ def test_write_qa_prompt_requires_approved_draft(tmp_path: Path) -> None:
 
 def test_write_repair_prompt_uses_approved_draft_and_qa(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_spec_to_approved(runs, "systems-thinking")
     _drive_outline_to_approved(runs, "systems-thinking")
     runs.write_draft_prompt("systems-thinking").response_path.write_text(
@@ -572,7 +624,7 @@ def test_write_repair_prompt_uses_approved_draft_and_qa(tmp_path: Path) -> None:
 
 def test_write_repair_prompt_requires_approved_qa(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_spec_to_approved(runs, "systems-thinking")
     _drive_outline_to_approved(runs, "systems-thinking")
     _drive_draft_to_approved(runs, "systems-thinking")
@@ -583,7 +635,7 @@ def test_write_repair_prompt_requires_approved_qa(tmp_path: Path) -> None:
 
 def test_finalize_run_writes_final_guide(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_all_stages_to_approved(
         runs, "systems-thinking", repair_body="# Systems Thinking\n\nCorrected content.\n"
     )
@@ -602,7 +654,7 @@ def test_finalize_run_writes_final_guide(tmp_path: Path) -> None:
 
 def test_finalize_run_requires_approved_repair(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_spec_to_approved(runs, "systems-thinking")
     _drive_outline_to_approved(runs, "systems-thinking")
     _drive_draft_to_approved(runs, "systems-thinking")
@@ -614,7 +666,7 @@ def test_finalize_run_requires_approved_repair(tmp_path: Path) -> None:
 
 def test_finalize_run_refuses_overwrite_without_opt_in(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_all_stages_to_approved(runs, "systems-thinking")
     runs.finalize_run("systems-thinking")
 
@@ -626,7 +678,7 @@ def test_finalize_run_refuses_overwrite_without_opt_in(tmp_path: Path) -> None:
 
 def test_run_status_next_action_is_finalize_then_done(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_all_stages_to_approved(runs, "systems-thinking")
 
     status = runs.run_status("systems-thinking")
@@ -662,7 +714,7 @@ def test_run_status_reports_pending_before_any_work(tmp_path: Path) -> None:
 
 
 def test_run_status_advances_through_spec_substates(tmp_path: Path) -> None:
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
 
     result = runs.write_spec_prompt("systems-thinking", title="Systems Thinking")
     action = runs.run_status("systems-thinking").next_action
@@ -680,7 +732,7 @@ def test_run_status_advances_through_spec_substates(tmp_path: Path) -> None:
 
 def test_advance_writes_the_next_prompt(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
 
     result = runs.advance("systems-thinking")
 
@@ -692,7 +744,7 @@ def test_advance_writes_the_next_prompt(tmp_path: Path) -> None:
 
 def test_advance_pauses_on_human_steps(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     runs.advance("systems-thinking")  # writes the spec prompt
 
     result = runs.advance("systems-thinking")
@@ -703,7 +755,7 @@ def test_advance_pauses_on_human_steps(tmp_path: Path) -> None:
 
 def test_advance_finalizes_when_all_stages_approved(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_all_stages_to_approved(runs, "systems-thinking")
 
     result = runs.advance("systems-thinking")
@@ -715,7 +767,7 @@ def test_advance_finalizes_when_all_stages_approved(tmp_path: Path) -> None:
 
 def test_advance_is_noop_when_done(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_all_stages_to_approved(runs, "systems-thinking")
     runs.finalize_run("systems-thinking")
 
@@ -727,7 +779,7 @@ def test_advance_is_noop_when_done(tmp_path: Path) -> None:
 
 def test_advance_drives_a_full_run_with_human_steps(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
 
     for _ in range(50):
         status = runs.advance("systems-thinking").status
@@ -751,7 +803,7 @@ def test_advance_drives_a_full_run_with_human_steps(tmp_path: Path) -> None:
 
 def test_export_run_writes_html(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_all_stages_to_approved(
         runs, "systems-thinking", repair_body="# Systems Thinking\n\nCorrected content.\n"
     )
@@ -773,7 +825,7 @@ def test_export_run_writes_html(tmp_path: Path) -> None:
 
 def test_export_run_writes_markdown_bundle(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_all_stages_to_approved(runs, "systems-thinking", repair_body="# Systems Thinking\n")
     runs.finalize_run("systems-thinking")
 
@@ -789,7 +841,7 @@ def test_export_run_writes_markdown_bundle(tmp_path: Path) -> None:
 
 def test_export_run_requires_finalized(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_all_stages_to_approved(runs, "systems-thinking")
 
     with pytest.raises(ConfigError, match="not finalized"):
@@ -798,7 +850,7 @@ def test_export_run_requires_finalized(tmp_path: Path) -> None:
 
 def test_export_run_rejects_unknown_format(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     _drive_all_stages_to_approved(runs, "systems-thinking")
     runs.finalize_run("systems-thinking")
 
@@ -812,7 +864,7 @@ def test_stage_status_rejects_unsupported_stage(tmp_path: Path) -> None:
 
 
 def test_stage_status_returns_flags(tmp_path: Path) -> None:
-    runs = RunStore(tmp_path)
+    runs = _create_legacy_run(tmp_path)
     runs.write_spec_prompt("systems-thinking", title="Systems Thinking")
 
     status = runs.stage_status("systems-thinking", "spec")
@@ -827,6 +879,8 @@ def test_list_run_ids_returns_started_runs(tmp_path: Path) -> None:
     runs = RunStore(tmp_path)
     assert runs.list_run_ids() == ()
 
+    runs.create_run("beta-topic", content_contract=ContentContract.legacy_markdown())
+    runs.create_run("alpha-topic", content_contract=ContentContract.legacy_markdown())
     runs.write_spec_prompt("beta-topic", title="Beta")
     runs.write_spec_prompt("alpha-topic", title="Alpha")
 
@@ -851,8 +905,7 @@ def test_write_spec_prompt_rejects_unknown_stage_helper(tmp_path: Path) -> None:
 
 
 def test_ingest_response_writes_response_atomically(tmp_path):
-    runs = RunStore(tmp_path)
-    runs.create_run("systems-thinking")
+    runs = _create_legacy_run(tmp_path)
     path = runs.ingest_response("systems-thinking", "draft", "# Draft body\n")
     assert path == runs.response_path("systems-thinking", "draft")
     assert path.read_text(encoding="utf-8") == "# Draft body\n"
@@ -860,15 +913,13 @@ def test_ingest_response_writes_response_atomically(tmp_path):
 
 
 def test_ingest_response_rejects_empty(tmp_path):
-    runs = RunStore(tmp_path)
-    runs.create_run("systems-thinking")
+    runs = _create_legacy_run(tmp_path)
     with pytest.raises(ConfigError):
         runs.ingest_response("systems-thinking", "draft", "   \n\t ")
 
 
 def test_ingest_response_refuses_clobber_unless_forced(tmp_path):
-    runs = RunStore(tmp_path)
-    runs.create_run("systems-thinking")
+    runs = _create_legacy_run(tmp_path)
     runs.ingest_response("systems-thinking", "draft", "first\n")
     with pytest.raises(ConfigError):
         runs.ingest_response("systems-thinking", "draft", "second\n")
@@ -877,8 +928,7 @@ def test_ingest_response_refuses_clobber_unless_forced(tmp_path):
 
 
 def test_append_manifest_event_records_event(tmp_path):
-    runs = RunStore(tmp_path)
-    runs.create_run("systems-thinking")
+    runs = _create_legacy_run(tmp_path)
     runs.append_manifest_event(
         "systems-thinking", {"stage": "draft", "action": "job", "job_id": "j1"}
     )
@@ -906,8 +956,7 @@ def _response_sha(path: Path) -> str:
 
 
 def test_edit_response_rewrites_content_and_records_event(tmp_path: Path) -> None:
-    store = RunStore(tmp_path)
-    store.create_run("t")
+    store = _create_legacy_run(tmp_path, "t")
     path = store.ingest_response("t", "draft", "old body\n")
 
     result = store.edit_response(
@@ -926,8 +975,7 @@ def test_edit_response_rewrites_content_and_records_event(tmp_path: Path) -> Non
 
 
 def test_edit_response_rejects_stale_hash(tmp_path: Path) -> None:
-    store = RunStore(tmp_path)
-    store.create_run("t")
+    store = _create_legacy_run(tmp_path, "t")
     path = store.ingest_response("t", "draft", "old body\n")
     loaded_sha = _response_sha(path)
     path.write_text("changed by someone else\n", encoding="utf-8")
@@ -940,16 +988,14 @@ def test_edit_response_rejects_stale_hash(tmp_path: Path) -> None:
 
 
 def test_edit_response_requires_existing_response(tmp_path: Path) -> None:
-    store = RunStore(tmp_path)
-    store.create_run("t")
+    store = _create_legacy_run(tmp_path, "t")
 
     with pytest.raises(ConfigError):
         store.edit_response("t", "draft", "text\n", base_sha256="0" * 64)
 
 
 def test_edit_response_rejects_empty_text(tmp_path: Path) -> None:
-    store = RunStore(tmp_path)
-    store.create_run("t")
+    store = _create_legacy_run(tmp_path, "t")
     path = store.ingest_response("t", "draft", "old body\n")
 
     with pytest.raises(ConfigError):
@@ -957,8 +1003,7 @@ def test_edit_response_rejects_empty_text(tmp_path: Path) -> None:
 
 
 def test_edit_response_rejects_bad_stage_and_topic(tmp_path: Path) -> None:
-    store = RunStore(tmp_path)
-    store.create_run("t")
+    store = _create_legacy_run(tmp_path, "t")
 
     with pytest.raises(ConfigError):
         store.edit_response("t", "bogus", "text\n", base_sha256="0" * 64)
@@ -1167,8 +1212,7 @@ def test_guide_v1_prompt_written_events_record_upstream_hashes(tmp_path: Path) -
 
 
 def test_ingest_response_force_records_replaced_response_hash(tmp_path: Path) -> None:
-    runs = RunStore(tmp_path)
-    runs.create_run("systems-thinking")
+    runs = _create_legacy_run(tmp_path)
     old_text = "first response\n"
     path = runs.ingest_response("systems-thinking", "draft", old_text)
     old_sha = hashlib.sha256(old_text.encode("utf-8")).hexdigest()
@@ -1580,8 +1624,7 @@ def test_guide_v1_export_refusal(tmp_path: Path) -> None:
 
 def test_legacy_run_untouched_by_guide_validation(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
-    runs = RunStore(tmp_path)
-    runs.create_run("systems-thinking")
+    runs = _create_legacy_run(tmp_path)
     _drive_all_stages_to_approved(runs, "systems-thinking")
 
     status = runs.run_status("systems-thinking")
@@ -1589,3 +1632,98 @@ def test_legacy_run_untouched_by_guide_validation(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="validation applies only to guide runs"):
         runs.validate_run("systems-thinking", "draft")
     assert status.next_action.action == "finalize"
+
+
+# --- Wave 4 Slice C: new-run default flip and explicit legacy path ----------
+
+
+def test_create_run_default_is_interactive_guide_v1(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    store.create_run("systems-thinking")
+
+    manifest = store.read_manifest("systems-thinking")
+    assert manifest["content_contract"] == {
+        "kind": "interactive_guide",
+        "schema_version": "1.0",
+    }
+    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1()
+    draft = store.stage_paths("systems-thinking", "draft")
+    assert draft.response_path.suffix == ".json"
+    assert draft.approved_path.name == "draft.json"
+    assert draft.content_type == GUIDE_V1_CONTENT_TYPE
+
+
+def test_implicit_write_spec_prompt_creates_guide_v1_run(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    result = store.write_spec_prompt("systems-thinking", title="Systems Thinking")
+
+    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1()
+    assert "education-pipeline-contract+json" in result.prompt_path.read_text(encoding="utf-8")
+    assert store.read_manifest("systems-thinking")["content_contract"] == {
+        "kind": "interactive_guide",
+        "schema_version": "1.0",
+    }
+
+
+def test_explicit_legacy_creation_is_byte_compatible_and_drives_to_finalize(
+    tmp_path: Path,
+) -> None:
+    from education_pipeline.prompts import SpecPromptInput, compile_spec_prompt
+
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = _create_legacy_run(tmp_path)
+
+    manifest = runs.read_manifest("systems-thinking")
+    assert manifest["content_contract"] == {"kind": "legacy_markdown"}
+    draft = runs.stage_paths("systems-thinking", "draft")
+    assert draft.response_path.name == "draft.response.md"
+    assert draft.approved_path.name == "draft.md"
+
+    result = runs.write_spec_prompt("systems-thinking", title="Systems Thinking")
+    expected = compile_spec_prompt(
+        SpecPromptInput(topic_id="systems-thinking", title="Systems Thinking")
+    )
+    assert result.prompt_path.read_bytes() == expected.text.encode("utf-8")
+
+    result.response_path.write_text("# Course Specification\n", encoding="utf-8")
+    runs.approve_stage("systems-thinking", "spec")
+    _drive_outline_to_approved(runs, "systems-thinking")
+    _drive_draft_to_approved(runs, "systems-thinking")
+    _drive_qa_to_approved(runs, "systems-thinking")
+    _drive_repair_to_approved(runs, "systems-thinking", "# Systems Thinking\n")
+    final = runs.finalize_run("systems-thinking")
+    assert final.name == "guide.md"
+    assert runs.is_finalized("systems-thinking") is True
+
+
+def test_mixed_workspace_legacy_and_guide_v1_progress_independently(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("legacy-topic", TOPIC_TOML.replace(
+        'id = "systems-thinking"', 'id = "legacy-topic"'
+    ).replace("Systems Thinking", "Legacy Topic"))
+    TopicStore(tmp_path).save_topic_toml("guide-topic", TOPIC_TOML.replace(
+        'id = "systems-thinking"', 'id = "guide-topic"'
+    ).replace("Systems Thinking", "Guide Topic"))
+
+    runs = RunStore(tmp_path)
+    runs.create_run("legacy-topic", content_contract=ContentContract.legacy_markdown())
+    runs.create_run("guide-topic")  # default → interactive_guide 1.0
+
+    assert runs.list_run_ids() == ("guide-topic", "legacy-topic")
+    assert runs.content_contract("legacy-topic") == ContentContract.legacy_markdown()
+    assert runs.content_contract("guide-topic") == ContentContract.interactive_guide_v1()
+
+    # Drive legacy fully to finalized while guide sits mid-lifecycle.
+    _drive_all_stages_to_approved(runs, "legacy-topic", repair_body="# Legacy Topic\n")
+    runs.finalize_run("legacy-topic")
+    assert runs.is_finalized("legacy-topic") is True
+    assert runs.run_status("legacy-topic").next_action.action == "done"
+
+    guide_spec = runs.write_spec_prompt("guide-topic", title="Guide Topic")
+    assert "education-pipeline-contract+json" in guide_spec.prompt_path.read_text(
+        encoding="utf-8"
+    )
+    guide_status = runs.run_status("guide-topic")
+    assert guide_status.next_action.action == "save_response"
+    assert guide_status.next_action.stage == "spec"
+    assert guide_status.finalized is False
+    assert runs.is_finalized("legacy-topic") is True

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from education_pipeline import RunStore, parse_model_catalog, parse_model_plan
+from education_pipeline import ContentContract, RunStore, parse_model_catalog, parse_model_plan
 from education_pipeline.daemon.jobs import JobRunner, JobStore
 from education_pipeline.providers import (
     Invocation,
@@ -40,7 +40,7 @@ def _setup(tmp_path, provider="fake"):
     register_runner(FakeRunner())
     register_runner(UnavailableRunner())
     runs = RunStore(tmp_path)
-    runs.create_run("t")
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
     # a prompt must exist for the stage the job runs
     runs.stage_paths("t", "draft").prompt_path.parent.mkdir(parents=True, exist_ok=True)
     runs.stage_paths("t", "draft").prompt_path.write_text("PROMPT", encoding="utf-8")

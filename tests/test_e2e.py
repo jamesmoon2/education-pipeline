@@ -4,7 +4,7 @@ import sys
 import threading
 from pathlib import Path
 
-from education_pipeline import RunStore
+from education_pipeline import ContentContract, RunStore
 from education_pipeline.cli import main
 from education_pipeline.providers import Invocation, ProviderResponse, register_runner
 
@@ -41,6 +41,7 @@ def test_full_run_via_cli_lands_response_and_manifest_event(tmp_path, monkeypatc
     monkeypatch.setenv("FAKE_STDOUT", "# Executed spec\n")
     _write_config(tmp_path)
     runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking", content_contract=ContentContract.legacy_markdown())
     runs.write_spec_prompt("systems-thinking", title="Systems Thinking")  # next action: save_response(spec)
 
     # `ensure_daemon` normally autostarts the daemon as a separate OS process

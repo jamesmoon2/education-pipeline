@@ -25,7 +25,7 @@ from education_pipeline.daemon import lifecycle
 from education_pipeline.daemon.jobs import TERMINAL_STATUSES
 from education_pipeline.export import EXPORT_FORMATS
 from education_pipeline.profiles import load_learner_profile
-from education_pipeline.runs import RunStore
+from education_pipeline.runs import ContentContract, RunStore
 from education_pipeline.topics import load_topic
 from education_pipeline.workspace import ProfileStore, TopicStore
 
@@ -77,6 +77,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("profile_id")
     p.add_argument("topic_id")
     p.set_defaults(func=_cmd_profile_attach)
+
+    p = sub.add_parser("create", help="create a topic run directory")
+    p.add_argument("topic_id")
+    p.add_argument(
+        "--legacy-markdown",
+        action="store_true",
+        help="create a legacy Markdown run instead of interactive_guide 1.0",
+    )
+    p.set_defaults(func=_cmd_create)
 
     p = sub.add_parser("status", help="show a run's progress and next step")
     p.add_argument("topic_id")
@@ -176,6 +185,20 @@ def _cmd_profile_attach(args: argparse.Namespace) -> int:
     )
     print(f"attached profile {attachment.profile_id} to {attachment.topic_id}")
     print(f"  snapshot: {attachment.snapshot_path}")
+    return 0
+
+
+def _cmd_create(args: argparse.Namespace) -> int:
+    store = RunStore(_root(args))
+    if args.legacy_markdown:
+        run = store.create_run(
+            args.topic_id, content_contract=ContentContract.legacy_markdown()
+        )
+        print(f"created run {args.topic_id} (legacy_markdown)")
+    else:
+        run = store.create_run(args.topic_id)
+        print(f"created run {args.topic_id} (interactive_guide 1.0)")
+    print(run)
     return 0
 
 

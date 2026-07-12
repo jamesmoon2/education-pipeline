@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from education_pipeline import RunStore
+from education_pipeline import ContentContract, RunStore
 from education_pipeline.config import ConfigError
 from education_pipeline.daemon import serve
 from education_pipeline.daemon import lifecycle
@@ -23,7 +23,7 @@ def _health(port, token):
 
 
 def test_serve_writes_discovery_and_serves_health(tmp_path):
-    RunStore(tmp_path).create_run("t")
+    RunStore(tmp_path).create_run("t", content_contract=ContentContract.legacy_markdown())
     ready = threading.Event()
     thread = threading.Thread(target=serve, args=(tmp_path,), kwargs={"ready": ready}, daemon=True)
     thread.start()
@@ -42,7 +42,7 @@ def test_serve_writes_discovery_and_serves_health(tmp_path):
 
 
 def test_serve_refuses_when_workspace_already_claimed(tmp_path):
-    RunStore(tmp_path).create_run("t")
+    RunStore(tmp_path).create_run("t", content_contract=ContentContract.legacy_markdown())
     lifecycle.write_discovery(tmp_path, pid=os.getpid(), port=1, token="x", version="0.1.0")
     with pytest.raises(ConfigError):
         serve(tmp_path)

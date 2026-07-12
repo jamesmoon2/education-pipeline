@@ -6,15 +6,19 @@ from education_pipeline.config import ConfigError
 from education_pipeline.daemon import write_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
-from education_pipeline.runs import RunStore, SUPPORTED_STAGES
+from education_pipeline.runs import ContentContract, RunStore, SUPPORTED_STAGES
 
 
-def _workspace(tmp_path):
+def _workspace(tmp_path, *, create_legacy_run: bool = True):
     (tmp_path / "topics").mkdir()
     (tmp_path / "topics" / "t.toml").write_text(
         'schema_version = 1\nid = "t"\ntitle = "Test Topic"\n', encoding="utf-8"
     )
-    return RunStore(tmp_path), JobStore(tmp_path)
+    runs = RunStore(tmp_path)
+    # Explicit legacy: write-api suite verifies the Markdown compatibility path.
+    if create_legacy_run:
+        runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    return runs, JobStore(tmp_path)
 
 
 def test_advance_starts_run_and_full_loop_reaches_export(tmp_path):
@@ -64,7 +68,7 @@ def test_ingest_empty_text_is_config_error(tmp_path):
 
 
 def test_run_actions_404_without_a_run(tmp_path):
-    runs, jobs = _workspace(tmp_path)
+    runs, jobs = _workspace(tmp_path, create_legacy_run=False)
     with pytest.raises(NotFoundError):
         write_api.ingest_response(runs, jobs, "t", "spec", "x")
     with pytest.raises(NotFoundError):

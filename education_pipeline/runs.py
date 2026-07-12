@@ -242,29 +242,44 @@ class RunStore:
         *,
         content_contract: ContentContract | None = None,
     ) -> Path:
-        """Create the run directory tree and initialize an empty manifest."""
+        """Create the run directory tree and initialize a manifest if needed.
+
+        Newly created manifests default to interactive_guide schema ``1.0`` when
+        ``content_contract`` is omitted. Pass
+        :meth:`ContentContract.legacy_markdown` for an explicit legacy Markdown
+        run. When a manifest already exists and ``content_contract`` is omitted,
+        the existing run is left unchanged (including pre-existing manifests
+        without a ``content_contract`` field, which still read as legacy). When
+        a contract is provided against an existing run, it must match the
+        immutable recorded contract.
+        """
 
         run = self.run_dir(topic_id)
-        requested = content_contract or ContentContract.legacy_markdown()
-        _validate_content_contract(requested)
         for subdir in RUN_SUBDIRS:
             (run / subdir).mkdir(parents=True, exist_ok=True)
 
         manifest_path = run / "manifest.json"
         if not manifest_path.exists():
+            requested = (
+                content_contract
+                if content_contract is not None
+                else ContentContract.interactive_guide_v1()
+            )
+            _validate_content_contract(requested)
             manifest = {
                 "schema_version": MANIFEST_SCHEMA_VERSION,
                 "topic_id": run.name,
                 "events": [],
+                "content_contract": requested.to_manifest(),
             }
-            if content_contract is not None:
-                manifest["content_contract"] = requested.to_manifest()
             _write_manifest(manifest_path, manifest)
-        elif content_contract is not None and self.content_contract(run.name) != requested:
-            raise ConfigError(
-                f"run {run.name!r} already has immutable content contract "
-                f"{self.content_contract(run.name)!r}; requested {requested!r}"
-            )
+        elif content_contract is not None:
+            _validate_content_contract(content_contract)
+            if self.content_contract(run.name) != content_contract:
+                raise ConfigError(
+                    f"run {run.name!r} already has immutable content contract "
+                    f"{self.content_contract(run.name)!r}; requested {content_contract!r}"
+                )
         return run
 
     def list_run_ids(self) -> tuple[str, ...]:
@@ -996,6 +1011,9 @@ class RunStore:
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
+        # Materialize the run first so a missing manifest takes the new default
+        # (interactive_guide 1.0) before compiler selection.
+        self.create_run(safe_id)
         profile = self._load_attached_profile(safe_id)
         spec_input = SpecPromptInput(
             topic_id=safe_id,
@@ -1023,6 +1041,9 @@ class RunStore:
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
+        # Materialize the run first so a missing manifest takes the new default
+        # (interactive_guide 1.0) before compiler selection.
+        self.create_run(safe_id)
         topic = TopicStore(self.root).load_topic(safe_id)
         profile = self._load_attached_profile(safe_id)
         if self._is_guide_v1(safe_id):
