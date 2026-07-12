@@ -100,6 +100,18 @@ export default function ResponseEditor({
 
   return (
     <div className="response-editor">
+      <div className="editor-controls" role="toolbar" aria-label="Editor actions">
+        <button disabled={save.busy || !buffer.trim()} onClick={doSave}>
+          Save
+        </button>
+        <button onClick={togglePreview}>
+          {previewOpen ? "Hide preview" : "Preview"}
+        </button>
+        <button onClick={cancel}>Cancel</button>
+        {stale && (
+          <button onClick={() => void reload()}>Reload current content</button>
+        )}
+      </div>
       <div className="editor-panes">
         <label>
           Edit response for {stage}
@@ -121,18 +133,6 @@ export default function ResponseEditor({
           />
         )}
         {currentOnDisk !== null && <pre className="content">{currentOnDisk}</pre>}
-      </div>
-      <div className="editor-controls">
-        <button disabled={save.busy || !buffer.trim()} onClick={doSave}>
-          Save
-        </button>
-        <button onClick={togglePreview}>
-          {previewOpen ? "Hide preview" : "Preview"}
-        </button>
-        <button onClick={cancel}>Cancel</button>
-        {stale && (
-          <button onClick={() => void reload()}>Reload current content</button>
-        )}
       </div>
       {jsonError && <p className="error" role="alert">JSON syntax error: {jsonError}</p>}
       {save.feedback && (

@@ -106,6 +106,59 @@ export default function StageViewerPage() {
           </button>
         )}
       </div>
+      <div className="stage-actions" role="toolbar" aria-label="Stage actions">
+        {tab === "response" && canEdit && !editing && (
+          <button onClick={() => setEditing(true)}>Edit</button>
+        )}
+        {data.response === null && (
+          <button onClick={() => setPasteOpen((open) => !open)}>Paste response…</button>
+        )}
+        {needsApproval && (
+          <button
+            disabled={approve.busy}
+            onClick={() =>
+              approve.run(() => postApprove(topicId!, data.stage), {
+                retryWithOverwrite: () => postApprove(topicId!, data.stage, true),
+                successMessage: `Approved ${data.stage}.`,
+              })
+            }
+          >
+            Approve {data.stage}
+          </button>
+        )}
+        {data.response !== null && !finalized && (
+          <button
+            disabled={rerun.busy}
+            onClick={() => {
+              if (!window.confirm(`Replace the existing ${data.stage} response with a new provider result? The prior hash will remain in the manifest.`)) return;
+              void rerun.run(() => enqueueJob(topicId!, data.stage, true), {
+                successMessage: `Provider rerun queued for ${data.stage}.`,
+              });
+            }}
+          >
+            Rerun with provider…
+          </button>
+        )}
+      </div>
+      {needsApproval &&
+        run?.content_contract.kind === "interactive_guide" &&
+        data.approved !== null && (
+          <p className="warning">Reapproval invalidates downstream validation, finalization, and export until rebuilt.</p>
+        )}
+      {pasteOpen && data.response === null && (
+        <ResponseForm
+          topicId={topicId!}
+          stage={data.stage}
+          onDone={() => {
+            setPasteOpen(false);
+            refresh();
+          }}
+        />
+      )}
+      {rerun.feedback && <p className={rerun.isError ? "error" : "success"}>{rerun.feedback}</p>}
+      {approve.feedback && (
+        <p className={approve.isError ? "error" : "success"}>{approve.feedback}</p>
+      )}
       {showEditor ? (
         <ResponseEditor
           topicId={topicId!}
@@ -129,59 +182,6 @@ export default function StageViewerPage() {
       )}
       {diffOpen && draftApproved !== null && (
         <DiffView a={draftApproved} b={data.response ?? ""} />
-      )}
-      {tab === "response" && canEdit && !editing && (
-        <button onClick={() => setEditing(true)}>Edit</button>
-      )}
-      {data.response !== null && !finalized && (
-        <button
-          disabled={rerun.busy}
-          onClick={() => {
-            if (!window.confirm(`Replace the existing ${data.stage} response with a new provider result? The prior hash will remain in the manifest.`)) return;
-            void rerun.run(() => enqueueJob(topicId!, data.stage, true), {
-              successMessage: `Provider rerun queued for ${data.stage}.`,
-            });
-          }}
-        >
-          Rerun with provider…
-        </button>
-      )}
-      {data.response === null && (
-        <div>
-          <button onClick={() => setPasteOpen((open) => !open)}>Paste response…</button>
-          {pasteOpen && (
-            <ResponseForm
-              topicId={topicId!}
-              stage={data.stage}
-              onDone={() => {
-                setPasteOpen(false);
-                refresh();
-              }}
-            />
-          )}
-        </div>
-      )}
-      {needsApproval && (
-        <div>
-        {run?.content_contract.kind === "interactive_guide" && data.approved !== null && (
-          <p className="warning">Reapproval invalidates downstream validation, finalization, and export until rebuilt.</p>
-        )}
-        <button
-          disabled={approve.busy}
-          onClick={() =>
-            approve.run(() => postApprove(topicId!, data.stage), {
-              retryWithOverwrite: () => postApprove(topicId!, data.stage, true),
-              successMessage: `Approved ${data.stage}.`,
-            })
-          }
-        >
-          Approve {data.stage}
-        </button>
-        </div>
-      )}
-      {rerun.feedback && <p className={rerun.isError ? "error" : "success"}>{rerun.feedback}</p>}
-      {approve.feedback && (
-        <p className={approve.isError ? "error" : "success"}>{approve.feedback}</p>
       )}
     </div>
   );

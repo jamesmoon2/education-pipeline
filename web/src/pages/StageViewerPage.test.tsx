@@ -155,6 +155,32 @@ describe("StageViewerPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("groups stage actions in a toolbar above the content", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "draft",
+      prompt: "# prompt",
+      response: "response body",
+      approved: null,
+      response_sha256: "sha-1",
+      content_type: "text/markdown",
+    });
+    renderAt("/topics/t/stages/draft");
+    await userEvent.click(await screen.findByRole("tab", { name: /^response/ }));
+
+    const toolbar = await screen.findByRole("toolbar", { name: "Stage actions" });
+    const edit = screen.getByRole("button", { name: "Edit" });
+    const approve = screen.getByRole("button", { name: "Approve draft" });
+    expect(toolbar).toContainElement(edit);
+    expect(toolbar).toContainElement(approve);
+
+    // The toolbar renders before the content pane.
+    const content = screen.getByText("response body");
+    expect(
+      toolbar.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("hides Edit when the run is finalized", async () => {
     mockRun(true);
     vi.mocked(getStageContent).mockResolvedValue({
