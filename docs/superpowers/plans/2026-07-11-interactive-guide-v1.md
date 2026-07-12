@@ -1243,7 +1243,11 @@ stop. Do not implement the next milestone.
   Chunk 08 prohibits. A related observation: load-time
   `history.replaceState` fragment normalization moves the sequential focus
   starting point into the current section, so first Tab bypasses the skip
-  link (still reachable via Shift+Tab).
+  link (still reachable via Shift+Tab). **Resolved 2026-07-11 under separate
+  authorization:** commit `e2cb6f4` makes `goToTarget` focus in-document
+  targets outside any section, with a new keyboard e2e test (suite now 38);
+  pytest 404 and e2e 38 passed after the fix. The Shift+Tab observation
+  remains an accepted nuance for the post-milestone audit.
 - **Blocker 2 (human-required):** the manual screen-reader smoke pass, human
   keyboard pass, real print dialog, and real-device reflow checks cannot be
   performed by the supervising agent and were not claimed; see the acceptance

@@ -68,6 +68,12 @@ manual checklist row "skip link … jumps to the main content" (WCAG 2.4.1
 bypass-blocks intent). Fixing it requires changing frozen runtime behavior,
 which Chunk 08 prohibits — recorded as a blocker, not fixed.
 
+**Resolved 2026-07-11 with separate authorization:** `goToTarget` now focuses
+in-document targets that no section owns (commit `e2cb6f4`), covered by a new
+keyboard e2e test (`skip link: Enter moves focus to the main content without
+changing section`; suite now 38 passed). Verified after the fix:
+`python3 -m pytest` — 404 passed; `npm run e2e` — 38 passed.
+
 ### O1 — Initial Tab starts inside the current section (observation)
 
 On load the runtime normalizes the URL to the current section via
