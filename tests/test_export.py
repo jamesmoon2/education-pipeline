@@ -65,6 +65,12 @@ def test_render_escapes_document_title() -> None:
     assert "<title>A &amp; B &lt;c&gt;</title>" in html
 
 
+def test_legacy_export_document_carries_csp() -> None:
+    html = render_markdown_to_html("# T", title="T")
+    assert 'http-equiv="Content-Security-Policy"' in html
+    assert "default-src 'none'" in html
+
+
 def test_build_markdown_bundle_prepends_front_matter() -> None:
     bundle = build_markdown_bundle(
         "# Guide\n\nBody.\n",
