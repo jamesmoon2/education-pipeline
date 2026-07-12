@@ -155,6 +155,19 @@ def _make_handler(context: DaemonContext):
                 error["details"] = details
             self._send(status, {"error": error})
 
+        def _last_resort(self, exc: Exception) -> None:
+            # Any exception not mapped by a typed handler must never escape to
+            # socketserver, which would silently drop the connection with no
+            # status line at all. Convert it to a diagnosable 500 and log the
+            # traceback to stderr; never let this handler itself raise.
+            import traceback
+
+            traceback.print_exc()
+            try:
+                self._error(500, "internal", f"internal server error: {exc}")
+            except Exception:
+                traceback.print_exc()
+
         def _guard(self) -> bool:
             if not self._host_ok():
                 self._error(400, "bad_host", "host not allowed")
@@ -236,6 +249,8 @@ def _make_handler(context: DaemonContext):
                 return self._error(404, "not_found", str(exc))
             except ConfigError as exc:
                 return self._error(400, "bad_request", str(exc))
+            except Exception as exc:  # last resort: never drop the connection
+                return self._last_resort(exc)
 
         def _api_get_routes(self):
             if self.path.startswith("/v1/health"):
@@ -362,6 +377,8 @@ def _make_handler(context: DaemonContext):
                 return self._error(422, exc.code, str(exc), exc.details)
             except ConfigError as exc:
                 return self._error(400, "bad_request", str(exc))
+            except Exception as exc:  # last resort: never drop the connection
+                return self._last_resort(exc)
 
         def _api_post_routes(self):
             if self.path == "/v1/preview":
@@ -553,6 +570,8 @@ def _make_handler(context: DaemonContext):
                 return self._error(409, exc.code, str(exc))
             except ConfigError as exc:
                 return self._error(400, "bad_request", str(exc))
+            except Exception as exc:  # last resort: never drop the connection
+                return self._last_resort(exc)
 
         def _api_put_routes(self):
             if self.path == "/v1/config/plan":

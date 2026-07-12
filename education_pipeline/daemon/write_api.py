@@ -109,7 +109,7 @@ def create_waiver(
     report = payload["report"]
     if report.get("guide_sha256") != guide_sha256:
         raise ConflictError("stale_validation", "guide hash does not match the current report")
-    if not reason.strip():
+    if not isinstance(reason, str) or not reason.strip():
         raise ConfigError("waiver reason must not be empty")
     finding = next(
         (item for item in report.get("findings", []) if item.get("id") == finding_id),
@@ -129,6 +129,15 @@ def create_waiver(
             raise ConfigError(f"invalid validation waivers file: {path}") from exc
         old = _require_json_object(old, f"validation waivers file: {path}")
         if old.get("guide_sha256") == guide_sha256 and isinstance(old.get("waivers"), list):
+            for index, item in enumerate(old["waivers"]):
+                item = _require_json_object(
+                    item, f"validation waivers file: {path} waivers[{index}]"
+                )
+                if not isinstance(item.get("finding_id"), str):
+                    raise ConfigError(
+                        f"validation waivers file: {path} waivers[{index}] "
+                        "must define a string 'finding_id'"
+                    )
             existing = [item for item in old["waivers"] if item.get("finding_id") != finding_id]
     existing.append({"finding_id": finding_id, "reason": reason.strip()})
     existing.sort(key=lambda item: item["finding_id"])

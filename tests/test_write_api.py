@@ -454,6 +454,79 @@ def test_waiver_rejects_wrong_shape_persisted_waivers_file(tmp_path):
         )
 
 
+def _corrupt_waivers_setup(tmp_path, corrupt_waivers_list):
+    runs, jobs = _workspace(tmp_path, create_legacy_run=False)
+    runs.create_run("t")
+    guide = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("t", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = write_api.validate_run(runs, jobs, "t", "draft")["report"]
+    finding = next(item for item in report["findings"] if item["waivable"])
+
+    path = runs.waivers_path("t")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "guide_sha256": report["guide_sha256"],
+                "waivers": corrupt_waivers_list,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return runs, finding, report
+
+
+@pytest.mark.parametrize(
+    "corrupt_waivers_list",
+    [
+        [1, 2, 3],
+        ["str"],
+        [None],
+        [[]],
+        [{"reason": "no id key"}],
+        [{"finding_id": 7}],
+        [{"finding_id": None}],
+    ],
+)
+def test_waiver_rejects_element_level_corrupt_waivers_list(tmp_path, corrupt_waivers_list):
+    """Even when the root of validation-waivers.json is a well-formed object,
+    a corrupt element inside its ``waivers`` list must surface as ConfigError
+    (400), not crash the process when the builder calls ``.get()`` / compares
+    ``finding_id`` values on whatever json.loads() handed back for an element."""
+    runs, finding, report = _corrupt_waivers_setup(tmp_path, corrupt_waivers_list)
+
+    with pytest.raises(ConfigError):
+        write_api.create_waiver(
+            runs, "t", "draft", finding["id"], report["guide_sha256"], "reason"
+        )
+
+    # The write must be atomic: a raised guard must leave no partial write and
+    # no .tmp orphan, and the original corrupt file must be untouched.
+    path = runs.waivers_path("t")
+    assert not path.with_name(path.name + ".tmp").exists()
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["waivers"] == corrupt_waivers_list
+
+
+@pytest.mark.parametrize("bad_reason", [5, None, [], {}])
+def test_waiver_rejects_non_string_reason(tmp_path, bad_reason):
+    runs, jobs = _workspace(tmp_path, create_legacy_run=False)
+    runs.create_run("t")
+    guide = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("t", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = write_api.validate_run(runs, jobs, "t", "draft")["report"]
+    finding = next(item for item in report["findings"] if item["waivable"])
+
+    with pytest.raises(ConfigError):
+        write_api.create_waiver(
+            runs, "t", "draft", finding["id"], report["guide_sha256"], bad_reason
+        )
+
+
 @pytest.mark.parametrize(
     "body",
     [

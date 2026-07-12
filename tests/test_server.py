@@ -48,10 +48,18 @@ def _start_server(tmp_path, monkeypatch, web_dist=None, catalog=None, plan=None)
     p = runs.stage_paths("t", "draft").prompt_path
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("PROMPT", encoding="utf-8")
+    # A guide-contract topic alongside the legacy one, for validation/waiver tests.
+    runs.create_run("g", content_contract=ContentContract.interactive_guide_v1())
+    gp = runs.stage_paths("g", "draft").prompt_path
+    gp.parent.mkdir(parents=True, exist_ok=True)
+    gp.write_text("PROMPT", encoding="utf-8")
     topics_dir = tmp_path / "topics"
     topics_dir.mkdir(parents=True, exist_ok=True)
     (topics_dir / "t.toml").write_text(
         'schema_version = 1\nid = "t"\ntitle = "Test Topic"\n', encoding="utf-8"
+    )
+    (topics_dir / "g.toml").write_text(
+        'schema_version = 1\nid = "g"\ntitle = "Guide Topic"\n', encoding="utf-8"
     )
     profiles_dir = tmp_path / "profiles"
     profiles_dir.mkdir(parents=True, exist_ok=True)
@@ -276,7 +284,7 @@ def test_api_get_still_requires_token(server):
 def test_topics_list_includes_title_and_run(server):
     status, body = _req(server, "GET", "/v1/topics")
     assert status == 200
-    (entry,) = body["topics"]
+    entry = next(item for item in body["topics"] if item["id"] == "t")
     assert entry["id"] == "t"
     assert entry["title"] == "Test Topic"
     assert entry["error"] is None
@@ -318,7 +326,7 @@ def test_profiles_list_and_get(server):
 def test_runs_list(server):
     status, body = _req(server, "GET", "/v1/runs")
     assert status == 200
-    assert body["runs"] == ["t"]
+    assert sorted(body["runs"]) == ["g", "t"]
 
 
 def test_run_status_endpoint(server):
@@ -928,6 +936,65 @@ def test_guide_preview_error_semantics(server):
     assert status == 400 and body["error"]["code"] == "invalid_guide_json"
     status, body = _req(server, "POST", "/v1/guide-preview", body={"text": "{}"})
     assert status == 422 and body["error"]["code"] == "guide_not_renderable"
+
+
+def test_create_waiver_over_http_with_corrupt_element_returns_400_not_dropped_connection(
+    server, tmp_path
+):
+    """Regression test for the crash the daemon must never surface as a
+    dropped connection: a validation-waivers.json whose root is a valid JSON
+    object but whose ``waivers`` list has a corrupt element must come back as
+    a genuine HTTP 400 with the standard error envelope."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = runs.validate_run("g", "draft")
+    report_payload = json.loads(report.read_text(encoding="utf-8"))
+    finding = next(item for item in report_payload["findings"] if item["waivable"])
+
+    waivers_path = runs.waivers_path("g")
+    waivers_path.parent.mkdir(parents=True, exist_ok=True)
+    waivers_path.write_text(
+        json.dumps(
+            {
+                "guide_sha256": report_payload["guide_sha256"],
+                "waivers": [1, 2, 3],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/runs/g/validation/draft/waivers",
+        body={
+            "finding_id": finding["id"],
+            "guide_sha256": report_payload["guide_sha256"],
+            "reason": "accepted",
+        },
+    )
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+    # the corrupt file on disk is untouched: no .tmp orphan, no partial write
+    assert not waivers_path.with_name(waivers_path.name + ".tmp").exists()
+    assert json.loads(waivers_path.read_text(encoding="utf-8"))["waivers"] == [1, 2, 3]
+
+
+def test_unhandled_exception_returns_500_envelope_not_dropped_connection(server, monkeypatch):
+    """The daemon's last-resort handler must convert any unexpected exception
+    into a diagnosable 500, never a dropped connection."""
+    from education_pipeline.daemon import write_api
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(write_api, "advance_run", _boom)
+    status, body = _req(server, "POST", "/v1/runs/t/advance")
+    assert status == 500
+    assert body["error"]["code"] == "internal"
 
 
 def test_config_providers_reports_availability(config_server):
