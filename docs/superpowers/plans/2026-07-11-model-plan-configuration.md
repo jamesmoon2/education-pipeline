@@ -874,7 +874,7 @@ export const createTopic = (fields: { id: string; title: string; brief?: string;
 - [x] Update `README`/cockpit docs where the paste-TOML flow was documented, describing Settings, the run plan editor, and New run. Keep everything domain-neutral.
 - [x] Verify the frozen-surface guard: `git log --oneline --stat -- education_pipeline/guide_runtime education_pipeline/guides` since the Wave 0 gate commit shows no changes; canonical fixture SHA unchanged.
 - [x] Run the final full gate; record final counts in the Wave Log; commit `docs: close model-plan-configuration milestone`.
-- [ ] Write the post-milestone audit + next-milestone proposal per the pattern of `docs/superpowers/specs/2026-07-11-interactive-guide-v1-post-milestone-audit.md` (separate doc, separate commit).
+- [x] Write the post-milestone audit + next-milestone proposal per the pattern of `docs/superpowers/specs/2026-07-11-interactive-guide-v1-post-milestone-audit.md` (separate doc, separate commit).
 
 ---
 
