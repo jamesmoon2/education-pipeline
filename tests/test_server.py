@@ -1,6 +1,8 @@
+import hashlib
 import http.client
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ from education_pipeline import (
     STAGE_ORDER,
     ContentContract,
     RunStore,
+    load_model_plan,
     parse_model_catalog,
     parse_model_plan,
 )
@@ -1047,6 +1050,135 @@ def test_put_config_plan_unknown_model_returns_400_and_writes_nothing(tmp_path, 
         # The failed PUT wrote nothing: no workspace plan file was created.
         assert not plan_file.exists()
         assert config.plan_sha256() == base_sha256
+    finally:
+        worker.stop()
+        srv.shutdown()
+
+
+def _start_workspace_config_server(tmp_path):
+    # Boots a server over a REAL WorkspaceConfigSource (not StaticConfigSource),
+    # matching test_put_config_plan_unknown_model_returns_400_and_writes_nothing
+    # above. Model ids are drawn from the packaged config/model-catalog.example.toml
+    # fallback that WorkspaceConfigSource reads when the workspace has no catalog.
+    register_runner(FakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    config = WorkspaceConfigSource(tmp_path)
+    store = JobStore(tmp_path)
+    worker = Worker(store, lambda job: JobRunner(store, runs, *config.load(), timeout=30))
+    context = DaemonContext(
+        root=tmp_path,
+        store=store,
+        worker=worker,
+        runs=runs,
+        token="secret-token",
+        version="0.1.0",
+        config=config,
+        topics=TopicStore(tmp_path),
+        profiles=ProfileStore(tmp_path),
+        on_shutdown=lambda: None,
+    )
+    srv = build_server(context)
+    import threading
+
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    worker.start()
+    return srv, worker, config
+
+
+def test_hand_edited_plan_toml_is_reflected_by_get_config_plan(tmp_path):
+    # Regression for the spec criterion "a hand edit to model-plan.toml takes
+    # effect": WorkspaceConfigSource re-reads config/model-plan.toml on every
+    # request, so a file written directly to the workspace (as an advanced
+    # user editing it in a text editor would) must show up verbatim over the
+    # HTTP API without any daemon restart.
+    plan_file = tmp_path / "config" / "model-plan.toml"
+    plan_file.parent.mkdir(parents=True, exist_ok=True)
+    plan_file.write_text(
+        '\n'.join(
+            [
+                'provider = "claude-code"',
+                "",
+                "[stages.draft]",
+                'model = "premium-reasoning"',
+                'effort = "high"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    expected_sha256 = hashlib.sha256(plan_file.read_bytes()).hexdigest()
+
+    srv, worker, config = _start_workspace_config_server(tmp_path)
+    try:
+        status, payload = _req(srv.server_port, "GET", "/v1/config/plan")
+        assert status == 200
+        assert payload["provider"] == "claude-code"
+        assert payload["plan_sha256"] == expected_sha256
+        stages = {s["stage"]: s for s in payload["stages"]}
+        assert stages["draft"]["provider"] == "claude-code"
+        assert stages["draft"]["model"] == "premium-reasoning"
+        assert stages["draft"]["effort"] == "high"
+        # Untouched stages keep their built-in defaults (recommendation-only,
+        # no explicit model), proving the hand edit was merged, not replacing
+        # the whole plan structure.
+        assert stages["qa"]["model"] is None
+        assert stages["qa"]["recommendation"] == "fast_cheap_check"
+    finally:
+        worker.stop()
+        srv.shutdown()
+
+
+def test_put_config_plan_round_trips_through_hand_editable_toml(tmp_path):
+    # Regression for the spec criterion "...and round-trips through the UI":
+    # a UI-issued PUT must produce a model-plan.toml file that (1) contains
+    # exactly the edited values when read directly with tomllib, and (2) is
+    # still a well-formed plan that load_model_plan can parse against the
+    # catalog -- i.e. an advanced user can keep hand-editing the file the UI
+    # wrote.
+    srv, worker, config = _start_workspace_config_server(tmp_path)
+    try:
+        status, before = _req(srv.server_port, "GET", "/v1/config/plan")
+        assert status == 200
+        base_sha256 = before["plan_sha256"]
+
+        status, updated = _req(
+            srv.server_port,
+            "PUT",
+            "/v1/config/plan",
+            body={
+                "base_sha256": base_sha256,
+                "provider": "claude-code",
+                "stages": {
+                    "draft": {"model": "premium-reasoning", "effort": "high"},
+                    "qa": {"provider": "codex", "model": "fast-check"},
+                },
+            },
+        )
+        assert status == 200
+        assert updated["plan_sha256"] != base_sha256
+
+        plan_file = tmp_path / "config" / "model-plan.toml"
+        assert plan_file.exists()
+        raw = tomllib.loads(plan_file.read_text(encoding="utf-8"))
+        assert raw["provider"] == "claude-code"
+        assert raw["stages"]["draft"]["model"] == "premium-reasoning"
+        assert raw["stages"]["draft"]["effort"] == "high"
+        assert raw["stages"]["qa"]["provider"] == "codex"
+        assert raw["stages"]["qa"]["model"] == "fast-check"
+        # No stray top-level "provider" leaking into the qa stage table -- the
+        # UI-written file is exactly what an advanced user would author by hand.
+        assert "provider" not in raw["stages"]["draft"]
+
+        catalog, _ = config.load()
+        reparsed = load_model_plan(plan_file, catalog)
+        assert reparsed.provider == "claude-code"
+        draft = reparsed.stage("draft")
+        assert draft.model == "premium-reasoning"
+        assert draft.effort == "high"
+        qa = reparsed.stage("qa")
+        assert qa.provider == "codex"
+        assert qa.model == "fast-check"
     finally:
         worker.stop()
         srv.shutdown()
