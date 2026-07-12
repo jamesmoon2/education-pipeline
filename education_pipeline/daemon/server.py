@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Protocol
 
-from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
+from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan, apply_overrides
 from education_pipeline.daemon import read_api, write_api
 from education_pipeline.daemon.jobs import Job, JobStore, Worker
 from education_pipeline.daemon.static import resolve_static
@@ -66,7 +66,9 @@ class DaemonContext:
     web_dist: Path | None = None
 
     def enqueue_stage(self, topic_id: str, stage: str | None, force: bool) -> Job:
-        _, plan = self.config.load()
+        catalog, plan = self.config.load()
+        overrides = self.runs.read_plan_overrides(topic_id)
+        plan = apply_overrides(plan, overrides, catalog)
         # Validate topic against the workspace (reuses safe-id logic in RunStore).
         status = self.runs.run_status(topic_id)
         target_stage = stage or status.next_action.stage
@@ -89,6 +91,9 @@ class DaemonContext:
         provider = stage_plan.provider or plan.provider
         job = self.store.create(topic_id, target_stage, provider, stage_plan.model, stage_plan.effort)
         job.metadata["force"] = force
+        job.metadata["plan_source"] = (
+            "override" if target_stage in overrides.get("stages", {}) else "default"
+        )
         # Do not pre-save here: Worker.enqueue performs the duplicate-active
         # check, durable save, and queue insertion as one atomic operation
         # under its lock, so a rejected job never gets a job.json written.

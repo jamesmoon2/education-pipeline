@@ -14,6 +14,7 @@ from education_pipeline.config import (
     ConfigError,
     ModelCatalog,
     ModelPlan,
+    apply_overrides,
     emit_model_plan_toml,
     load_model_catalog,
     load_model_plan,
@@ -128,6 +129,8 @@ def serve(
 
         def _runner_for(job):
             catalog, plan = config.load()
+            overrides = runs.read_plan_overrides(job.topic_id)
+            plan = apply_overrides(plan, overrides, catalog)
             return JobRunner(store, runs, catalog, plan, timeout=timeout,
                               force=bool(job.metadata.get("force")))
 

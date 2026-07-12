@@ -8,10 +8,13 @@ from pathlib import Path
 import pytest
 
 from education_pipeline import ContentContract, RunStore
-from education_pipeline.config import ConfigError
+from education_pipeline.config import ConfigError, parse_model_catalog, parse_model_plan
 from education_pipeline.daemon import serve
 from education_pipeline.daemon import lifecycle
-from education_pipeline.daemon import WorkspaceConfigSource
+from education_pipeline.daemon import StaticConfigSource, WorkspaceConfigSource
+from education_pipeline.daemon.jobs import JobStore, Worker
+from education_pipeline.daemon.server import DaemonContext
+from education_pipeline.workspace import ProfileStore, TopicStore
 
 
 def _health(port, token):
@@ -85,3 +88,87 @@ def test_workspace_config_source_write_plan_creates_config_file_atomically(tmp_p
     reread_catalog, reread_plan = source.load()
     assert reread_plan.provider == "manual"
     assert source.plan_path() == written_path
+
+
+def _make_daemon_context(tmp_path, catalog, plan):
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    prompt_path = runs.stage_paths("t", "draft").prompt_path
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text("PROMPT", encoding="utf-8")
+    store = JobStore(tmp_path)
+    worker = Worker(store, lambda job: None)
+    return DaemonContext(
+        root=tmp_path,
+        store=store,
+        worker=worker,
+        runs=runs,
+        token="secret-token",
+        version="0.1.0",
+        config=StaticConfigSource(catalog, plan),
+        topics=TopicStore(tmp_path),
+        profiles=ProfileStore(tmp_path),
+        on_shutdown=lambda: None,
+    )
+
+
+def test_enqueue_stage_resolves_effective_plan_from_run_overrides(tmp_path):
+    catalog = parse_model_catalog(
+        {
+            "providers": [
+                {"id": "default-provider", "models": [{"id": "default-model"}]},
+                {"id": "override-provider", "models": [{"id": "override-model"}]},
+            ]
+        }
+    )
+    plan = parse_model_plan(
+        {
+            "provider": "default-provider",
+            "stages": {"draft": {"model": "default-model", "effort": "low"}},
+        },
+        catalog,
+    )
+    context = _make_daemon_context(tmp_path, catalog, plan)
+    context.runs.write_plan_overrides(
+        "t",
+        {
+            "stages": {
+                "draft": {
+                    "provider": "override-provider",
+                    "model": "override-model",
+                    "effort": "high",
+                }
+            }
+        },
+    )
+
+    job = context.enqueue_stage("t", "draft", False)
+
+    assert job.provider == "override-provider"
+    assert job.model == "override-model"
+    assert job.effort == "high"
+    assert job.metadata["plan_source"] == "override"
+
+
+def test_enqueue_stage_marks_plan_source_default_when_no_override(tmp_path):
+    catalog = parse_model_catalog(
+        {"providers": [{"id": "default-provider", "models": [{"id": "default-model"}]}]}
+    )
+    plan = parse_model_plan(
+        {
+            "provider": "default-provider",
+            "stages": {"draft": {"model": "default-model"}},
+        },
+        catalog,
+    )
+    context = _make_daemon_context(tmp_path, catalog, plan)
+    # Overrides exist for a different stage only — draft itself is untouched.
+    context.runs.write_plan_overrides(
+        "t", {"stages": {"qa": {"model": "default-model"}}}
+    )
+
+    job = context.enqueue_stage("t", "draft", False)
+
+    assert job.provider == "default-provider"
+    assert job.model == "default-model"
+    assert job.metadata["plan_source"] == "default"
