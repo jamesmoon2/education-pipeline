@@ -12,7 +12,7 @@ from education_pipeline import (
     parse_model_catalog,
     parse_model_plan,
 )
-from education_pipeline.daemon import StaticConfigSource
+from education_pipeline.daemon import StaticConfigSource, WorkspaceConfigSource
 from education_pipeline.daemon.jobs import JobRunner, JobStore, Worker
 from education_pipeline.daemon.server import DaemonContext, build_server
 from education_pipeline.providers import Invocation, ProviderResponse, register_runner
@@ -965,6 +965,59 @@ def test_put_config_plan_with_stale_sha_returns_409(config_server):
     )
     assert status == 409
     assert body["error"]["code"] == "stale_content"
+
+
+def test_put_config_plan_unknown_model_returns_400_and_writes_nothing(tmp_path, monkeypatch):
+    # End-to-end over the HTTP layer against a REAL WorkspaceConfigSource: a
+    # failed PUT (unknown model) must return 400 and leave the workspace's
+    # model-plan.toml untouched (here: still absent, since reads fall back to
+    # the packaged example).
+    register_runner(FakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    config = WorkspaceConfigSource(tmp_path)
+    store = JobStore(tmp_path)
+    worker = Worker(store, lambda job: JobRunner(store, runs, *config.load(), timeout=30))
+    context = DaemonContext(
+        root=tmp_path,
+        store=store,
+        worker=worker,
+        runs=runs,
+        token="secret-token",
+        version="0.1.0",
+        config=config,
+        topics=TopicStore(tmp_path),
+        profiles=ProfileStore(tmp_path),
+        on_shutdown=lambda: None,
+    )
+    srv = build_server(context)
+    import threading
+
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    worker.start()
+    try:
+        plan_file = tmp_path / "config" / "model-plan.toml"
+        assert not plan_file.exists()  # setup uses the packaged fallback
+        base_sha256 = config.plan_sha256()
+
+        status, body = _req(
+            srv.server_port,
+            "PUT",
+            "/v1/config/plan",
+            body={
+                "base_sha256": base_sha256,
+                "provider": "claude-code",
+                "stages": {"draft": {"model": "does-not-exist"}},
+            },
+        )
+        assert status == 400
+        assert body["error"]["code"] == "bad_request"
+        # The failed PUT wrote nothing: no workspace plan file was created.
+        assert not plan_file.exists()
+        assert config.plan_sha256() == base_sha256
+    finally:
+        worker.stop()
+        srv.shutdown()
 
 
 @pytest.fixture
