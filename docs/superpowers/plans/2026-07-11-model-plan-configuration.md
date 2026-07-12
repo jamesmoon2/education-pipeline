@@ -59,6 +59,7 @@ This plan is executed **one wave per manager session**. Context is cleared betwe
 | Wave | Date | Gate commit | pytest | vitest | e2e | Notes for next wave |
 |------|------|-------------|--------|--------|-----|---------------------|
 | — | — | — | 404 | 79 | 38 | Baselines at plan start |
+| 0 | 2026-07-11 | 7b91f41 | 411 | 79 | 38 | Gate ran at code commit 7b91f41; this docs-only plan-record commit sits on top (HEAD after Wave 0). Delta is docs-only, so trust these counts without re-running. +7 pytest (0.1:3, 0.2:1, 0.3:3). DEVIATION (owner FYI): Task 0.1's brief sample fallback `label (href)` and its interface prose conflict with the brief's own test forbidding the `javascript:` substring; resolved by rendering `label` only for unsafe links (safer; honors the written test). Reviewer confirmed it's the only resolution satisfying the test. Pre-existing daemon-test stderr noise (`ConnectionResetError`) is unrelated to Wave 0 and harmless. Wave 1 must add read-only `/v1` config endpoints only — no write path. |
 
 ---
 
@@ -229,7 +230,7 @@ git add .gitignore && git diff --check && git commit -m "chore: ignore workspace
 
 ### Wave 0 exit gate
 
-- [ ] Run the full gate (pytest / vitest / build / e2e), record counts + gate SHA in the Wave Log, commit the plan file. Expected: pytest 404 + ~6 new, vitest 79, e2e 38.
+- [x] Run the full gate (pytest / vitest / build / e2e), record counts + gate SHA in the Wave Log, commit the plan file. Expected: pytest 404 + ~6 new, vitest 79, e2e 38. **Done: pytest 411, vitest 79, build clean, e2e 38.**
 
 **Handoff → Wave 1** (return this to the owner verbatim as your final message):
 
