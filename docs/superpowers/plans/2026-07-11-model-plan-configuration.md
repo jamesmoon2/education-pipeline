@@ -60,6 +60,7 @@ This plan is executed **one wave per manager session**. Context is cleared betwe
 |------|------|-------------|--------|--------|-----|---------------------|
 | — | — | — | 404 | 79 | 38 | Baselines at plan start |
 | 0 | 2026-07-11 | 7b91f41 | 411 | 79 | 38 | Gate ran at code commit 7b91f41; this docs-only plan-record commit sits on top (HEAD after Wave 0). Delta is docs-only, so trust these counts without re-running. +7 pytest (0.1:3, 0.2:1, 0.3:3). DEVIATION (owner FYI): Task 0.1's brief sample fallback `label (href)` and its interface prose conflict with the brief's own test forbidding the `javascript:` substring; resolved by rendering `label` only for unsafe links (safer; honors the written test). Reviewer confirmed it's the only resolution satisfying the test. Pre-existing daemon-test stderr noise (`ConnectionResetError`) is unrelated to Wave 0 and harmless. Wave 1 must add read-only `/v1` config endpoints only — no write path. |
+| 1 | 2026-07-11 | dc72ee8 | 419 | 79 | 38 | Gate ran at code commit dc72ee8; this docs-only plan-record commit sits on top. +8 pytest (1.1:2, 1.2:1, 1.3:3, 1.4:2). All four tasks landed as specified; read-only constraint held (`write_plan` raises NotImplementedError; no PUT routes). Final wave review: ready to merge, zero Critical/Important. MUST-KNOW for Wave 2 (Task 2.2): the plan GET routes call `config.load()` then `config.plan_sha256()` as two separate disk reads — a TOCTOU window; once the SHA seeds the PUT guard this can pass the guard on a stale view. Fix by deriving parse+hash from one read of the plan bytes (e.g. `load_with_sha()`). Also: `StaticConfigSource.plan_sha256()` is an interim `repr()`-hash — Task 2.2 replaces it with sha of emitted TOML per the self-review notes. `ConfigSource` Protocol lives in `server.py` (circular-import constraint); if Wave 2 grows it, consider a `daemon/config_source.py`. |
 
 ---
 
@@ -249,7 +250,7 @@ git add .gitignore && git diff --check && git commit -m "chore: ignore workspace
 **Interfaces:**
 - Produces: `REASONING_STAGES: frozenset[str]`; `weak_stage_warning(catalog: ModelCatalog, stage_plan: StageModelPlan) -> str | None`.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 def _catalog_with_quality(quality):
@@ -273,7 +274,7 @@ def test_no_warning_for_strong_premium_unset_quality_or_non_reasoning_stage():
     assert weak_stage_warning(fast, qa) is None
 ```
 
-- [ ] **Step 2: Verify fail, implement** in `config.py`:
+- [x] **Step 2: Verify fail, implement** in `config.py`:
 
 ```python
 REASONING_STAGES = frozenset({"spec", "outline", "repair"})
@@ -297,7 +298,7 @@ def weak_stage_warning(catalog: ModelCatalog, stage_plan: StageModelPlan) -> str
     return None
 ```
 
-- [ ] **Step 3: Verify + commit** — `python3 -m pytest tests/test_config.py -v`; `git commit -m "feat(config): catalog-driven weak-configuration warnings"`
+- [x] **Step 3: Verify + commit** — `python3 -m pytest tests/test_config.py -v`; `git commit -m "feat(config): catalog-driven weak-configuration warnings"`
 
 ### Task 1.2: `ConfigSource` — fresh config loads per request/job
 
@@ -325,7 +326,7 @@ class StaticConfigSource:
 
 - `DaemonContext` **replaces** its `catalog: ModelCatalog` and `plan: ModelPlan` fields with `config: <either source>`. `enqueue_stage` calls `self.config.load()` to resolve the stage plan (fresh read per enqueue).
 
-- [ ] **Step 1: Failing test** — in `tests/test_daemon_serve.py`:
+- [x] **Step 1: Failing test** — in `tests/test_daemon_serve.py`:
 
 ```python
 def test_workspace_config_source_rereads_after_disk_edit(tmp_path):
@@ -342,9 +343,9 @@ def test_workspace_config_source_rereads_after_disk_edit(tmp_path):
     assert source.plan_sha256() != ""
 ```
 
-- [ ] **Step 2: Verify fail, implement.** `WorkspaceConfigSource` reuses the existing fallback logic (move the body of `load_workspace_config` into it; keep `load_workspace_config(root)` as a thin wrapper delegating to it for compatibility). `plan_sha256` = `hashlib.sha256(self.plan_path().read_bytes()).hexdigest()`.
+- [x] **Step 2: Verify fail, implement.** `WorkspaceConfigSource` reuses the existing fallback logic (move the body of `load_workspace_config` into it; keep `load_workspace_config(root)` as a thin wrapper delegating to it for compatibility). `plan_sha256` = `hashlib.sha256(self.plan_path().read_bytes()).hexdigest()`.
 
-- [ ] **Step 3: Thread it through.** In `serve()`: build `config = WorkspaceConfigSource(root)`; pass `config=config` to `DaemonContext`; the worker factory becomes:
+- [x] **Step 3: Thread it through.** In `serve()`: build `config = WorkspaceConfigSource(root)`; pass `config=config` to `DaemonContext`; the worker factory becomes:
 
 ```python
 def _runner_for(job):
@@ -356,8 +357,8 @@ worker = Worker(store, _runner_for)
 
 In `server.py`, `DaemonContext.enqueue_stage` starts with `_, plan = self.config.load()` and uses that local `plan`. Update every test that constructs `DaemonContext(...)` to pass `config=StaticConfigSource(catalog, plan)` (grep: `rg "DaemonContext\(" tests education_pipeline`).
 
-- [ ] **Step 4: Full pytest** — `python3 -m pytest` → green (this task touches many test call sites; do not proceed with any red).
-- [ ] **Step 5: Commit** — `git commit -m "refactor(daemon): load model catalog/plan freshly per request via ConfigSource"`
+- [x] **Step 4: Full pytest** — `python3 -m pytest` → green (this task touches many test call sites; do not proceed with any red).
+- [x] **Step 5: Commit** — `git commit -m "refactor(daemon): load model catalog/plan freshly per request via ConfigSource"`
 
 ### Task 1.3: `GET /v1/config/providers`, `/v1/config/catalog`, `/v1/config/plan`
 
@@ -385,7 +386,7 @@ def plan_payload(catalog: ModelCatalog, plan: ModelPlan, plan_sha256: str) -> di
 #  ]}  — stages in STAGE_ORDER, all eight (finalize/export show recommendation "local_only", provider as planned).
 ```
 
-- [ ] **Step 1: Failing tests** in `tests/test_server.py` (use its existing authed-GET helper):
+- [x] **Step 1: Failing tests** in `tests/test_server.py` (use its existing authed-GET helper):
 
 ```python
 def test_config_providers_reports_availability(...):
@@ -402,7 +403,7 @@ def test_config_plan_includes_sha_and_warnings(...):
 
 Add one test with a `StaticConfigSource` whose plan pins a `quality = "fast"` model on `outline` and assert `stages["outline"]["warning"]` is a non-empty string. (`StaticConfigSource.plan_sha256()` returns the sha of the emitted/held plan text — give it a deterministic value like sha of `repr(plan)` until Wave 2 makes it real.)
 
-- [ ] **Step 2: Implement** the three builders in `read_api.py` (import `get_runner` from `education_pipeline.providers`; catch `ConfigError` from `get_runner` for the no-runner case). Wire routes in `_api_get_routes` **before** the `/v1/runs/...` matches:
+- [x] **Step 2: Implement** the three builders in `read_api.py` (import `get_runner` from `education_pipeline.providers`; catch `ConfigError` from `get_runner` for the no-runner case). Wire routes in `_api_get_routes` **before** the `/v1/runs/...` matches:
 
 ```python
 if self.path == "/v1/config/providers":
@@ -416,7 +417,7 @@ if self.path == "/v1/config/plan":
     return self._send(200, read_api.plan_payload(catalog, plan, context.config.plan_sha256()))
 ```
 
-- [ ] **Step 3: Verify + commit** — `python3 -m pytest tests/test_server.py -v`; `git commit -m "feat(daemon): read endpoints for provider availability, catalog, and plan"`
+- [x] **Step 3: Verify + commit** — `python3 -m pytest tests/test_server.py -v`; `git commit -m "feat(daemon): read endpoints for provider availability, catalog, and plan"`
 
 ### Task 1.4: `GET /v1/runs/{topic}/plan` — effective plan + command preview
 
@@ -457,13 +458,13 @@ def _stage_command(catalog, stage_plan, runs, topic_id):
         return None
 ```
 
-- [ ] **Step 1: Failing test** — run-scoped plan for an initialized run returns per-stage `source: "default"` and a non-null `command` for an executable-provider stage (use the codex/claude-code provider ids the packaged example catalog defines; check `config/model-catalog.example.toml` for exact ids) and `command: null` for a manual stage. 404 for an unknown topic (reuse `read_api.require_run`).
-- [ ] **Step 2: Implement + route** (`^/v1/runs/([^/?]+)/plan$` in `_api_get_routes`, placed before the bare `^/v1/runs/([^/?]+)$` match).
-- [ ] **Step 3: Verify + commit** — `git commit -m "feat(daemon): per-run effective plan endpoint with command preview"`
+- [x] **Step 1: Failing test** — run-scoped plan for an initialized run returns per-stage `source: "default"` and a non-null `command` for an executable-provider stage (use the codex/claude-code provider ids the packaged example catalog defines; check `config/model-catalog.example.toml` for exact ids) and `command: null` for a manual stage. 404 for an unknown topic (reuse `read_api.require_run`).
+- [x] **Step 2: Implement + route** (`^/v1/runs/([^/?]+)/plan$` in `_api_get_routes`, placed before the bare `^/v1/runs/([^/?]+)$` match).
+- [x] **Step 3: Verify + commit** — `git commit -m "feat(daemon): per-run effective plan endpoint with command preview"`
 
 ### Wave 1 exit gate
 
-- [ ] Full gate; record in Wave Log; commit plan file.
+- [x] Full gate; record in Wave Log; commit plan file. **Done: pytest 419, vitest 79, build clean, e2e 38.**
 
 **Handoff → Wave 2** (return this to the owner verbatim as your final message):
 
