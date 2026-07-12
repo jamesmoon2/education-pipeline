@@ -14,7 +14,7 @@ from education_pipeline.config import (
     ConfigError,
     ModelCatalog,
     ModelPlan,
-    apply_overrides,
+    apply_overrides_lenient,
     emit_model_plan_toml,
     load_model_catalog,
     load_model_plan,
@@ -130,7 +130,17 @@ def serve(
         def _runner_for(job):
             catalog, plan = config.load()
             overrides = runs.read_plan_overrides(job.topic_id)
-            plan = apply_overrides(plan, overrides, catalog)
+            plan, override_errors = apply_overrides_lenient(plan, overrides, catalog)
+            if job.stage in override_errors:
+                # This stage's own override is invalid (e.g. the global plan
+                # or catalog changed underneath it since it was stored).
+                # Raising here fails only this job -- Worker._loop catches it
+                # and marks the job "failed" with this message; other stages
+                # (and other jobs) are unaffected.
+                raise ConfigError(
+                    f"override for stage {job.stage!r} is invalid: "
+                    f"{override_errors[job.stage]}"
+                )
             # Re-stamp plan_source against the overrides in effect right now:
             # it may have gone stale if overrides were edited while this job
             # sat queued. The mutated job object is the same one Worker._loop

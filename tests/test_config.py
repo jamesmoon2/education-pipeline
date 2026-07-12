@@ -13,7 +13,12 @@ from education_pipeline import (
     parse_model_catalog,
     parse_model_plan,
 )
-from education_pipeline.config import apply_overrides, emit_model_plan_toml, weak_stage_warning
+from education_pipeline.config import (
+    apply_overrides,
+    apply_overrides_lenient,
+    emit_model_plan_toml,
+    weak_stage_warning,
+)
 
 
 def test_loads_example_catalog_and_plan() -> None:
@@ -293,3 +298,74 @@ def test_apply_overrides_with_empty_overrides_returns_equivalent_plan():
     merged = apply_overrides(plan, {}, catalog=catalog)
 
     assert merged == plan
+
+
+def test_apply_overrides_lenient_applies_valid_stages_and_reports_invalid_ones():
+    plan, catalog = _plan_and_catalog()
+
+    effective, errors = apply_overrides_lenient(
+        plan,
+        {
+            "stages": {
+                "outline": {"effort": "medium"},
+                "qa": {"model": "not-real"},
+            }
+        },
+        catalog=catalog,
+    )
+
+    # Valid stage override applied.
+    assert effective.stage("outline").effort == "medium"
+    assert effective.stage("outline").model == "opus"
+    # Invalid stage override reported, and that stage keeps its prior value.
+    assert set(errors) == {"qa"}
+    assert "not-real" in errors["qa"]
+    assert effective.stage("qa").model == "sonnet"
+
+
+def test_apply_overrides_lenient_all_valid_returns_no_errors():
+    plan, catalog = _plan_and_catalog()
+
+    effective, errors = apply_overrides_lenient(
+        plan,
+        {"stages": {"qa": {"model": "opus", "effort": "low"}}},
+        catalog=catalog,
+    )
+
+    assert errors == {}
+    assert effective.stage("qa").model == "opus"
+    assert effective.stage("qa").effort == "low"
+
+
+def test_apply_overrides_lenient_all_invalid_returns_errors_for_each_and_unchanged_plan():
+    plan, catalog = _plan_and_catalog()
+
+    effective, errors = apply_overrides_lenient(
+        plan,
+        {
+            "stages": {
+                "outline": {"model": "not-real"},
+                "qa": {"provider": "not-real"},
+            }
+        },
+        catalog=catalog,
+    )
+
+    assert set(errors) == {"outline", "qa"}
+    assert effective == plan
+
+
+def test_apply_overrides_lenient_with_empty_overrides_returns_equivalent_plan_and_no_errors():
+    plan, catalog = _plan_and_catalog()
+
+    effective, errors = apply_overrides_lenient(plan, {}, catalog=catalog)
+
+    assert errors == {}
+    assert effective == plan
+
+
+def test_apply_overrides_lenient_rejects_non_table_stages():
+    plan, catalog = _plan_and_catalog()
+
+    with pytest.raises(ConfigError, match="overrides\\['stages'\\]"):
+        apply_overrides_lenient(plan, {"stages": "nope"}, catalog=catalog)

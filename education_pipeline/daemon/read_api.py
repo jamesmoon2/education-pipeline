@@ -17,7 +17,7 @@ from education_pipeline.config import (
     ModelCatalog,
     ModelOption,
     ModelPlan,
-    apply_overrides,
+    apply_overrides_lenient,
     weak_stage_warning,
 )
 from education_pipeline.providers import get_runner
@@ -326,12 +326,17 @@ def run_plan_payload(
     require_run(runs, topic_id)
     overrides = runs.read_plan_overrides(topic_id)
     override_stage_names = set(overrides.get("stages", {}) or {})
-    effective = apply_overrides(plan, overrides, catalog)
+    effective, errors = apply_overrides_lenient(plan, overrides, catalog)
     payload = plan_payload(catalog, effective, plan_sha256)
     for stage_entry in payload["stages"]:
-        stage_plan = effective.stage(stage_entry["stage"])
-        stage_entry["source"] = (
-            "override" if stage_entry["stage"] in override_stage_names else "default"
-        )
+        stage_name = stage_entry["stage"]
+        stage_plan = effective.stage(stage_name)
+        is_override = stage_name in override_stage_names
+        stage_entry["source"] = "override" if is_override else "default"
+        if is_override and stage_name in errors:
+            stage_entry["override_error"] = (
+                f"stored override is invalid: {errors[stage_name]} "
+                "-- reset this stage to clear it."
+            )
         stage_entry["command"] = _stage_command(catalog, stage_plan, runs, topic_id)
     return payload

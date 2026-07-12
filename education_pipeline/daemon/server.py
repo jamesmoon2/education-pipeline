@@ -15,7 +15,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Protocol
 
-from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan, apply_overrides
+from education_pipeline.config import (
+    ConfigError,
+    ModelCatalog,
+    ModelPlan,
+    apply_overrides_lenient,
+)
 from education_pipeline.daemon import read_api, write_api
 from education_pipeline.daemon.jobs import Job, JobStore, Worker
 from education_pipeline.daemon.static import resolve_static
@@ -68,7 +73,7 @@ class DaemonContext:
     def enqueue_stage(self, topic_id: str, stage: str | None, force: bool) -> Job:
         catalog, plan = self.config.load()
         overrides = self.runs.read_plan_overrides(topic_id)
-        plan = apply_overrides(plan, overrides, catalog)
+        plan, override_errors = apply_overrides_lenient(plan, overrides, catalog)
         # Validate topic against the workspace (reuses safe-id logic in RunStore).
         status = self.runs.run_status(topic_id)
         target_stage = stage or status.next_action.stage
@@ -76,6 +81,11 @@ class DaemonContext:
             raise ConfigError(
                 f"stage {target_stage!r} is not an executable stage; "
                 f"executable stages: {', '.join(SUPPORTED_STAGES)}"
+            )
+        if target_stage in override_errors:
+            raise ConfigError(
+                f"override for stage {target_stage!r} is invalid: "
+                f"{override_errors[target_stage]}"
             )
         # Structural approval gate: only enqueue when the next action is to run a prompt.
         action = status.next_action

@@ -1297,3 +1297,136 @@ def test_put_run_plan_missing_overrides_field_is_400(run_plan_server):
     status, body = _req(run_plan_server, "PUT", "/v1/runs/t/plan", body={})
     assert status == 400
     assert body["error"]["code"] == "bad_request"
+
+
+def test_get_run_plan_degrades_stage_when_stored_override_invalidated_by_catalog_change(
+    tmp_path, monkeypatch
+):
+    catalog_v1 = parse_model_catalog(
+        {
+            "providers": [
+                {"id": "manual", "models": [{"id": "prompt-only"}]},
+                {
+                    "id": "claude-code",
+                    "models": [
+                        {"id": "balanced", "argv_model": "claude-sonnet-5"},
+                        {"id": "premium", "argv_model": "claude-opus-5"},
+                    ],
+                },
+            ]
+        }
+    )
+    plan = parse_model_plan(
+        {
+            "provider": "claude-code",
+            "stages": {
+                "draft": {"model": "balanced"},
+                "qa": {"provider": "manual", "model": "prompt-only"},
+            },
+        },
+        catalog_v1,
+    )
+    register_runner(FakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    config = StaticConfigSource(catalog_v1, plan)
+    store = JobStore(tmp_path)
+    worker = Worker(store, lambda job: JobRunner(store, runs, catalog_v1, plan, timeout=30))
+    context = DaemonContext(
+        root=tmp_path,
+        store=store,
+        worker=worker,
+        runs=runs,
+        token="secret-token",
+        version="0.1.0",
+        config=config,
+        topics=TopicStore(tmp_path),
+        profiles=ProfileStore(tmp_path),
+        on_shutdown=lambda: None,
+    )
+    srv = build_server(context)
+    import threading
+
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    worker.start()
+    try:
+        # Store a valid override while the "premium" model still exists.
+        status, updated = _req(
+            srv.server_port,
+            "PUT",
+            "/v1/runs/t/plan",
+            body={"overrides": {"draft": {"model": "premium"}}},
+        )
+        assert status == 200
+        stages = {s["stage"]: s for s in updated["stages"]}
+        assert stages["draft"]["source"] == "override"
+        assert "override_error" not in stages["draft"]
+
+        # The global catalog is edited -- "premium" no longer exists.
+        catalog_v2 = parse_model_catalog(
+            {
+                "providers": [
+                    {"id": "manual", "models": [{"id": "prompt-only"}]},
+                    {
+                        "id": "claude-code",
+                        "models": [{"id": "balanced", "argv_model": "claude-sonnet-5"}],
+                    },
+                ]
+            }
+        )
+        config.catalog = catalog_v2
+
+        # GET must still return 200, not 400.
+        status, payload = _req(srv.server_port, "GET", "/v1/runs/t/plan")
+        assert status == 200
+        stages = {s["stage"]: s for s in payload["stages"]}
+        assert stages["draft"]["source"] == "override"
+        assert stages["draft"].get("override_error")
+        assert "premium" in stages["draft"]["override_error"]
+        # Effective values fall back to what would ACTUALLY run (the
+        # override is refused), not to the invalid override itself.
+        assert stages["draft"]["model"] == "balanced"
+        # Other stages are unaffected.
+        assert stages["qa"]["source"] == "default"
+        assert "override_error" not in stages["qa"]
+
+        # Enqueue of the broken stage 400s with the override message; a
+        # different stage enqueues fine.
+        status, body = _req(
+            srv.server_port,
+            "POST",
+            "/v1/jobs",
+            body={"topic_id": "t", "stage": "draft"},
+        )
+        assert status == 400
+        assert "premium" in body["error"]["message"]
+
+        status, body = _req(
+            srv.server_port,
+            "POST",
+            "/v1/jobs",
+            body={"topic_id": "t", "stage": "qa"},
+        )
+        assert status == 200
+
+        # Clearing the broken stage while it's broken succeeds.
+        status, cleared = _req(
+            srv.server_port, "PUT", "/v1/runs/t/plan", body={"overrides": {"draft": None}}
+        )
+        assert status == 200
+        stages = {s["stage"]: s for s in cleared["stages"]}
+        assert stages["draft"]["source"] == "default"
+        assert "override_error" not in stages["draft"]
+
+        # Re-setting the broken stage to a still-invalid value stays 400.
+        status, body = _req(
+            srv.server_port,
+            "PUT",
+            "/v1/runs/t/plan",
+            body={"overrides": {"draft": {"model": "premium"}}},
+        )
+        assert status == 400
+        assert body["error"]["code"] == "bad_request"
+    finally:
+        worker.stop()
+        srv.shutdown()

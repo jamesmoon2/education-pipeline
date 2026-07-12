@@ -20,7 +20,7 @@ from pathlib import Path
 
 from education_pipeline.config import (
     ConfigError,
-    apply_overrides,
+    apply_overrides_lenient,
     emit_model_plan_toml,
     parse_model_plan,
 )
@@ -400,7 +400,20 @@ def update_run_plan(runs: RunStore, config, topic_id: str, body: dict) -> dict:
             )
     merged = {"stages": merged_stages}
 
-    apply_overrides(plan, merged, catalog)  # validate before writing; ConfigError -> 400
+    # Validate leniently: reject only when a stage THIS REQUEST touches ends
+    # up invalid after merge. A different stage's stored override may already
+    # be broken (the global plan/catalog changed underneath it) -- that must
+    # not block clearing or editing an unrelated stage, or the only way to
+    # recover would be hand-editing the overrides file.
+    _, errors = apply_overrides_lenient(plan, merged, catalog)
+    touched_errors = {
+        stage_name: message
+        for stage_name, message in errors.items()
+        if stage_name in overrides_body
+    }
+    if touched_errors:
+        stage_name, message = next(iter(touched_errors.items()))
+        raise ConfigError(f"override for stage {stage_name!r} is invalid: {message}")
 
     runs.write_plan_overrides(topic_id, merged)
     return read_api.run_plan_payload(catalog, plan, config.plan_sha256(), runs, topic_id)

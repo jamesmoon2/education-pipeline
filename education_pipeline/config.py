@@ -267,6 +267,38 @@ def apply_overrides(
     return parse_model_plan(raw, catalog=catalog)
 
 
+def apply_overrides_lenient(
+    plan: ModelPlan,
+    overrides: Mapping[str, Any],
+    catalog: ModelCatalog | None = None,
+) -> tuple[ModelPlan, dict[str, str]]:
+    """Like :func:`apply_overrides`, but each stage override is validated
+    independently instead of all-or-nothing.
+
+    Applies overrides one stage at a time (same rebuild-raw + parse_model_plan
+    approach as ``apply_overrides``, scoped to a single stage per call).
+    Returns the effective plan with every VALID stage override applied, plus a
+    dict ``{stage: human-readable error}`` for each stage whose override
+    failed validation -- that stage keeps its default/global values in the
+    returned plan rather than blowing up the whole request.
+    """
+
+    override_stages = overrides.get("stages", {})
+    if not isinstance(override_stages, Mapping):
+        raise ConfigError("overrides['stages'] must be a table")
+
+    effective = plan
+    errors: dict[str, str] = {}
+    for stage_name, stage_override in override_stages.items():
+        try:
+            effective = apply_overrides(
+                effective, {"stages": {stage_name: stage_override}}, catalog=catalog
+            )
+        except ConfigError as exc:
+            errors[stage_name] = str(exc)
+    return effective, errors
+
+
 REASONING_STAGES = frozenset({"spec", "outline", "repair"})
 _QUALITY_RANK = {"fast": 0, "strong": 1, "premium": 2}
 

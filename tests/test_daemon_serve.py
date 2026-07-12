@@ -175,6 +175,39 @@ def test_enqueue_stage_marks_plan_source_default_when_no_override(tmp_path):
     assert job.metadata["plan_source"] == "default"
 
 
+def test_enqueue_stage_refuses_only_the_stage_with_an_invalid_override(tmp_path):
+    # Reproduces the Wave-3 MUST-FIX: a run's stored override for one stage
+    # became invalid (e.g. the global catalog dropped the pinned model), but
+    # that must not block enqueuing OTHER stages of the same run.
+    catalog = parse_model_catalog(
+        {"providers": [{"id": "default-provider", "models": [{"id": "default-model"}]}]}
+    )
+    plan = parse_model_plan(
+        {
+            "provider": "default-provider",
+            "stages": {
+                "draft": {"model": "default-model"},
+                "qa": {"model": "default-model"},
+            },
+        },
+        catalog,
+    )
+    context = _make_daemon_context(tmp_path, catalog, plan)
+    context.runs.write_plan_overrides(
+        "t", {"stages": {"draft": {"model": "does-not-exist"}}}
+    )
+
+    with pytest.raises(ConfigError, match="does-not-exist"):
+        context.enqueue_stage("t", "draft", False)
+
+    # A different, un-overridden stage of the same run enqueues normally.
+    job = context.enqueue_stage("t", "qa", False)
+    assert job.stage == "qa"
+    assert job.provider == "default-provider"
+    assert job.model == "default-model"
+    assert job.metadata["plan_source"] == "default"
+
+
 _FAKE_PROVIDER = Path(__file__).parent / "fake_provider.py"
 
 
