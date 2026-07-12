@@ -5,6 +5,10 @@ import {
   apiPost,
   download,
   postPreview,
+  postGuidePreview,
+  postValidate,
+  getValidation,
+  postWaiver,
   postResponse,
   putResponse,
   resetSessionForTests,
@@ -262,6 +266,54 @@ describe("apiPut", () => {
     const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/preview");
     expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({
       text: "# Hi",
+    });
+  });
+
+  it("posts guide preview, validation, findings, and waiver payloads", async () => {
+    const report = {
+      report_schema_version: 1,
+      guide_schema_version: "1.0",
+      phase: "draft",
+      guide_sha256: "hash",
+      validator_version: "1",
+      summary: { blocking: 0, errors: 0, warnings: 0, info: 0 },
+      findings: [],
+    };
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/guide-preview": {
+        status: 200,
+        body: { html: "<!doctype html>", content_sha256: "hash", validation: report.summary },
+      },
+      "/v1/runs/t/validate": { status: 200, body: { state: "current", report } },
+      "/v1/runs/t/validation/draft": { status: 200, body: { state: "current", report } },
+      "/v1/runs/t/validation/draft/waivers": {
+        status: 200,
+        body: {
+          state: "current",
+          report,
+          waivers: { schema_version: 1, guide_sha256: "hash", waivers: [] },
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postGuidePreview("{}");
+    await postValidate("t", "draft");
+    await getValidation("t", "draft");
+    await postWaiver("t", "draft", "finding", "hash", "accepted");
+
+    const bodies = Object.fromEntries(
+      fetchMock.mock.calls
+        .filter(([, init]) => init?.body)
+        .map(([url, init]) => [String(url), JSON.parse(init!.body as string)]),
+    );
+    expect(bodies["/v1/guide-preview"]).toEqual({ text: "{}", include_validation: true });
+    expect(bodies["/v1/runs/t/validate"]).toEqual({ phase: "draft" });
+    expect(bodies["/v1/runs/t/validation/draft/waivers"]).toEqual({
+      finding_id: "finding",
+      guide_sha256: "hash",
+      reason: "accepted",
     });
   });
 });

@@ -94,3 +94,9 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.85em; }
 .diff-removed {
   background: #ffebe9;
 }
+.guide-preview-frame {
+  width: 100%;
+  min-height: 40rem;
+  border: 1px solid var(--border, #bbb);
+  background: white;
+}

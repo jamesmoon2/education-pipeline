@@ -101,6 +101,7 @@ export default function StageViewerPage() {
           stage={data.stage}
           content={data.response ?? ""}
           contentSha256={data.response_sha256 ?? ""}
+          contentType={data.content_type}
           onSaved={() => {
             setEditing(false);
             refresh();

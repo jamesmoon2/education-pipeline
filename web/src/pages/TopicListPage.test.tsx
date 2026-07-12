@@ -28,6 +28,11 @@ const summary: TopicSummary = {
   run: {
     topic_id: "systems-thinking",
     finalized: false,
+    content_contract: { kind: "legacy_markdown" },
+    validations: {
+      draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+      final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+    },
     stages: [],
     next_action: {
       topic_id: "systems-thinking",

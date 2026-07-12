@@ -38,6 +38,11 @@ function makeStatus(action: NextAction["action"], stage: string | null): RunStat
   return {
     topic_id: "t",
     finalized: action === "done",
+    content_contract: { kind: "legacy_markdown" },
+    validations: {
+      draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+      final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+    },
     stages: [],
     next_action: { topic_id: "t", stage, action, detail: `detail for ${action}` },
   };

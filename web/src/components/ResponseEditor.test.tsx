@@ -9,6 +9,7 @@ vi.mock("../api/client", async () => {
     ApiRequestError: actual.ApiRequestError,
     putResponse: vi.fn(),
     postPreview: vi.fn(),
+    postGuidePreview: vi.fn(),
     getStageContent: vi.fn(),
   };
 });
@@ -26,6 +27,7 @@ function renderEditor(overrides: Partial<Parameters<typeof ResponseEditor>[0]> =
     stage: "repair",
     content: "original body",
     contentSha256: "sha-1",
+    contentType: "text/markdown" as const,
     onSaved: vi.fn(),
     onClose: vi.fn(),
     ...overrides,
@@ -69,6 +71,7 @@ describe("ResponseEditor", () => {
       response: "external content",
       approved: null,
       response_sha256: "sha-external",
+      content_type: "text/markdown",
     });
     const props = renderEditor();
 
@@ -123,6 +126,42 @@ describe("ResponseEditor", () => {
       await vi.advanceTimersByTimeAsync(500);
     });
     expect(postPreview).toHaveBeenCalledWith("# typed");
+  });
+
+  it("shows JSON syntax feedback without replacing the guide buffer", async () => {
+    const { postGuidePreview } = await import("../api/client");
+    renderEditor({
+      content: '{"schema_version":"1.0"}',
+      contentType: "application/vnd.education-pipeline.guide+json;version=1.0",
+    });
+
+    const textarea = screen.getByLabelText("Edit response for repair");
+    fireEvent.change(textarea, { target: { value: "{" } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("JSON syntax error");
+    expect(textarea).toHaveValue("{");
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(postGuidePreview).not.toHaveBeenCalled();
+  });
+
+  it("renders executable guide previews only in an opaque sandboxed iframe", async () => {
+    const { postGuidePreview } = await import("../api/client");
+    vi.mocked(postGuidePreview).mockResolvedValue({
+      html: "<!doctype html><script>document.body.dataset.ready='yes'</script>",
+      content_sha256: "abc",
+      validation: { blocking: 0, errors: 0, warnings: 0 },
+    });
+    renderEditor({
+      content: '{"schema_version":"1.0"}',
+      contentType: "application/vnd.education-pipeline.guide+json;version=1.0",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    const frame = await screen.findByTitle("Interactive guide preview");
+    expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    expect(frame).not.toHaveAttribute("sandbox", expect.stringContaining("allow-same-origin"));
+    expect(frame).toHaveAttribute("srcdoc", expect.stringContaining("<script>"));
+    expect(document.querySelector(".preview.content")).toBeNull();
   });
 
   it("confirms before discarding a dirty buffer on cancel", async () => {

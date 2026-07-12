@@ -39,6 +39,11 @@ function mockRun(finalized = false) {
   vi.mocked(getRunStatus).mockResolvedValue({
     topic_id: "t",
     finalized,
+    content_contract: { kind: "legacy_markdown" },
+    validations: {
+      draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+      final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+    },
     stages: [],
     next_action: { topic_id: "t", stage: null, action: "done", detail: "" },
   });
@@ -58,6 +63,7 @@ describe("StageViewerPage", () => {
       response: "# the response",
       approved: null,
       response_sha256: null,
+      content_type: "text/markdown",
     });
     renderAt("/topics/t/stages/draft");
     expect(await screen.findByText("# the prompt")).toBeInTheDocument();
@@ -75,6 +81,7 @@ describe("StageViewerPage", () => {
       response: null,
       approved: null,
       response_sha256: null,
+      content_type: "text/markdown",
     });
     vi.mocked(postResponse).mockResolvedValue({} as never);
     renderAt("/topics/t/stages/draft");
@@ -93,6 +100,7 @@ describe("StageViewerPage", () => {
       response: "response body",
       approved: null,
       response_sha256: "hash-1",
+      content_type: "text/markdown",
     });
     vi.mocked(postApprove).mockResolvedValue({} as never);
     renderAt("/topics/t/stages/draft");
@@ -109,6 +117,7 @@ describe("StageViewerPage", () => {
       response: "response body",
       approved: "response body",
       response_sha256: "hash-1",
+      content_type: "text/markdown",
     });
     renderAt("/topics/t/stages/draft");
     expect(await screen.findByRole("tab", { name: /prompt/ })).toBeInTheDocument();
@@ -124,6 +133,7 @@ describe("StageViewerPage", () => {
       response: "response body",
       approved: null,
       response_sha256: "sha-1",
+      content_type: "text/markdown",
     });
     vi.mocked(putResponse).mockResolvedValue({
       topic_id: "t",
@@ -154,6 +164,7 @@ describe("StageViewerPage", () => {
       response: "response body",
       approved: "response body",
       response_sha256: "sha-1",
+      content_type: "text/markdown",
     });
     renderAt("/topics/t/stages/draft");
     await userEvent.click(await screen.findByRole("tab", { name: /^response/ }));
@@ -168,6 +179,7 @@ describe("StageViewerPage", () => {
       response: "edited body",
       approved: "previously approved body",
       response_sha256: "sha-1",
+      content_type: "text/markdown",
     });
     renderAt("/topics/t/stages/draft");
     expect(
@@ -183,6 +195,7 @@ describe("StageViewerPage", () => {
       response: "the response text",
       approved: null,
       response_sha256: "sha-1",
+      content_type: "text/markdown",
     });
     renderAt("/topics/t/stages/draft");
     await userEvent.click(
@@ -205,6 +218,7 @@ describe("StageViewerPage", () => {
           response: "same line\nold line",
           approved: "same line\nold line",
           response_sha256: "sha-d",
+          content_type: "text/markdown",
         };
       }
       return {
@@ -214,6 +228,7 @@ describe("StageViewerPage", () => {
         response: "same line\nnew line",
         approved: null,
         response_sha256: "sha-r",
+        content_type: "text/markdown",
       };
     });
     renderAt("/topics/t/stages/repair");
@@ -239,6 +254,7 @@ describe("StageViewerPage", () => {
       response: "body",
       approved: null,
       response_sha256: "sha-1",
+      content_type: "text/markdown",
     });
     renderAt("/topics/t/stages/draft");
     await screen.findByRole("tab", { name: /prompt/ });
@@ -255,6 +271,7 @@ describe("StageViewerPage", () => {
       response: "response body",
       approved: null,
       response_sha256: "sha-1",
+      content_type: "text/markdown",
     });
     renderAt("/topics/t/stages/draft");
     await userEvent.click(await screen.findByRole("tab", { name: /^response/ }));
@@ -276,6 +293,7 @@ describe("StageViewerPage", () => {
         response: "body",
         approved: null,
         response_sha256: "sha-r",
+        content_type: "text/markdown",
       };
     });
     renderAt("/topics/t/stages/repair");
