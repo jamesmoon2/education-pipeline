@@ -240,6 +240,7 @@ def test_waiver_requires_current_hash_reason_and_waivable_finding(tmp_path):
     guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " <b>unsafe</b>"
     draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
     report = write_api.validate_run(runs, jobs, "t", "draft")["report"]
+    assert write_api.read_api.waivers_payload(runs, "t", "draft")["state"] == "stale"
     nonwaivable = next(item for item in report["findings"] if not item["waivable"])
     with pytest.raises(write_api.UnprocessableError):
         write_api.create_waiver(
