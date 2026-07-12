@@ -1776,6 +1776,15 @@ def test_write_plan_overrides_is_atomic_and_overwrites_prior_contents(tmp_path: 
     assert leftovers == []
 
 
+def test_read_plan_overrides_rejects_malformed_json(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+    path = runs.plan_overrides_path("systems-thinking")
+    path.write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="model-plan overrides"):
+        runs.read_plan_overrides("systems-thinking")
+
+
 def test_write_plan_overrides_empty_dict_writes_empty_overrides(tmp_path: Path) -> None:
     runs = _create_legacy_run(tmp_path)
 

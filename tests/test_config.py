@@ -280,6 +280,13 @@ def test_apply_overrides_rejects_unknown_model():
         apply_overrides(plan, {"stages": {"qa": {"model": "not-real"}}}, catalog=catalog)
 
 
+def test_apply_overrides_rejects_unknown_provider():
+    plan, catalog = _plan_and_catalog()
+
+    with pytest.raises(ConfigError, match="unknown provider"):
+        apply_overrides(plan, {"stages": {"qa": {"provider": "not-real"}}}, catalog=catalog)
+
+
 def test_apply_overrides_with_empty_overrides_returns_equivalent_plan():
     plan, catalog = _plan_and_catalog()
 

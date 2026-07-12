@@ -243,6 +243,8 @@ class RunStore:
             return json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ConfigError(f"invalid model-plan overrides file: {path}") from exc
 
     def write_plan_overrides(self, topic_id: str, overrides: dict) -> None:
         """Atomically persist sparse per-run model-plan overrides."""
