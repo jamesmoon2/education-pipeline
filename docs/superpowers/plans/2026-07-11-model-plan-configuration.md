@@ -37,7 +37,22 @@ This plan is executed **one wave per manager session**. Context is cleared betwe
 1. Run the full gate: `python3 -m pytest`, then in `web/`: `npm test -- --run`, `npm run build`, `npm run e2e`.
 2. Record in the **Wave Log**: date, gate commit SHA, suite counts, and one line of anything the next wave must know (deviations, discovered constraints).
 3. Commit the updated plan file itself (`docs: record wave N gate`).
-4. Report the handoff prompt for the next wave (verbatim from the wave's **Handoff** block) to the owner, then stop.
+4. **Your final message to the owner** is the next wave's **Handoff** block, verbatim: the model to run it on and the exact kickoff prompt. Then stop.
+
+**Manager model per wave.** Workers are Sonnet throughout — tasks are specified so workers never design. The manager model varies with each wave's surprise surface:
+
+| Wave | Manager | Why |
+|------|---------|-----|
+| 0 | Opus medium | Three small, fully-specified fixes |
+| 1 | Fable medium (or Opus high) | Task 1.2's `DaemonContext` refactor touches every test construction site; failure mode is a half-fixed refactor slipping past review |
+| 2 | Opus medium | Emitter + PUT are tightly specified; vitest/build gates catch UI drift |
+| 3 | Fable medium (or Opus high) | Cross-task coupling (`plan_source` 3.2→3.3) and resolution/provenance semantics where subtle bugs survive green unit tests |
+| 4 | Opus medium | UI work behind vitest + e2e gates |
+| 5 | Opus medium | Test-writing against shipped behavior. Escalate to Fable if the e2e PATH-stubbing fixture (Playwright + daemon env) turns into a debugging rabbit hole |
+
+**Wave 0 kickoff** (the owner starts the first session with):
+
+> **Model: Opus medium.** Prompt: "Read `docs/superpowers/plans/2026-07-11-model-plan-configuration.md` and its spec, follow the Execution & Handoff Protocol, and execute **Wave 0** (tasks 0.1–0.4) using superpowers:subagent-driven-development."
 
 **Wave Log** (append one row per completed wave; never edit prior rows):
 
@@ -216,9 +231,9 @@ git add .gitignore && git diff --check && git commit -m "chore: ignore workspace
 
 - [ ] Run the full gate (pytest / vitest / build / e2e), record counts + gate SHA in the Wave Log, commit the plan file. Expected: pytest 404 + ~6 new, vitest 79, e2e 38.
 
-**Handoff → Wave 1** (give this to the next manager verbatim):
+**Handoff → Wave 1** (return this to the owner verbatim as your final message):
 
-> Read `docs/superpowers/plans/2026-07-11-model-plan-configuration.md` and its spec, follow the Execution & Handoff Protocol, and execute **Wave 1** (tasks 1.1–1.4). Wave 0 is done — verify via the Wave Log + `git log` shortcut instead of re-running suites. Your wave adds read-only `/v1` config endpoints; it must not add any write path.
+> **Model: Fable medium (or Opus high).** Prompt: "Read `docs/superpowers/plans/2026-07-11-model-plan-configuration.md` and its spec, follow the Execution & Handoff Protocol, and execute **Wave 1** (tasks 1.1–1.4) using superpowers:subagent-driven-development. Wave 0 is done — verify via the Wave Log + `git log` shortcut instead of re-running suites. Your wave adds read-only `/v1` config endpoints; it must not add any write path."
 
 ---
 
@@ -449,9 +464,9 @@ def _stage_command(catalog, stage_plan, runs, topic_id):
 
 - [ ] Full gate; record in Wave Log; commit plan file.
 
-**Handoff → Wave 2:**
+**Handoff → Wave 2** (return this to the owner verbatim as your final message):
 
-> Read `docs/superpowers/plans/2026-07-11-model-plan-configuration.md` + spec, follow the Execution & Handoff Protocol, execute **Wave 2** (tasks 2.1–2.4). Waves 0–1 are done (see Wave Log). Wave 2 makes the global plan writable (TOML emitter + SHA-guarded PUT) and builds the Settings page over the Wave-1 read endpoints.
+> **Model: Opus medium.** Prompt: "Read `docs/superpowers/plans/2026-07-11-model-plan-configuration.md` and its spec, follow the Execution & Handoff Protocol, and execute **Wave 2** (tasks 2.1–2.4) using superpowers:subagent-driven-development. Waves 0–1 are done (see Wave Log). Wave 2 makes the global plan writable (TOML emitter + SHA-guarded PUT) and builds the Settings page over the Wave-1 read endpoints."
 
 ---
 
@@ -619,9 +634,9 @@ Behavior: provider `<select>` (options = catalog providers + always `manual`; un
 
 - [ ] Full gate; Wave Log; commit plan file. Manual smoke (optional but encouraged): `npm run dev` against a live daemon, edit a default, verify `config/model-plan.toml` changed on disk, hand-edit it back, reload Settings, see the hand edit.
 
-**Handoff → Wave 3:**
+**Handoff → Wave 3** (return this to the owner verbatim as your final message):
 
-> Read `docs/superpowers/plans/2026-07-11-model-plan-configuration.md` + spec, follow the Execution & Handoff Protocol, execute **Wave 3** (tasks 3.1–3.5): per-run overrides, execution-time resolution, provenance, and the run plan editor UI. Waves 0–2 done per Wave Log. Reuse `PlanStageRow` from Wave 2 — do not build a second stage editor.
+> **Model: Fable medium (or Opus high).** Prompt: "Read `docs/superpowers/plans/2026-07-11-model-plan-configuration.md` and its spec, follow the Execution & Handoff Protocol, and execute **Wave 3** (tasks 3.1–3.5) using superpowers:subagent-driven-development: per-run overrides, execution-time resolution, provenance, and the run plan editor UI. Waves 0–2 done per Wave Log. Reuse `PlanStageRow` from Wave 2 — do not build a second stage editor. Tasks 3.2 and 3.3 are order-dependent (`plan_source` metadata); keep them ordered."
 
 ---
 
@@ -744,9 +759,9 @@ export interface StageProvenance { stage: string; provider: string; model: strin
 
 - [ ] Full gate; Wave Log; commit plan file.
 
-**Handoff → Wave 4:**
+**Handoff → Wave 4** (return this to the owner verbatim as your final message):
 
-> Read `docs/superpowers/plans/2026-07-11-model-plan-configuration.md` + spec, follow the Execution & Handoff Protocol, execute **Wave 4** (tasks 4.1–4.2): structured topic creation and the New-run wizard replacing the empty-board TOML dead end. Waves 0–3 done per Wave Log. The wizard's plan-review step embeds `RunPlanPanel`/`PlanStageRow` from Wave 3 — build no new editor.
+> **Model: Opus medium.** Prompt: "Read `docs/superpowers/plans/2026-07-11-model-plan-configuration.md` and its spec, follow the Execution & Handoff Protocol, and execute **Wave 4** (tasks 4.1–4.2) using superpowers:subagent-driven-development: structured topic creation and the New-run wizard replacing the empty-board TOML dead end. Waves 0–3 done per Wave Log. The wizard's plan-review step embeds `RunPlanPanel`/`PlanStageRow` from Wave 3 — build no new editor."
 
 ---
 
@@ -814,9 +829,9 @@ export const createTopic = (fields: { id: string; title: string; brief?: string;
 
 - [ ] Full gate; Wave Log; commit plan file.
 
-**Handoff → Wave 5:**
+**Handoff → Wave 5** (return this to the owner verbatim as your final message):
 
-> Read `docs/superpowers/plans/2026-07-11-model-plan-configuration.md` + spec, follow the Execution & Handoff Protocol, execute **Wave 5** (tasks 5.1–5.3): acceptance e2e, regression coverage, docs/PRD closeout. Waves 0–4 done per Wave Log. Wave 5 adds coverage and docs only — production code changes are allowed solely to fix defects the new tests expose.
+> **Model: Opus medium** (escalate to Fable if the e2e PATH-stubbing fixture turns into a debugging rabbit hole). Prompt: "Read `docs/superpowers/plans/2026-07-11-model-plan-configuration.md` and its spec, follow the Execution & Handoff Protocol, and execute **Wave 5** (tasks 5.1–5.3) using superpowers:subagent-driven-development: acceptance e2e, regression coverage, docs/PRD closeout. Waves 0–4 done per Wave Log. Wave 5 adds coverage and docs only — production code changes are allowed solely to fix defects the new tests expose."
 
 ---
 
