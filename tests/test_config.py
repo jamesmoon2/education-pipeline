@@ -6,11 +6,13 @@ from education_pipeline import (
     DEFAULT_STAGE_RECOMMENDATIONS,
     STAGE_ORDER,
     ConfigError,
+    StageModelPlan,
     load_model_catalog,
     load_model_plan,
     parse_model_catalog,
     parse_model_plan,
 )
+from education_pipeline.config import weak_stage_warning
 
 
 def test_loads_example_catalog_and_plan() -> None:
@@ -156,3 +158,24 @@ def test_model_option_argv_defaults_and_extra_args_type_checked():
                 ]
             }
         )
+
+
+def _catalog_with_quality(quality):
+    return parse_model_catalog({"providers": [{"id": "p", "models": [{"id": "m", "label": "M", "quality": quality}]}]})
+
+
+def test_weak_warning_fires_for_fast_model_on_reasoning_stage():
+    catalog = _catalog_with_quality("fast")
+    stage = StageModelPlan(stage="outline", recommendation="premium_reasoning", provider="p", model="m")
+    assert weak_stage_warning(catalog, stage) is not None
+
+
+def test_no_warning_for_strong_premium_unset_quality_or_non_reasoning_stage():
+    strong = _catalog_with_quality("strong")
+    stage = StageModelPlan(stage="outline", recommendation="premium_reasoning", provider="p", model="m")
+    assert weak_stage_warning(strong, stage) is None
+    unset = parse_model_catalog({"providers": [{"id": "p", "models": [{"id": "m", "label": "M"}]}]})
+    assert weak_stage_warning(unset, stage) is None
+    fast = _catalog_with_quality("fast")
+    qa = StageModelPlan(stage="qa", recommendation="fast_cheap_check", provider="p", model="m")
+    assert weak_stage_warning(fast, qa) is None

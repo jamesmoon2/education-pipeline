@@ -200,6 +200,27 @@ def parse_model_plan(
     return ModelPlan(provider=provider_id, stages=stages)
 
 
+REASONING_STAGES = frozenset({"spec", "outline", "repair"})
+_QUALITY_RANK = {"fast": 0, "strong": 1, "premium": 2}
+
+
+def weak_stage_warning(catalog: ModelCatalog, stage_plan: StageModelPlan) -> str | None:
+    """A human-readable warning when a below-'strong' model is chosen for a reasoning-heavy stage."""
+
+    if stage_plan.stage not in REASONING_STAGES or stage_plan.provider is None or stage_plan.model is None:
+        return None
+    provider = catalog.providers.get(stage_plan.provider)
+    option = provider.models.get(stage_plan.model) if provider is not None else None
+    if option is None or option.quality is None:
+        return None
+    if _QUALITY_RANK.get(option.quality, _QUALITY_RANK["strong"]) < _QUALITY_RANK["strong"]:
+        return (
+            f"stage {stage_plan.stage!r} is reasoning-heavy; "
+            f"{option.label} is rated {option.quality!r} — consider a strong or premium model"
+        )
+    return None
+
+
 def _load_toml(path: str | Path) -> Mapping[str, Any]:
     config_path = Path(path)
     try:
