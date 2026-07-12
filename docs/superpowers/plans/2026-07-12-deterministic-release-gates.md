@@ -57,13 +57,36 @@ next wave's manager recommendation and kickoff prompt).
 
 | Wave | Status | Commits | pytest | vitest | e2e | build | Notes for the next wave |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 0 — Hardening | not started | | | | | | |
+| 0 — Hardening | **complete** | `5f03d56..d492ccc` (10) | 543 | 114 | 41 | clean | See "Wave 0 outcome" below. **Read the manifest-lock composition contract before touching `RunStore`.** |
 | 1 — Static checks | not started | | | | | | |
 | 2 — Attribution + report | not started | | | | | | |
 | 3 — CLI parity | not started | | | | | | |
 | 4 — Acceptance + closeout | not started | | | | | | |
 
 Baseline at plan time: pytest 478, vitest 114, e2e 41, build clean (commit `57f715e`).
+
+### Wave 0 outcome (read before Wave 1 or Wave 2)
+
+**Gate:** pytest 543, vitest 114, e2e 41/41, build clean at `d492ccc`. Whole-wave review: READY TO MERGE.
+
+**⚠️ The manifest-lock composition contract — Task 2.3 as written below will DEADLOCK.**
+
+`RunStore._manifest_lock` from Task 0.1 is now named **`_manifest_write_lock`** and is a plain, **non-reentrant** `threading.Lock`. It serializes the manifest *and* the waivers file per topic. The rule is **one read-modify-write cycle per critical section**:
+
+- To compose two writes: take the lock **once** and call the **unlocked `_locked` primitives** (`_append_manifest_event_locked`, `_record_stage_provenance_locked`).
+- **Never** call a public wrapper (`append_manifest_event`, `record_stage_provenance`, `_append_event`, `record_waiver`, `create_run`) from inside the lock — it deadlocks *by design*. That is deliberate: an earlier fix used an `RLock` to make nesting "work", and it silently **lost updates** instead (the inner call writes, the outer then overwrites from its stale snapshot). Fail-loud was chosen over silent corruption.
+- **Never** call a `_locked` primitive *without* holding the lock — that silently loses updates and nothing will stop you (contract is documented, not enforced).
+
+Task 2.3 says the sidecar write and the exported-event append "sit inside the Task 0.1 manifest lock where the event is recorded." The `exported` event is recorded by **`_append_event`**, which is a *lock-taking wrapper* and was **not** split into a primitive. **Wave 2 must first extract `_append_event_locked`** (same pattern as the other two), then compose against it. There is no pytest timeout configured, so a nesting mistake surfaces as a **CI hang**, not a crisp failure.
+
+**Other Wave 0 outcomes the later waves depend on:**
+
+- **The plan's Task 0.2 premise was largely false, and this is verified.** `update_global_plan`, `update_run_plan`, and `create_topic` already converted every nested wrong-shape body to `ConfigError` (114 adversarial probes, zero crashes). No shared `_require_json_string` was needed there. The real bugs were elsewhere and are fixed: `create_waiver` crashed on element-level corruption of `validation-waivers.json` and **dropped the HTTP connection** with no status line; its guard diverged from the loader so the endpoint could return 200 while persisting a file its own loader rejects (bricking the run); `read_api.waivers_payload` held a third schema copy returning `200 {"state":"current"}` on files every other reader rejected; and `create_waiver`'s unserialized read-modify-write with a fixed temp name lost 30/30 concurrent waivers and crashed 15/60 calls.
+- **`RunStore.load_waiver_set(topic_id)` is now the single source of truth** for the waivers-file schema, and **`RunStore.record_waiver`** is its sole writer (locked + atomic). **Task 3.2 must build `record_waiver`/`remove_waiver` on these** — do not add a fourth shape check.
+- **Scope addition (not in the plan, owner-approved):** `server.py`'s `do_GET`/`do_POST`/`do_PUT` now wrap their entire body in a last-resort handler returning a 500 envelope + stderr traceback, so no unguarded exception can drop the socket. The 422 arms (`UnprocessableError`, `GuideDocumentError`, `ContractError`, `GuideParseError`) are pinned by tests on every verb — **Wave 1 adds new failure modes to the finalize/export path, and they must map to 422, not 500.**
+- **Owner decision (Task 0.3 follow-up):** unknown stage keys are **strict at write, lenient on disk** — `PUT /v1/config/plan` with a misspelled key now 400s (`parse_model_plan(..., strict_keys=True)`), but an existing hand-edited `model-plan.toml` with a stray key still loads.
+
+**Residual Minors for milestone final triage:** `_locked` primitives' "caller holds the lock" contract is documented, not enforced (a `lock.locked()` heuristic assert would catch the dev-time error); the lock's name still says "manifest" though it also guards waivers; no pytest timeout, so a lock-nesting regression hangs CI; loader-accepted extra keys in `waivers.json` are now dropped from the GET payload rather than echoed; a truncated request body (`Content-Length` > bytes sent) hangs a handler thread forever (**pre-existing**, reproduces at `d46406a`, post-auth + loopback only).
 
 **Wave 0 manager recommendation (initial):** Opus, medium effort — mechanical hardening with well-scoped tests; Fable is not needed until the cross-surface design work in Waves 1–2.
 
@@ -83,7 +106,9 @@ Two scheduled debt items from the model-plan post-milestone audit §7. No behavi
 - Consumes: existing `_write_bytes_atomic(path, data)` in `runs.py`.
 - Produces: `RunStore._manifest_lock(topic_id: str) -> threading.Lock` (private); `_write_manifest` unchanged signature, now atomic. Later waves' findings writer (Task 2.3 manifest events) relies on every manifest read-modify-write being wrapped in the per-topic lock.
 
-- [ ] **Step 1: Write the failing tests**
+> **As shipped:** the lock is named **`_manifest_write_lock`**, is non-reentrant, and also guards the waivers file. Composition is via unlocked `_locked` primitives, never by nesting public wrappers. See "Wave 0 outcome" in the Wave Log.
+
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_runs.py
@@ -130,12 +155,12 @@ def test_concurrent_manifest_events_are_all_recorded(tmp_path):
 
 Adjust the event-shape assertions to match how `append_manifest_event` actually stores events (read the method first; it may namespace under a key other than `events`).
 
-- [ ] **Step 2: Run tests, verify the concurrency test fails (lost updates) or is flaky**
+- [x] **Step 2: Run tests, verify the concurrency test fails (lost updates) or is flaky**
 
 Run: `python3 -m pytest tests/test_runs.py -k "manifest_write_is_atomic or concurrent_manifest" -v`
 Expected: FAIL — `_write_bytes_atomic` spy not called for manifest, and/or fewer than 50 events recorded.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `runs.py`:
 
@@ -163,12 +188,12 @@ Wrap **every** manifest read-modify-write cycle (`append_manifest_event`, `recor
 
 Add a short comment at `_manifest_lock` stating the boundary: serialization is in-process only (daemon threads); cross-process CLI concurrency is out of scope.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_runs.py -v`
 Expected: PASS (all existing + 2 new).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/test_runs.py education_pipeline/runs.py
@@ -185,7 +210,7 @@ git commit -m "fix(runs): make manifest writes atomic and serialize writers per 
 - Consumes: `ConfigError` (→ HTTP 400 in `server.py`), existing builder signatures.
 - Produces: every builder raises `ConfigError` (never `TypeError`/`AttributeError`/`KeyError`) for any body whose nested values have the wrong JSON type.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 The daemon's `_read_body` already rejects a non-dict *root*. The audit's gap is nested shapes. For each builder, feed a body with wrong-typed nested values and assert `ConfigError` (not a crash). Representative cases (add one test per builder):
 
@@ -210,12 +235,12 @@ def test_update_run_plan_rejects_wrong_shapes_with_config_error(run_env, body):
 
 Mirror the same parametrized pattern for `update_global_plan` and `create_topic` (e.g. `{"title": 5}`, `{"metadata": []}`), and `create_waiver` (e.g. `{"finding_id": 7}`, `{"reason": []}`). Read each builder first and derive the wrong-shape cases from the keys it actually touches. Then add one HTTP-level test in `tests/test_server.py` proving a nested-wrong-shape `PUT /v1/runs/{topic}/plan` returns status 400 with the standard error envelope, not 500 (use this module's existing daemon boot helper).
 
-- [ ] **Step 2: Run tests, verify failures**
+- [x] **Step 2: Run tests, verify failures**
 
 Run: `python3 -m pytest tests/test_write_api.py tests/test_server.py -k "wrong_shape or rejects" -v`
 Expected: FAIL — `TypeError`/`AttributeError` raised instead of `ConfigError`, and HTTP 500 instead of 400.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add a small shared shape guard in `write_api.py` and call it at the top of each builder for the keys that builder reads:
 
@@ -234,12 +259,12 @@ def _require_json_string(value: object, label: str) -> str:
 
 Use them where each builder currently indexes into the body unchecked (e.g. `_require_json_object(body.get("stages", {}), "'stages'")`, and per-stage `_require_json_object(stage_override, f"override for stage {name!r}")`). Keep the existing `_require_body_string`/`_optional_body_string` helpers where already used; do not duplicate them.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_write_api.py tests/test_server.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/test_write_api.py tests/test_server.py education_pipeline/daemon/write_api.py
@@ -256,7 +281,7 @@ git commit -m "fix(daemon): return 400 for wrong-shape PUT/POST bodies across wr
 - Consumes: `apply_overrides(plan, overrides, catalog)` and `apply_overrides_lenient` (which delegates per stage).
 - Produces: `apply_overrides` raises `ConfigError` naming the unknown key(s); `apply_overrides_lenient` converts that into the stage's `override_error` (existing degrade behavior, unchanged).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_config.py
@@ -274,12 +299,12 @@ def test_apply_overrides_lenient_degrades_unknown_key_to_stage_error():
 
 Match this module's existing fixture style for building a plan/catalog (reuse its helpers rather than raw dicts if helpers exist). Add one `tests/test_write_api.py` test: `update_run_plan` with a misspelled key raises `ConfigError` (→ 400) instead of persisting a silent no-op.
 
-- [ ] **Step 2: Run tests, verify failures**
+- [x] **Step 2: Run tests, verify failures**
 
 Run: `python3 -m pytest tests/test_config.py tests/test_write_api.py -k "unknown" -v`
 Expected: FAIL — the misspelled key merges silently and validation passes.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `apply_overrides`, before merging each stage override:
 
@@ -299,12 +324,12 @@ if unknown:
 
 `apply_overrides_lenient` needs no change — it already catches `ConfigError` per stage.
 
-- [ ] **Step 4: Run tests, verify pass; check for existing tests that legitimately used extra keys**
+- [x] **Step 4: Run tests, verify pass; check for existing tests that legitimately used extra keys**
 
 Run: `python3 -m pytest tests/test_config.py tests/test_write_api.py tests/test_server.py -v`
 Expected: PASS. If an existing test relied on tolerated unknown keys, that test encoded the bug — update it and say so in the commit message.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/test_config.py tests/test_write_api.py education_pipeline/config.py
@@ -313,7 +338,7 @@ git commit -m "fix(config): reject unknown stage-override keys instead of silent
 
 ### Wave 0 close
 
-- [ ] Run the wave-close checklist in the Wave Protocol section (four-suite gate → update this plan doc + Wave Log → commit → print next-wave manager recommendation and kickoff prompt → stop).
+- [x] Run the wave-close checklist in the Wave Protocol section (four-suite gate → update this plan doc + Wave Log → commit → print next-wave manager recommendation and kickoff prompt → stop).
 - Suggested next-wave recommendation to print (override with judgment): **Fable, high effort** for Wave 1 — the static-check semantics (accessible-name rules, heading order over the assembled document) reward careful reading of `document.py`.
 
 ---
@@ -879,6 +904,8 @@ Expected: FAIL — module and path helper don't exist.
 - Add `export_report_path` to `RunStore`.
 - In `_export_guide_v1`, after writing the export HTML: compute `export_sha256` over the written bytes, build the sidecar bytes, `_write_bytes_atomic` it, and add `quality_report_file` to the exported event's `files` plus `quality_report_sha256` to its extras. Both writes and the event append sit inside the Task 0.1 manifest lock where the event is recorded.
 
+> **⚠️ CORRECTION (Wave 0 shipped a different shape — following the line above verbatim deadlocks).** The lock is `_manifest_write_lock`, **non-reentrant**. The `exported` event is recorded by `_append_event`, which is a *lock-taking wrapper*. Taking the lock and then calling it re-enters the same lock and **hangs the daemon thread forever** (there is no pytest timeout, so this surfaces as a CI hang). **First extract `_append_event_locked`** — the unlocked primitive, following the existing `_append_manifest_event_locked` / `_record_stage_provenance_locked` pattern — then take the lock once and call *that* from inside the critical section. One read-modify-write cycle per critical section. Full contract in "Wave 0 outcome" in the Wave Log.
+
 - [ ] **Step 4: Run tests**
 
 Run: `python3 -m pytest tests/test_quality_report.py tests/test_runs.py tests/test_server.py -v`
@@ -981,6 +1008,9 @@ git commit -m "feat(cli): validate, findings, and report commands with gate exit
 
 **Interfaces:**
 - Consumes: the waiver-file read/merge/write logic currently inlined in `write_api.create_waiver` (~lines 92–133).
+
+> **⚠️ CORRECTION — Wave 0 already did most of this.** `RunStore.record_waiver` exists (locked via `_manifest_write_lock`, atomic, add-or-replace by `finding_id`), `RunStore.load_waiver_set` is the single source of truth for the waivers schema, and `write_api.create_waiver` is already a thin adapter over them. This task shrinks to: add `remove_waiver`, return `WaiverResult` from both, and add the CLI. **Reuse `record_waiver`/`load_waiver_set` — do not re-add them and do not introduce a fourth shape check.**
+
 - Produces: that logic moves into the store so CLI and daemon share one implementation:
 
 ```python
