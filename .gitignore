@@ -13,6 +13,7 @@ runs/
 topics/
 profiles/
 queue/
+.education-pipeline/
 
 # Local app/session state.
 .remember/
