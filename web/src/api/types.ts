@@ -218,3 +218,50 @@ export interface GuidePreviewResult {
   content_sha256: string;
   validation: ValidationCounts;
 }
+
+export interface ProviderAvailability {
+  id: string;
+  label: string;
+  description: string;
+  executable: boolean;
+  available: boolean;
+  reason: string | null;
+}
+
+export interface CatalogModel {
+  id: string;
+  label: string;
+  description: string;
+  quality: string | null;
+  default_effort: string | null;
+}
+
+export interface CatalogProvider {
+  id: string;
+  label: string;
+  description: string;
+  models: CatalogModel[];
+}
+
+export interface PlanStage {
+  stage: string;
+  provider: string | null;
+  model: string | null;
+  effort: string | null;
+  recommendation: string;
+  warning: string | null;
+  source?: "default" | "override";
+  command?: string[] | null;
+}
+
+export interface PlanPayload {
+  provider: string;
+  plan_sha256: string;
+  stages: PlanStage[];
+}
+
+export interface StageOverride {
+  provider?: string;
+  model?: string;
+  effort?: string;
+}

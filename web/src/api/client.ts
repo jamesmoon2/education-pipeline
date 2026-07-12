@@ -2,6 +2,7 @@ import type {
   AdvanceResult,
   ApproveResult,
   AttachProfileResult,
+  CatalogProvider,
   EditResponseResult,
   ExportFormat,
   ExportResult,
@@ -11,11 +12,14 @@ import type {
   Job,
   GuidePreviewResult,
   LogChunk,
+  PlanPayload,
   PreviewResult,
+  ProviderAvailability,
   ResponseResult,
   RunStatus,
   Session,
   StageContent,
+  StageOverride,
   TopicDetail,
   TopicSummary,
   ValidateResult,
@@ -237,3 +241,21 @@ export const downloadExport = (topicId: string, format: ExportFormat) =>
     `/v1/runs/${encodeURIComponent(topicId)}/exports/${format}/download`,
     format === "html" ? `${topicId}-guide.html` : `${topicId}-guide.bundle.md`,
   );
+
+export const getConfigProviders = () =>
+  api<{ providers: ProviderAvailability[] }>("/v1/config/providers");
+export const getConfigCatalog = () =>
+  api<{ providers: CatalogProvider[] }>("/v1/config/catalog");
+export const getConfigPlan = () => api<PlanPayload>("/v1/config/plan");
+export const putConfigPlan = (
+  baseSha256: string,
+  provider: string,
+  stages: Record<string, StageOverride>,
+) =>
+  apiPut<PlanPayload>("/v1/config/plan", {
+    base_sha256: baseSha256,
+    provider,
+    stages,
+  });
+export const getRunPlan = (topicId: string) =>
+  api<PlanPayload>(`/v1/runs/${encodeURIComponent(topicId)}/plan`);

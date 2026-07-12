@@ -12,6 +12,11 @@ import {
   postResponse,
   putResponse,
   resetSessionForTests,
+  getConfigProviders,
+  getConfigCatalog,
+  getConfigPlan,
+  putConfigPlan,
+  getRunPlan,
 } from "./client";
 
 function mockFetch(routes: Record<string, { status: number; body: unknown }>) {
@@ -130,6 +135,165 @@ describe("apiPost", () => {
     expect(err).toBeInstanceOf(ApiRequestError);
     expect(err.status).toBe(409);
     expect(err.code).toBe("already_exists");
+  });
+});
+
+describe("config endpoints", () => {
+  afterEach(() => {
+    resetSessionForTests();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("getConfigProviders fetches provider availability", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/config/providers": {
+        status: 200,
+        body: {
+          providers: [
+            {
+              id: "claude",
+              label: "Claude",
+              description: "Claude Code",
+              executable: true,
+              available: true,
+              reason: null,
+            },
+          ],
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getConfigProviders();
+
+    expect(result.providers).toHaveLength(1);
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/config/providers");
+    expect(call).toBeDefined();
+    expect((call![1] as RequestInit | undefined)?.method ?? "GET").toBe("GET");
+  });
+
+  it("getConfigCatalog fetches the model catalog", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/config/catalog": {
+        status: 200,
+        body: {
+          providers: [
+            {
+              id: "claude",
+              label: "Claude",
+              description: "Claude Code",
+              models: [
+                {
+                  id: "sonnet",
+                  label: "Sonnet",
+                  description: "Balanced",
+                  quality: "high",
+                  default_effort: "medium",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getConfigCatalog();
+
+    expect(result.providers[0].models[0].id).toBe("sonnet");
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/config/catalog");
+    expect(call).toBeDefined();
+  });
+
+  it("getConfigPlan fetches the effective plan", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/config/plan": {
+        status: 200,
+        body: {
+          provider: "claude",
+          plan_sha256: "hash-1",
+          stages: [
+            {
+              stage: "spec",
+              provider: "claude",
+              model: "sonnet",
+              effort: "medium",
+              recommendation: "default",
+              warning: null,
+              source: "default",
+              command: null,
+            },
+          ],
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getConfigPlan();
+
+    expect(result.plan_sha256).toBe("hash-1");
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/config/plan");
+    expect(call).toBeDefined();
+  });
+
+  it("putConfigPlan sends a JSON PUT with base_sha256, provider, and stages", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/config/plan": {
+        status: 200,
+        body: {
+          provider: "claude",
+          plan_sha256: "hash-2",
+          stages: [],
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await putConfigPlan("hash-1", "claude", {
+      spec: { provider: "codex", model: "gpt-5", effort: "high" },
+    });
+
+    expect(result.plan_sha256).toBe("hash-2");
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/config/plan");
+    const init = call![1] as RequestInit;
+    expect(init.method).toBe("PUT");
+    expect(init.headers).toMatchObject({
+      "X-EP-Token": "tok",
+      "Content-Type": "application/json",
+    });
+    expect(JSON.parse(init.body as string)).toEqual({
+      base_sha256: "hash-1",
+      provider: "claude",
+      stages: {
+        spec: { provider: "codex", model: "gpt-5", effort: "high" },
+      },
+    });
+  });
+
+  it("getRunPlan fetches the per-run effective plan", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/topic-a/plan": {
+        status: 200,
+        body: {
+          provider: "claude",
+          plan_sha256: "hash-3",
+          stages: [],
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getRunPlan("topic-a");
+
+    expect(result.plan_sha256).toBe("hash-3");
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/runs/topic-a/plan");
+    expect(call).toBeDefined();
   });
 });
 
