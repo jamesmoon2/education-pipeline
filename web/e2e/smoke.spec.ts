@@ -30,12 +30,20 @@ test.beforeAll(async () => {
     stdio: "inherit",
   });
 
+  // Poll for a ready record containing a port: the daemon writes a pid-only
+  // placeholder first, and reading that races to an undefined port.
   const discovery = join(ws, ".education-pipeline", "daemon.json");
-  for (let i = 0; i < 100 && !existsSync(discovery); i++) {
+  let record: { port?: number } | undefined;
+  for (let i = 0; i < 100 && !record?.port; i++) {
     await new Promise((r) => setTimeout(r, 100));
+    if (!existsSync(discovery)) continue;
+    try {
+      record = JSON.parse(readFileSync(discovery, "utf-8")) as { port?: number };
+    } catch {
+      // partially written record; keep polling
+    }
   }
-  if (!existsSync(discovery)) throw new Error("daemon never wrote its discovery file");
-  const record = JSON.parse(readFileSync(discovery, "utf-8")) as { port: number };
+  if (!record?.port) throw new Error("daemon never wrote a ready discovery record");
   baseURL = `http://127.0.0.1:${record.port}`;
 });
 
