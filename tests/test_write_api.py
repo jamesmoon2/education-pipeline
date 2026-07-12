@@ -62,6 +62,26 @@ def test_update_global_plan_with_unknown_model_raises_config_error_and_leaves_pl
     assert config.plan_sha256() == base_sha256
 
 
+def test_update_global_plan_rejects_unknown_stage_key_instead_of_silently_dropping_it():
+    """PUT /v1/config/plan is the strict write path: a misspelled stage key
+    (e.g. 'modle' instead of 'model') must raise ConfigError, not silently
+    discard the key and return 200."""
+
+    config = _config_source()
+    base_sha256 = config.plan_sha256()
+    with pytest.raises(ConfigError, match="unknown stage-override key"):
+        write_api.update_global_plan(
+            config,
+            {
+                "base_sha256": base_sha256,
+                "provider": "fake",
+                "stages": {"draft": {"modle": "opus"}},
+            },
+        )
+    assert config.plan.provider == "manual"
+    assert config.plan_sha256() == base_sha256
+
+
 def test_update_run_plan_sets_override_and_source_and_command_change(tmp_path):
     config = _config_source()
     runs, _jobs = _workspace(tmp_path)

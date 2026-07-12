@@ -27,6 +27,7 @@ from education_pipeline.daemon.jobs import Job, JobStore, Worker
 from education_pipeline.daemon.static import resolve_static
 from education_pipeline.export import render_html_body
 from education_pipeline.guides import (
+    ContractError,
     GuideDocumentError,
     assemble_guide_document,
     normalize_guide,
@@ -171,11 +172,13 @@ def _make_handler(context: DaemonContext):
             if getattr(self, "_response_started", False):
                 # A status line (and possibly a partial body) already went
                 # out on this connection — appending a second status line
-                # would corrupt an in-flight keep-alive response. This can't
-                # happen today (the socket is dead by the time we'd get
-                # here and BrokenPipeError is caught below), but the check
-                # encodes the invariant explicitly rather than relying on
-                # that accident.
+                # would corrupt an in-flight keep-alive response. The only
+                # route that can reach _last_resort after a response has
+                # started is /v1/shutdown, which sends its 200 first and
+                # only then calls context.on_shutdown(). That call is safe
+                # to guard around because on_shutdown is threading.Event.set
+                # (see daemon/__init__.py), which cannot raise — not because
+                # the socket is somehow already dead by then.
                 return
             try:
                 # The message echoes str(exc), which can include filesystem
@@ -402,6 +405,14 @@ def _make_handler(context: DaemonContext):
                 return self._error(409, exc.code, str(exc))
             except write_api.UnprocessableError as exc:
                 return self._error(422, exc.code, str(exc), exc.details)
+            except (GuideDocumentError, ContractError) as exc:
+                # Same fault class as the /v1/guide-preview 422 below (both
+                # are raised by normalize_guide/assemble_guide_document, e.g.
+                # from finalize_run/export_run): a guide that is safe input
+                # but not renderable under the guide contract must map to the
+                # same 422 guide_not_renderable everywhere it can surface,
+                # not fall through to a plausible-looking 500.
+                return self._error(422, "guide_not_renderable", str(exc))
             except ConfigError as exc:
                 return self._error(400, "bad_request", str(exc))
             except Exception as exc:  # last resort: never drop the connection
@@ -598,6 +609,13 @@ def _make_handler(context: DaemonContext):
                 return self._error(404, "not_found", str(exc))
             except write_api.ConflictError as exc:
                 return self._error(409, exc.code, str(exc))
+            except write_api.UnprocessableError as exc:
+                return self._error(422, exc.code, str(exc), exc.details)
+            except (GuideDocumentError, ContractError) as exc:
+                # Keep the error taxonomy coherent across verbs: see the
+                # matching arm in do_POST for why this maps to 422
+                # guide_not_renderable rather than a bare 500.
+                return self._error(422, "guide_not_renderable", str(exc))
             except ConfigError as exc:
                 return self._error(400, "bad_request", str(exc))
             except Exception as exc:  # last resort: never drop the connection

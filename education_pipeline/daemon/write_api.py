@@ -14,7 +14,6 @@ carry a precise conflict code; the store call remains the authority and its
 from __future__ import annotations
 
 import hashlib
-import json
 import tomllib
 from pathlib import Path
 
@@ -114,32 +113,27 @@ def create_waiver(
     if not finding.get("waivable"):
         raise UnprocessableError("finding_not_waivable", f"finding {finding_id!r} is not waivable")
 
-    path = runs.waivers_path(topic_id)
-    # Reuse RunStore's own loader to read the pre-existing file rather than
-    # re-deriving the waivers schema here: a second, divergent copy of the
-    # shape rules (this endpoint previously validated only ``finding_id``,
-    # while the loader also requires ``reason`` to be a string) is exactly
-    # what let a malformed element slip through, get copied verbatim into a
-    # freshly written file, and brick the run — the endpoint returned 200
-    # for a file its own loader would then refuse to load forever after.
-    # ``load_waiver_set`` raises ConfigError (-> HTTP 400) for a file that
-    # doesn't parse under those rules, so nothing invalid is ever propagated
-    # into the new file.
-    existing_set = runs.load_waiver_set(topic_id)
-    existing: list[dict] = []
-    if existing_set is not None and existing_set.guide_sha256 == guide_sha256:
-        existing = [
-            {"finding_id": w.finding_id, "reason": w.reason}
-            for w in existing_set.waivers
-            if w.finding_id != finding_id
-        ]
-    existing.append({"finding_id": finding_id, "reason": reason.strip()})
-    existing.sort(key=lambda item: item["finding_id"])
-    value = {"schema_version": 1, "guide_sha256": guide_sha256, "waivers": existing}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp.replace(path)
+    # Delegate the read-modify-write to RunStore.record_waiver rather than
+    # hand-rolling a second locking/temp-file scheme here: on a
+    # ThreadingHTTPServer, two concurrent POSTs to this endpoint for the same
+    # run raced on an unserialized load-mutate-write with a shared hardcoded
+    # temp filename, producing both lost updates and FileNotFoundError from a
+    # colliding ``.tmp`` rename. ``record_waiver`` uses RunStore's per-topic
+    # ``_manifest_lock`` (serialization) and ``_write_bytes_atomic``
+    # (collision-free ``mkstemp`` temp names) -- the same tools that already
+    # protect manifest read-modify-write cycles -- so this is a single,
+    # reused critical section rather than a divergent one. It also reuses
+    # ``load_waiver_set`` internally, so the schema-validation guarantee
+    # described below still holds: a malformed persisted waivers file is
+    # never silently propagated into the new file.
+    waiver_set = runs.record_waiver(topic_id, guide_sha256, finding_id, reason.strip())
+    value = {
+        "schema_version": waiver_set.schema_version,
+        "guide_sha256": waiver_set.guide_sha256,
+        "waivers": [
+            {"finding_id": w.finding_id, "reason": w.reason} for w in waiver_set.waivers
+        ],
+    }
     return {"waivers": value, **read_api.validation_payload(runs, topic_id, phase)}
 
 
@@ -382,6 +376,10 @@ def update_global_plan(config, body: dict) -> dict:
     plan = parse_model_plan(
         {"provider": body.get("provider"), "stages": body.get("stages", {})},
         catalog=catalog,
+        # Strict at write, lenient on disk (owner's decision): reject an
+        # unknown/misspelled stage key here rather than silently discarding
+        # it, without tightening load_model_plan's disk loader.
+        strict_keys=True,
     )
     config.write_plan(emit_model_plan_toml(plan))
     return read_api.plan_payload(catalog, plan, config.plan_sha256())

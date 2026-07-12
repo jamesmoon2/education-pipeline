@@ -67,6 +67,47 @@ def test_plan_rejects_unknown_stage_names() -> None:
         parse_model_plan({"provider": "manual", "stages": {"publish": {"recommendation": "local"}}})
 
 
+def test_parse_model_plan_strict_keys_rejects_unknown_stage_key() -> None:
+    """The owner decided: strict at write, lenient on disk. `strict_keys=True`
+    (used only by the daemon's PUT /v1/config/plan write path) must reject a
+    misspelled/unknown stage-override key instead of silently discarding it,
+    the same way `apply_overrides`'s existing allowlist does."""
+
+    with pytest.raises(ConfigError, match="unknown stage-override key"):
+        parse_model_plan(
+            {"provider": "manual", "stages": {"draft": {"modle": "opus"}}},
+            strict_keys=True,
+        )
+
+
+def test_parse_model_plan_default_lenient_ignores_unknown_stage_key() -> None:
+    """Guards the owner's decision from the other direction: the disk loader
+    (default `strict_keys=False`) must keep loading a plan whose stage table
+    has a stray key exactly as it did before this change -- tightening the
+    disk loader was explicitly ruled out."""
+
+    plan = parse_model_plan(
+        {"provider": "manual", "stages": {"draft": {"modle": "opus"}}}
+    )
+    assert plan.stage("draft").model is None
+
+
+def test_load_model_plan_toml_with_stray_stage_key_still_loads(tmp_path: Path) -> None:
+    """Regression guard for the owner's 'lenient on disk' decision: an
+    existing workspace's hand-edited model-plan.toml containing a stray stage
+    key must still load exactly as today, even though the same key is now
+    rejected on the PUT write path."""
+
+    plan_path = tmp_path / "model-plan.toml"
+    plan_path.write_text(
+        'provider = "manual"\n\n[stages.draft]\nmodle = "opus"\n',
+        encoding="utf-8",
+    )
+    plan = load_model_plan(plan_path)
+    assert plan.provider == "manual"
+    assert plan.stage("draft").model is None
+
+
 def test_plan_rejects_unknown_model_when_provider_has_catalog_models() -> None:
     catalog = parse_model_catalog(
         {

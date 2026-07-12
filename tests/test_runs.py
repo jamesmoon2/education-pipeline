@@ -1,6 +1,7 @@
 import concurrent.futures
 import hashlib
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -451,6 +452,72 @@ def test_concurrent_mixed_manifest_writers_all_recorded(tmp_path: Path) -> None:
 
     # File must still be valid JSON (no torn write from either writer path)
     json.loads(store.manifest_path("mixed-writers-topic").read_text(encoding="utf-8"))
+
+
+def test_concurrent_record_waiver_calls_all_survive(tmp_path: Path) -> None:
+    """Regression test for the daemon's create_waiver read-modify-write: two
+    threads waiving two *different* findings on the same run's waivers file
+    must both survive, and no thread may crash with FileNotFoundError from a
+    colliding hardcoded temp filename. Mirrors
+    ``test_concurrent_mixed_manifest_writers_all_recorded`` but exercises
+    ``RunStore.record_waiver`` (which write_api.create_waiver must delegate to
+    rather than hand-rolling its own read-modify-write + temp file).
+    """
+    store = _create_legacy_run(tmp_path, "waiver-race-topic")
+    guide_sha256 = "0" * 64
+    waiver_count = 30
+
+    def record(n: int) -> None:
+        store.record_waiver(
+            "waiver-race-topic", guide_sha256, f"finding-{n}", f"reason {n}"
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+        futures = [pool.submit(record, n) for n in range(waiver_count)]
+        for future in futures:
+            future.result()
+
+    waiver_set = store.load_waiver_set("waiver-race-topic")
+    assert waiver_set is not None
+    assert sorted(w.finding_id for w in waiver_set.waivers) == sorted(
+        f"finding-{n}" for n in range(waiver_count)
+    )
+
+    # File must still be valid JSON (no torn write, no lost update)
+    json.loads(store.waivers_path("waiver-race-topic").read_text(encoding="utf-8"))
+
+
+def test_manifest_lock_is_reentrant_same_thread(tmp_path: Path) -> None:
+    """Wave 2's findings/quality-report writer is expected to append manifest
+    events from a new RunStore method that itself takes ``_manifest_lock``
+    and then calls an existing lock-taking helper (e.g.
+    ``append_manifest_event``). A non-reentrant lock would deadlock the
+    daemon thread the first time that happens -- silently, forever. Pin the
+    fix: the same thread must be able to acquire the per-topic manifest lock
+    twice without blocking.
+    """
+    store = _create_legacy_run(tmp_path, "reentrant-lock-topic")
+    lock = store._manifest_lock("reentrant-lock-topic")
+
+    reacquired = threading.Event()
+
+    def acquire_nested() -> None:
+        with lock:
+            reacquired.set()
+
+    with lock:
+        thread = threading.Thread(target=acquire_nested)
+        thread.start()
+        # A non-reentrant lock blocks even on the SAME thread if re-entered
+        # directly; to specifically exercise "the exact same thread acquires
+        # it twice" (what a nested method call does), reacquire directly here
+        # rather than only via a second thread.
+        acquired_again = lock.acquire(timeout=2)
+        assert acquired_again, "manifest lock must be reentrant on the same thread"
+        lock.release()
+
+    thread.join(timeout=2)
+    assert reacquired.is_set()
 
 
 def test_write_spec_prompt_writes_prompt_and_response_stub(tmp_path: Path) -> None:

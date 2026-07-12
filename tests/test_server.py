@@ -464,59 +464,154 @@ def test_asset_response_has_no_csp_header(ui_server):
     assert "Content-Security-Policy" not in headers
 
 
-def test_static_get_race_returns_500_not_dropped_connection(ui_server, monkeypatch, tmp_path):
+def test_static_get_race_returns_500_not_dropped_connection(ui_server, tmp_path):
     """Regression test for the defect class the do_GET catch-all was meant to
     close: previously only ``_api_get()`` was wrapped, so a static file that
     vanishes between ``resolve_static`` and ``read_bytes`` (the ordinary
     "npm run build while the page is open" race) raised FileNotFoundError
     straight through do_GET and dropped the connection with no status line
     at all. Simulate the race by having resolve_static point at a file that
-    no longer exists."""
+    no longer exists.
+
+    Uses a nested ``pytest.MonkeyPatch.context()`` rather than the function-
+    scoped ``monkeypatch`` fixture: ``ui_server`` is built by ``_start_server``,
+    which patches env vars (e.g. FAKE_STDOUT) through that SAME fixture
+    instance, so calling ``monkeypatch.undo()`` here to restore
+    ``resolve_static`` mid-test would also unwind the fixture's own setup --
+    harmless today, but a landmine the moment a later assertion in this test
+    depends on that env patch still being in place.
+    """
     from education_pipeline.daemon import server as server_mod
     from education_pipeline.daemon.static import StaticFile
 
     missing = tmp_path / "gone.js"
-    monkeypatch.setattr(
-        server_mod,
-        "resolve_static",
-        lambda dist, path: StaticFile(
-            path=missing,
-            content_type="text/javascript; charset=utf-8",
-            cache_control="no-store",
-        ),
-    )
-    status, body, _ = _raw_get(ui_server, "/assets/app-abc.js")
-    body = json.loads(body or b"{}")
-    assert status == 500
-    assert body["error"]["code"] == "internal"
-    # the connection/server survives: a subsequent request still succeeds
-    monkeypatch.undo()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            server_mod,
+            "resolve_static",
+            lambda dist, path: StaticFile(
+                path=missing,
+                content_type="text/javascript; charset=utf-8",
+                cache_control="no-store",
+            ),
+        )
+        status, body, _ = _raw_get(ui_server, "/assets/app-abc.js")
+        body = json.loads(body or b"{}")
+        assert status == 500
+        assert body["error"]["code"] == "internal"
+    # the context manager exit restores resolve_static (and only that); the
+    # connection/server survives: a subsequent request still succeeds
     status, body, _ = _raw_get(ui_server, "/assets/app-abc.js")
     assert status == 200
 
 
-def test_session_endpoint_survives_unexpected_exception(server_with_context, monkeypatch):
+def test_session_endpoint_survives_unexpected_exception(server_with_context):
     """/v1/session is handled entirely outside _api_get(); it must still be
     covered by the last-resort catch-all so an unexpected failure comes back
     as a diagnosable 500 rather than a dropped connection. Force the failure
     locally (an unserializable token breaks json.dumps inside _send for this
     route only) rather than patching the global json module, which would
-    affect unrelated background threads (e.g. the job worker) too."""
+    affect unrelated background threads (e.g. the job worker) too.
+
+    Uses a nested ``pytest.MonkeyPatch.context()`` rather than the function-
+    scoped ``monkeypatch`` fixture: ``server_with_context`` is built by
+    ``_start_server``, which patches env vars through that SAME fixture
+    instance, so ``monkeypatch.undo()`` here would also unwind the fixture's
+    own setup, not just the ``token`` patch -- harmless today, but a landmine
+    the moment a later assertion needs that env patch still in place.
+    """
     port, context = server_with_context
 
     class _Unserializable:
         pass
 
-    monkeypatch.setattr(context, "token", _Unserializable())
-    status, body = _req(port, "GET", "/v1/session", token=None)
-    assert status == 500
-    assert body["error"]["code"] == "internal"
-    # the connection/server survives: restoring a valid token, a subsequent
-    # request still succeeds
-    monkeypatch.undo()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(context, "token", _Unserializable())
+        status, body = _req(port, "GET", "/v1/session", token=None)
+        assert status == 500
+        assert body["error"]["code"] == "internal"
+    # the context manager exit restores context.token (and only that); the
+    # connection/server survives: a subsequent request still succeeds
     status, body = _req(port, "GET", "/v1/session", token=None)
     assert status == 200
     assert body["token"] == "secret-token"
+
+
+def test_do_put_unprocessable_error_returns_422_not_500(server, monkeypatch):
+    """do_POST already maps write_api.UnprocessableError -> 422, but do_PUT
+    had no matching arm and fell through to the last-resort 500 handler.
+    Nothing raises UnprocessableError on PUT today, so force it via
+    monkeypatch on a real PUT route (edit_response) to pin the status for
+    whenever a future PUT path does raise it."""
+    from education_pipeline.daemon import server as server_mod
+
+    def _raise(*args, **kwargs):
+        raise server_mod.write_api.UnprocessableError("some_code", "not processable")
+
+    monkeypatch.setattr(server_mod.write_api, "edit_response", _raise)
+    status, body = _req(
+        server,
+        "PUT",
+        "/v1/runs/t/stages/draft/response",
+        body={"text": "x", "base_sha256": "0" * 64},
+    )
+    assert status == 422
+    assert body["error"]["code"] == "some_code"
+
+
+def test_do_post_guide_document_error_from_finalize_returns_422_not_500(server, monkeypatch):
+    """finalize_run/export_run call normalize_guide/assemble_guide_document,
+    which can raise GuideDocumentError or ContractError -- both ValueError
+    subclasses, neither a ConfigError. Before this fix that fault escaped the
+    do_POST except chain entirely and became a plausible 500 internal; it
+    must map to the same 422 guide_not_renderable used at /v1/guide-preview."""
+    from education_pipeline.daemon import server as server_mod
+    from education_pipeline.guides import GuideDocumentError
+
+    def _raise(*args, **kwargs):
+        raise GuideDocumentError("guide cannot be rendered")
+
+    monkeypatch.setattr(server_mod.write_api, "finalize_run", _raise)
+    status, body = _req(server, "POST", "/v1/runs/t/finalize", body={})
+    assert status == 422
+    assert body["error"]["code"] == "guide_not_renderable"
+
+
+def test_do_post_contract_error_from_export_returns_422_not_500(server, monkeypatch):
+    """Same fault class as above via ContractError (also raised from the
+    normalize/assemble path), exercised on a different POST route
+    (export_run) to confirm the mapping isn't route-specific."""
+    from education_pipeline.daemon import server as server_mod
+    from education_pipeline.guides import ContractError
+
+    def _raise(*args, **kwargs):
+        raise ContractError("guide contract mismatch")
+
+    monkeypatch.setattr(server_mod.write_api, "export_run", _raise)
+    status, body = _req(server, "POST", "/v1/runs/t/export", body={})
+    assert status == 422
+    assert body["error"]["code"] == "guide_not_renderable"
+
+
+def test_do_put_guide_document_error_returns_422_not_500(server, monkeypatch):
+    """Same coherent-taxonomy requirement on the PUT verb: a GuideDocumentError
+    escaping a PUT route (e.g. a future update_run_plan-adjacent path) must
+    not fall through do_PUT's except chain into the last-resort 500."""
+    from education_pipeline.daemon import server as server_mod
+    from education_pipeline.guides import GuideDocumentError
+
+    def _raise(*args, **kwargs):
+        raise GuideDocumentError("guide cannot be rendered")
+
+    monkeypatch.setattr(server_mod.write_api, "edit_response", _raise)
+    status, body = _req(
+        server,
+        "PUT",
+        "/v1/runs/t/stages/draft/response",
+        body={"text": "x", "base_sha256": "0" * 64},
+    )
+    assert status == 422
+    assert body["error"]["code"] == "guide_not_renderable"
 
 
 def test_json_api_response_has_no_csp_header(server):
@@ -1227,6 +1322,33 @@ def test_put_config_plan_with_stale_sha_returns_409(config_server):
     )
     assert status == 409
     assert body["error"]["code"] == "stale_content"
+
+
+def test_put_config_plan_unknown_stage_key_returns_400_over_http(config_server):
+    """A misspelled stage-override key ('modle' instead of 'model') must be
+    rejected with 400 over real HTTP, not silently swallowed with a 200 that
+    discards the key."""
+
+    status, payload = _req(config_server, "GET", "/v1/config/plan")
+    assert status == 200
+    base_sha256 = payload["plan_sha256"]
+
+    status, body = _req(
+        config_server,
+        "PUT",
+        "/v1/config/plan",
+        body={
+            "base_sha256": base_sha256,
+            "provider": "fake",
+            "stages": {"draft": {"modle": "opus"}},
+        },
+    )
+    assert status == 400
+    assert "unknown stage-override key" in body["error"]["message"]
+
+    # nothing was written: the plan sha is unchanged
+    status, reread = _req(config_server, "GET", "/v1/config/plan")
+    assert reread["plan_sha256"] == base_sha256
 
 
 def test_put_config_plan_unknown_model_returns_400_and_writes_nothing(tmp_path, monkeypatch):
