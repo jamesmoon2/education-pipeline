@@ -292,6 +292,13 @@ def test_apply_overrides_rejects_unknown_provider():
         apply_overrides(plan, {"stages": {"qa": {"provider": "not-real"}}}, catalog=catalog)
 
 
+def test_apply_overrides_rejects_unknown_stage_override_keys():
+    plan, catalog = _plan_and_catalog()
+
+    with pytest.raises(ConfigError, match="unknown stage-override key"):
+        apply_overrides(plan, {"stages": {"qa": {"modle": "opus"}}}, catalog=catalog)
+
+
 def test_apply_overrides_with_empty_overrides_returns_equivalent_plan():
     plan, catalog = _plan_and_catalog()
 
@@ -362,6 +369,17 @@ def test_apply_overrides_lenient_with_empty_overrides_returns_equivalent_plan_an
 
     assert errors == {}
     assert effective == plan
+
+
+def test_apply_overrides_lenient_degrades_unknown_key_to_stage_error():
+    plan, catalog = _plan_and_catalog()
+
+    effective, errors = apply_overrides_lenient(
+        plan, {"stages": {"qa": {"modle": "opus"}}}, catalog=catalog
+    )
+
+    assert "qa" in errors and "modle" in errors["qa"]
+    assert effective.stage("qa").model == "sonnet"
 
 
 def test_apply_overrides_lenient_rejects_non_table_stages():

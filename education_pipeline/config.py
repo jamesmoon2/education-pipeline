@@ -228,6 +228,9 @@ def emit_model_plan_toml(plan: ModelPlan) -> str:
     return "\n".join(lines)
 
 
+_STAGE_OVERRIDE_KEYS = frozenset({"provider", "model", "effort", "recommendation"})
+
+
 def apply_overrides(
     plan: ModelPlan,
     overrides: Mapping[str, Any],
@@ -260,6 +263,13 @@ def apply_overrides(
     for stage_name, stage_override in override_stages.items():
         if not isinstance(stage_override, Mapping):
             raise ConfigError(f"override for stage {stage_name!r} must be a table")
+        unknown = sorted(set(stage_override) - _STAGE_OVERRIDE_KEYS)
+        if unknown:
+            keys = ", ".join(repr(k) for k in unknown)
+            allowed = ", ".join(sorted(_STAGE_OVERRIDE_KEYS))
+            raise ConfigError(
+                f"unknown stage-override key(s) {keys} for stage {stage_name!r}; allowed: {allowed}"
+            )
         merged_stage = dict(raw["stages"].get(stage_name, {}))
         merged_stage.update(stage_override)
         raw["stages"][stage_name] = merged_stage

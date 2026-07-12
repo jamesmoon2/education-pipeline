@@ -276,4 +276,5 @@ export interface StageOverride {
   provider?: string;
   model?: string;
   effort?: string;
+  recommendation?: string;
 }

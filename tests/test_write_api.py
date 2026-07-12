@@ -101,6 +101,17 @@ def test_update_run_plan_invalid_model_is_400_and_stored_overrides_untouched(tmp
     assert runs.read_plan_overrides("t") == before
 
 
+def test_update_run_plan_unknown_override_key_is_config_error_and_not_persisted(tmp_path):
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    before = runs.read_plan_overrides("t")
+    with pytest.raises(ConfigError):
+        write_api.update_run_plan(
+            runs, config, "t", {"overrides": {"draft": {"modle": "m"}}}
+        )
+    assert runs.read_plan_overrides("t") == before
+
+
 def test_update_run_plan_missing_or_bad_overrides_field_is_config_error(tmp_path):
     config = _config_source()
     runs, _jobs = _workspace(tmp_path)
