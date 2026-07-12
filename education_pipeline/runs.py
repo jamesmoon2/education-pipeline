@@ -15,10 +15,20 @@ from education_pipeline.export import (
     build_markdown_bundle,
     render_markdown_to_html,
 )
+from education_pipeline.guides import (
+    ContractError,
+    build_guide_contract,
+    check_contract_conflict,
+    extract_outline_contract,
+    extract_spec_contract,
+)
 from education_pipeline.prompts import (
     PromptArtifact,
     SpecPromptInput,
     compile_draft_prompt,
+    compile_guide_v1_draft_prompt,
+    compile_guide_v1_outline_prompt,
+    compile_guide_v1_spec_prompt,
     compile_outline_prompt,
     compile_qa_prompt,
     compile_repair_prompt,
@@ -26,6 +36,8 @@ from education_pipeline.prompts import (
     compile_topic_spec_prompt,
 )
 from education_pipeline.workspace import ProfileStore, TopicStore
+
+_GUIDE_CONTRACT_FILENAME = "guide-contract.json"
 
 
 class StaleContentError(Exception):
@@ -398,6 +410,10 @@ class RunStore:
         The approved copy is the canonical input for downstream stages. A stub
         placeholder never counts as an ingested response, so approving before a
         real response is saved raises.
+
+        For guide-v1 runs, spec and outline responses must contain valid fenced
+        contract blocks (and outline must not conflict with the approved spec)
+        before promotion.
         """
 
         paths = self.stage_paths(topic_id, stage)
@@ -407,6 +423,8 @@ class RunStore:
             )
 
         text = paths.response_path.read_text(encoding="utf-8")
+        if self._is_guide_v1(paths.topic_id) and paths.stage in {"spec", "outline"}:
+            self._validate_guide_approval(paths.topic_id, paths.stage, text)
         _write_text(paths.approved_path, text, overwrite=overwrite)
         self._append_event(
             paths.topic_id,
@@ -423,7 +441,8 @@ class RunStore:
 
         The written file is byte-for-byte a hand-saved response. Empty or
         whitespace-only output is rejected, and an existing response is never
-        clobbered unless ``force`` is set.
+        clobbered unless ``force`` is set. A forced overwrite records the prior
+        response's hash in a ``response_replaced`` manifest event first.
         """
 
         paths = self.stage_paths(topic_id, stage)
@@ -432,6 +451,13 @@ class RunStore:
         if paths.response_path.exists() and not force:
             raise ConfigError(
                 f"response already ingested for stage {paths.stage!r}: {paths.response_path}"
+            )
+        if paths.response_path.exists() and force:
+            self._append_event(
+                paths.topic_id,
+                stage=paths.stage,
+                action="response_replaced",
+                files={"replaced_response_file": paths.response_path},
             )
         _write_text_atomic(paths.response_path, text)
         if paths.stub_path.exists():
@@ -596,19 +622,22 @@ class RunStore:
         """Compile and write the spec-stage prompt for a topic run.
 
         Uses the topic's attached learner profile snapshot when one exists,
-        otherwise compiles with broadly accessible defaults.
+        otherwise compiles with broadly accessible defaults. Guide-v1 runs
+        use the contract-aware guide-v1 compiler.
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
         profile = self._load_attached_profile(safe_id)
-        artifact = compile_spec_prompt(
-            SpecPromptInput(
-                topic_id=safe_id,
-                title=title,
-                topic_brief=topic_brief,
-                profile=profile,
-            )
+        spec_input = SpecPromptInput(
+            topic_id=safe_id,
+            title=title,
+            topic_brief=topic_brief,
+            profile=profile,
         )
+        if self._is_guide_v1(safe_id):
+            artifact = compile_guide_v1_spec_prompt(spec_input)
+        else:
+            artifact = compile_spec_prompt(spec_input)
         return self._write_prompt(artifact, overwrite=overwrite)
 
     def write_topic_spec_prompt(
@@ -620,13 +649,24 @@ class RunStore:
         """Compile and write the spec prompt from a stored topic artifact.
 
         Loads the topic from the workspace ``topics`` directory and reuses the
-        topic's attached learner profile snapshot when one exists.
+        topic's attached learner profile snapshot when one exists. Guide-v1
+        runs compile from the topic's id, title, and brief only.
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
         topic = TopicStore(self.root).load_topic(safe_id)
         profile = self._load_attached_profile(safe_id)
-        artifact = compile_topic_spec_prompt(topic, profile)
+        if self._is_guide_v1(safe_id):
+            artifact = compile_guide_v1_spec_prompt(
+                SpecPromptInput(
+                    topic_id=topic.id,
+                    title=topic.title,
+                    topic_brief=topic.brief,
+                    profile=profile,
+                )
+            )
+        else:
+            artifact = compile_topic_spec_prompt(topic, profile)
         return self._write_prompt(artifact, overwrite=overwrite)
 
     def write_outline_prompt(
@@ -638,15 +678,24 @@ class RunStore:
         """Compile and write the outline prompt from the approved spec.
 
         Requires the spec stage to have been approved, and reuses the topic's
-        attached learner profile snapshot when one exists.
+        attached learner profile snapshot when one exists. Guide-v1 runs use
+        the contract-aware outline compiler and record the approved-spec source
+        hash on the prompt_written event.
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
         topic = TopicStore(self.root).load_topic(safe_id)
         approved_spec = self.read_approved(safe_id, "spec")
         profile = self._load_attached_profile(safe_id)
-        artifact = compile_outline_prompt(topic, approved_spec, profile)
-        return self._write_prompt(artifact, overwrite=overwrite)
+        if self._is_guide_v1(safe_id):
+            artifact = compile_guide_v1_outline_prompt(topic, approved_spec, profile)
+            extra_files = {
+                "source_spec_file": self.stage_paths(safe_id, "spec").approved_path,
+            }
+        else:
+            artifact = compile_outline_prompt(topic, approved_spec, profile)
+            extra_files = None
+        return self._write_prompt(artifact, overwrite=overwrite, extra_event_files=extra_files)
 
     def write_draft_prompt(
         self,
@@ -657,15 +706,29 @@ class RunStore:
         """Compile and write the draft prompt from the approved outline.
 
         Requires the outline stage to have been approved, and reuses the topic's
-        attached learner profile snapshot when one exists.
+        attached learner profile snapshot when one exists. Guide-v1 runs also
+        write immutable ``inputs/guide-contract.json`` and embed those bytes in
+        the draft prompt.
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
         topic = TopicStore(self.root).load_topic(safe_id)
         approved_outline = self.read_approved(safe_id, "outline")
         profile = self._load_attached_profile(safe_id)
-        artifact = compile_draft_prompt(topic, approved_outline, profile)
-        return self._write_prompt(artifact, overwrite=overwrite)
+        if self._is_guide_v1(safe_id):
+            self.create_run(safe_id)
+            contract_bytes = self._write_guide_contract(safe_id, profile=profile, overwrite=overwrite)
+            artifact = compile_guide_v1_draft_prompt(
+                topic, approved_outline, contract_bytes, profile
+            )
+            extra_files = {
+                "source_outline_file": self.stage_paths(safe_id, "outline").approved_path,
+                "contract_file": self._guide_contract_path(safe_id),
+            }
+        else:
+            artifact = compile_draft_prompt(topic, approved_outline, profile)
+            extra_files = None
+        return self._write_prompt(artifact, overwrite=overwrite, extra_event_files=extra_files)
 
     def write_qa_prompt(
         self,
@@ -719,7 +782,13 @@ class RunStore:
         )
         return self._write_prompt(artifact, overwrite=overwrite)
 
-    def _write_prompt(self, artifact: PromptArtifact, *, overwrite: bool) -> PromptFile:
+    def _write_prompt(
+        self,
+        artifact: PromptArtifact,
+        *,
+        overwrite: bool,
+        extra_event_files: dict[str, Path] | None = None,
+    ) -> PromptFile:
         paths = self.stage_paths(artifact.topic_id, artifact.stage)
         self.create_run(artifact.topic_id)
 
@@ -727,11 +796,17 @@ class RunStore:
         if not paths.response_path.exists():
             _write_text(paths.stub_path, _stub_text(paths), overwrite=True)
 
+        files: dict[str, Path] = {
+            "prompt_file": paths.prompt_path,
+            "response_file": paths.response_path,
+        }
+        if extra_event_files:
+            files.update(extra_event_files)
         self._append_event(
             artifact.topic_id,
             stage=paths.stage,
             action="prompt_written",
-            files={"prompt_file": paths.prompt_path, "response_file": paths.response_path},
+            files=files,
         )
         return PromptFile(
             stage=paths.stage,
@@ -741,6 +816,70 @@ class RunStore:
             stub_path=paths.stub_path,
             artifact=artifact,
         )
+
+    def _is_guide_v1(self, topic_id: str) -> bool:
+        return self.content_contract(topic_id).kind == "interactive_guide"
+
+    def _guide_contract_path(self, topic_id: str) -> Path:
+        return self.run_dir(topic_id) / "inputs" / _GUIDE_CONTRACT_FILENAME
+
+    def _validate_guide_approval(self, topic_id: str, stage: str, response_text: str) -> None:
+        """Raise ConfigError if a guide-v1 spec/outline response fails its contract gate."""
+
+        try:
+            if stage == "spec":
+                extract_spec_contract(response_text)
+            elif stage == "outline":
+                outline_contract = extract_outline_contract(response_text)
+                spec_contract = extract_spec_contract(self.read_approved(topic_id, "spec"))
+                check_contract_conflict(spec_contract, outline_contract)
+        except ContractError as exc:
+            raise ConfigError(
+                f"cannot approve {stage} for guide run {topic_id!r}: {exc}"
+            ) from exc
+
+    def _publishable_profile_summary(self, profile) -> str | None:
+        if profile is None:
+            return None
+        if not profile.privacy.include_in_published_output:
+            return None
+        summary = profile.privacy.publishable_summary
+        if not summary:
+            return None
+        return summary
+
+    def _write_guide_contract(self, topic_id: str, *, profile, overwrite: bool) -> bytes:
+        """Build and atomically write ``inputs/guide-contract.json`` for a guide-v1 draft.
+
+        Returns the bytes actually on disk after the write (or no-op when the
+        existing file already matches). Divergent bytes without ``overwrite``
+        raise: the guide contract is immutable once established.
+        """
+
+        try:
+            spec_contract = extract_spec_contract(self.read_approved(topic_id, "spec"))
+            outline_contract = extract_outline_contract(self.read_approved(topic_id, "outline"))
+        except ContractError as exc:
+            raise ConfigError(
+                f"cannot build guide contract for run {topic_id!r}: {exc}"
+            ) from exc
+
+        contract_bytes = build_guide_contract(
+            spec_contract,
+            outline_contract,
+            publishable_profile_summary=self._publishable_profile_summary(profile),
+        )
+        path = self._guide_contract_path(topic_id)
+        if path.exists():
+            existing = path.read_bytes()
+            if existing == contract_bytes:
+                return existing
+            if not overwrite:
+                raise ConfigError(
+                    f"guide contract is immutable and requires an explicit overwrite/rebuild: {path}"
+                )
+        _write_bytes_atomic(path, contract_bytes)
+        return contract_bytes
 
     def _load_attached_profile(self, topic_id: str):
         snapshot_path = ProfileStore(self.root).topic_profile_snapshot_path(topic_id)
@@ -799,14 +938,18 @@ def _write_text(path: Path, text: str, *, overwrite: bool) -> None:
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
+    _write_bytes_atomic(path, text.encode("utf-8"))
+
+
+def _write_bytes_atomic(path: Path, data: bytes) -> None:
     import os
     import tempfile
 
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=path.suffix)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):

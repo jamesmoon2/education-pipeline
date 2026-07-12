@@ -19,6 +19,7 @@ from education_pipeline import (
     StageStatus,
     TopicStore,
 )
+from education_pipeline.guides import build_guide_contract, extract_outline_contract, extract_spec_contract
 
 
 def _drive_spec_to_approved(runs: RunStore, topic_id: str) -> None:
@@ -84,6 +85,84 @@ private_by_default = true
 include_in_published_output = false
 publishable_summary = "Early-career team learning systems thinking."
 """
+
+PUBLISHABLE_PROFILE_TOML = """\
+schema_version = 1
+id = "publishable-profile"
+target_learner = "team cohort"
+professional_experience = "early-career analysts"
+learning_goals = ["understand systems thinking"]
+
+[privacy]
+private_by_default = true
+include_in_published_output = true
+publishable_summary = "Early-career team learning systems thinking."
+"""
+
+VALID_SPEC_CONTRACT = {
+    "contract_version": 1,
+    "guide_schema_version": "1.0",
+    "blueprint": "conceptual-foundations",
+    "estimated_minutes": 30,
+    "outcomes": [{"id": "identify-loop", "text": "Identify reinforcing and balancing feedback."}],
+    "required_interactions": ["knowledge_check", "worked_reveal", "scenario", "reflection"],
+    "personalization_requirements": ["Use gardening examples where they clarify the concept."],
+    "source_policy": "Sources required for factual claims that are not common knowledge.",
+}
+
+VALID_OUTLINE_CONTRACT = {
+    "contract_version": 1,
+    "modules": {
+        "feedback-loops": {
+            "outcome_ids": ["identify-loop"],
+            "estimated_minutes": 30,
+            "interaction_types": ["knowledge_check", "worked_reveal"],
+        },
+    },
+}
+
+
+def _guide_spec_response(contract: dict | None = None) -> str:
+    body = contract if contract is not None else VALID_SPEC_CONTRACT
+    return (
+        "# Course Specification: Systems Thinking\n\n"
+        "## Learning Outcomes\n"
+        "- Identify reinforcing and balancing feedback.\n\n"
+        "```education-pipeline-contract+json\n"
+        f"{json.dumps(body)}\n"
+        "```\n"
+    )
+
+
+def _guide_outline_response(contract: dict | None = None) -> str:
+    body = contract if contract is not None else VALID_OUTLINE_CONTRACT
+    return (
+        "# Course Outline: Systems Thinking\n\n"
+        "## Modules\n"
+        "1. Feedback loops\n\n"
+        "```education-pipeline-outline+json\n"
+        f"{json.dumps(body)}\n"
+        "```\n"
+    )
+
+
+def _create_guide_run(tmp_path: Path, topic_id: str = "systems-thinking") -> RunStore:
+    TopicStore(tmp_path).save_topic_toml(topic_id, TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    runs.create_run(topic_id, content_contract=ContentContract.interactive_guide_v1())
+    return runs
+
+
+def _drive_guide_spec_to_approved(runs: RunStore, topic_id: str) -> None:
+    result = runs.write_topic_spec_prompt(topic_id)
+    result.response_path.write_text(_guide_spec_response(), encoding="utf-8")
+    runs.approve_stage(topic_id, "spec")
+
+
+def _drive_guide_outline_to_approved(runs: RunStore, topic_id: str) -> None:
+    result = runs.write_outline_prompt(topic_id)
+    result.response_path.write_text(_guide_outline_response(), encoding="utf-8")
+    runs.approve_stage(topic_id, "outline")
 
 
 def test_run_store_creates_run_directories(tmp_path: Path) -> None:
@@ -805,3 +884,229 @@ def test_edit_response_rejects_bad_stage_and_topic(tmp_path: Path) -> None:
         store.edit_response("t", "bogus", "text\n", base_sha256="0" * 64)
     with pytest.raises(ConfigError):
         store.edit_response("../evil", "draft", "text\n", base_sha256="0" * 64)
+
+
+# --- guide-v1 approval gates, prompts, and contract file --------------------
+
+
+def test_guide_v1_spec_approval_requires_contract_block(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    result = runs.write_topic_spec_prompt("systems-thinking")
+    result.response_path.write_text("# Spec without a contract fence\n", encoding="utf-8")
+    before_events = list(runs.read_manifest("systems-thinking")["events"])
+    approved = runs.approved_path("systems-thinking", "spec")
+
+    with pytest.raises(ConfigError, match=r"cannot approve spec for guide run.*fenced") as exc_info:
+        runs.approve_stage("systems-thinking", "spec")
+
+    assert "education-pipeline-contract+json" in str(exc_info.value)
+    assert not approved.exists()
+    events = runs.read_manifest("systems-thinking")["events"]
+    assert events == before_events
+    assert not any(e.get("action") == "response_approved" for e in events)
+    assert runs.run_status("systems-thinking").next_action.action == "approve"
+
+
+def test_guide_v1_spec_approval_with_valid_block_succeeds(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    result = runs.write_topic_spec_prompt("systems-thinking")
+    result.response_path.write_text(_guide_spec_response(), encoding="utf-8")
+
+    approved = runs.approve_stage("systems-thinking", "spec")
+
+    assert approved.exists()
+    assert extract_spec_contract(approved.read_text(encoding="utf-8")) == VALID_SPEC_CONTRACT
+    events = runs.read_manifest("systems-thinking")["events"]
+    assert events[-1]["action"] == "response_approved"
+    assert events[-1]["stage"] == "spec"
+
+
+def test_guide_v1_outline_approval_requires_block_and_conflict_checks(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_spec_to_approved(runs, "systems-thinking")
+    outline = runs.write_outline_prompt("systems-thinking")
+
+    outline.response_path.write_text("# Outline without fence\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"cannot approve outline for guide run.*fenced"):
+        runs.approve_stage("systems-thinking", "outline")
+    assert not runs.approved_path("systems-thinking", "outline").exists()
+
+    bad_version = {**VALID_OUTLINE_CONTRACT, "contract_version": 2}
+    outline.response_path.write_text(_guide_outline_response(bad_version), encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"cannot approve outline for guide run"):
+        runs.approve_stage("systems-thinking", "outline")
+
+    unknown_outcome = {
+        "contract_version": 1,
+        "modules": {
+            "feedback-loops": {
+                "outcome_ids": ["missing-outcome"],
+                "estimated_minutes": 30,
+                "interaction_types": ["knowledge_check"],
+            },
+        },
+    }
+    outline.response_path.write_text(_guide_outline_response(unknown_outcome), encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"cannot approve outline for guide run.*unknown outcome"):
+        runs.approve_stage("systems-thinking", "outline")
+    assert not runs.approved_path("systems-thinking", "outline").exists()
+
+    outline.response_path.write_text(_guide_outline_response(), encoding="utf-8")
+    approved = runs.approve_stage("systems-thinking", "outline")
+    assert extract_outline_contract(approved.read_text(encoding="utf-8")) == VALID_OUTLINE_CONTRACT
+
+
+def test_guide_v1_draft_prompt_writes_immutable_guide_contract(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_spec_to_approved(runs, "systems-thinking")
+    _drive_guide_outline_to_approved(runs, "systems-thinking")
+
+    expected = build_guide_contract(VALID_SPEC_CONTRACT, VALID_OUTLINE_CONTRACT)
+    result = runs.write_draft_prompt("systems-thinking")
+    contract_path = tmp_path / "runs" / "systems-thinking" / "inputs" / "guide-contract.json"
+    assert contract_path.read_bytes() == expected
+
+    # Unchanged upstream + overwrite leaves bytes identical.
+    runs.write_draft_prompt("systems-thinking", overwrite=True)
+    assert contract_path.read_bytes() == expected
+
+    # Reapprove outline with different modules; overwrite=False refuses divergent rewrite.
+    alt_outline = {
+        "contract_version": 1,
+        "modules": {
+            "boundaries": {
+                "outcome_ids": ["identify-loop"],
+                "estimated_minutes": 20,
+                "interaction_types": ["scenario", "reflection"],
+            },
+        },
+    }
+    outline_paths = runs.stage_paths("systems-thinking", "outline")
+    outline_paths.response_path.write_text(_guide_outline_response(alt_outline), encoding="utf-8")
+    runs.approve_stage("systems-thinking", "outline", overwrite=True)
+
+    with pytest.raises(ConfigError, match="immutable"):
+        runs.write_draft_prompt("systems-thinking", overwrite=False)
+
+    assert contract_path.read_bytes() == expected
+
+    runs.write_draft_prompt("systems-thinking", overwrite=True)
+    rewritten = build_guide_contract(VALID_SPEC_CONTRACT, alt_outline)
+    assert contract_path.read_bytes() == rewritten
+    assert result.stage == "draft"
+
+
+def test_guide_v1_prompt_text_contains_contract_markers(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+
+    spec = runs.write_topic_spec_prompt("systems-thinking")
+    assert "education-pipeline-contract+json" in spec.prompt_path.read_text(encoding="utf-8")
+
+    spec.response_path.write_text(_guide_spec_response(), encoding="utf-8")
+    runs.approve_stage("systems-thinking", "spec")
+    outline = runs.write_outline_prompt("systems-thinking")
+    assert "education-pipeline-outline+json" in outline.prompt_path.read_text(encoding="utf-8")
+
+    outline.response_path.write_text(_guide_outline_response(), encoding="utf-8")
+    runs.approve_stage("systems-thinking", "outline")
+    draft = runs.write_draft_prompt("systems-thinking")
+    draft_text = draft.prompt_path.read_text(encoding="utf-8")
+    contract_bytes = build_guide_contract(VALID_SPEC_CONTRACT, VALID_OUTLINE_CONTRACT)
+    assert contract_bytes.decode("utf-8") in draft_text
+    assert "Return exactly one JSON object" in draft_text
+
+
+def test_guide_v1_contract_omits_non_publishable_profile_summary(tmp_path: Path) -> None:
+    profiles = ProfileStore(tmp_path)
+    profiles.save_profile_toml("visual-profile", PROFILE_TOML)
+    profiles.attach_profile_to_topic("visual-profile", "systems-thinking")
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_spec_to_approved(runs, "systems-thinking")
+    _drive_guide_outline_to_approved(runs, "systems-thinking")
+
+    runs.write_draft_prompt("systems-thinking")
+    payload = json.loads(
+        (tmp_path / "runs" / "systems-thinking" / "inputs" / "guide-contract.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "publishable_profile_summary" not in payload
+
+
+def test_guide_v1_contract_includes_publishable_profile_summary(tmp_path: Path) -> None:
+    profiles = ProfileStore(tmp_path)
+    profiles.save_profile_toml("publishable-profile", PUBLISHABLE_PROFILE_TOML)
+    profiles.attach_profile_to_topic("publishable-profile", "systems-thinking")
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_spec_to_approved(runs, "systems-thinking")
+    _drive_guide_outline_to_approved(runs, "systems-thinking")
+
+    runs.write_draft_prompt("systems-thinking")
+    payload = json.loads(
+        (tmp_path / "runs" / "systems-thinking" / "inputs" / "guide-contract.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["publishable_profile_summary"] == "Early-career team learning systems thinking."
+
+
+def test_guide_v1_prompt_written_events_record_upstream_hashes(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_spec_to_approved(runs, "systems-thinking")
+
+    runs.write_outline_prompt("systems-thinking")
+    outline_event = next(
+        e
+        for e in reversed(runs.read_manifest("systems-thinking")["events"])
+        if e["action"] == "prompt_written" and e["stage"] == "outline"
+    )
+    spec_approved = runs.approved_path("systems-thinking", "spec")
+    assert outline_event["source_spec_file"] == "approved/spec.md"
+    assert outline_event["source_spec_file_sha256"] == hashlib.sha256(
+        spec_approved.read_bytes()
+    ).hexdigest()
+
+    outline = runs.stage_paths("systems-thinking", "outline")
+    outline.response_path.write_text(_guide_outline_response(), encoding="utf-8")
+    runs.approve_stage("systems-thinking", "outline")
+    runs.write_draft_prompt("systems-thinking")
+
+    draft_event = next(
+        e
+        for e in reversed(runs.read_manifest("systems-thinking")["events"])
+        if e["action"] == "prompt_written" and e["stage"] == "draft"
+    )
+    outline_approved = runs.approved_path("systems-thinking", "outline")
+    contract_path = tmp_path / "runs" / "systems-thinking" / "inputs" / "guide-contract.json"
+    assert draft_event["source_outline_file"] == "approved/outline.md"
+    assert draft_event["source_outline_file_sha256"] == hashlib.sha256(
+        outline_approved.read_bytes()
+    ).hexdigest()
+    assert draft_event["contract_file"] == "inputs/guide-contract.json"
+    assert draft_event["contract_file_sha256"] == hashlib.sha256(contract_path.read_bytes()).hexdigest()
+
+
+def test_ingest_response_force_records_replaced_response_hash(tmp_path: Path) -> None:
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+    old_text = "first response\n"
+    path = runs.ingest_response("systems-thinking", "draft", old_text)
+    old_sha = hashlib.sha256(old_text.encode("utf-8")).hexdigest()
+
+    runs.ingest_response("systems-thinking", "draft", "second response\n", force=True)
+
+    events = runs.read_manifest("systems-thinking")["events"]
+    replaced = [e for e in events if e["action"] == "response_replaced"]
+    assert len(replaced) == 1
+    assert replaced[0]["stage"] == "draft"
+    assert replaced[0]["replaced_response_file"] == "responses/draft.response.md"
+    assert replaced[0]["replaced_response_file_sha256"] == old_sha
+    assert path.read_text(encoding="utf-8") == "second response\n"
+    assert hashlib.sha256(path.read_bytes()).hexdigest() != old_sha
+
+
+def test_guide_v1_write_spec_prompt_uses_guide_compiler(tmp_path: Path) -> None:
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking", content_contract=ContentContract.interactive_guide_v1())
+    result = runs.write_spec_prompt("systems-thinking", title="Systems Thinking")
+    assert "education-pipeline-contract+json" in result.prompt_path.read_text(encoding="utf-8")
