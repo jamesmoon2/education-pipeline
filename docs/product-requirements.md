@@ -484,7 +484,14 @@ model-generated executable code.
 
 **Status: Delivered 2026-07-12** (closeout evidence in
 [`docs/superpowers/plans/2026-07-11-model-plan-configuration.md`](superpowers/plans/2026-07-11-model-plan-configuration.md)
-Wave Log).
+Wave Log). Accepted limitations and follow-on debt are recorded in the
+post-milestone audit; the two scheduled debt items (API-hygiene 400s and
+atomic manifest writes) move to "P0 — Establish deterministic release gates".
+
+Milestone specifications:
+
+- [`docs/superpowers/specs/2026-07-11-model-plan-configuration-design.md`](superpowers/specs/2026-07-11-model-plan-configuration-design.md)
+- [`docs/superpowers/specs/2026-07-12-model-plan-configuration-post-milestone-audit.md`](superpowers/specs/2026-07-12-model-plan-configuration-post-milestone-audit.md)
 
 - Expose provider availability and project defaults in Settings.
 - Add per-stage provider/model/effort controls with “Use recommended” reset.
