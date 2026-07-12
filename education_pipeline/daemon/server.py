@@ -541,6 +541,14 @@ def _make_handler(context: DaemonContext):
                     200,
                     write_api.update_global_plan(context.config, self._read_body()),
                 )
+            m = re.match(r"^/v1/runs/([^/?]+)/plan$", self.path)
+            if m:
+                return self._send(
+                    200,
+                    write_api.update_run_plan(
+                        context.runs, context.config, m.group(1), self._read_body()
+                    ),
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/response$", self.path)
             if m:
                 body = self._read_body()

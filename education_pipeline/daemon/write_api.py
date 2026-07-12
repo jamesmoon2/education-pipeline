@@ -18,7 +18,12 @@ import json
 import tomllib
 from pathlib import Path
 
-from education_pipeline.config import ConfigError, emit_model_plan_toml, parse_model_plan
+from education_pipeline.config import (
+    ConfigError,
+    apply_overrides,
+    emit_model_plan_toml,
+    parse_model_plan,
+)
 from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
@@ -309,6 +314,35 @@ def update_global_plan(config, body: dict) -> dict:
     )
     config.write_plan(emit_model_plan_toml(plan))
     return read_api.plan_payload(catalog, plan, config.plan_sha256())
+
+
+def update_run_plan(runs: RunStore, config, topic_id: str, body: dict) -> dict:
+    read_api.require_run(runs, topic_id)
+    overrides_body = body.get("overrides")
+    if not isinstance(overrides_body, dict):
+        raise ConfigError("body field 'overrides' must be a table")
+
+    catalog, plan = config.load()
+    stored = runs.read_plan_overrides(topic_id)
+    stored_stages = stored.get("stages", {})
+    if not isinstance(stored_stages, dict):
+        stored_stages = {}
+    merged_stages = dict(stored_stages)
+    for stage_name, stage_override in overrides_body.items():
+        if stage_override is None:
+            merged_stages.pop(stage_name, None)
+        elif isinstance(stage_override, dict):
+            merged_stages[stage_name] = stage_override
+        else:
+            raise ConfigError(
+                f"override for stage {stage_name!r} must be a table or null"
+            )
+    merged = {"stages": merged_stages}
+
+    apply_overrides(plan, merged, catalog)  # validate before writing; ConfigError -> 400
+
+    runs.write_plan_overrides(topic_id, merged)
+    return read_api.run_plan_payload(catalog, plan, config.plan_sha256(), runs, topic_id)
 
 
 def attach_profile(

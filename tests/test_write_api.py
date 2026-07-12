@@ -62,6 +62,61 @@ def test_update_global_plan_with_unknown_model_raises_config_error_and_leaves_pl
     assert config.plan_sha256() == base_sha256
 
 
+def test_update_run_plan_sets_override_and_source_and_command_change(tmp_path):
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    result = write_api.update_run_plan(
+        runs, config, "t", {"overrides": {"draft": {"model": "m"}}}
+    )
+    stages = {s["stage"]: s for s in result["stages"]}
+    assert stages["draft"]["source"] == "override"
+    assert stages["draft"]["model"] == "m"
+    other_stages = [s for name, s in stages.items() if name != "draft"]
+    assert all(s["source"] == "default" for s in other_stages)
+
+
+def test_update_run_plan_clear_override_with_null_reverts_to_default(tmp_path):
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    write_api.update_run_plan(runs, config, "t", {"overrides": {"draft": {"model": "m"}}})
+    result = write_api.update_run_plan(runs, config, "t", {"overrides": {"draft": None}})
+    stages = {s["stage"]: s for s in result["stages"]}
+    assert stages["draft"]["source"] == "default"
+
+
+def test_update_run_plan_invalid_model_is_400_and_stored_overrides_untouched(tmp_path):
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    write_api.update_run_plan(
+        runs, config, "t", {"overrides": {"draft": {"provider": "fake", "model": "m"}}}
+    )
+    before = runs.read_plan_overrides("t")
+    with pytest.raises(ConfigError):
+        write_api.update_run_plan(
+            runs,
+            config,
+            "t",
+            {"overrides": {"draft": {"provider": "fake", "model": "does-not-exist"}}},
+        )
+    assert runs.read_plan_overrides("t") == before
+
+
+def test_update_run_plan_missing_or_bad_overrides_field_is_config_error(tmp_path):
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    with pytest.raises(ConfigError):
+        write_api.update_run_plan(runs, config, "t", {})
+    with pytest.raises(ConfigError):
+        write_api.update_run_plan(runs, config, "t", {"overrides": "not-a-dict"})
+
+
+def test_update_run_plan_unknown_topic_is_404(tmp_path):
+    config = _config_source()
+    runs = RunStore(tmp_path)
+    with pytest.raises(NotFoundError):
+        write_api.update_run_plan(runs, config, "nope", {"overrides": {}})
+
+
 def _workspace(tmp_path, *, create_legacy_run: bool = True):
     (tmp_path / "topics").mkdir()
     (tmp_path / "topics" / "t.toml").write_text(

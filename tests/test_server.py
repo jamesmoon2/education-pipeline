@@ -1076,3 +1076,60 @@ def test_run_plan_404_for_unknown_topic(run_plan_server):
     status, body = _req(run_plan_server, "GET", "/v1/runs/nope/plan")
     assert status == 404
     assert body["error"]["code"] == "not_found"
+
+
+def test_put_run_plan_sets_override_then_clears_it(run_plan_server):
+    status, updated = _req(
+        run_plan_server,
+        "PUT",
+        "/v1/runs/t/plan",
+        body={"overrides": {"draft": {"provider": "manual", "model": "prompt-only"}}},
+    )
+    assert status == 200
+    stages = {s["stage"]: s for s in updated["stages"]}
+    assert stages["draft"]["source"] == "override"
+    assert stages["draft"]["provider"] == "manual"
+    assert stages["draft"]["command"] is None  # manual provider -> no invocable command
+
+    status, reread = _req(run_plan_server, "GET", "/v1/runs/t/plan")
+    assert status == 200
+    stages = {s["stage"]: s for s in reread["stages"]}
+    assert stages["draft"]["source"] == "override"
+
+    status, cleared = _req(
+        run_plan_server, "PUT", "/v1/runs/t/plan", body={"overrides": {"draft": None}}
+    )
+    assert status == 200
+    stages = {s["stage"]: s for s in cleared["stages"]}
+    assert stages["draft"]["source"] == "default"
+    assert stages["draft"]["command"] is not None
+
+
+def test_put_run_plan_invalid_model_is_400_and_overrides_unchanged(run_plan_server):
+    status, body = _req(
+        run_plan_server,
+        "PUT",
+        "/v1/runs/t/plan",
+        body={"overrides": {"draft": {"model": "does-not-exist"}}},
+    )
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+
+    status, reread = _req(run_plan_server, "GET", "/v1/runs/t/plan")
+    assert status == 200
+    stages = {s["stage"]: s for s in reread["stages"]}
+    assert stages["draft"]["source"] == "default"
+
+
+def test_put_run_plan_unknown_topic_is_404(run_plan_server):
+    status, body = _req(
+        run_plan_server, "PUT", "/v1/runs/nope/plan", body={"overrides": {}}
+    )
+    assert status == 404
+    assert body["error"]["code"] == "not_found"
+
+
+def test_put_run_plan_missing_overrides_field_is_400(run_plan_server):
+    status, body = _req(run_plan_server, "PUT", "/v1/runs/t/plan", body={})
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"

@@ -17,6 +17,7 @@ from education_pipeline.config import (
     ModelCatalog,
     ModelOption,
     ModelPlan,
+    apply_overrides,
     weak_stage_warning,
 )
 from education_pipeline.providers import get_runner
@@ -323,9 +324,14 @@ def run_plan_payload(
     """The effective plan for one run, plus per-stage source + command preview."""
 
     require_run(runs, topic_id)
-    payload = plan_payload(catalog, plan, plan_sha256)
+    overrides = runs.read_plan_overrides(topic_id)
+    override_stage_names = set(overrides.get("stages", {}) or {})
+    effective = apply_overrides(plan, overrides, catalog)
+    payload = plan_payload(catalog, effective, plan_sha256)
     for stage_entry in payload["stages"]:
-        stage_plan = plan.stage(stage_entry["stage"])
-        stage_entry["source"] = "default"  # Wave 3 adds "override"
+        stage_plan = effective.stage(stage_entry["stage"])
+        stage_entry["source"] = (
+            "override" if stage_entry["stage"] in override_stage_names else "default"
+        )
         stage_entry["command"] = _stage_command(catalog, stage_plan, runs, topic_id)
     return payload
