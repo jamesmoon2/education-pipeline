@@ -146,6 +146,9 @@ def ingest_response(
             "retry with force to replace it",
         )
     path = runs.ingest_response(topic_id, stage, text, force=force)
+    runs.record_stage_provenance(
+        topic_id, stage, provider="manual", model=None, effort=None, source="manual"
+    )
     return {
         "topic_id": paths.topic_id,
         "stage": paths.stage,

@@ -74,6 +74,16 @@ def test_execute_success_ingests_response(tmp_path, monkeypatch):
     # manifest carries a job event
     actions = [e["action"] for e in runs.read_manifest("t")["events"]]
     assert "job" in actions
+    # manifest carries a stage-provenance entry for this job
+    provenance = runs.read_manifest("t")["stage_provenance"]
+    assert len(provenance) == 1
+    entry = provenance[0]
+    assert entry["job_id"] == job.id
+    assert entry["stage"] == "draft"
+    assert entry["provider"] == "fake"
+    assert entry["model"] == "m"
+    assert entry["source"] == "default"
+    assert "recorded_at" in entry
 
 
 def test_execute_nonzero_exit_fails_without_response(tmp_path, monkeypatch):

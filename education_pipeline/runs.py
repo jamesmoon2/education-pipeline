@@ -728,6 +728,36 @@ class RunStore:
         manifest.setdefault("events", []).append(entry)
         _write_manifest(run / "manifest.json", manifest)
 
+    def record_stage_provenance(
+        self,
+        topic_id: str,
+        stage: str,
+        *,
+        provider: str,
+        model: str | None,
+        effort: str | None,
+        source: str,
+        job_id: str | None = None,
+    ) -> None:
+        """Append the effective provider/model/effort that ran a stage to
+        manifest["stage_provenance"] (created as [] when missing). Append-only;
+        re-running a stage appends a new entry rather than replacing the last."""
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        run = self.run_dir(safe_id)
+        manifest = self.read_manifest(safe_id)
+        entry = {
+            "stage": stage,
+            "provider": provider,
+            "model": model,
+            "effort": effort,
+            "source": source,
+            "job_id": job_id,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        manifest.setdefault("stage_provenance", []).append(entry)
+        _write_manifest(run / "manifest.json", manifest)
+
     def final_path(self, topic_id: str) -> Path:
         """Path of the assembled final guide for a run (legacy ``final/guide.md``)."""
 

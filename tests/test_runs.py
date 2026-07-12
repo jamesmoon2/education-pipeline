@@ -938,6 +938,61 @@ def test_append_manifest_event_records_event(tmp_path):
     assert "recorded_at" in events[-1]
 
 
+def test_record_stage_provenance_appends_and_preserves_prior_entries(tmp_path):
+    runs = _create_legacy_run(tmp_path)
+    runs.record_stage_provenance(
+        "systems-thinking",
+        "draft",
+        provider="fake",
+        model="m",
+        effort="high",
+        source="override",
+        job_id="j1",
+    )
+    runs.record_stage_provenance(
+        "systems-thinking",
+        "draft",
+        provider="fake",
+        model="m2",
+        effort=None,
+        source="default",
+        job_id="j2",
+    )
+    entries = runs.read_manifest("systems-thinking")["stage_provenance"]
+    assert len(entries) == 2
+    first, second = entries
+    assert first == {
+        "stage": "draft",
+        "provider": "fake",
+        "model": "m",
+        "effort": "high",
+        "source": "override",
+        "job_id": "j1",
+        "recorded_at": first["recorded_at"],
+    }
+    assert "recorded_at" in first
+    assert second["model"] == "m2"
+    assert second["job_id"] == "j2"
+    # prior entry preserved, not overwritten
+    assert entries[0]["job_id"] == "j1"
+
+
+def test_record_stage_provenance_defaults_job_id_to_none(tmp_path):
+    runs = _create_legacy_run(tmp_path)
+    runs.record_stage_provenance(
+        "systems-thinking",
+        "spec",
+        provider="manual",
+        model=None,
+        effort=None,
+        source="manual",
+    )
+    entry = runs.read_manifest("systems-thinking")["stage_provenance"][0]
+    assert entry["job_id"] is None
+    assert entry["model"] is None
+    assert entry["effort"] is None
+
+
 def test_export_path_names_and_bad_format(tmp_path):
     from education_pipeline.config import ConfigError
     from education_pipeline.runs import RunStore

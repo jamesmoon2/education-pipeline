@@ -313,6 +313,15 @@ class JobRunner:
                         "model": job.model,
                     },
                 )
+                self.runs.record_stage_provenance(
+                    job.topic_id,
+                    job.stage,
+                    provider=job.provider,
+                    model=job.model,
+                    effort=job.effort,
+                    source=job.metadata.get("plan_source", "default"),
+                    job_id=job.id,
+                )
             except Exception as exc:
                 # The response already landed durably; a manifest-event append
                 # failure must not downgrade an already-committed success.

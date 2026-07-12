@@ -113,6 +113,21 @@ def test_ingest_conflict_and_force(tmp_path):
     assert runs.stage_paths("t", "spec").response_path.read_text(encoding="utf-8") == "second"
 
 
+def test_ingest_response_records_manual_provenance_entry(tmp_path):
+    runs, jobs = _workspace(tmp_path)
+    write_api.advance_run(runs, jobs, "t")
+    write_api.ingest_response(runs, jobs, "t", "spec", "manual body")
+    entries = runs.read_manifest("t")["stage_provenance"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["stage"] == "spec"
+    assert entry["provider"] == "manual"
+    assert entry["model"] is None
+    assert entry["effort"] is None
+    assert entry["source"] == "manual"
+    assert "recorded_at" in entry
+
+
 def test_ingest_empty_text_is_config_error(tmp_path):
     runs, jobs = _workspace(tmp_path)
     write_api.advance_run(runs, jobs, "t")
@@ -261,6 +276,19 @@ def test_guide_status_stage_content_and_validate_payloads(tmp_path):
     assert result["state"] == "current"
     assert result["report"]["guide_sha256"]
     assert result["status"]["validations"]["draft"]["state"] == "current"
+
+
+def test_run_status_payload_surfaces_stage_provenance(tmp_path):
+    runs, jobs = _workspace(tmp_path)
+    write_api.advance_run(runs, jobs, "t")
+    # Legacy manifests (no stage_provenance key yet) must yield an empty list.
+    status = write_api.read_api.run_status_payload(runs, "t")
+    assert status["stage_provenance"] == []
+
+    write_api.ingest_response(runs, jobs, "t", "spec", "manual body")
+    status = write_api.read_api.run_status_payload(runs, "t")
+    assert len(status["stage_provenance"]) == 1
+    assert status["stage_provenance"][0]["source"] == "manual"
 
 
 def test_waiver_requires_current_hash_reason_and_waivable_finding(tmp_path):

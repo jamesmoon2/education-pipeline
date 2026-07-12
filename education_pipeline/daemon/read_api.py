@@ -78,6 +78,7 @@ def run_status_payload(runs: RunStore, topic_id: str) -> dict:
     require_run(runs, topic_id)
     status = runs.run_status(topic_id)
     contract = runs.content_contract(topic_id)
+    manifest = runs.read_manifest(topic_id)
     validations = {
         phase: _validation_summary(runs, topic_id, phase)
         for phase in ("draft", "final")
@@ -86,6 +87,7 @@ def run_status_payload(runs: RunStore, topic_id: str) -> dict:
         "topic_id": status.topic_id,
         "finalized": status.finalized,
         "content_contract": contract.to_manifest(),
+        "stage_provenance": manifest.get("stage_provenance", []),
         "validations": validations,
         "stages": [
             {
