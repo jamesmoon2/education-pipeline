@@ -20,26 +20,42 @@ import { useAction } from "../hooks/useAction";
 // model-plan override (the run engine drives them deterministically).
 const LOCAL_ONLY_STAGES = new Set(["finalize", "export"]);
 
+// Seed the editable overrides map from EVERY non-local stage in the loaded
+// plan — provider/model/effort exactly as persisted. This is mandatory
+// because PUT /v1/config/plan is a FULL REPLACE (see spec §2): the daemon
+// rebuilds the plan from exactly the stages in the request body, defaulting
+// any omitted stage. Seeding only "changed" stages would silently reset every
+// untouched persisted override on Save. (The global plan payload has no
+// `source` field — that exists only on the per-run payload — so there is no
+// override/default distinction to gate on here.)
 function seedOverrides(stages: PlanStage[]): Record<string, StageOverride> {
   const overrides: Record<string, StageOverride> = {};
   for (const stage of stages) {
     if (LOCAL_ONLY_STAGES.has(stage.stage)) continue;
-    if (stage.source === "override") {
-      overrides[stage.stage] = {
-        provider: stage.provider ?? undefined,
-        model: stage.model ?? undefined,
-        effort: stage.effort ?? undefined,
-      };
-    }
+    overrides[stage.stage] = {
+      provider: stage.provider ?? undefined,
+      model: stage.model ?? undefined,
+      effort: stage.effort ?? undefined,
+    };
   }
   return overrides;
 }
 
-function withOverride(stage: PlanStage, override: StageOverride | undefined): PlanStage {
-  if (!override) return stage;
+// The row's displayed state. A stage WITH an entry renders that entry's
+// values; a stage WITHOUT an entry (cleared via per-row "Use recommended")
+// renders the recommended default — top-level provider, no model, no effort —
+// NOT the stale loaded value.
+function displayStage(
+  stage: PlanStage,
+  override: StageOverride | undefined,
+  defaultProvider: string,
+): PlanStage {
+  if (!override) {
+    return { ...stage, provider: defaultProvider, model: null, effort: null };
+  }
   return {
     ...stage,
-    provider: override.provider ?? stage.provider,
+    provider: override.provider ?? defaultProvider,
     model: override.model ?? null,
     effort: override.effort ?? null,
   };
@@ -151,7 +167,7 @@ export default function SettingsPage() {
         {plan.stages.map((stage) => (
           <PlanStageRow
             key={stage.stage}
-            stage={withOverride(stage, overrides[stage.stage])}
+            stage={displayStage(stage, overrides[stage.stage], plan.provider)}
             catalog={catalog}
             providers={providers}
             onChange={handleRowChange}
