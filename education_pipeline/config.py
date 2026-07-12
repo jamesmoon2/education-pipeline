@@ -228,6 +228,45 @@ def emit_model_plan_toml(plan: ModelPlan) -> str:
     return "\n".join(lines)
 
 
+def apply_overrides(
+    plan: ModelPlan,
+    overrides: Mapping[str, Any],
+    catalog: ModelCatalog | None = None,
+) -> ModelPlan:
+    """Overlay sparse per-run overrides onto a plan. Implementation: rebuild the
+    raw mapping (provider + per-stage dicts from `plan`), deep-merge
+    overrides["stages"], and re-run parse_model_plan(..., catalog=catalog) so
+    every existing validation rule applies to the merged result."""
+
+    raw: dict[str, Any] = {"provider": plan.provider, "stages": {}}
+    for stage_name in STAGE_ORDER:
+        stage = plan.stages[stage_name]
+        body: dict[str, Any] = {}
+        if stage.provider is not None and stage.provider != plan.provider:
+            body["provider"] = stage.provider
+        if stage.model is not None:
+            body["model"] = stage.model
+        if stage.effort is not None:
+            body["effort"] = stage.effort
+        if stage.recommendation != DEFAULT_STAGE_RECOMMENDATIONS[stage_name]:
+            body["recommendation"] = stage.recommendation
+        if body:
+            raw["stages"][stage_name] = body
+
+    override_stages = overrides.get("stages", {})
+    if not isinstance(override_stages, Mapping):
+        raise ConfigError("overrides['stages'] must be a table")
+
+    for stage_name, stage_override in override_stages.items():
+        if not isinstance(stage_override, Mapping):
+            raise ConfigError(f"override for stage {stage_name!r} must be a table")
+        merged_stage = dict(raw["stages"].get(stage_name, {}))
+        merged_stage.update(stage_override)
+        raw["stages"][stage_name] = merged_stage
+
+    return parse_model_plan(raw, catalog=catalog)
+
+
 REASONING_STAGES = frozenset({"spec", "outline", "repair"})
 _QUALITY_RANK = {"fast": 0, "strong": 1, "premium": 2}
 

@@ -13,7 +13,7 @@ from education_pipeline import (
     parse_model_catalog,
     parse_model_plan,
 )
-from education_pipeline.config import emit_model_plan_toml, weak_stage_warning
+from education_pipeline.config import apply_overrides, emit_model_plan_toml, weak_stage_warning
 
 
 def test_loads_example_catalog_and_plan() -> None:
@@ -203,3 +203,86 @@ def test_emit_model_plan_toml_round_trips():
 def test_emit_escapes_special_characters():
     plan = parse_model_plan({"provider": 'we"ird\\id'}, catalog=None)
     assert parse_model_plan(tomllib.loads(emit_model_plan_toml(plan))) == plan
+
+
+def _plan_and_catalog():
+    catalog = parse_model_catalog(
+        {
+            "providers": [
+                {
+                    "id": "claude-code",
+                    "models": [
+                        {"id": "opus", "label": "Opus"},
+                        {"id": "sonnet", "label": "Sonnet"},
+                    ],
+                },
+                {
+                    "id": "codex",
+                    "models": [{"id": "gpt", "label": "GPT"}],
+                },
+            ]
+        }
+    )
+    plan = parse_model_plan(
+        {
+            "provider": "claude-code",
+            "stages": {
+                "outline": {"model": "opus", "effort": "high"},
+                "qa": {"model": "sonnet"},
+            },
+        },
+        catalog=catalog,
+    )
+    return plan, catalog
+
+
+def test_apply_overrides_changes_only_the_overridden_stage():
+    plan, catalog = _plan_and_catalog()
+
+    merged = apply_overrides(
+        plan,
+        {"stages": {"qa": {"model": "opus", "effort": "low"}}},
+        catalog=catalog,
+    )
+
+    assert merged.stage("qa").model == "opus"
+    assert merged.stage("qa").effort == "low"
+    # Untouched stage is preserved exactly.
+    assert merged.stage("outline") == plan.stage("outline")
+    assert merged.provider == plan.provider
+
+
+def test_apply_overrides_preserves_unset_keys_within_overridden_stage():
+    plan, catalog = _plan_and_catalog()
+
+    merged = apply_overrides(
+        plan,
+        {"stages": {"outline": {"effort": "medium"}}},
+        catalog=catalog,
+    )
+
+    # model stays as the plan had it; only effort changes.
+    assert merged.stage("outline").model == "opus"
+    assert merged.stage("outline").effort == "medium"
+
+
+def test_apply_overrides_rejects_unknown_stage():
+    plan, catalog = _plan_and_catalog()
+
+    with pytest.raises(ConfigError, match="unknown model-plan stage"):
+        apply_overrides(plan, {"stages": {"publish": {"model": "opus"}}}, catalog=catalog)
+
+
+def test_apply_overrides_rejects_unknown_model():
+    plan, catalog = _plan_and_catalog()
+
+    with pytest.raises(ConfigError, match="unknown model"):
+        apply_overrides(plan, {"stages": {"qa": {"model": "not-real"}}}, catalog=catalog)
+
+
+def test_apply_overrides_with_empty_overrides_returns_equivalent_plan():
+    plan, catalog = _plan_and_catalog()
+
+    merged = apply_overrides(plan, {}, catalog=catalog)
+
+    assert merged == plan

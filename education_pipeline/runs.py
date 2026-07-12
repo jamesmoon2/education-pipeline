@@ -232,6 +232,24 @@ class RunStore:
         manifest = self.read_manifest(topic_id)
         return _parse_content_contract(manifest.get("content_contract"))
 
+    def plan_overrides_path(self, topic_id: str) -> Path:
+        return self.run_dir(topic_id) / "model-plan-overrides.json"
+
+    def read_plan_overrides(self, topic_id: str) -> dict:
+        """Return the run's sparse model-plan overrides, or {} when absent."""
+
+        path = self.plan_overrides_path(topic_id)
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+
+    def write_plan_overrides(self, topic_id: str, overrides: dict) -> None:
+        """Atomically persist sparse per-run model-plan overrides."""
+
+        path = self.plan_overrides_path(topic_id)
+        _write_bytes_atomic(path, (json.dumps(overrides, indent=2) + "\n").encode("utf-8"))
+
     def response_path(self, topic_id: str, stage: str) -> Path:
         return self.stage_paths(topic_id, stage).response_path
 

@@ -1735,3 +1735,51 @@ def test_mixed_workspace_legacy_and_guide_v1_progress_independently(tmp_path: Pa
     assert guide_status.next_action.stage == "spec"
     assert guide_status.finalized is False
     assert runs.is_finalized("legacy-topic") is True
+
+
+def test_read_plan_overrides_returns_empty_dict_for_fresh_run(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+
+    assert runs.read_plan_overrides("systems-thinking") == {}
+
+
+def test_plan_overrides_path_is_under_run_dir(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+
+    path = runs.plan_overrides_path("systems-thinking")
+
+    assert path == runs.run_dir("systems-thinking") / "model-plan-overrides.json"
+
+
+def test_write_plan_overrides_round_trips_through_a_fresh_run_store(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+    overrides = {"stages": {"qa": {"model": "opus", "effort": "low"}}}
+
+    runs.write_plan_overrides("systems-thinking", overrides)
+
+    # Simulate a daemon restart: a brand-new RunStore over the same root.
+    reloaded = RunStore(tmp_path)
+    assert reloaded.read_plan_overrides("systems-thinking") == overrides
+
+
+def test_write_plan_overrides_is_atomic_and_overwrites_prior_contents(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+
+    runs.write_plan_overrides("systems-thinking", {"stages": {"qa": {"model": "opus"}}})
+    runs.write_plan_overrides("systems-thinking", {"stages": {"draft": {"effort": "high"}}})
+
+    assert runs.read_plan_overrides("systems-thinking") == {
+        "stages": {"draft": {"effort": "high"}}
+    }
+    # No stray temp files left behind in the run directory.
+    leftovers = [p for p in runs.run_dir("systems-thinking").glob(".tmp-*")]
+    assert leftovers == []
+
+
+def test_write_plan_overrides_empty_dict_writes_empty_overrides(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+
+    runs.write_plan_overrides("systems-thinking", {})
+
+    assert runs.plan_overrides_path("systems-thinking").exists()
+    assert runs.read_plan_overrides("systems-thinking") == {}
