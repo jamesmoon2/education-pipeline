@@ -172,18 +172,25 @@ def validation_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
 
 
 def waivers_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
+    # Route through RunStore.load_waiver_set -- the single source of truth
+    # for the waivers-file schema -- instead of re-parsing the raw JSON here.
+    # A second, weaker shape check (root-is-a-dict only) previously let this
+    # route echo a corrupt file back verbatim with "state": "current" while
+    # the write route and the loader itself both raised ConfigError for the
+    # very same file. All three surfaces must now agree.
     validation = validation_payload(runs, topic_id, phase)
     report_hash = validation["report"].get("guide_sha256")
-    value = {"schema_version": 1, "guide_sha256": report_hash, "waivers": []}
-    path = runs.waivers_path(topic_id)
-    if path.is_file():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ConfigError(f"invalid validation waivers file: {path}") from exc
-        if not isinstance(loaded, dict):
-            raise ConfigError(f"invalid validation waivers file: {path}")
-        value = loaded
+    waiver_set = runs.load_waiver_set(topic_id)
+    if waiver_set is None:
+        value = {"schema_version": 1, "guide_sha256": report_hash, "waivers": []}
+    else:
+        value = {
+            "schema_version": waiver_set.schema_version,
+            "guide_sha256": waiver_set.guide_sha256,
+            "waivers": [
+                {"finding_id": w.finding_id, "reason": w.reason} for w in waiver_set.waivers
+            ],
+        }
     state = validation["state"]
     if value.get("guide_sha256") != report_hash:
         state = "stale"

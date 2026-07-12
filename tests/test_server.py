@@ -1112,6 +1112,37 @@ def test_create_waiver_never_persists_a_file_its_own_loader_rejects(server, tmp_
         assert not waivers_path.with_name(waivers_path.name + ".tmp").exists()
 
 
+def test_get_waivers_over_http_with_corrupt_file_returns_400_not_200(server, tmp_path):
+    """The GET waivers route used to keep its own, weaker copy of the waivers
+    schema check (root-is-a-dict only) and echoed a corrupt file back
+    verbatim with ``"state": "current"`` -- telling the cockpit the run is
+    healthy while POST .../waivers and RunStore.load_waiver_set both refuse
+    the same file with ConfigError. All three surfaces must agree."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = runs.validate_run("g", "draft")
+    report_payload = json.loads(report.read_text(encoding="utf-8"))
+
+    waivers_path = runs.waivers_path("g")
+    waivers_path.parent.mkdir(parents=True, exist_ok=True)
+    waivers_path.write_text(
+        json.dumps(
+            {
+                "guide_sha256": report_payload["guide_sha256"],
+                "waivers": [1, 2, 3],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status, body = _req(server, "GET", "/v1/runs/g/validation/draft/waivers")
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
 def test_unhandled_exception_returns_500_envelope_not_dropped_connection(server, monkeypatch):
     """The daemon's last-resort handler must convert any unexpected exception
     into a diagnosable 500, never a dropped connection."""

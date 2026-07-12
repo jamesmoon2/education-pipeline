@@ -510,6 +510,34 @@ def test_waiver_rejects_element_level_corrupt_waivers_list(tmp_path, corrupt_wai
     assert persisted["waivers"] == corrupt_waivers_list
 
 
+@pytest.mark.parametrize(
+    "corrupt_waivers_list",
+    [
+        [1, 2, 3],
+        ["str"],
+        [None],
+        [[]],
+        [{"reason": "no id key"}],
+        [{"finding_id": 7}],
+        [{"finding_id": None}],
+    ],
+)
+def test_waivers_payload_agrees_with_loader_on_corrupt_waivers_file(
+    tmp_path, corrupt_waivers_list
+):
+    """The read-side ``waivers_payload`` builder used to keep a third, weaker
+    copy of the waivers schema: it only checked that the file's root was a
+    dict, then echoed the corrupt content back verbatim with
+    ``"state": "current"``. That let GET report a run as healthy while the
+    write endpoint and ``RunStore.load_waiver_set`` both raised ConfigError
+    for the exact same file. All three surfaces must agree: a corrupt file
+    is a typed error, not a 200."""
+    runs, finding, report = _corrupt_waivers_setup(tmp_path, corrupt_waivers_list)
+
+    with pytest.raises(ConfigError):
+        write_api.read_api.waivers_payload(runs, "t", "draft")
+
+
 @pytest.mark.parametrize("bad_reason", [5, None, [], {}])
 def test_waiver_rejects_non_string_reason(tmp_path, bad_reason):
     runs, jobs = _workspace(tmp_path, create_legacy_run=False)
