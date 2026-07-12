@@ -376,6 +376,25 @@ test.describe("guide runtime keyboard-only operation (http)", () => {
     await expect(status).toHaveText("Skipped.");
   });
 
+  test("skip link: Enter moves focus to the main content without changing section", async ({
+    page,
+  }) => {
+    const firstSection = page.locator('section[data-role="guide-section"]').first();
+    await expect(firstSection).toHaveClass(/is-current/);
+
+    await page.locator(".skip-link").focus();
+    await page.keyboard.press("Enter");
+
+    // Focus lands on the main region so the next Tab enters course content,
+    // the visible section is unchanged, and no unknown-fragment message is
+    // announced.
+    await expect(page.locator("#guide-main")).toBeFocused();
+    await expect(firstSection).toHaveClass(/is-current/);
+    await expect(page.locator('[data-role="nav-announcement"]')).not.toContainText(
+      "does not match",
+    );
+  });
+
   test("navigation: next and previous section controls work by keyboard", async ({ page }) => {
     const currentSection = page.locator('section[data-role="guide-section"].is-current');
     const firstSection = page.locator('section[data-role="guide-section"]').first();

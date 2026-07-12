@@ -313,7 +313,17 @@
     }
     function goToTarget(targetId) {
       const sectionId = resolveOwningSectionId(targetId);
-      if (!sectionId) return;
+      if (!sectionId) {
+        // In-document targets outside any section (e.g. the skip link's
+        // #guide-main) still deserve their native jump: move focus without
+        // changing the visible section or announcing an unknown fragment.
+        const el = document.getElementById(targetId);
+        if (el) {
+          if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1");
+          el.focus();
+        }
+        return;
+      }
       show(sectionId, { focus: false });
       if (sectionId !== targetId) {
         const el = document.getElementById(targetId);
