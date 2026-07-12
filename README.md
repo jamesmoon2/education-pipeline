@@ -58,6 +58,23 @@ Commands: `topic`/`profile` (`import`, `list`, `attach`, `show`), and
 runs over the same API; the CLI remains the supported power-user surface and an
 end-to-end way to verify the engine.
 
+### Configuring and starting runs from the cockpit
+
+The cockpit's **Settings** page (`/settings`) shows provider availability and
+lets you set global per-stage provider/model/effort defaults, with
+weak-configuration warnings and a one-click "Use recommended" reset. Each run
+board has a **plan editor** (the `RunPlanPanel` next to the jobs panel) for
+per-stage overrides on top of those defaults, saved immediately, with a
+command preview and provenance display so you can see exactly what will run
+and why. The **New-run wizard** (`/new`) walks through a structured topic
+form (or a TOML paste, for hand-authored topics), an optional learner
+profile, and a model-plan review before creating the run.
+
+Hand-editing `<workspace>/config/model-plan.toml` (and
+`model-catalog.toml`) directly remains fully supported and takes effect
+without restarting the daemon; the cockpit and the TOML files read and write
+the same underlying configuration.
+
 ### Executing a stage through a provider
 
 Instead of copying a prompt into a model UI, run it through a configured

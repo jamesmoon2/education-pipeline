@@ -482,6 +482,10 @@ model-generated executable code.
 
 ### P0 — Finish model-plan configuration
 
+**Status: Delivered 2026-07-12** (closeout evidence in
+[`docs/superpowers/plans/2026-07-11-model-plan-configuration.md`](superpowers/plans/2026-07-11-model-plan-configuration.md)
+Wave Log).
+
 - Expose provider availability and project defaults in Settings.
 - Add per-stage provider/model/effort controls with “Use recommended” reset.
 - Add warnings and explanations for model choices.
