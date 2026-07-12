@@ -14,14 +14,13 @@ This repository is being extracted as a fresh public project from a private
 education-content factory. It intentionally starts with no generated courses,
 private prompts, learner profiles, or run artifacts.
 
-The pipeline engine, CLI, local provider daemon, and browser-based cockpit are
-implemented. The next product milestone is a versioned interactive-guide schema
-and maintained runtime so the pipeline's primary output is a polished,
-personalized interactive course rather than only rendered prose. See
+The pipeline engine, CLI, local provider daemon, browser-based cockpit, and
+the interactive-guide v1 output (versioned schema, deterministic validation
+with waivers, and a maintained offline runtime) are implemented. See
 [`docs/product-requirements.md`](docs/product-requirements.md) for the
 authoritative whole-product direction and prioritized roadmap.
 
-## Planned Workflow
+## Workflow
 
 ```text
 profile -> spec -> outline -> approve -> draft -> qa -> repair -> finalize -> export
@@ -72,6 +71,21 @@ provider (Claude Code or Codex):
 `run` executes exactly the run's next stage and stops for your approval; it
 never auto-approves. The first `run` auto-starts a local, loopback-only daemon
 (opt out with `--no-autostart`); stop it with `daemon stop`.
+
+## Interactive Guides
+
+New runs default to the `interactive_guide` 1.0 content contract: draft and
+repair produce canonical guide JSON, deterministic validation (with reviewable
+findings and exact-hash waivers) gates finalization, and `export --format html`
+writes one self-contained interactive course that works offline from a `file:`
+URL — no daemon, Node, or network needed. Existing Markdown runs are read as
+legacy and never mutated; pass `create --legacy-markdown` to start a new one.
+Learner progress lives only in the reader's browser `localStorage`, with a
+built-in reset control.
+
+See [`docs/interactive-guides.md`](docs/interactive-guides.md) for the guide
+workflow, artifact layout, validation findings and waivers, preview isolation,
+progress storage, and export/privacy boundaries.
 
 ## Repository Boundary
 
