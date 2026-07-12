@@ -1269,6 +1269,20 @@ def test_put_run_plan_sets_override_then_clears_it(run_plan_server):
     assert stages["draft"]["command"] is not None
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"overrides": "not-a-dict"},
+        {"overrides": {"draft": "opus"}},
+        {"overrides": {"draft": {"model": 5}}},
+    ],
+)
+def test_put_run_plan_wrong_shape_nested_value_is_400_not_500(run_plan_server, body):
+    status, payload = _req(run_plan_server, "PUT", "/v1/runs/t/plan", body=body)
+    assert status == 400
+    assert payload["error"]["code"] == "bad_request"
+
+
 def test_put_run_plan_invalid_model_is_400_and_overrides_unchanged(run_plan_server):
     status, body = _req(
         run_plan_server,

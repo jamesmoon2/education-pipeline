@@ -429,3 +429,80 @@ def test_waiver_requires_current_hash_reason_and_waivable_finding(tmp_path):
         write_api.create_waiver(
             runs, "t", "draft", nonwaivable["id"], report["guide_sha256"], "reason"
         )
+
+
+def test_waiver_rejects_wrong_shape_persisted_waivers_file(tmp_path):
+    """A corrupted/non-object waivers file on disk must surface as ConfigError
+    (400), not crash the process with AttributeError when the builder calls
+    .get() on whatever json.loads() handed back."""
+    runs, jobs = _workspace(tmp_path, create_legacy_run=False)
+    runs.create_run("t")
+    guide = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("t", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = write_api.validate_run(runs, jobs, "t", "draft")["report"]
+    finding = next(item for item in report["findings"] if item["waivable"])
+
+    path = runs.waivers_path("t")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        write_api.create_waiver(
+            runs, "t", "draft", finding["id"], report["guide_sha256"], "reason"
+        )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"provider": "manual", "stages": "draft"},
+        {"provider": "manual", "stages": {"draft": "opus"}},
+        {"provider": "manual", "stages": {"draft": {"model": 5}}},
+        {"provider": "manual", "stages": {"draft": {"provider": []}}},
+        {"provider": {}, "stages": {}},
+    ],
+)
+def test_update_global_plan_rejects_wrong_shape_nested_values(body):
+    config = _config_source()
+    body = {**body, "base_sha256": config.plan_sha256()}
+    with pytest.raises(ConfigError):
+        write_api.update_global_plan(config, body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"overrides": "not-a-dict"},
+        {"overrides": {"draft": "opus"}},
+        {"overrides": {"draft": {"model": 5}}},
+        {"overrides": {"draft": {"provider": []}}},
+        {"overrides": {"draft": []}},
+    ],
+)
+def test_update_run_plan_rejects_wrong_shape_nested_values(tmp_path, body):
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    with pytest.raises(ConfigError):
+        write_api.update_run_plan(runs, config, "t", body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"id": "x", "title": "T", "goals": "not-a-list"},
+        {"id": "x", "title": "T", "goals": {"a": 1}},
+        {"id": "x", "title": "T", "goals": [1, 2]},
+        {"id": "x", "title": "T", "brief": {}},
+        {"id": "x", "title": "T", "audience": []},
+        {"id": {"a": 1}, "title": "T"},
+        {"id": "x", "title": {"a": 1}},
+    ],
+)
+def test_create_topic_rejects_wrong_shape_nested_values(tmp_path, body):
+    from education_pipeline.workspace import TopicStore
+
+    topics = TopicStore(tmp_path)
+    with pytest.raises(ConfigError):
+        write_api.create_topic(topics, body)

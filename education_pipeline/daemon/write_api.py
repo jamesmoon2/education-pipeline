@@ -49,6 +49,12 @@ class UnprocessableError(Exception):
         self.details = details
 
 
+def _require_json_object(value: object, label: str) -> dict:
+    if not isinstance(value, dict):
+        raise ConfigError(f"{label} must be a JSON object")
+    return value
+
+
 def _run_relative(runs: RunStore, topic_id: str, path: Path) -> str:
     return path.relative_to(runs.run_dir(topic_id)).as_posix()
 
@@ -121,6 +127,7 @@ def create_waiver(
             old = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ConfigError(f"invalid validation waivers file: {path}") from exc
+        old = _require_json_object(old, f"validation waivers file: {path}")
         if old.get("guide_sha256") == guide_sha256 and isinstance(old.get("waivers"), list):
             existing = [item for item in old["waivers"] if item.get("finding_id") != finding_id]
     existing.append({"finding_id": finding_id, "reason": reason.strip()})
