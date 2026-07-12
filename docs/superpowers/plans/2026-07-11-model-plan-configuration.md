@@ -61,6 +61,7 @@ This plan is executed **one wave per manager session**. Context is cleared betwe
 | — | — | — | 404 | 79 | 38 | Baselines at plan start |
 | 0 | 2026-07-11 | 7b91f41 | 411 | 79 | 38 | Gate ran at code commit 7b91f41; this docs-only plan-record commit sits on top (HEAD after Wave 0). Delta is docs-only, so trust these counts without re-running. +7 pytest (0.1:3, 0.2:1, 0.3:3). DEVIATION (owner FYI): Task 0.1's brief sample fallback `label (href)` and its interface prose conflict with the brief's own test forbidding the `javascript:` substring; resolved by rendering `label` only for unsafe links (safer; honors the written test). Reviewer confirmed it's the only resolution satisfying the test. Pre-existing daemon-test stderr noise (`ConnectionResetError`) is unrelated to Wave 0 and harmless. Wave 1 must add read-only `/v1` config endpoints only — no write path. |
 | 1 | 2026-07-11 | dc72ee8 | 419 | 79 | 38 | Gate ran at code commit dc72ee8; this docs-only plan-record commit sits on top. +8 pytest (1.1:2, 1.2:1, 1.3:3, 1.4:2). All four tasks landed as specified; read-only constraint held (`write_plan` raises NotImplementedError; no PUT routes). Final wave review: ready to merge, zero Critical/Important. MUST-KNOW for Wave 2 (Task 2.2): the plan GET routes call `config.load()` then `config.plan_sha256()` as two separate disk reads — a TOCTOU window; once the SHA seeds the PUT guard this can pass the guard on a stale view. Fix by deriving parse+hash from one read of the plan bytes (e.g. `load_with_sha()`). Also: `StaticConfigSource.plan_sha256()` is an interim `repr()`-hash — Task 2.2 replaces it with sha of emitted TOML per the self-review notes. `ConfigSource` Protocol lives in `server.py` (circular-import constraint); if Wave 2 grows it, consider a `daemon/config_source.py`. |
+| 2 | 2026-07-12 | 1061467 | 427 | 99 | 38 | Gate ran at code commit 1061467; this docs-only plan-record commit sits on top. +8 pytest (2.1:2, 2.2:5, +1 fix HTTP test), +20 vitest (2.3:5, 2.4:8 PlanStageRow + 5 SettingsPage + 2 fix-regression). Global plan is now writable (SHA-guarded full-replace PUT) with Settings UI. Whole-wave review (Opus): READY TO MERGE, zero Critical/Important. One CRITICAL was found+fixed mid-wave in Task 2.4: SettingsPage seeded overrides off `stage.source`, but the global `/v1/config/plan` payload has NO `source` field (that's per-run only) → seed was always `{}` → full-replace Save silently wiped persisted overrides on untouched stages. Fixed: Settings now seeds every non-local stage and Save transmits the COMPLETE plan (regression test guards it). SHA-TOCTOU carry-forward assessed: real but benign for the loopback single-user daemon (guard is advisory, not CAS; only a millisecond-aligned concurrent hand-edit triggers a lost update). DEVIATION (owner FYI): Task 2.4 replaced the brief's Step-1(d) test ("Save sends only edited stages") — that instruction is a data-loss bug against the spec §2 full-replace PUT, which governs. MINORS deferred to Wave 5 final-review triage: (a) PlanStageRow renders a DUPLICATE `manual` provider option (catalog already defines `manual` + component appends one unconditionally) — cosmetic, in the SHARED component Waves 3–4 reuse as-is, so it won't self-fix; fix = append fallback only when catalog lacks `manual`; (b) custom per-stage `recommendation` hand-edits not round-tripped through Settings Save (StageOverride excludes recommendation; no recommendation UI in Wave 2) — accepted; cockpit-only users never have a custom value to lose; (c) non-dict JSON body to PUT /v1/config/plan → 500 not 400 (matches existing PUT-builder pattern, not a regression); (d) emitter doesn't escape U+007F/DEL (unreachable for ids-only schema). |
 
 ---
 
@@ -483,7 +484,7 @@ def _stage_command(catalog, stage_plan, runs, topic_id):
 **Interfaces:**
 - Produces: `emit_model_plan_toml(plan: ModelPlan) -> str` such that `parse_model_plan(tomllib.loads(emit_model_plan_toml(p)), catalog) == p` for any valid plan.
 
-- [ ] **Step 1: Failing round-trip test**
+- [x] **Step 1: Failing round-trip test**
 
 ```python
 def test_emit_model_plan_toml_round_trips():
@@ -509,7 +510,7 @@ def test_emit_escapes_special_characters():
     assert parse_model_plan(tomllib.loads(emit_model_plan_toml(plan))) == plan
 ```
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 ```python
 def emit_model_plan_toml(plan: ModelPlan) -> str:
@@ -541,7 +542,7 @@ def emit_model_plan_toml(plan: ModelPlan) -> str:
 
 (add `import json` to the module imports.)
 
-- [ ] **Step 3: Verify + commit** — `git commit -m "feat(config): TOML emitter for model plans"`
+- [x] **Step 3: Verify + commit** — `git commit -m "feat(config): TOML emitter for model plans"`
 
 ### Task 2.2: `WorkspaceConfigSource.write_plan` + `PUT /v1/config/plan`
 
@@ -571,8 +572,8 @@ def update_global_plan(config, body: dict) -> dict
 - Route: `PUT /v1/config/plan` in `_api_put_routes` → `write_api.update_global_plan(context.config, self._read_body())`.
 - `StaticConfigSource.write_plan` re-parses the text and swaps its held plan; its `plan_sha256()` becomes `hashlib.sha256(held_text.encode()).hexdigest()` (initialize held_text via `emit_model_plan_toml` at construction so SHA guards are testable without disk).
 
-- [ ] **Step 1: Failing tests** — (a) write_plan creates `config/model-plan.toml` atomically and a subsequent `load()` reflects it even when the workspace previously used the packaged fallback; (b) PUT with correct SHA updates the plan and the response carries the new sha; (c) PUT with a stale SHA → 409 `stale_content`; (d) PUT referencing an unknown model → 400 and the file is untouched.
-- [ ] **Step 2: Implement, verify, commit** — `git commit -m "feat(daemon): SHA-guarded global model-plan writes"`
+- [x] **Step 1: Failing tests** — (a) write_plan creates `config/model-plan.toml` atomically and a subsequent `load()` reflects it even when the workspace previously used the packaged fallback; (b) PUT with correct SHA updates the plan and the response carries the new sha; (c) PUT with a stale SHA → 409 `stale_content`; (d) PUT referencing an unknown model → 400 and the file is untouched.
+- [x] **Step 2: Implement, verify, commit** — `git commit -m "feat(daemon): SHA-guarded global model-plan writes"`
 
 ### Task 2.3: API client + types for config endpoints
 
@@ -603,7 +604,7 @@ export const putConfigPlan = (baseSha256: string, provider: string, stages: Reco
 export const getRunPlan = (topicId: string) => api<PlanPayload>(`/v1/runs/${topicId}/plan`);
 ```
 
-- [ ] **Step 1:** Failing client tests (mock fetch per `client.test.ts`'s existing pattern: assert URL, method, and body shape for `putConfigPlan`). **Step 2:** implement. **Step 3:** `cd web && npm test -- --run` green; commit `feat(web): API client for config endpoints`.
+- [x] **Step 1:** Failing client tests (mock fetch per `client.test.ts`'s existing pattern: assert URL, method, and body shape for `putConfigPlan`). **Step 2:** implement. **Step 3:** `cd web && npm test -- --run` green; commit `feat(web): API client for config endpoints`.
 
 ### Task 2.4: Settings page
 
@@ -628,13 +629,13 @@ Behavior: provider `<select>` (options = catalog providers + always `manual`; un
 
 - `SettingsPage`: loads providers+catalog+plan on mount; renders availability list (id, label, available ✓/✗ + reason) and one `PlanStageRow` per stage; tracks dirty overrides in state; Save → `putConfigPlan(plan.plan_sha256, provider, dirtyStages)`; on 409 `stale_content` shows "Plan changed on disk — reload" with a reload button (match `ResponseEditor.tsx`'s existing stale-content UX); "Use recommended (all stages)" button clears every stage override in the payload.
 
-- [ ] **Step 1: Failing component tests** (vitest + testing-library, mock the client module like `RunBoardPage.test.tsx` does): (a) renders a row per model-powered stage and static rows for finalize/export; (b) an unavailable provider option shows its reason; (c) weak warning text appears under a stage whose payload carries `warning`; (d) Save calls `putConfigPlan` with only the edited stages; (e) a 409 from save surfaces the reload affordance.
-- [ ] **Step 2: Implement.** Route in `App.tsx`: `<Route path="/settings" element={<SettingsPage />} />` plus a nav `<Link to="/settings">Settings</Link>` alongside the existing header links.
-- [ ] **Step 3:** `npm test -- --run` and `npm run build` green. Commit `feat(web): Settings page for global model-plan defaults`.
+- [x] **Step 1: Failing component tests** (vitest + testing-library, mock the client module like `RunBoardPage.test.tsx` does): (a) renders a row per model-powered stage and static rows for finalize/export; (b) an unavailable provider option shows its reason; (c) weak warning text appears under a stage whose payload carries `warning`; (d) Save calls `putConfigPlan` with only the edited stages; (e) a 409 from save surfaces the reload affordance.
+- [x] **Step 2: Implement.** Route in `App.tsx`: `<Route path="/settings" element={<SettingsPage />} />` plus a nav `<Link to="/settings">Settings</Link>` alongside the existing header links.
+- [x] **Step 3:** `npm test -- --run` and `npm run build` green. Commit `feat(web): Settings page for global model-plan defaults`.
 
 ### Wave 2 exit gate
 
-- [ ] Full gate; Wave Log; commit plan file. Manual smoke (optional but encouraged): `npm run dev` against a live daemon, edit a default, verify `config/model-plan.toml` changed on disk, hand-edit it back, reload Settings, see the hand edit.
+- [x] Full gate; Wave Log; commit plan file. Manual smoke (optional but encouraged): `npm run dev` against a live daemon, edit a default, verify `config/model-plan.toml` changed on disk, hand-edit it back, reload Settings, see the hand edit. **Done: pytest 427, vitest 99, build clean, e2e 38. Whole-wave review READY TO MERGE (one Critical found+fixed in 2.4). Manual smoke not run (all four suites green + integrated full-replace path verified in review).**
 
 **Handoff → Wave 3** (return this to the owner verbatim as your final message):
 
