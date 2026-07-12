@@ -1,3 +1,4 @@
+import concurrent.futures
 import hashlib
 import json
 from pathlib import Path
@@ -359,6 +360,43 @@ def test_manifest_events_record_current_artifact_hashes(tmp_path: Path) -> None:
         result.prompt_path.read_bytes()
     ).hexdigest()
     assert "response_file_sha256" not in event
+
+
+def test_manifest_write_is_atomic_no_partial_file(tmp_path: Path, monkeypatch) -> None:
+    """_write_manifest must go through the temp-file + os.replace path."""
+    from education_pipeline import runs as runs_mod
+
+    calls = []
+    original = runs_mod._write_bytes_atomic
+
+    def spy(path, data):
+        calls.append(path.name)
+        return original(path, data)
+
+    monkeypatch.setattr(runs_mod, "_write_bytes_atomic", spy)
+    store = runs_mod.RunStore(tmp_path)
+    store.create_run("atomic-topic")
+    assert "manifest.json" in calls
+
+
+def test_concurrent_manifest_events_are_all_recorded(tmp_path: Path) -> None:
+    """Two writer threads appending events must not lose either event."""
+    from education_pipeline.runs import RunStore
+
+    store = RunStore(tmp_path)
+    store.create_run("locked-topic")
+
+    def append(n: int) -> None:
+        store.append_manifest_event("locked-topic", {"action": f"evt-{n}"})
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(append, range(50)))
+
+    manifest = store.read_manifest("locked-topic")
+    actions = [e["action"] for e in manifest["events"] if e.get("action", "").startswith("evt-")]
+    assert sorted(actions) == sorted(f"evt-{n}" for n in range(50))
+    # File must still be valid JSON (no torn write)
+    json.loads(store.manifest_path("locked-topic").read_text(encoding="utf-8"))
 
 
 def test_write_spec_prompt_writes_prompt_and_response_stub(tmp_path: Path) -> None:

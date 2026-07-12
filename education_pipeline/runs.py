@@ -8,6 +8,7 @@ from pathlib import Path
 import hashlib
 import json
 import re
+import threading
 
 from education_pipeline.config import ConfigError
 from education_pipeline.export import (
@@ -189,6 +190,19 @@ class RunStore:
 
     def __init__(self, root: str | Path) -> None:
         object.__setattr__(self, "root", Path(root))
+        object.__setattr__(self, "_manifest_locks", {})
+        object.__setattr__(self, "_manifest_locks_guard", threading.Lock())
+
+    def _manifest_lock(self, topic_id: str) -> threading.Lock:
+        """Return the per-topic lock guarding manifest read-modify-write cycles.
+
+        Serialization is in-process only (protects concurrent daemon threads
+        writing the same run's manifest). Cross-process CLI concurrency is out
+        of scope here.
+        """
+
+        with self._manifest_locks_guard:
+            return self._manifest_locks.setdefault(topic_id, threading.Lock())
 
     @property
     def runs_dir(self) -> Path:
@@ -289,27 +303,28 @@ class RunStore:
             (run / subdir).mkdir(parents=True, exist_ok=True)
 
         manifest_path = run / "manifest.json"
-        if not manifest_path.exists():
-            requested = (
-                content_contract
-                if content_contract is not None
-                else ContentContract.interactive_guide_v1()
-            )
-            _validate_content_contract(requested)
-            manifest = {
-                "schema_version": MANIFEST_SCHEMA_VERSION,
-                "topic_id": run.name,
-                "events": [],
-                "content_contract": requested.to_manifest(),
-            }
-            _write_manifest(manifest_path, manifest)
-        elif content_contract is not None:
-            _validate_content_contract(content_contract)
-            if self.content_contract(run.name) != content_contract:
-                raise ConfigError(
-                    f"run {run.name!r} already has immutable content contract "
-                    f"{self.content_contract(run.name)!r}; requested {content_contract!r}"
+        with self._manifest_lock(run.name):
+            if not manifest_path.exists():
+                requested = (
+                    content_contract
+                    if content_contract is not None
+                    else ContentContract.interactive_guide_v1()
                 )
+                _validate_content_contract(requested)
+                manifest = {
+                    "schema_version": MANIFEST_SCHEMA_VERSION,
+                    "topic_id": run.name,
+                    "events": [],
+                    "content_contract": requested.to_manifest(),
+                }
+                _write_manifest(manifest_path, manifest)
+            elif content_contract is not None:
+                _validate_content_contract(content_contract)
+                if self.content_contract(run.name) != content_contract:
+                    raise ConfigError(
+                        f"run {run.name!r} already has immutable content contract "
+                        f"{self.content_contract(run.name)!r}; requested {content_contract!r}"
+                    )
         return run
 
     def list_run_ids(self) -> tuple[str, ...]:
@@ -730,11 +745,12 @@ class RunStore:
 
         safe_id = _artifact_id(topic_id, "topic id")
         run = self.run_dir(safe_id)
-        manifest = self.read_manifest(safe_id)
-        entry = dict(event)
-        entry.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
-        manifest.setdefault("events", []).append(entry)
-        _write_manifest(run / "manifest.json", manifest)
+        with self._manifest_lock(safe_id):
+            manifest = self.read_manifest(safe_id)
+            entry = dict(event)
+            entry.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
+            manifest.setdefault("events", []).append(entry)
+            _write_manifest(run / "manifest.json", manifest)
 
     def record_stage_provenance(
         self,
@@ -753,18 +769,19 @@ class RunStore:
 
         safe_id = _artifact_id(topic_id, "topic id")
         run = self.run_dir(safe_id)
-        manifest = self.read_manifest(safe_id)
-        entry = {
-            "stage": stage,
-            "provider": provider,
-            "model": model,
-            "effort": effort,
-            "source": source,
-            "job_id": job_id,
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
-        }
-        manifest.setdefault("stage_provenance", []).append(entry)
-        _write_manifest(run / "manifest.json", manifest)
+        with self._manifest_lock(safe_id):
+            manifest = self.read_manifest(safe_id)
+            entry = {
+                "stage": stage,
+                "provider": provider,
+                "model": model,
+                "effort": effort,
+                "source": source,
+                "job_id": job_id,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            }
+            manifest.setdefault("stage_provenance", []).append(entry)
+            _write_manifest(run / "manifest.json", manifest)
 
     def final_path(self, topic_id: str) -> Path:
         """Path of the assembled final guide for a run (legacy ``final/guide.md``)."""
@@ -1561,17 +1578,19 @@ class RunStore:
         extra: dict[str, object] | None = None,
     ) -> None:
         run = self.run_dir(topic_id)
-        manifest = self.read_manifest(topic_id)
-        event: dict[str, str] = {"stage": stage, "action": action}
-        for label, path in files.items():
-            event[label] = _relative_to(path, run)
-            if path.is_file():
-                event[f"{label}_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-        if extra:
-            event.update(extra)
-        event["recorded_at"] = datetime.now(timezone.utc).isoformat()
-        manifest.setdefault("events", []).append(event)
-        _write_manifest(run / "manifest.json", manifest)
+        safe_id = _artifact_id(topic_id, "topic id")
+        with self._manifest_lock(safe_id):
+            manifest = self.read_manifest(topic_id)
+            event: dict[str, str] = {"stage": stage, "action": action}
+            for label, path in files.items():
+                event[label] = _relative_to(path, run)
+                if path.is_file():
+                    event[f"{label}_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            if extra:
+                event.update(extra)
+            event["recorded_at"] = datetime.now(timezone.utc).isoformat()
+            manifest.setdefault("events", []).append(event)
+            _write_manifest(run / "manifest.json", manifest)
 
 
 def _guide_source_sha(text: str) -> str:
@@ -1605,8 +1624,7 @@ def _relative_to(path: Path, run: Path) -> str:
 
 
 def _write_manifest(path: Path, manifest: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    _write_bytes_atomic(path, (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
 
 
 def _write_text(path: Path, text: str, *, overwrite: bool) -> None:
