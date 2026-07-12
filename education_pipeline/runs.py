@@ -17,10 +17,20 @@ from education_pipeline.export import (
 )
 from education_pipeline.guides import (
     ContractError,
+    Waiver,
+    WaiverSet,
+    apply_waivers,
     build_guide_contract,
+    canonical_guide_bytes,
+    canonical_report_bytes,
     check_contract_conflict,
     extract_outline_contract,
     extract_spec_contract,
+    guide_sha256,
+    normalize_guide,
+    parse_guide,
+    project_guide_markdown,
+    validate_guide,
 )
 from education_pipeline.prompts import (
     PromptArtifact,
@@ -28,6 +38,8 @@ from education_pipeline.prompts import (
     compile_draft_prompt,
     compile_guide_v1_draft_prompt,
     compile_guide_v1_outline_prompt,
+    compile_guide_v1_qa_prompt,
+    compile_guide_v1_repair_prompt,
     compile_guide_v1_spec_prompt,
     compile_outline_prompt,
     compile_qa_prompt,
@@ -123,6 +135,7 @@ class StageStatus:
     prompt_written: bool
     response_ingested: bool
     approved: bool
+    stale: bool = False
 
     @property
     def state(self) -> str:
@@ -272,11 +285,16 @@ class RunStore:
         """Report the persisted progress for one stage of a run."""
 
         paths = self.stage_paths(topic_id, stage)
+        approved = paths.approved_path.exists()
+        stale = False
+        if approved and self._is_guide_v1(paths.topic_id) and paths.stage in {"qa", "repair"}:
+            stale = self._stage_upstream_stale(paths.topic_id, paths.stage)
         return StageStatus(
             stage=paths.stage,
             prompt_written=paths.prompt_path.exists(),
             response_ingested=paths.response_path.exists(),
-            approved=paths.approved_path.exists(),
+            approved=approved,
+            stale=stale,
         )
 
     def run_status(self, topic_id: str) -> RunStatus:
@@ -299,18 +317,28 @@ class RunStore:
     def advance(self, topic_id: str) -> AdvanceResult:
         """Perform the run's next machine step, pausing at human steps.
 
-        Machine steps (writing the next stage prompt, or finalizing) are done
-        automatically. Human steps (saving a response, approving it) and a
-        completed run are left untouched, so this can be called repeatedly to
-        drive a run forward and resume it from wherever it stopped.
+        Machine steps (writing the next stage prompt, validation, or finalizing)
+        are done automatically. Human steps (saving a response, approving it,
+        resolving findings) and a completed run are left untouched, so this can
+        be called repeatedly to drive a run forward and resume it from wherever
+        it stopped.
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
         action = self.run_status(safe_id).next_action
         performed: str | None = None
         if action.action == "write_prompt" and action.stage is not None:
-            self._write_stage_prompt(safe_id, action.stage)
+            overwrite = False
+            if self._is_guide_v1(safe_id):
+                paths = self.stage_paths(safe_id, action.stage)
+                if paths.prompt_path.exists():
+                    overwrite = True
+            self._write_stage_prompt(safe_id, action.stage, overwrite=overwrite)
             performed = "write_prompt"
+        elif action.action == "validate":
+            phase = "draft" if action.stage == "draft" else "final"
+            self.validate_run(safe_id, phase)
+            performed = "validate"
         elif action.action == "finalize":
             self.finalize_run(safe_id)
             performed = "finalize"
@@ -320,7 +348,9 @@ class RunStore:
             status=self.run_status(safe_id),
         )
 
-    def _write_stage_prompt(self, topic_id: str, stage: str) -> PromptFile:
+    def _write_stage_prompt(
+        self, topic_id: str, stage: str, *, overwrite: bool = False
+    ) -> PromptFile:
         writers = {
             "spec": self.write_topic_spec_prompt,
             "outline": self.write_outline_prompt,
@@ -332,7 +362,7 @@ class RunStore:
             writer = writers[stage]
         except KeyError as exc:
             raise ConfigError(f"no prompt writer for stage {stage!r}") from exc
-        return writer(topic_id)
+        return writer(topic_id, overwrite=overwrite)
 
     def _next_action(
         self,
@@ -340,32 +370,20 @@ class RunStore:
         stages: tuple[StageStatus, ...],
         finalized: bool,
     ) -> NextAction:
+        if self._is_guide_v1(topic_id):
+            return self._next_action_guide_v1(topic_id, stages, finalized)
+        return self._next_action_legacy(topic_id, stages, finalized)
+
+    def _next_action_legacy(
+        self,
+        topic_id: str,
+        stages: tuple[StageStatus, ...],
+        finalized: bool,
+    ) -> NextAction:
         for status in stages:
-            if status.approved:
-                continue
-            if not status.prompt_written:
-                return NextAction(
-                    topic_id=topic_id,
-                    stage=status.stage,
-                    action="write_prompt",
-                    detail=f"Write the {status.stage} prompt for {topic_id!r}.",
-                )
-            if not status.response_ingested:
-                response_path = self.stage_paths(topic_id, status.stage).response_path
-                return NextAction(
-                    topic_id=topic_id,
-                    stage=status.stage,
-                    action="save_response",
-                    detail=(
-                        f"Run the {status.stage} prompt and save the response to {response_path}."
-                    ),
-                )
-            return NextAction(
-                topic_id=topic_id,
-                stage=status.stage,
-                action="approve",
-                detail=f"Review and approve the {status.stage} response for {topic_id!r}.",
-            )
+            pending = self._pending_stage_action(topic_id, status)
+            if pending is not None:
+                return pending
         if not finalized:
             return NextAction(
                 topic_id=topic_id,
@@ -381,6 +399,160 @@ class RunStore:
             stage=None,
             action="done",
             detail=f"Run {topic_id!r} is complete and finalized.",
+        )
+
+    def _next_action_guide_v1(
+        self,
+        topic_id: str,
+        stages: tuple[StageStatus, ...],
+        finalized: bool,
+    ) -> NextAction:
+        by_stage = {status.stage: status for status in stages}
+
+        for stage_name in ("spec", "outline", "draft"):
+            pending = self._pending_stage_action(topic_id, by_stage[stage_name])
+            if pending is not None:
+                return pending
+
+        if self.report_state(topic_id, "draft") != "current":
+            return NextAction(
+                topic_id=topic_id,
+                stage="draft",
+                action="validate",
+                detail=f"Run draft validation for {topic_id!r}.",
+            )
+
+        draft_text = self.read_approved(topic_id, "draft")
+        if not parse_guide(draft_text).ok:
+            return NextAction(
+                topic_id=topic_id,
+                stage="draft",
+                action="resolve_findings",
+                detail=(
+                    f"Correct and reapprove the draft response for {topic_id!r}; "
+                    "the approved draft is too malformed for QA."
+                ),
+            )
+
+        for stage_name in ("qa", "repair"):
+            status = by_stage[stage_name]
+            if status.approved and status.stale:
+                return self._stale_stage_rebuild_action(topic_id, stage_name)
+            pending = self._pending_stage_action(topic_id, status)
+            if pending is not None:
+                return pending
+
+        if self.report_state(topic_id, "final") != "current":
+            return NextAction(
+                topic_id=topic_id,
+                stage="repair",
+                action="validate",
+                detail=f"Run final validation for {topic_id!r}.",
+            )
+
+        if finalized:
+            return NextAction(
+                topic_id=topic_id,
+                stage=None,
+                action="done",
+                detail=f"Run {topic_id!r} is complete and finalized.",
+            )
+
+        source_text = self.read_approved(topic_id, "repair")
+        report = validate_guide(source_text, phase="final")
+        waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
+        if not waiver_result.gate_open:
+            return NextAction(
+                topic_id=topic_id,
+                stage="repair",
+                action="resolve_findings",
+                detail=(
+                    f"{waiver_result.effective_blocking} blocking finding(s) remain for "
+                    f"{topic_id!r}; non-waivable findings cannot be waived."
+                ),
+            )
+
+        return NextAction(
+            topic_id=topic_id,
+            stage=None,
+            action="finalize",
+            detail=(
+                f"Finalize {topic_id!r}: write final/guide.json and final/guide.md "
+                f"from the approved repair."
+            ),
+        )
+
+    def _pending_stage_action(
+        self, topic_id: str, status: StageStatus
+    ) -> NextAction | None:
+        if status.approved:
+            return None
+        if not status.prompt_written:
+            return NextAction(
+                topic_id=topic_id,
+                stage=status.stage,
+                action="write_prompt",
+                detail=f"Write the {status.stage} prompt for {topic_id!r}.",
+            )
+        if not status.response_ingested:
+            response_path = self.stage_paths(topic_id, status.stage).response_path
+            return NextAction(
+                topic_id=topic_id,
+                stage=status.stage,
+                action="save_response",
+                detail=(
+                    f"Run the {status.stage} prompt and save the response to {response_path}."
+                ),
+            )
+        return NextAction(
+            topic_id=topic_id,
+            stage=status.stage,
+            action="approve",
+            detail=f"Review and approve the {status.stage} response for {topic_id!r}.",
+        )
+
+    def _stale_stage_rebuild_action(self, topic_id: str, stage: str) -> NextAction:
+        """When a guide-v1 qa/repair stage is approved but upstream hashes drifted."""
+
+        prompt_event = self._latest_stage_event(topic_id, stage, "prompt_written")
+        draft_path = self.stage_paths(topic_id, "draft").approved_path
+        draft_sha = (
+            hashlib.sha256(draft_path.read_bytes()).hexdigest()
+            if draft_path.is_file()
+            else None
+        )
+        needs_prompt = True
+        if prompt_event is not None and draft_sha is not None:
+            recorded_draft = prompt_event.get("source_draft_file_sha256")
+            needs_prompt = recorded_draft != draft_sha
+            if stage == "repair" and not needs_prompt:
+                qa_path = self.stage_paths(topic_id, "qa").approved_path
+                qa_sha = (
+                    hashlib.sha256(qa_path.read_bytes()).hexdigest()
+                    if qa_path.is_file()
+                    else None
+                )
+                recorded_qa = prompt_event.get("source_qa_file_sha256")
+                needs_prompt = recorded_qa != qa_sha
+
+        if needs_prompt:
+            return NextAction(
+                topic_id=topic_id,
+                stage=stage,
+                action="write_prompt",
+                detail=(
+                    f"Upstream content changed for {topic_id!r}; rebuild the {stage} prompt "
+                    "(force), re-run it, and reapprove (overwrite)."
+                ),
+            )
+        return NextAction(
+            topic_id=topic_id,
+            stage=stage,
+            action="save_response",
+            detail=(
+                f"Upstream content changed for {topic_id!r}; re-run the {stage} prompt "
+                "and reapprove (overwrite)."
+            ),
         )
 
     def read_manifest(self, topic_id: str) -> dict:
@@ -426,11 +598,19 @@ class RunStore:
         if self._is_guide_v1(paths.topic_id) and paths.stage in {"spec", "outline"}:
             self._validate_guide_approval(paths.topic_id, paths.stage, text)
         _write_text(paths.approved_path, text, overwrite=overwrite)
+        files: dict[str, Path] = {
+            "prompt_file": paths.prompt_path,
+            "approved_file": paths.approved_path,
+        }
+        if self._is_guide_v1(paths.topic_id) and paths.stage in {"qa", "repair"}:
+            files["source_draft_file"] = self.stage_paths(paths.topic_id, "draft").approved_path
+            if paths.stage == "repair":
+                files["source_qa_file"] = self.stage_paths(paths.topic_id, "qa").approved_path
         self._append_event(
             paths.topic_id,
             stage=paths.stage,
             action="response_approved",
-            files={"prompt_file": paths.prompt_path, "approved_file": paths.approved_path},
+            files=files,
         )
         return paths.approved_path
 
@@ -512,9 +692,28 @@ class RunStore:
         _write_manifest(run / "manifest.json", manifest)
 
     def final_path(self, topic_id: str) -> Path:
-        """Path of the assembled final guide for a run."""
+        """Path of the assembled final guide for a run (legacy ``final/guide.md``)."""
 
         return self.run_dir(topic_id) / "final" / _FINAL_FILENAME
+
+    def final_guide_json_path(self, topic_id: str) -> Path:
+        """Path of the guide-v1 final JSON artifact (``final/guide.json``)."""
+
+        return self.final_path(topic_id).with_name("guide.json")
+
+    def final_guide_md_path(self, topic_id: str) -> Path:
+        """Path of the guide-v1 projected Markdown artifact (``final/guide.md``)."""
+
+        return self.final_path(topic_id).with_name("guide.md")
+
+    def draft_report_path(self, topic_id: str) -> Path:
+        return self.run_dir(topic_id) / "reports" / "draft-validation.json"
+
+    def final_report_path(self, topic_id: str) -> Path:
+        return self.run_dir(topic_id) / "reports" / "final-validation.json"
+
+    def waivers_path(self, topic_id: str) -> Path:
+        return self.run_dir(topic_id) / "reports" / "validation-waivers.json"
 
     def export_path(self, topic_id: str, format: str) -> Path:
         """Path an export of ``format`` is (or would be) written to."""
@@ -540,6 +739,11 @@ class RunStore:
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
+        if self._is_guide_v1(safe_id):
+            raise ConfigError(
+                "guide-v1 HTML export is not yet supported; "
+                "export integration arrives with the export/preview API wave"
+            )
         export_path = self.export_path(safe_id, format)
         guide = self._read_final_guide(safe_id)
         topic = TopicStore(self.root).load_topic(safe_id)
@@ -584,18 +788,55 @@ class RunStore:
         return front_matter
 
     def is_finalized(self, topic_id: str) -> bool:
-        """Whether the run's final guide has been assembled."""
+        """Whether the run's final guide has been assembled.
 
-        return self.final_path(topic_id).exists()
+        Legacy runs: file existence of ``final/guide.md``. Guide-v1 runs: hash-
+        derived — a finalized event must exist, both final artifacts must exist,
+        and the event's ``source_file_sha256`` must still match the current
+        approved repair bytes.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        if not self._is_guide_v1(safe_id):
+            return self.final_path(safe_id).exists()
+
+        final_json = self.final_guide_json_path(safe_id)
+        final_md = self.final_guide_md_path(safe_id)
+        if not final_json.is_file() or not final_md.is_file():
+            return False
+
+        try:
+            events = self.read_manifest(safe_id).get("events", [])
+        except ConfigError:
+            return False
+
+        finalized = next(
+            (event for event in reversed(events) if event.get("action") == "finalized"),
+            None,
+        )
+        if finalized is None:
+            return False
+
+        recorded = finalized.get("source_file_sha256")
+        if not isinstance(recorded, str):
+            return False
+        source = self.stage_paths(safe_id, _FINAL_SOURCE_STAGE).approved_path
+        if not source.is_file():
+            return False
+        return recorded == hashlib.sha256(source.read_bytes()).hexdigest()
 
     def finalize_run(self, topic_id: str, *, overwrite: bool = False) -> Path:
         """Assemble the approved final-stage draft into the run's ``final`` guide.
 
-        This is a deterministic local step, not an LLM prompt stage: it copies the
-        approved repair output into ``final/guide.md`` and records the event.
+        Legacy: copies the approved repair into ``final/guide.md``. Guide-v1:
+        requires a current final validation report with an open waiver gate, then
+        writes ``final/guide.json`` and ``final/guide.md`` atomically.
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
+        if self._is_guide_v1(safe_id):
+            return self._finalize_guide_v1(safe_id, overwrite=overwrite)
+
         content = self.read_approved(safe_id, _FINAL_SOURCE_STAGE)
         self.create_run(safe_id)
         final = self.final_path(safe_id)
@@ -610,6 +851,134 @@ class RunStore:
             },
         )
         return final
+
+    def _finalize_guide_v1(self, topic_id: str, *, overwrite: bool) -> Path:
+        source_text = self.read_approved(topic_id, _FINAL_SOURCE_STAGE)
+        if self.report_state(topic_id, "final") != "current":
+            raise ConfigError(
+                f"final validation is missing or stale for {topic_id!r}; "
+                "run final validation before finalizing"
+            )
+
+        report = validate_guide(source_text, phase="final")
+        waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
+        if not waiver_result.gate_open:
+            parts = [
+                f"cannot finalize {topic_id!r}: "
+                f"{waiver_result.effective_blocking} blocking finding(s) remain"
+            ]
+            if waiver_result.stale:
+                parts.append("stale waivers were ignored")
+            if waiver_result.rejected_finding_ids:
+                parts.append(
+                    "non-waivable or empty-reason waivers were rejected: "
+                    + ", ".join(waiver_result.rejected_finding_ids)
+                )
+            raise ConfigError("; ".join(parts))
+
+        parsed = parse_guide(source_text)
+        if not parsed.ok:
+            raise ConfigError(
+                f"cannot finalize {topic_id!r}: approved repair is not valid guide JSON"
+            )
+        guide = normalize_guide(parsed)
+        guide_json = canonical_guide_bytes(guide)
+        guide_md = project_guide_markdown(guide)
+
+        final_json = self.final_guide_json_path(topic_id)
+        final_md = self.final_guide_md_path(topic_id)
+        if not overwrite:
+            if final_json.exists() or final_md.exists():
+                raise ConfigError(
+                    f"refusing to overwrite existing final guide artifacts for {topic_id!r}: "
+                    f"{final_json} / {final_md}"
+                )
+
+        self.create_run(topic_id)
+        _write_bytes_atomic(final_json, guide_json)
+        _write_bytes_atomic(final_md, guide_md.encode("utf-8"))
+        self._append_event(
+            topic_id,
+            stage="finalize",
+            action="finalized",
+            files={
+                "final_json_file": final_json,
+                "final_md_file": final_md,
+                "source_file": self.stage_paths(topic_id, _FINAL_SOURCE_STAGE).approved_path,
+                "report_file": self.final_report_path(topic_id),
+            },
+            extra={
+                "guide_sha256": guide_sha256(guide),
+                "schema_version": guide.schema_version,
+            },
+        )
+        return final_json
+
+    def report_state(self, topic_id: str, phase: str) -> str:
+        """Return ``missing`` | ``current`` | ``stale`` for a validation report.
+
+        Freshness is content-derived from the source approved artifact hash,
+        never from file-existence alone.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        if not self._is_guide_v1(safe_id):
+            raise ConfigError("validation applies only to guide runs")
+        if phase not in {"draft", "final"}:
+            raise ConfigError(f"phase must be 'draft' or 'final'; got {phase!r}")
+
+        source_stage = "draft" if phase == "draft" else "repair"
+        source_path = self.stage_paths(safe_id, source_stage).approved_path
+        report_path = (
+            self.draft_report_path(safe_id) if phase == "draft" else self.final_report_path(safe_id)
+        )
+        if not source_path.is_file() or not report_path.is_file():
+            return "missing"
+
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return "stale"
+        if not isinstance(report, dict) or report.get("phase") != phase:
+            return "stale"
+        recorded = report.get("guide_sha256")
+        if not isinstance(recorded, str):
+            return "stale"
+        source_text = source_path.read_text(encoding="utf-8")
+        if recorded == _guide_source_sha(source_text):
+            return "current"
+        return "stale"
+
+    def validate_run(self, topic_id: str, phase: str) -> Path:
+        """Run deterministic validation and write the phase report atomically."""
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        if not self._is_guide_v1(safe_id):
+            raise ConfigError("validation applies only to guide runs")
+        if phase not in {"draft", "final"}:
+            raise ConfigError(f"phase must be 'draft' or 'final'; got {phase!r}")
+
+        source_stage = "draft" if phase == "draft" else "repair"
+        source_path = self.stage_paths(safe_id, source_stage).approved_path
+        if not source_path.is_file():
+            raise ConfigError(
+                f"approved {source_stage} response not found: {source_path}"
+            )
+        source_text = source_path.read_text(encoding="utf-8")
+        report = validate_guide(source_text, phase=phase)
+        report_path = (
+            self.draft_report_path(safe_id) if phase == "draft" else self.final_report_path(safe_id)
+        )
+        self.create_run(safe_id)
+        _write_bytes_atomic(report_path, canonical_report_bytes(report))
+        self._append_event(
+            safe_id,
+            stage=source_stage,
+            action="validated",
+            files={"report_file": report_path, "source_file": source_path},
+            extra={"phase": phase},
+        )
+        return report_path
 
     def write_spec_prompt(
         self,
@@ -740,6 +1109,8 @@ class RunStore:
 
         Requires the spec, outline, and draft stages to have been approved, and
         reuses the topic's attached learner profile snapshot when one exists.
+        Guide-v1 runs also require a current draft validation report and a
+        parseable approved draft.
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
@@ -748,6 +1119,41 @@ class RunStore:
         approved_outline = self.read_approved(safe_id, "outline")
         approved_draft = self.read_approved(safe_id, "draft")
         profile = self._load_attached_profile(safe_id)
+        if self._is_guide_v1(safe_id):
+            state = self.report_state(safe_id, "draft")
+            if state != "current":
+                if state == "missing":
+                    raise ConfigError(
+                        f"draft validation is required before QA for {safe_id!r}; "
+                        "run draft validation first"
+                    )
+                raise ConfigError(
+                    f"draft validation is stale for {safe_id!r}; "
+                    "the draft changed and must be revalidated before QA"
+                )
+            parsed = parse_guide(approved_draft)
+            if not parsed.ok:
+                raise ConfigError(
+                    f"approved draft for {safe_id!r} is too malformed for QA; "
+                    "correct and reapprove the draft response"
+                )
+            draft_guide_json = canonical_guide_bytes(normalize_guide(parsed)).decode("utf-8")
+            draft_findings_json = self.draft_report_path(safe_id).read_text(encoding="utf-8")
+            artifact = compile_guide_v1_qa_prompt(
+                topic,
+                approved_spec=approved_spec,
+                approved_outline=approved_outline,
+                draft_guide_json=draft_guide_json,
+                draft_findings_json=draft_findings_json,
+                profile=profile,
+            )
+            extra_files = {
+                "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
+                "draft_report_file": self.draft_report_path(safe_id),
+            }
+            return self._write_prompt(
+                artifact, overwrite=overwrite, extra_event_files=extra_files
+            )
         artifact = compile_qa_prompt(
             topic,
             approved_spec=approved_spec,
@@ -766,7 +1172,8 @@ class RunStore:
         """Compile and write the repair prompt from the approved draft and QA findings.
 
         Requires the draft and QA stages to have been approved, and reuses the
-        topic's attached learner profile snapshot when one exists.
+        topic's attached learner profile snapshot when one exists. Guide-v1 runs
+        also require a current draft report and the guide contract file.
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
@@ -774,6 +1181,48 @@ class RunStore:
         approved_draft = self.read_approved(safe_id, "draft")
         approved_qa = self.read_approved(safe_id, "qa")
         profile = self._load_attached_profile(safe_id)
+        if self._is_guide_v1(safe_id):
+            state = self.report_state(safe_id, "draft")
+            if state != "current":
+                if state == "missing":
+                    raise ConfigError(
+                        f"draft validation is required before repair for {safe_id!r}; "
+                        "run draft validation first"
+                    )
+                raise ConfigError(
+                    f"draft validation is stale for {safe_id!r}; "
+                    "the draft changed and must be revalidated before repair"
+                )
+            contract_path = self._guide_contract_path(safe_id)
+            if not contract_path.is_file():
+                raise ConfigError(
+                    f"guide contract not found for {safe_id!r}: {contract_path}"
+                )
+            parsed = parse_guide(approved_draft)
+            if not parsed.ok:
+                raise ConfigError(
+                    f"approved draft for {safe_id!r} is too malformed for repair; "
+                    "correct and reapprove the draft response"
+                )
+            draft_guide_json = canonical_guide_bytes(normalize_guide(parsed)).decode("utf-8")
+            draft_findings_json = self.draft_report_path(safe_id).read_text(encoding="utf-8")
+            artifact = compile_guide_v1_repair_prompt(
+                topic,
+                draft_guide_json=draft_guide_json,
+                qa_findings_markdown=approved_qa,
+                draft_findings_json=draft_findings_json,
+                guide_contract=contract_path.read_bytes(),
+                profile=profile,
+            )
+            extra_files = {
+                "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
+                "source_qa_file": self.stage_paths(safe_id, "qa").approved_path,
+                "draft_report_file": self.draft_report_path(safe_id),
+                "contract_file": contract_path,
+            }
+            return self._write_prompt(
+                artifact, overwrite=overwrite, extra_event_files=extra_files
+            )
         artifact = compile_repair_prompt(
             topic,
             approved_draft=approved_draft,
@@ -887,6 +1336,76 @@ class RunStore:
             return None
         return ProfileStore(self.root).load_topic_profile_snapshot(topic_id)
 
+    def _load_waiver_set(self, topic_id: str) -> WaiverSet | None:
+        path = self.waivers_path(topic_id)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ConfigError(f"invalid validation waivers file: {path}") from exc
+        if not isinstance(payload, dict):
+            raise ConfigError(f"invalid validation waivers file: {path}")
+        schema_version = payload.get("schema_version")
+        guide_hash = payload.get("guide_sha256")
+        waivers_raw = payload.get("waivers")
+        if schema_version != 1:
+            raise ConfigError(f"invalid validation waivers file: {path}")
+        if not isinstance(guide_hash, str) or not isinstance(waivers_raw, list):
+            raise ConfigError(f"invalid validation waivers file: {path}")
+        waivers: list[Waiver] = []
+        for item in waivers_raw:
+            if not isinstance(item, dict):
+                raise ConfigError(f"invalid validation waivers file: {path}")
+            finding_id = item.get("finding_id")
+            reason = item.get("reason")
+            if not isinstance(finding_id, str) or not isinstance(reason, str):
+                raise ConfigError(f"invalid validation waivers file: {path}")
+            waivers.append(Waiver(finding_id=finding_id, reason=reason))
+        return WaiverSet(guide_sha256=guide_hash, waivers=tuple(waivers), schema_version=1)
+
+    def _latest_stage_event(
+        self, topic_id: str, stage: str, action: str
+    ) -> dict | None:
+        path = self.manifest_path(topic_id)
+        if not path.is_file():
+            return None
+        try:
+            events = self.read_manifest(topic_id).get("events", [])
+        except ConfigError:
+            return None
+        for event in reversed(events):
+            if event.get("stage") == stage and event.get("action") == action:
+                return event
+        return None
+
+    def _stage_upstream_stale(self, topic_id: str, stage: str) -> bool:
+        """True when an approved guide-v1 qa/repair stage's recorded upstream hashes drifted."""
+
+        event = self._latest_stage_event(topic_id, stage, "response_approved")
+        if event is None:
+            return False
+
+        draft_path = self.stage_paths(topic_id, "draft").approved_path
+        recorded_draft = event.get("source_draft_file_sha256")
+        if recorded_draft is None:
+            return False
+        if not draft_path.is_file():
+            return True
+        if recorded_draft != hashlib.sha256(draft_path.read_bytes()).hexdigest():
+            return True
+
+        if stage == "repair":
+            recorded_qa = event.get("source_qa_file_sha256")
+            if recorded_qa is None:
+                return False
+            qa_path = self.stage_paths(topic_id, "qa").approved_path
+            if not qa_path.is_file():
+                return True
+            if recorded_qa != hashlib.sha256(qa_path.read_bytes()).hexdigest():
+                return True
+        return False
+
     def _append_event(
         self,
         topic_id: str,
@@ -894,6 +1413,7 @@ class RunStore:
         stage: str,
         action: str,
         files: dict[str, Path],
+        extra: dict[str, str] | None = None,
     ) -> None:
         run = self.run_dir(topic_id)
         manifest = self.read_manifest(topic_id)
@@ -902,9 +1422,23 @@ class RunStore:
             event[label] = _relative_to(path, run)
             if path.is_file():
                 event[f"{label}_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        if extra:
+            event.update(extra)
         event["recorded_at"] = datetime.now(timezone.utc).isoformat()
         manifest.setdefault("events", []).append(event)
         _write_manifest(run / "manifest.json", manifest)
+
+
+def _guide_source_sha(text: str) -> str:
+    """Hash the guide source the same way ``validate_guide`` records ``guide_sha256``."""
+
+    raw = text.encode("utf-8")
+    if len(raw) > 2_000_000:
+        return hashlib.sha256(raw).hexdigest()
+    parsed = parse_guide(text)
+    if not parsed.ok:
+        return hashlib.sha256(raw).hexdigest()
+    return guide_sha256(normalize_guide(parsed))
 
 
 def _stub_text(paths: StagePaths) -> str:
