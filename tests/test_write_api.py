@@ -285,6 +285,58 @@ def test_import_topic_rejects_bad_toml_and_missing_id(tmp_path):
         write_api.import_topic(topics, 'schema_version = 1\ntitle = "No Id"\n')
 
 
+def test_create_topic_from_structured_fields(tmp_path):
+    from education_pipeline.workspace import TopicStore
+
+    topics = TopicStore(tmp_path)
+    body = {
+        "id": "n2",
+        "title": "New Two",
+        "brief": "A short brief.",
+        "audience": "engineers",
+        "goals": ["explain X", "explain Y"],
+    }
+
+    result = write_api.create_topic(topics, body)
+
+    assert result == {"id": "n2", "title": "New Two"}
+    saved = topics.load_topic("n2")
+    assert saved.brief == "A short brief."
+    assert saved.audience == "engineers"
+    assert saved.goals == ("explain X", "explain Y")
+
+
+def test_create_topic_duplicate_id_conflicts_then_overwrite(tmp_path):
+    from education_pipeline.workspace import TopicStore
+
+    topics = TopicStore(tmp_path)
+    body = {"id": "n3", "title": "New Three"}
+    assert write_api.create_topic(topics, body) == {"id": "n3", "title": "New Three"}
+
+    with pytest.raises(write_api.ConflictError) as exc:
+        write_api.create_topic(topics, body)
+    assert exc.value.code == "already_exists"
+
+    body["title"] = "New Three Updated"
+    result = write_api.create_topic(topics, body, overwrite=True)
+    assert result == {"id": "n3", "title": "New Three Updated"}
+    assert topics.load_topic("n3").title == "New Three Updated"
+
+
+def test_create_topic_requires_non_empty_id_and_title(tmp_path):
+    from education_pipeline.workspace import TopicStore
+
+    topics = TopicStore(tmp_path)
+    with pytest.raises(ConfigError):
+        write_api.create_topic(topics, {"title": "No Id"})
+    with pytest.raises(ConfigError):
+        write_api.create_topic(topics, {"id": "no-title"})
+    with pytest.raises(ConfigError):
+        write_api.create_topic(topics, {"id": "  ", "title": "Blank Id"})
+    with pytest.raises(ConfigError):
+        write_api.create_topic(topics, {"id": "bad-goals", "title": "Bad Goals", "goals": ["ok", ""]})
+
+
 def test_import_profile(tmp_path):
     from education_pipeline.workspace import ProfileStore
 

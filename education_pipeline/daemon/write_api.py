@@ -28,6 +28,7 @@ from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
 from education_pipeline.runs import RunStore, StaleContentError
+from education_pipeline.topics import Topic, emit_topic_toml
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 
@@ -286,6 +287,66 @@ def import_topic(topics: TopicStore, toml_text: str, *, overwrite: bool = False)
         )
     topic = topics.save_topic_toml(topic_id, toml_text, overwrite=overwrite)
     return {"id": topic.id, "title": topic.title}
+
+
+def _require_body_string(body: dict, key: str) -> str:
+    value = body.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"body must define non-empty string {key!r}")
+    return value
+
+
+def _optional_body_string(body: dict, key: str) -> str | None:
+    if key not in body:
+        return None
+    value = body[key]
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"body field {key!r} must be a non-empty string when set")
+    return value
+
+
+def _optional_body_string_tuple(body: dict, key: str) -> tuple[str, ...]:
+    if key not in body:
+        return ()
+    value = body[key]
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConfigError(f"body field {key!r} must be a list of strings")
+    strings: list[str] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigError(f"body field {key!r} item #{index} must be a non-empty string")
+        strings.append(item)
+    return tuple(strings)
+
+
+def create_topic(topics: TopicStore, body: dict, *, overwrite: bool = False) -> dict:
+    topic_id = _require_body_string(body, "id")
+    title = _require_body_string(body, "title")
+    topic = Topic(
+        id=topic_id,
+        title=title,
+        brief=_optional_body_string(body, "brief"),
+        audience=_optional_body_string(body, "audience"),
+        goals=_optional_body_string_tuple(body, "goals"),
+        scope_includes=_optional_body_string_tuple(body, "scope_includes"),
+        scope_excludes=_optional_body_string_tuple(body, "scope_excludes"),
+        key_questions=_optional_body_string_tuple(body, "key_questions"),
+        prerequisites=_optional_body_string_tuple(body, "prerequisites"),
+        constraints=_optional_body_string_tuple(body, "constraints"),
+        tags=_optional_body_string_tuple(body, "tags"),
+        notes=_optional_body_string(body, "notes"),
+    )
+    if topics.topic_path(topic_id).is_file() and not overwrite:
+        raise ConflictError(
+            "already_exists",
+            f"topic {topic_id!r} already exists; retry with overwrite to replace it",
+        )
+    saved = topics.save_topic_toml(topic_id, emit_topic_toml(topic), overwrite=overwrite)
+    return {"id": saved.id, "title": saved.title}
 
 
 def import_profile(profiles: ProfileStore, toml_text: str, *, overwrite: bool = False) -> dict:

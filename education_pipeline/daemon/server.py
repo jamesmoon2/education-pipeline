@@ -491,11 +491,20 @@ def _make_handler(context: DaemonContext):
                 )
             if self.path == "/v1/topics":
                 body = self._read_body()
+                if "toml" in body:
+                    return self._send(
+                        200,
+                        write_api.import_topic(
+                            context.topics,
+                            _require_str(body, "toml"),
+                            overwrite=bool(body.get("overwrite")),
+                        ),
+                    )
                 return self._send(
                     200,
-                    write_api.import_topic(
+                    write_api.create_topic(
                         context.topics,
-                        _require_str(body, "toml"),
+                        body,
                         overwrite=bool(body.get("overwrite")),
                     ),
                 )

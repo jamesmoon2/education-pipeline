@@ -581,6 +581,38 @@ def test_import_topic_rejects_invalid_input(server):
     assert status == 400
 
 
+def test_create_topic_structured_endpoint(server):
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/topics",
+        body={"id": "n4", "title": "New Four", "brief": "A brief.", "goals": ["explain X"]},
+    )
+    assert status == 200 and body == {"id": "n4", "title": "New Four"}
+
+    status, body = _req(server, "GET", "/v1/topics/n4")
+    assert status == 200 and body["title"] == "New Four"
+
+
+def test_create_topic_structured_duplicate_is_409(server):
+    body = {"id": "n5", "title": "New Five"}
+    status, _ = _req(server, "POST", "/v1/topics", body=body)
+    assert status == 200
+
+    status, body_resp = _req(server, "POST", "/v1/topics", body=body)
+    assert status == 409 and body_resp["error"]["code"] == "already_exists"
+
+    status, _ = _req(
+        server, "POST", "/v1/topics", body={"id": "n5", "title": "New Five Updated", "overwrite": True}
+    )
+    assert status == 200
+
+
+def test_create_topic_structured_missing_title_is_400(server):
+    status, _ = _req(server, "POST", "/v1/topics", body={"id": "n6"})
+    assert status == 400
+
+
 def test_import_profile_endpoint(server):
     toml = 'schema_version = 1\nid = "p2"\ntarget_learner = "new cohort"\n'
     status, body = _req(server, "POST", "/v1/profiles", body={"toml": toml})
