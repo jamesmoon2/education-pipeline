@@ -17,26 +17,48 @@ export default function TopicListPage() {
 
   return (
     <div>
-      <p className="toolbar">
-        <button onClick={() => setImportKind(importKind === "topic" ? null : "topic")}>
-          Import topic…
-        </button>{" "}
-        <button onClick={() => setImportKind(importKind === "profile" ? null : "profile")}>
-          Import profile…
-        </button>
-      </p>
-      {importKind && (
-        <ImportForm
-          kind={importKind}
-          onDone={() => {
-            setImportKind(null);
-            refresh();
-          }}
-        />
-      )}
       {data.topics.length === 0 ? (
-        <p>No topics yet. Import one above.</p>
+        <div className="empty-state">
+          <p>No topics yet.</p>
+          <p>
+            <Link to="/new" className="primary-cta">
+              Create your first course →
+            </Link>
+          </p>
+          <p className="toolbar">
+            <button onClick={() => setImportKind(importKind === "topic" ? null : "topic")}>
+              Import topic…
+            </button>
+          </p>
+          {importKind === "topic" && (
+            <ImportForm
+              kind="topic"
+              onDone={() => {
+                setImportKind(null);
+                refresh();
+              }}
+            />
+          )}
+        </div>
       ) : (
+        <>
+          <p className="toolbar">
+            <button onClick={() => setImportKind(importKind === "topic" ? null : "topic")}>
+              Import topic…
+            </button>{" "}
+            <button onClick={() => setImportKind(importKind === "profile" ? null : "profile")}>
+              Import profile…
+            </button>
+          </p>
+          {importKind && (
+            <ImportForm
+              kind={importKind}
+              onDone={() => {
+                setImportKind(null);
+                refresh();
+              }}
+            />
+          )}
         <table>
           <thead>
             <tr>
@@ -63,6 +85,7 @@ export default function TopicListPage() {
             ))}
           </tbody>
         </table>
+        </>
       )}
     </div>
   );

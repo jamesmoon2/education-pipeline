@@ -1,4 +1,5 @@
 import { Link, Route, Routes } from "react-router-dom";
+import NewRunPage from "./pages/NewRunPage";
 import RunBoardPage from "./pages/RunBoardPage";
 import SettingsPage from "./pages/SettingsPage";
 import StageViewerPage from "./pages/StageViewerPage";
@@ -18,6 +19,7 @@ export default function App() {
       <main>
         <Routes>
           <Route path="/" element={<TopicListPage />} />
+          <Route path="/new" element={<NewRunPage />} />
           <Route path="/topics/:topicId" element={<RunBoardPage />} />
           <Route path="/topics/:topicId/stages/:stage" element={<StageViewerPage />} />
           <Route path="/settings" element={<SettingsPage />} />

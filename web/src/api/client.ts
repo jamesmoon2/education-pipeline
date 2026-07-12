@@ -218,6 +218,10 @@ export const postExport = (topicId: string, format: ExportFormat, overwrite = fa
   });
 export const importTopic = (toml: string, overwrite = false) =>
   apiPost<ImportTopicResult>("/v1/topics", { toml, overwrite });
+export const createTopic = (
+  fields: { id: string; title: string; brief?: string; audience?: string; goals?: string[] },
+  overwrite = false,
+) => apiPost<{ id: string; title: string }>("/v1/topics", { ...fields, overwrite });
 export const importProfile = (toml: string, overwrite = false) =>
   apiPost<ImportProfileResult>("/v1/profiles", { toml, overwrite });
 export const attachProfile = (topicId: string, profileId: string) =>

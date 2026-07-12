@@ -68,6 +68,8 @@ describe("TopicListPage", () => {
       </MemoryRouter>,
     );
     expect(await screen.findByText(/No topics yet/)).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "Create your first course →" });
+    expect(link).toHaveAttribute("href", "/new");
   });
 
   it("imports a topic from pasted TOML", async () => {
@@ -89,7 +91,10 @@ describe("TopicListPage", () => {
   });
 
   it("imports a profile from pasted TOML", async () => {
-    vi.mocked(getTopics).mockResolvedValue({ topics: [] });
+    // Uses a non-empty topic list: the profile-import toolbar affordance
+    // lives on the non-empty branch (the empty state only offers topic
+    // import, demoted below the "/new" wizard link).
+    vi.mocked(getTopics).mockResolvedValue({ topics: [summary] });
     vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
     vi.mocked(importProfile).mockResolvedValue({ id: "p1" });
     render(
