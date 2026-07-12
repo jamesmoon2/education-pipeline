@@ -49,12 +49,6 @@ class UnprocessableError(Exception):
         self.details = details
 
 
-def _require_json_object(value: object, label: str) -> dict:
-    if not isinstance(value, dict):
-        raise ConfigError(f"{label} must be a JSON object")
-    return value
-
-
 def _run_relative(runs: RunStore, topic_id: str, path: Path) -> str:
     return path.relative_to(runs.run_dir(topic_id)).as_posix()
 
@@ -121,24 +115,24 @@ def create_waiver(
         raise UnprocessableError("finding_not_waivable", f"finding {finding_id!r} is not waivable")
 
     path = runs.waivers_path(topic_id)
+    # Reuse RunStore's own loader to read the pre-existing file rather than
+    # re-deriving the waivers schema here: a second, divergent copy of the
+    # shape rules (this endpoint previously validated only ``finding_id``,
+    # while the loader also requires ``reason`` to be a string) is exactly
+    # what let a malformed element slip through, get copied verbatim into a
+    # freshly written file, and brick the run — the endpoint returned 200
+    # for a file its own loader would then refuse to load forever after.
+    # ``load_waiver_set`` raises ConfigError (-> HTTP 400) for a file that
+    # doesn't parse under those rules, so nothing invalid is ever propagated
+    # into the new file.
+    existing_set = runs.load_waiver_set(topic_id)
     existing: list[dict] = []
-    if path.is_file():
-        try:
-            old = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ConfigError(f"invalid validation waivers file: {path}") from exc
-        old = _require_json_object(old, f"validation waivers file: {path}")
-        if old.get("guide_sha256") == guide_sha256 and isinstance(old.get("waivers"), list):
-            for index, item in enumerate(old["waivers"]):
-                item = _require_json_object(
-                    item, f"validation waivers file: {path} waivers[{index}]"
-                )
-                if not isinstance(item.get("finding_id"), str):
-                    raise ConfigError(
-                        f"validation waivers file: {path} waivers[{index}] "
-                        "must define a string 'finding_id'"
-                    )
-            existing = [item for item in old["waivers"] if item.get("finding_id") != finding_id]
+    if existing_set is not None and existing_set.guide_sha256 == guide_sha256:
+        existing = [
+            {"finding_id": w.finding_id, "reason": w.reason}
+            for w in existing_set.waivers
+            if w.finding_id != finding_id
+        ]
     existing.append({"finding_id": finding_id, "reason": reason.strip()})
     existing.sort(key=lambda item: item["finding_id"])
     value = {"schema_version": 1, "guide_sha256": guide_sha256, "waivers": existing}

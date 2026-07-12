@@ -91,13 +91,25 @@ def _start_server(tmp_path, monkeypatch, web_dist=None, catalog=None, plan=None)
 
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     worker.start()
-    return srv, worker
+    return srv, worker, context
 
 
 @pytest.fixture
 def server(tmp_path, monkeypatch):
-    srv, worker = _start_server(tmp_path, monkeypatch)
+    srv, worker, _context = _start_server(tmp_path, monkeypatch)
     yield srv.server_port
+    worker.stop()
+    srv.shutdown()
+
+
+@pytest.fixture
+def server_with_context(tmp_path, monkeypatch):
+    """Like ``server``, but also exposes the live DaemonContext so a test can
+    mutate its fields (e.g. corrupt ``token`` to force a serialization
+    failure in a specific route) without reaching into private handler
+    internals."""
+    srv, worker, context = _start_server(tmp_path, monkeypatch)
+    yield srv.server_port, context
     worker.stop()
     srv.shutdown()
 
@@ -129,7 +141,7 @@ def config_server(tmp_path, monkeypatch):
         },
         catalog,
     )
-    srv, worker = _start_server(tmp_path, monkeypatch, catalog=catalog, plan=plan)
+    srv, worker, _context = _start_server(tmp_path, monkeypatch, catalog=catalog, plan=plan)
     yield srv.server_port
     worker.stop()
     srv.shutdown()
@@ -141,7 +153,7 @@ def ui_server(tmp_path, monkeypatch):
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text("<html>cockpit</html>", encoding="utf-8")
     (dist / "assets" / "app-abc.js").write_text("js", encoding="utf-8")
-    srv, worker = _start_server(tmp_path, monkeypatch, web_dist=dist)
+    srv, worker, _context = _start_server(tmp_path, monkeypatch, web_dist=dist)
     yield srv.server_port
     worker.stop()
     srv.shutdown()
@@ -284,6 +296,10 @@ def test_api_get_still_requires_token(server):
 def test_topics_list_includes_title_and_run(server):
     status, body = _req(server, "GET", "/v1/topics")
     assert status == 200
+    # cardinality/shape: exactly the two fixture topics, each listed once —
+    # this is the only assertion anywhere on GET /v1/topics's shape.
+    assert {i["id"] for i in body["topics"]} == {"g", "t"}
+    assert len(body["topics"]) == 2
     entry = next(item for item in body["topics"] if item["id"] == "t")
     assert entry["id"] == "t"
     assert entry["title"] == "Test Topic"
@@ -326,7 +342,9 @@ def test_profiles_list_and_get(server):
 def test_runs_list(server):
     status, body = _req(server, "GET", "/v1/runs")
     assert status == 200
-    assert sorted(body["runs"]) == ["g", "t"]
+    # RunStore.list_run_ids returns tuple(sorted(ids)); assert the exact
+    # ordering the API promises, not just the set of ids.
+    assert body["runs"] == ["g", "t"]
 
 
 def test_run_status_endpoint(server):
@@ -444,6 +462,61 @@ def test_asset_response_has_no_csp_header(ui_server):
     status, _, headers = _raw_get(ui_server, "/assets/app-abc.js")
     assert status == 200
     assert "Content-Security-Policy" not in headers
+
+
+def test_static_get_race_returns_500_not_dropped_connection(ui_server, monkeypatch, tmp_path):
+    """Regression test for the defect class the do_GET catch-all was meant to
+    close: previously only ``_api_get()`` was wrapped, so a static file that
+    vanishes between ``resolve_static`` and ``read_bytes`` (the ordinary
+    "npm run build while the page is open" race) raised FileNotFoundError
+    straight through do_GET and dropped the connection with no status line
+    at all. Simulate the race by having resolve_static point at a file that
+    no longer exists."""
+    from education_pipeline.daemon import server as server_mod
+    from education_pipeline.daemon.static import StaticFile
+
+    missing = tmp_path / "gone.js"
+    monkeypatch.setattr(
+        server_mod,
+        "resolve_static",
+        lambda dist, path: StaticFile(
+            path=missing,
+            content_type="text/javascript; charset=utf-8",
+            cache_control="no-store",
+        ),
+    )
+    status, body, _ = _raw_get(ui_server, "/assets/app-abc.js")
+    body = json.loads(body or b"{}")
+    assert status == 500
+    assert body["error"]["code"] == "internal"
+    # the connection/server survives: a subsequent request still succeeds
+    monkeypatch.undo()
+    status, body, _ = _raw_get(ui_server, "/assets/app-abc.js")
+    assert status == 200
+
+
+def test_session_endpoint_survives_unexpected_exception(server_with_context, monkeypatch):
+    """/v1/session is handled entirely outside _api_get(); it must still be
+    covered by the last-resort catch-all so an unexpected failure comes back
+    as a diagnosable 500 rather than a dropped connection. Force the failure
+    locally (an unserializable token breaks json.dumps inside _send for this
+    route only) rather than patching the global json module, which would
+    affect unrelated background threads (e.g. the job worker) too."""
+    port, context = server_with_context
+
+    class _Unserializable:
+        pass
+
+    monkeypatch.setattr(context, "token", _Unserializable())
+    status, body = _req(port, "GET", "/v1/session", token=None)
+    assert status == 500
+    assert body["error"]["code"] == "internal"
+    # the connection/server survives: restoring a valid token, a subsequent
+    # request still succeeds
+    monkeypatch.undo()
+    status, body = _req(port, "GET", "/v1/session", token=None)
+    assert status == 200
+    assert body["token"] == "secret-token"
 
 
 def test_json_api_response_has_no_csp_header(server):
@@ -983,6 +1056,62 @@ def test_create_waiver_over_http_with_corrupt_element_returns_400_not_dropped_co
     assert json.loads(waivers_path.read_text(encoding="utf-8"))["waivers"] == [1, 2, 3]
 
 
+def test_create_waiver_never_persists_a_file_its_own_loader_rejects(server, tmp_path):
+    """create_waiver's guard on a pre-existing waiver element only checked
+    that ``finding_id`` was a string. RunStore's loader also requires
+    ``reason`` to be a string (and schema_version == 1). An element like
+    {"finding_id": "other", "reason": {"nested": True}} passed the write
+    guard, got copied verbatim into the newly written file, and the endpoint
+    returned 200 — after which every future load of the run's waivers raises
+    ConfigError, bricking the run. Whatever the endpoint chooses to do
+    (reject, or normalize), a file it accepts and writes must always load
+    cleanly via RunStore's own loader."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = runs.validate_run("g", "draft")
+    report_payload = json.loads(report.read_text(encoding="utf-8"))
+    finding = next(item for item in report_payload["findings"] if item["waivable"])
+
+    waivers_path = runs.waivers_path("g")
+    waivers_path.parent.mkdir(parents=True, exist_ok=True)
+    before = json.dumps(
+        {
+            "schema_version": 1,
+            "guide_sha256": report_payload["guide_sha256"],
+            # finding_id is a string (passes the old write-path guard) but
+            # reason is not — the loader rejects this, the old guard did not.
+            "waivers": [{"finding_id": "some-other-finding", "reason": {"nested": True}}],
+        }
+    )
+    waivers_path.write_text(before, encoding="utf-8")
+
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/runs/g/validation/draft/waivers",
+        body={
+            "finding_id": finding["id"],
+            "guide_sha256": report_payload["guide_sha256"],
+            "reason": "accepted",
+        },
+    )
+    if status == 200:
+        # The endpoint accepted the request; the file it wrote MUST load
+        # cleanly through RunStore's own loader — no divergent schema logic.
+        loaded = RunStore(tmp_path).load_waiver_set("g")
+        assert loaded is not None
+        assert {w.finding_id for w in loaded.waivers} >= {finding["id"]}
+    else:
+        # The endpoint refused instead: the pre-existing file must be left
+        # untouched (no partial write, no .tmp orphan).
+        assert status == 400
+        assert waivers_path.read_text(encoding="utf-8") == before
+        assert not waivers_path.with_name(waivers_path.name + ".tmp").exists()
+
+
 def test_unhandled_exception_returns_500_envelope_not_dropped_connection(server, monkeypatch):
     """The daemon's last-resort handler must convert any unexpected exception
     into a diagnosable 500, never a dropped connection."""
@@ -1277,7 +1406,7 @@ def run_plan_server(tmp_path, monkeypatch):
         },
         catalog,
     )
-    srv, worker = _start_server(tmp_path, monkeypatch, catalog=catalog, plan=plan)
+    srv, worker, _context = _start_server(tmp_path, monkeypatch, catalog=catalog, plan=plan)
     yield srv.server_port
     worker.stop()
     srv.shutdown()

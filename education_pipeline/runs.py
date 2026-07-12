@@ -1513,6 +1513,17 @@ class RunStore:
             return None
         return ProfileStore(self.root).load_topic_profile_snapshot(topic_id)
 
+    def load_waiver_set(self, topic_id: str) -> WaiverSet | None:
+        """Load and validate this topic's on-disk waivers file, if any.
+
+        Public so callers that need to read or rebuild the waivers file
+        (e.g. the daemon's create_waiver endpoint) validate against exactly
+        the same shape rules this loader enforces elsewhere — a single
+        source of truth for what counts as a loadable waivers file, instead
+        of a second, divergent copy of the schema checks.
+        """
+        return self._load_waiver_set(topic_id)
+
     def _load_waiver_set(self, topic_id: str) -> WaiverSet | None:
         path = self.waivers_path(topic_id)
         if not path.is_file():
