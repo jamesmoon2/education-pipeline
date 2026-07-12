@@ -13,7 +13,7 @@ import secrets
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
 from education_pipeline.daemon import read_api, write_api
@@ -31,6 +31,16 @@ from education_pipeline.runs import RunStore, SUPPORTED_STAGES
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
+
+
+class ConfigSource(Protocol):
+    """Reads the model catalog + plan, fresh, on every ``load()`` call."""
+
+    def load(self) -> tuple[ModelCatalog, ModelPlan]: ...
+
+    def plan_sha256(self) -> str: ...
+
+    def write_plan(self, toml_text: str) -> None: ...
 MAX_REQUEST_BODY_BYTES = 1024 * 1024  # 1 MiB; job POST bodies are tiny
 
 
@@ -49,14 +59,14 @@ class DaemonContext:
     runs: RunStore
     token: str
     version: str
-    catalog: ModelCatalog
-    plan: ModelPlan
+    config: ConfigSource
     topics: TopicStore
     profiles: ProfileStore
     on_shutdown: Callable[[], None]
     web_dist: Path | None = None
 
     def enqueue_stage(self, topic_id: str, stage: str | None, force: bool) -> Job:
+        _, plan = self.config.load()
         # Validate topic against the workspace (reuses safe-id logic in RunStore).
         status = self.runs.run_status(topic_id)
         target_stage = stage or status.next_action.stage
@@ -75,8 +85,8 @@ class DaemonContext:
             raise ConfigError(
                 f"a job is already active for {topic_id}/{target_stage}"
             )
-        stage_plan = self.plan.stage(target_stage)
-        provider = stage_plan.provider or self.plan.provider
+        stage_plan = plan.stage(target_stage)
+        provider = stage_plan.provider or plan.provider
         job = self.store.create(topic_id, target_stage, provider, stage_plan.model, stage_plan.effort)
         job.metadata["force"] = force
         # Do not pre-save here: Worker.enqueue performs the duplicate-active

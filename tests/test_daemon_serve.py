@@ -11,6 +11,7 @@ from education_pipeline import ContentContract, RunStore
 from education_pipeline.config import ConfigError
 from education_pipeline.daemon import serve
 from education_pipeline.daemon import lifecycle
+from education_pipeline.daemon import WorkspaceConfigSource
 
 
 def _health(port, token):
@@ -46,3 +47,17 @@ def test_serve_refuses_when_workspace_already_claimed(tmp_path):
     lifecycle.write_discovery(tmp_path, pid=os.getpid(), port=1, token="x", version="0.1.0")
     with pytest.raises(ConfigError):
         serve(tmp_path)
+
+
+def test_workspace_config_source_rereads_after_disk_edit(tmp_path):
+    cfg = tmp_path / "config"; cfg.mkdir()
+    (cfg / "model-catalog.toml").write_text('[[providers]]\nid = "manual"\nlabel = "Manual"\n')
+    (cfg / "model-plan.toml").write_text('provider = "manual"\n')
+    source = WorkspaceConfigSource(tmp_path)
+    _, plan1 = source.load()
+    assert plan1.stage("draft").model is None
+    (cfg / "model-plan.toml").write_text('provider = "manual"\n[stages.draft]\nmodel = "x"\n')
+    # invalid model must raise (catalog has none), so use a catalog-less-model provider: models list empty → any model name passes
+    _, plan2 = source.load()
+    assert plan2.stage("draft").model == "x"
+    assert source.plan_sha256() != ""

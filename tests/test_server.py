@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from education_pipeline import ContentContract, RunStore, parse_model_catalog, parse_model_plan
+from education_pipeline.daemon import StaticConfigSource
 from education_pipeline.daemon.jobs import JobRunner, JobStore, Worker
 from education_pipeline.daemon.server import DaemonContext, build_server
 from education_pipeline.providers import Invocation, ProviderResponse, register_runner
@@ -60,8 +61,7 @@ def _start_server(tmp_path, monkeypatch, web_dist=None):
         runs=runs,
         token="secret-token",
         version="0.1.0",
-        catalog=catalog,
-        plan=plan,
+        config=StaticConfigSource(catalog, plan),
         topics=TopicStore(tmp_path),
         profiles=ProfileStore(tmp_path),
         on_shutdown=lambda: None,
