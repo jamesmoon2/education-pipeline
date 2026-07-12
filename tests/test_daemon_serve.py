@@ -297,3 +297,74 @@ def test_worker_reresolves_overrides_edited_while_job_was_queued(tmp_path):
     finally:
         _post(port, token, "/v1/shutdown")
         thread.join(timeout=10)
+
+
+def test_worker_restamps_plan_source_when_overrides_edited_while_queued(tmp_path):
+    """plan_source must reflect the overrides in effect at execution, not enqueue.
+
+    A job enqueued with no override is stamped plan_source=default. If overrides
+    are added for its stage while it sits queued, the daemon re-resolves the
+    effective plan at execution time (Task 3.2) — plan_source must be re-stamped
+    to match, both on the job record and in the recorded stage provenance.
+    """
+
+    register_runner(_SlowFakeRunner())
+    register_runner(_SecondFakeRunner())
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "model-catalog.toml").write_text(
+        '[[providers]]\nid = "fake"\n[[providers.models]]\nid = "m"\n'
+        '[[providers]]\nid = "fake2"\n[[providers.models]]\nid = "m2"\n',
+        encoding="utf-8",
+    )
+    (cfg / "model-plan.toml").write_text(
+        'provider = "fake"\n'
+        '[stages.outline]\nmodel = "m"\n'
+        '[stages.draft]\nmodel = "m"\n',
+        encoding="utf-8",
+    )
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    for stage in ("outline", "draft"):
+        prompt = runs.stage_paths("t", stage).prompt_path
+        prompt.parent.mkdir(parents=True, exist_ok=True)
+        prompt.write_text("PROMPT", encoding="utf-8")
+
+    ready = threading.Event()
+    thread = threading.Thread(target=serve, args=(tmp_path,), kwargs={"ready": ready}, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=10)
+    record = lifecycle.read_discovery(tmp_path)
+    assert record is not None
+    port, token = record["port"], record["token"]
+    try:
+        # A slow outline job occupies the single worker for ~1s.
+        status, _ = _post(port, token, "/v1/jobs", {"topic_id": "t", "stage": "outline"})
+        assert status == 200
+        # The draft job queues behind it with no override in effect: default.
+        status, draft_job = _post(port, token, "/v1/jobs", {"topic_id": "t", "stage": "draft"})
+        assert status == 200
+        assert draft_job["metadata"]["plan_source"] == "default"
+        # While the draft job sits queued, an override is added for its stage.
+        runs.write_plan_overrides(
+            "t", {"stages": {"draft": {"provider": "fake2", "model": "m2"}}}
+        )
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            status, job = _get(port, token, f"/v1/jobs/{draft_job['id']}")
+            if job["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
+                break
+            time.sleep(0.05)
+        assert job["status"] == "succeeded"
+        # Re-stamped at execution time, not frozen at enqueue.
+        assert job["metadata"]["plan_source"] == "override"
+        manifest_status, manifest = _get(port, token, f"/v1/runs/t/manifest")
+        assert manifest_status == 200
+        draft_provenance = [
+            e for e in manifest["stage_provenance"] if e["job_id"] == draft_job["id"]
+        ]
+        assert len(draft_provenance) == 1
+        assert draft_provenance[0]["source"] == "override"
+    finally:
+        _post(port, token, "/v1/shutdown")
+        thread.join(timeout=10)

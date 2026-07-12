@@ -131,6 +131,14 @@ def serve(
             catalog, plan = config.load()
             overrides = runs.read_plan_overrides(job.topic_id)
             plan = apply_overrides(plan, overrides, catalog)
+            # Re-stamp plan_source against the overrides in effect right now:
+            # it may have gone stale if overrides were edited while this job
+            # sat queued. The mutated job object is the same one Worker._loop
+            # passes into runner.execute(), which persists it as soon as
+            # execute() flips status to "running" — no separate save needed.
+            job.metadata["plan_source"] = (
+                "override" if job.stage in overrides.get("stages", {}) else "default"
+            )
             return JobRunner(store, runs, catalog, plan, timeout=timeout,
                               force=bool(job.metadata.get("force")))
 
