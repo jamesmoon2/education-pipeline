@@ -233,6 +233,9 @@ def test_waiver_requires_current_hash_reason_and_waivable_finding(tmp_path):
         runs, "t", "draft", finding["id"], report["guide_sha256"], "Accepted example"
     )
     assert result["waivers"]["waivers"][0]["finding_id"] == finding["id"]
+    persisted = write_api.read_api.waivers_payload(runs, "t", "draft")
+    assert persisted["state"] == "current"
+    assert persisted["waivers"]["waivers"][0]["reason"] == "Accepted example"
 
     guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " <b>unsafe</b>"
     draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")

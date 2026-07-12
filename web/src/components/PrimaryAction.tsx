@@ -107,7 +107,12 @@ export default function PrimaryAction({
           Finalize
         </button>
       )}
-      {next.action === "done" && <ExportControls topicId={topicId} />}
+      {next.action === "done" && (
+        <ExportControls
+          topicId={topicId}
+          guideV1={status.content_contract.kind === "interactive_guide"}
+        />
+      )}
       {feedback && <p className={isError ? "error" : "success"}>{feedback}</p>}
     </div>
   );

@@ -160,6 +160,25 @@ def validation_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
     return {"state": runs.report_state(topic_id, phase), "report": report}
 
 
+def waivers_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
+    validation = validation_payload(runs, topic_id, phase)
+    report_hash = validation["report"].get("guide_sha256")
+    value = {"schema_version": 1, "guide_sha256": report_hash, "waivers": []}
+    path = runs.waivers_path(topic_id)
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ConfigError(f"invalid validation waivers file: {path}") from exc
+        if not isinstance(loaded, dict):
+            raise ConfigError(f"invalid validation waivers file: {path}")
+        value = loaded
+    state = validation["state"]
+    if value.get("guide_sha256") != report_hash:
+        state = "stale"
+    return {"state": state, "waivers": value}
+
+
 def manifest_payload(runs: RunStore, topic_id: str) -> dict:
     if not runs.manifest_path(topic_id).is_file():
         raise NotFoundError(f"no run manifest for topic: {topic_id}")

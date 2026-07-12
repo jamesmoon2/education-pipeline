@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { ApiRequestError, getRunStatus, postAdvance } from "../api/client";
 import JobsPanel from "../components/JobsPanel";
 import PrimaryAction from "../components/PrimaryAction";
+import ValidationFindingsPanel from "../components/ValidationFindingsPanel";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 
@@ -57,6 +58,15 @@ export default function RunBoardPage() {
               })}
             </tbody>
           </table>
+          {(["draft", "final"] as const).map((phase) => (
+            <ValidationFindingsPanel
+              key={phase}
+              topicId={status.topic_id}
+              phase={phase}
+              state={status.validations[phase].state}
+              onChanged={refresh}
+            />
+          ))}
         </section>
       )}
       <table>

@@ -240,6 +240,11 @@ def _make_handler(context: DaemonContext):
                 return self._send(
                     200, read_api.validation_payload(context.runs, m.group(1), m.group(2))
                 )
+            m = re.match(r"^/v1/runs/([^/?]+)/validation/(draft|final)/waivers$", self.path)
+            if m:
+                return self._send(
+                    200, read_api.waivers_payload(context.runs, m.group(1), m.group(2))
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/final/download$", self.path)
             if m:
                 topic_id = m.group(1)

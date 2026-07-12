@@ -208,6 +208,11 @@ export interface WaiverResult extends ValidationResult {
   waivers: WaiverSet;
 }
 
+export interface WaiversResult {
+  state: ValidationState;
+  waivers: WaiverSet;
+}
+
 export interface GuidePreviewResult {
   html: string;
   content_sha256: string;

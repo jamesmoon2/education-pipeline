@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   ApiRequestError,
   getRunStatus,
@@ -18,6 +18,9 @@ type Tab = (typeof TABS)[number];
 
 export default function StageViewerPage() {
   const { topicId, stage } = useParams<{ topicId: string; stage: string }>();
+  const [searchParams] = useSearchParams();
+  const findingPath = searchParams.get("json_path");
+  const relatedId = searchParams.get("related_id");
   const fetchContent = useCallback(
     () => getStageContent(topicId!, stage!),
     [topicId, stage],
@@ -72,6 +75,12 @@ export default function StageViewerPage() {
       <h2>
         {topicId} / {data.stage}
       </h2>
+      {findingPath && (
+        <p className="finding-location" role="status">
+          Finding location: <code>{findingPath}</code>
+          {relatedId ? <> · related guide ID <code>{relatedId}</code></> : null}
+        </p>
+      )}
       <nav className="tabs" role="tablist">
         {TABS.map((t) => (
           <button

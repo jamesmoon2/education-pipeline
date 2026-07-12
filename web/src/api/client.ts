@@ -21,6 +21,7 @@ import type {
   ValidateResult,
   ValidationResult,
   WaiverResult,
+  WaiversResult,
 } from "./types";
 
 export class ApiRequestError extends Error {
@@ -195,6 +196,10 @@ export const postWaiver = (
     `/v1/runs/${encodeURIComponent(topicId)}/validation/${phase}/waivers`,
     { finding_id: findingId, guide_sha256: guideSha256, reason },
   );
+export const getWaivers = (topicId: string, phase: "draft" | "final") =>
+  api<WaiversResult>(
+    `/v1/runs/${encodeURIComponent(topicId)}/validation/${phase}/waivers`,
+  );
 export const postApprove = (topicId: string, stage: string, overwrite = false) =>
   apiPost<ApproveResult>(
     `/v1/runs/${encodeURIComponent(topicId)}/stages/${encodeURIComponent(stage)}/approve`,
@@ -222,8 +227,11 @@ export const enqueueJob = (topicId: string, stage?: string, force = false) =>
   );
 export const cancelJob = (jobId: string) =>
   apiPost<Job>(`/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {});
-export const downloadFinal = (topicId: string) =>
-  download(`/v1/runs/${encodeURIComponent(topicId)}/final/download`, `${topicId}-guide.md`);
+export const downloadFinal = (topicId: string, guideV1 = false) =>
+  download(
+    `/v1/runs/${encodeURIComponent(topicId)}/final/download`,
+    `${topicId}-guide.${guideV1 ? "json" : "md"}`,
+  );
 export const downloadExport = (topicId: string, format: ExportFormat) =>
   download(
     `/v1/runs/${encodeURIComponent(topicId)}/exports/${format}/download`,

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -25,11 +25,14 @@ test.beforeAll(async () => {
   });
 
   const discovery = join(ws, ".education-pipeline", "daemon.json");
-  for (let i = 0; i < 100 && !existsSync(discovery); i++) {
-    await new Promise((r) => setTimeout(r, 100));
+  let record: { port: number } | null = null;
+  for (let i = 0; i < 100 && !record?.port; i++) {
+    if (existsSync(discovery)) {
+      try { record = JSON.parse(readFileSync(discovery, "utf-8")) as { port: number }; } catch { /* retry partial record */ }
+    }
+    if (!record?.port) await new Promise((r) => setTimeout(r, 100));
   }
-  if (!existsSync(discovery)) throw new Error("daemon never wrote its discovery file");
-  const record = JSON.parse(readFileSync(discovery, "utf-8")) as { port: number };
+  if (!record?.port) throw new Error("daemon never wrote a ready discovery record");
   baseURL = `http://127.0.0.1:${record.port}`;
 });
 
@@ -44,6 +47,11 @@ async function importTopicAndRunAllStages(page, topicId: string, title: string) 
     .getByLabel("topic TOML")
     .fill(`schema_version = 1\nid = "${topicId}"\ntitle = "${title}"\n`);
   await page.getByRole("button", { name: "Import", exact: true }).click();
+  execFileSync(
+    "python3",
+    ["-m", "education_pipeline", "-C", ws, "create", topicId, "--legacy-markdown"],
+    { cwd: resolve(import.meta.dirname, "../..") },
+  );
   await page.getByRole("link", { name: topicId, exact: true }).click();
 
   for (const stage of ["spec", "outline", "draft", "qa", "repair"]) {
@@ -96,6 +104,11 @@ test("a concurrent external edit is detected and rejected, never overwritten", a
     .getByLabel("topic TOML")
     .fill('schema_version = 1\nid = "c"\ntitle = "Conflict Topic"\n');
   await page.getByRole("button", { name: "Import", exact: true }).click();
+  execFileSync(
+    "python3",
+    ["-m", "education_pipeline", "-C", ws, "create", "c", "--legacy-markdown"],
+    { cwd: resolve(import.meta.dirname, "../..") },
+  );
   await page.getByRole("link", { name: "c", exact: true }).click();
   await page.getByRole("button", { name: "Advance" }).click();
   await page.getByRole("button", { name: "Paste response…" }).click();
