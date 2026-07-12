@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
+import json
 import tomllib
 
 
@@ -198,6 +199,33 @@ def parse_model_plan(
         )
 
     return ModelPlan(provider=provider_id, stages=stages)
+
+
+def emit_model_plan_toml(plan: ModelPlan) -> str:
+    """Serialize a ModelPlan back to model-plan.toml. Narrow by design: this
+    schema only ever holds strings, so JSON string escaping (valid TOML
+    basic-string syntax) covers every value."""
+
+    def q(value: str) -> str:
+        return json.dumps(value)
+
+    lines = [f"provider = {q(plan.provider)}", ""]
+    for stage_name in STAGE_ORDER:
+        stage = plan.stages[stage_name]
+        body: list[str] = []
+        if stage.provider is not None and stage.provider != plan.provider:
+            body.append(f"provider = {q(stage.provider)}")
+        if stage.model is not None:
+            body.append(f"model = {q(stage.model)}")
+        if stage.effort is not None:
+            body.append(f"effort = {q(stage.effort)}")
+        if stage.recommendation != DEFAULT_STAGE_RECOMMENDATIONS[stage_name]:
+            body.append(f"recommendation = {q(stage.recommendation)}")
+        if body:
+            lines.append(f"[stages.{stage_name}]")
+            lines.extend(body)
+            lines.append("")
+    return "\n".join(lines)
 
 
 REASONING_STAGES = frozenset({"spec", "outline", "repair"})

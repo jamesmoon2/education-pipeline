@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ from education_pipeline import (
     parse_model_catalog,
     parse_model_plan,
 )
-from education_pipeline.config import weak_stage_warning
+from education_pipeline.config import emit_model_plan_toml, weak_stage_warning
 
 
 def test_loads_example_catalog_and_plan() -> None:
@@ -179,3 +180,26 @@ def test_no_warning_for_strong_premium_unset_quality_or_non_reasoning_stage():
     fast = _catalog_with_quality("fast")
     qa = StageModelPlan(stage="qa", recommendation="fast_cheap_check", provider="p", model="m")
     assert weak_stage_warning(fast, qa) is None
+
+
+def test_emit_model_plan_toml_round_trips():
+    catalog = parse_model_catalog({"providers": [
+        {"id": "claude-code", "models": [{"id": "opus", "label": "Opus"}]},
+        {"id": "codex", "models": [{"id": "gpt", "label": "GPT"}]},
+        {"id": "manual"},
+    ]})
+    plan = parse_model_plan({
+        "provider": "claude-code",
+        "stages": {
+            "draft": {"provider": "codex", "model": "gpt", "effort": "high"},
+            "qa": {"provider": "manual"},
+            "outline": {"model": "opus", "recommendation": "premium_reasoning"},
+        },
+    }, catalog=catalog)
+    text = emit_model_plan_toml(plan)
+    assert parse_model_plan(tomllib.loads(text), catalog=catalog) == plan
+
+
+def test_emit_escapes_special_characters():
+    plan = parse_model_plan({"provider": 'we"ird\\id'}, catalog=None)
+    assert parse_model_plan(tomllib.loads(emit_model_plan_toml(plan))) == plan
