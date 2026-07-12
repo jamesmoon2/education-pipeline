@@ -215,8 +215,11 @@ export const attachProfile = (topicId: string, profileId: string) =>
   apiPost<AttachProfileResult>(`/v1/topics/${encodeURIComponent(topicId)}/profile`, {
     profile_id: profileId,
   });
-export const enqueueJob = (topicId: string, stage?: string) =>
-  apiPost<Job>("/v1/jobs", stage ? { topic_id: topicId, stage } : { topic_id: topicId });
+export const enqueueJob = (topicId: string, stage?: string, force = false) =>
+  apiPost<Job>(
+    "/v1/jobs",
+    stage ? { topic_id: topicId, stage, force } : { topic_id: topicId, force },
+  );
 export const cancelJob = (jobId: string) =>
   apiPost<Job>(`/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {});
 export const downloadFinal = (topicId: string) =>

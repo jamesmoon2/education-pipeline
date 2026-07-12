@@ -4,6 +4,7 @@ import {
   ApiRequestError,
   getRunStatus,
   getStageContent,
+  enqueueJob,
   postApprove,
 } from "../api/client";
 import DiffView from "../components/DiffView";
@@ -31,6 +32,7 @@ export default function StageViewerPage() {
   const [diffOpen, setDiffOpen] = useState(false);
   const [draftApproved, setDraftApproved] = useState<string | null>(null);
   const approve = useAction(refresh);
+  const rerun = useAction(refresh);
 
   if (error instanceof ApiRequestError && error.status === 404) {
     return (
@@ -122,6 +124,19 @@ export default function StageViewerPage() {
       {tab === "response" && canEdit && !editing && (
         <button onClick={() => setEditing(true)}>Edit</button>
       )}
+      {data.response !== null && !finalized && (
+        <button
+          disabled={rerun.busy}
+          onClick={() => {
+            if (!window.confirm(`Replace the existing ${data.stage} response with a new provider result? The prior hash will remain in the manifest.`)) return;
+            void rerun.run(() => enqueueJob(topicId!, data.stage, true), {
+              successMessage: `Provider rerun queued for ${data.stage}.`,
+            });
+          }}
+        >
+          Rerun with provider…
+        </button>
+      )}
       {data.response === null && (
         <div>
           <button onClick={() => setPasteOpen((open) => !open)}>Paste response…</button>
@@ -138,6 +153,10 @@ export default function StageViewerPage() {
         </div>
       )}
       {needsApproval && (
+        <div>
+        {run?.content_contract.kind === "interactive_guide" && data.approved !== null && (
+          <p className="warning">Reapproval invalidates downstream validation, finalization, and export until rebuilt.</p>
+        )}
         <button
           disabled={approve.busy}
           onClick={() =>
@@ -149,7 +168,9 @@ export default function StageViewerPage() {
         >
           Approve {data.stage}
         </button>
+        </div>
       )}
+      {rerun.feedback && <p className={rerun.isError ? "error" : "success"}>{rerun.feedback}</p>}
       {approve.feedback && (
         <p className={approve.isError ? "error" : "success"}>{approve.feedback}</p>
       )}
