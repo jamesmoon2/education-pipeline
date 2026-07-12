@@ -8,6 +8,7 @@ Pure functions: stores in, JSON-serializable dicts out. Raise
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 from education_pipeline.config import ConfigError
@@ -68,9 +69,16 @@ def get_profile(profiles: ProfileStore, profile_id: str) -> dict:
 def run_status_payload(runs: RunStore, topic_id: str) -> dict:
     require_run(runs, topic_id)
     status = runs.run_status(topic_id)
+    contract = runs.content_contract(topic_id)
+    validations = {
+        phase: _validation_summary(runs, topic_id, phase)
+        for phase in ("draft", "final")
+    }
     return {
         "topic_id": status.topic_id,
         "finalized": status.finalized,
+        "content_contract": contract.to_manifest(),
+        "validations": validations,
         "stages": [
             {
                 "stage": s.stage,
@@ -113,7 +121,43 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
         "response": _read(paths.response_path),
         "approved": _read(paths.approved_path),
         "response_sha256": response_sha256,
+        "content_type": paths.content_type,
     }
+
+
+def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
+    if runs.content_contract(topic_id).kind != "interactive_guide":
+        return {"state": "missing", "blocking": 0, "errors": 0, "warnings": 0}
+    state = runs.report_state(topic_id, phase)
+    counts = {"blocking": 0, "errors": 0, "warnings": 0}
+    path = runs.draft_report_path(topic_id) if phase == "draft" else runs.final_report_path(topic_id)
+    if path.is_file():
+        try:
+            summary = json.loads(path.read_text(encoding="utf-8")).get("summary", {})
+            for key in counts:
+                if isinstance(summary.get(key), int):
+                    counts[key] = summary[key]
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            pass
+    return {"state": state, **counts}
+
+
+def validation_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
+    require_run(runs, topic_id)
+    if phase not in {"draft", "final"}:
+        raise ConfigError("phase must be 'draft' or 'final'")
+    if runs.content_contract(topic_id).kind != "interactive_guide":
+        raise NotFoundError(f"run {topic_id!r} has no guide validation reports")
+    path = runs.draft_report_path(topic_id) if phase == "draft" else runs.final_report_path(topic_id)
+    if not path.is_file():
+        raise NotFoundError(f"no {phase} validation report for topic {topic_id!r}")
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"invalid validation report: {path}") from exc
+    if not isinstance(report, dict):
+        raise ConfigError(f"invalid validation report: {path}")
+    return {"state": runs.report_state(topic_id, phase), "report": report}
 
 
 def manifest_payload(runs: RunStore, topic_id: str) -> dict:
@@ -123,7 +167,11 @@ def manifest_payload(runs: RunStore, topic_id: str) -> dict:
 
 
 def final_download_path(runs: RunStore, topic_id: str) -> Path:
-    path = runs.final_path(topic_id)  # ConfigError on a bad id -> 400
+    path = (
+        runs.final_guide_json_path(topic_id)
+        if runs.content_contract(topic_id).kind == "interactive_guide"
+        else runs.final_path(topic_id)
+    )
     if not path.is_file():
         raise NotFoundError(f"run {topic_id!r} is not finalized")
     return path

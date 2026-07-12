@@ -20,6 +20,13 @@ from education_pipeline.daemon import read_api, write_api
 from education_pipeline.daemon.jobs import Job, JobStore, Worker
 from education_pipeline.daemon.static import resolve_static
 from education_pipeline.export import render_html_body
+from education_pipeline.guides import (
+    GuideDocumentError,
+    assemble_guide_document,
+    normalize_guide,
+    parse_guide,
+    validate_guide,
+)
 from education_pipeline.runs import RunStore, SUPPORTED_STAGES
 from education_pipeline.workspace import ProfileStore, TopicStore
 
@@ -117,8 +124,11 @@ def _make_handler(context: DaemonContext):
             self.end_headers()
             self.wfile.write(body)
 
-        def _error(self, status: int, code: str, message: str) -> None:
-            self._send(status, {"error": {"code": code, "message": message}})
+        def _error(self, status: int, code: str, message: str, details=None) -> None:
+            error = {"code": code, "message": message}
+            if details is not None:
+                error["details"] = details
+            self._send(status, {"error": error})
 
         def _guard(self) -> bool:
             if not self._host_ok():
@@ -143,9 +153,12 @@ def _make_handler(context: DaemonContext):
                     f"{MAX_REQUEST_BODY_BYTES}-byte cap"
                 )
             try:
-                return json.loads(self.rfile.read(length) or b"{}")
+                value = json.loads(self.rfile.read(length) or b"{}")
             except json.JSONDecodeError:
                 raise ConfigError("request body is not valid JSON")
+            if not isinstance(value, dict):
+                raise ConfigError("request JSON root must be an object")
+            return value
 
         def do_GET(self):
             if not self._host_ok():
@@ -222,12 +235,21 @@ def _make_handler(context: DaemonContext):
                 return self._send(
                     200, read_api.stage_content(context.runs, m.group(1), m.group(2))
                 )
+            m = re.match(r"^/v1/runs/([^/?]+)/validation/(draft|final)$", self.path)
+            if m:
+                return self._send(
+                    200, read_api.validation_payload(context.runs, m.group(1), m.group(2))
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/final/download$", self.path)
             if m:
                 topic_id = m.group(1)
                 path = read_api.final_download_path(context.runs, topic_id)
+                guide_v1 = context.runs.content_contract(topic_id).kind == "interactive_guide"
                 return self._send_file(
-                    path, "text/markdown; charset=utf-8", f"{topic_id}-guide.md"
+                    path,
+                    "application/vnd.education-pipeline.guide+json;version=1.0"
+                    if guide_v1 else "text/markdown; charset=utf-8",
+                    f"{topic_id}-guide.json" if guide_v1 else f"{topic_id}-guide.md",
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/exports/([^/?]+)/download$", self.path)
             if m:
@@ -277,6 +299,8 @@ def _make_handler(context: DaemonContext):
                 return self._error(404, "not_found", str(exc))
             except write_api.ConflictError as exc:
                 return self._error(409, exc.code, str(exc))
+            except write_api.UnprocessableError as exc:
+                return self._error(422, exc.code, str(exc), exc.details)
             except ConfigError as exc:
                 return self._error(400, "bad_request", str(exc))
 
@@ -285,6 +309,38 @@ def _make_handler(context: DaemonContext):
                 body = self._read_body()
                 return self._send(
                     200, {"html": render_html_body(_require_str(body, "text"))}
+                )
+            if self.path == "/v1/guide-preview":
+                body = self._read_body()
+                text = _require_str(body, "text")
+                try:
+                    json.loads(text)
+                except json.JSONDecodeError:
+                    return self._error(400, "invalid_guide_json", "guide text is not valid JSON")
+                parsed = parse_guide(text)
+                report = validate_guide(text, phase="draft")
+                if not parsed.ok:
+                    return self._error(
+                        422,
+                        "guide_not_renderable",
+                        "guide JSON is not safe to render",
+                        report.to_dict(),
+                    )
+                try:
+                    guide = normalize_guide(parsed)
+                    html = assemble_guide_document(guide, mode="preview")
+                except GuideDocumentError as exc:
+                    return self._error(422, "guide_not_renderable", str(exc), report.to_dict())
+                return self._send(
+                    200,
+                    {
+                        "html": html,
+                        "content_sha256": report.guide_sha256,
+                        "validation": {
+                            key: report.summary.to_dict()[key]
+                            for key in ("blocking", "errors", "warnings")
+                        },
+                    },
                 )
             if self.path == "/v1/jobs":
                 body = self._read_body()
@@ -307,6 +363,29 @@ def _make_handler(context: DaemonContext):
                 self._read_body()  # enforce the JSON/size rules even for an empty body
                 return self._send(
                     200, write_api.advance_run(context.runs, context.store, m.group(1))
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/validate$", self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.validate_run(
+                        context.runs, context.store, m.group(1), _require_str(body, "phase")
+                    ),
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/validation/(draft|final)/waivers$", self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.create_waiver(
+                        context.runs,
+                        m.group(1),
+                        m.group(2),
+                        _require_str(body, "finding_id"),
+                        _require_str(body, "guide_sha256"),
+                        _require_str(body, "reason"),
+                    ),
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/response$", self.path)
             if m:

@@ -31,7 +31,9 @@ from education_pipeline.guides import (
     parse_guide,
     project_guide_markdown,
     validate_guide,
+    assemble_guide_document,
 )
+from education_pipeline.guide_runtime import load_runtime_assets
 from education_pipeline.prompts import (
     PromptArtifact,
     SpecPromptInput,
@@ -755,10 +757,9 @@ class RunStore:
 
         safe_id = _artifact_id(topic_id, "topic id")
         if self._is_guide_v1(safe_id):
-            raise ConfigError(
-                "guide-v1 HTML export is not yet supported; "
-                "export integration arrives with the export/preview API wave"
-            )
+            if format != "html":
+                raise ConfigError("guide-v1 runs support only HTML export")
+            return self._export_guide_v1(safe_id, overwrite=overwrite)
         export_path = self.export_path(safe_id, format)
         guide = self._read_final_guide(safe_id)
         topic = TopicStore(self.root).load_topic(safe_id)
@@ -776,6 +777,71 @@ class RunStore:
             files={"export_file": export_path, "source_file": self.final_path(safe_id)},
         )
         return export_path
+
+    def _export_guide_v1(self, topic_id: str, *, overwrite: bool) -> Path:
+        """Export only the finalized canonical guide through the packaged runtime."""
+
+        final_json = self.final_guide_json_path(topic_id)
+        if not final_json.is_file() or not self.is_finalized(topic_id):
+            raise ConfigError(f"run {topic_id!r} is not currently finalized")
+        if self.report_state(topic_id, "final") != "current":
+            raise ConfigError("final validation is missing or stale; revalidate before export")
+
+        source_text = final_json.read_text(encoding="utf-8")
+        report = validate_guide(source_text, phase="final")
+        waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
+        if not waiver_result.gate_open:
+            raise ConfigError(
+                f"cannot export {topic_id!r}: "
+                f"{waiver_result.effective_blocking} blocking finding(s) remain"
+            )
+        parsed = parse_guide(source_text)
+        if not parsed.ok:
+            raise ConfigError("final/guide.json is not a renderable guide")
+        guide = normalize_guide(parsed)
+        assets = load_runtime_assets()
+        content = assemble_guide_document(guide, assets=assets, mode="export")
+        export_path = self.export_path(topic_id, "html")
+        if export_path.exists() and not overwrite:
+            raise ConfigError(f"refusing to overwrite existing file: {export_path}")
+        _write_text_atomic(export_path, content)
+        self._append_event(
+            topic_id,
+            stage="export",
+            action="exported",
+            files={
+                "export_file": export_path,
+                "source_file": final_json,
+                "report_file": self.final_report_path(topic_id),
+            },
+            extra={
+                "guide_schema_version": guide.schema_version,
+                "runtime_version": assets.version,
+                "runtime_css_sha256": hashlib.sha256(assets.css.encode("utf-8")).hexdigest(),
+                "runtime_js_sha256": hashlib.sha256(assets.javascript.encode("utf-8")).hexdigest(),
+                "model_stage_provenance": self._model_stage_provenance(topic_id),
+            },
+        )
+        return export_path
+
+    def _model_stage_provenance(self, topic_id: str) -> dict[str, dict[str, str | None]]:
+        """Return the latest non-sensitive provider/model aliases by stage."""
+
+        latest: dict[str, dict[str, str | None]] = {}
+        for event in self.read_manifest(topic_id).get("events", []):
+            stage = event.get("stage")
+            provider = event.get("provider")
+            if (
+                event.get("action") == "job"
+                and stage in SUPPORTED_STAGES
+                and isinstance(provider, str)
+            ):
+                model = event.get("model")
+                latest[stage] = {
+                    "provider": provider,
+                    "model": model if isinstance(model, str) else None,
+                }
+        return {stage: latest[stage] for stage in SUPPORTED_STAGES if stage in latest}
 
     def _read_final_guide(self, topic_id: str) -> str:
         path = self.final_path(topic_id)
@@ -1434,7 +1500,7 @@ class RunStore:
         stage: str,
         action: str,
         files: dict[str, Path],
-        extra: dict[str, str] | None = None,
+        extra: dict[str, object] | None = None,
     ) -> None:
         run = self.run_dir(topic_id)
         manifest = self.read_manifest(topic_id)

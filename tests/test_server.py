@@ -12,6 +12,7 @@ from education_pipeline.providers import Invocation, ProviderResponse, register_
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 FAKE = Path(__file__).parent / "fake_provider.py"
+GUIDE_FIXTURE = Path(__file__).parent / "fixtures" / "guides" / "feedback-loops.guide.json"
 
 
 class FakeRunner:
@@ -301,6 +302,7 @@ def test_stage_content_returns_prompt_and_nulls(server):
         "response": None,
         "approved": None,
         "response_sha256": None,
+        "content_type": "text/markdown",
     }
 
 
@@ -804,3 +806,24 @@ def test_preview_not_blocked_by_active_job(server, monkeypatch):
         if current["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
             break
         time.sleep(0.02)
+
+
+def test_guide_preview_renders_full_sandbox_document(server):
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/guide-preview",
+        body={"text": GUIDE_FIXTURE.read_text(encoding="utf-8"), "include_validation": True},
+    )
+    assert status == 200
+    assert body["html"].startswith("<!doctype html>")
+    assert 'data-guide-mode="preview"' in body["html"]
+    assert body["validation"]["blocking"] == 0
+    assert len(body["content_sha256"]) == 64
+
+
+def test_guide_preview_error_semantics(server):
+    status, body = _req(server, "POST", "/v1/guide-preview", body={"text": "{"})
+    assert status == 400 and body["error"]["code"] == "invalid_guide_json"
+    status, body = _req(server, "POST", "/v1/guide-preview", body={"text": "{}"})
+    assert status == 422 and body["error"]["code"] == "guide_not_renderable"

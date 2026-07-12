@@ -1,5 +1,8 @@
 """Unit tests for the write-action payload builders (no HTTP layer)."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from education_pipeline.config import ConfigError
@@ -7,6 +10,8 @@ from education_pipeline.daemon import write_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
 from education_pipeline.runs import ContentContract, RunStore, SUPPORTED_STAGES
+
+FIXTURE = Path(__file__).parent / "fixtures" / "guides" / "feedback-loops.guide.json"
 
 
 def _workspace(tmp_path, *, create_legacy_run: bool = True):
@@ -191,3 +196,49 @@ def test_attach_unknown_profile_is_404(tmp_path):
 
     with pytest.raises(NotFoundError):
         write_api.attach_profile(ProfileStore(tmp_path), "t", "ghost")
+
+
+def test_guide_status_stage_content_and_validate_payloads(tmp_path):
+    runs, jobs = _workspace(tmp_path, create_legacy_run=False)
+    runs.create_run("t")
+    draft = runs.stage_paths("t", "draft")
+    draft.approved_path.write_bytes(FIXTURE.read_bytes())
+
+    before = write_api.read_api.run_status_payload(runs, "t")
+    assert before["content_contract"] == {"kind": "interactive_guide", "schema_version": "1.0"}
+    assert before["validations"]["draft"]["state"] == "missing"
+    assert write_api.read_api.stage_content(runs, "t", "draft")["content_type"].endswith("version=1.0")
+
+    result = write_api.validate_run(runs, jobs, "t", "draft")
+    assert result["state"] == "current"
+    assert result["report"]["guide_sha256"]
+    assert result["status"]["validations"]["draft"]["state"] == "current"
+
+
+def test_waiver_requires_current_hash_reason_and_waivable_finding(tmp_path):
+    runs, jobs = _workspace(tmp_path, create_legacy_run=False)
+    runs.create_run("t")
+    guide = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("t", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = write_api.validate_run(runs, jobs, "t", "draft")["report"]
+    finding = next(item for item in report["findings"] if item["waivable"])
+
+    with pytest.raises(write_api.ConflictError):
+        write_api.create_waiver(runs, "t", "draft", finding["id"], "0" * 64, "reason")
+    with pytest.raises(ConfigError):
+        write_api.create_waiver(runs, "t", "draft", finding["id"], report["guide_sha256"], "  ")
+    result = write_api.create_waiver(
+        runs, "t", "draft", finding["id"], report["guide_sha256"], "Accepted example"
+    )
+    assert result["waivers"]["waivers"][0]["finding_id"] == finding["id"]
+
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " <b>unsafe</b>"
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = write_api.validate_run(runs, jobs, "t", "draft")["report"]
+    nonwaivable = next(item for item in report["findings"] if not item["waivable"])
+    with pytest.raises(write_api.UnprocessableError):
+        write_api.create_waiver(
+            runs, "t", "draft", nonwaivable["id"], report["guide_sha256"], "reason"
+        )

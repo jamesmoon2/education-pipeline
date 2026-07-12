@@ -1612,14 +1612,22 @@ def test_guide_v1_failure_between_final_writes_never_reports_finalized(
     assert runs.is_finalized(tid)
 
 
-def test_guide_v1_export_refusal(tmp_path: Path) -> None:
+def test_guide_v1_export_uses_canonical_final_and_records_provenance(tmp_path: Path) -> None:
     tid = "systems-thinking"
     runs = _create_guide_run(tmp_path, tid)
     _drive_guide_to_finalize_ready(runs, tid)
     runs.finalize_run(tid)
 
-    with pytest.raises(ConfigError, match="not yet supported"):
-        runs.export_run(tid)
+    exported = runs.export_run(tid)
+    html = exported.read_text(encoding="utf-8")
+    assert html.startswith("<!doctype html>")
+    assert 'data-guide-mode="export"' in html
+    event = runs.read_manifest(tid)["events"][-1]
+    assert event["source_file"] == "final/guide.json"
+    assert event["report_file"] == "reports/final-validation.json"
+    assert event["guide_schema_version"] == "1.0"
+    assert len(event["runtime_css_sha256"]) == 64
+    assert len(event["runtime_js_sha256"]) == 64
 
 
 def test_legacy_run_untouched_by_guide_validation(tmp_path: Path) -> None:
