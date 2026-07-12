@@ -18,7 +18,7 @@ import json
 import tomllib
 from pathlib import Path
 
-from education_pipeline.config import ConfigError
+from education_pipeline.config import ConfigError, emit_model_plan_toml, parse_model_plan
 from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
@@ -289,6 +289,23 @@ def import_profile(profiles: ProfileStore, toml_text: str, *, overwrite: bool = 
         )
     profile = profiles.save_profile_toml(profile_id, toml_text, overwrite=overwrite)
     return {"id": profile.id}
+
+
+def update_global_plan(config, body: dict) -> dict:
+    base_sha256 = body.get("base_sha256")
+    if not isinstance(base_sha256, str):
+        raise ConfigError("body field 'base_sha256' must be a string")
+    if base_sha256 != config.plan_sha256():
+        raise ConflictError(
+            "stale_content", "the model plan changed on disk; reload settings"
+        )
+    catalog, _ = config.load()
+    plan = parse_model_plan(
+        {"provider": body.get("provider"), "stages": body.get("stages", {})},
+        catalog=catalog,
+    )
+    config.write_plan(emit_model_plan_toml(plan))
+    return read_api.plan_payload(catalog, plan, config.plan_sha256())
 
 
 def attach_profile(

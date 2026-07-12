@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+import tempfile
 import threading
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from education_pipeline.config import (
     ConfigError,
     ModelCatalog,
     ModelPlan,
+    emit_model_plan_toml,
     load_model_catalog,
     load_model_plan,
     parse_model_plan,
@@ -63,7 +65,17 @@ class WorkspaceConfigSource:
         return hashlib.sha256(self.plan_path().read_bytes()).hexdigest()
 
     def write_plan(self, toml_text: str) -> None:
-        raise NotImplementedError("workspace plan writes are not implemented yet")
+        target = self.root / "config" / "model-plan.toml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".tmp-", suffix=".toml")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(toml_text)
+            os.replace(tmp, target)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
 
 
 class StaticConfigSource:
@@ -72,18 +84,20 @@ class StaticConfigSource:
     def __init__(self, catalog: ModelCatalog, plan: ModelPlan) -> None:
         self.catalog = catalog
         self.plan = plan
+        self.held_text = emit_model_plan_toml(plan)
 
     def load(self) -> tuple[ModelCatalog, ModelPlan]:
         return self.catalog, self.plan
 
     def plan_sha256(self) -> str:
-        return hashlib.sha256(repr(self.plan).encode("utf-8")).hexdigest()
+        return hashlib.sha256(self.held_text.encode("utf-8")).hexdigest()
 
     def write_plan(self, toml_text: str) -> None:
         import tomllib
 
         data = tomllib.loads(toml_text)
         self.plan = parse_model_plan(data, self.catalog)
+        self.held_text = toml_text
 
 
 def load_workspace_config(root: str | Path) -> tuple[ModelCatalog, ModelPlan]:

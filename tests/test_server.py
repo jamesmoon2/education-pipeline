@@ -926,6 +926,47 @@ def test_config_plan_includes_sha_and_warnings(config_server):
     assert stages["export"]["recommendation"] == "local_only"
 
 
+def test_put_config_plan_with_correct_sha_updates_and_returns_new_sha(config_server):
+    status, payload = _req(config_server, "GET", "/v1/config/plan")
+    assert status == 200
+    base_sha256 = payload["plan_sha256"]
+
+    status, updated = _req(
+        config_server,
+        "PUT",
+        "/v1/config/plan",
+        body={
+            "base_sha256": base_sha256,
+            "provider": "fake",
+            "stages": {"draft": {"model": "strong-m"}},
+        },
+    )
+    assert status == 200
+    assert updated["provider"] == "fake"
+    assert updated["plan_sha256"] != base_sha256
+    stages = {s["stage"]: s for s in updated["stages"]}
+    assert stages["draft"]["model"] == "strong-m"
+
+    status, reread = _req(config_server, "GET", "/v1/config/plan")
+    assert status == 200
+    assert reread["plan_sha256"] == updated["plan_sha256"]
+
+
+def test_put_config_plan_with_stale_sha_returns_409(config_server):
+    status, body = _req(
+        config_server,
+        "PUT",
+        "/v1/config/plan",
+        body={
+            "base_sha256": "stale" * 16,
+            "provider": "fake",
+            "stages": {"draft": {"model": "m"}},
+        },
+    )
+    assert status == 409
+    assert body["error"]["code"] == "stale_content"
+
+
 @pytest.fixture
 def run_plan_server(tmp_path, monkeypatch):
     # Provider/model ids drawn from config/model-catalog.example.toml.

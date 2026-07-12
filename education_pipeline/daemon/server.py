@@ -531,6 +531,11 @@ def _make_handler(context: DaemonContext):
                 return self._error(400, "bad_request", str(exc))
 
         def _api_put_routes(self):
+            if self.path == "/v1/config/plan":
+                return self._send(
+                    200,
+                    write_api.update_global_plan(context.config, self._read_body()),
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/response$", self.path)
             if m:
                 body = self._read_body()

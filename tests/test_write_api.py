@@ -5,13 +5,61 @@ from pathlib import Path
 
 import pytest
 
-from education_pipeline.config import ConfigError
-from education_pipeline.daemon import write_api
+from education_pipeline.config import ConfigError, parse_model_catalog, parse_model_plan
+from education_pipeline.daemon import StaticConfigSource, write_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
 from education_pipeline.runs import ContentContract, RunStore, SUPPORTED_STAGES
 
 FIXTURE = Path(__file__).parent / "fixtures" / "guides" / "feedback-loops.guide.json"
+
+
+def _config_source():
+    catalog = parse_model_catalog(
+        {
+            "providers": [
+                {"id": "manual"},
+                {"id": "fake", "models": [{"id": "m"}]},
+            ]
+        }
+    )
+    plan = parse_model_plan({"provider": "manual", "stages": {}}, catalog)
+    return StaticConfigSource(catalog, plan)
+
+
+def test_update_global_plan_with_correct_sha_updates_plan_and_returns_new_sha():
+    config = _config_source()
+    base_sha256 = config.plan_sha256()
+    result = write_api.update_global_plan(
+        config,
+        {
+            "base_sha256": base_sha256,
+            "provider": "fake",
+            "stages": {"draft": {"model": "m"}},
+        },
+    )
+    assert result["provider"] == "fake"
+    assert result["plan_sha256"] == config.plan_sha256()
+    assert result["plan_sha256"] != base_sha256
+    stages = {s["stage"]: s for s in result["stages"]}
+    assert stages["draft"]["model"] == "m"
+    assert config.plan.provider == "fake"
+
+
+def test_update_global_plan_with_unknown_model_raises_config_error_and_leaves_plan_untouched():
+    config = _config_source()
+    base_sha256 = config.plan_sha256()
+    with pytest.raises(ConfigError):
+        write_api.update_global_plan(
+            config,
+            {
+                "base_sha256": base_sha256,
+                "provider": "fake",
+                "stages": {"draft": {"model": "does-not-exist"}},
+            },
+        )
+    assert config.plan.provider == "manual"
+    assert config.plan_sha256() == base_sha256
 
 
 def _workspace(tmp_path, *, create_legacy_run: bool = True):

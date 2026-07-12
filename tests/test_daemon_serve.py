@@ -61,3 +61,27 @@ def test_workspace_config_source_rereads_after_disk_edit(tmp_path):
     _, plan2 = source.load()
     assert plan2.stage("draft").model == "x"
     assert source.plan_sha256() != ""
+
+
+def test_workspace_config_source_write_plan_creates_config_file_atomically(tmp_path):
+    # No config/ directory at all yet — reads fall back to the packaged example.
+    source = WorkspaceConfigSource(tmp_path)
+    catalog, _ = source.load()
+    from education_pipeline.config import emit_model_plan_toml, parse_model_plan
+
+    new_plan = parse_model_plan({"provider": "manual", "stages": {}}, catalog=catalog)
+    toml_text = emit_model_plan_toml(new_plan)
+
+    source.write_plan(toml_text)
+
+    written_path = tmp_path / "config" / "model-plan.toml"
+    assert written_path.is_file()
+    assert written_path.read_text(encoding="utf-8") == toml_text
+    # No leftover temp files in config/.
+    assert [p.name for p in written_path.parent.iterdir()] == ["model-plan.toml"]
+
+    # A subsequent load() reflects the write, and now reads config/, not the
+    # packaged example.
+    reread_catalog, reread_plan = source.load()
+    assert reread_plan.provider == "manual"
+    assert source.plan_path() == written_path
