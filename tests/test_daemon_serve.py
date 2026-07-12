@@ -14,6 +14,7 @@ from education_pipeline.daemon import lifecycle
 from education_pipeline.daemon import StaticConfigSource, WorkspaceConfigSource
 from education_pipeline.daemon.jobs import JobStore, Worker
 from education_pipeline.daemon.server import DaemonContext
+from education_pipeline.providers import Invocation, ProviderResponse, register_runner
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 
@@ -172,3 +173,127 @@ def test_enqueue_stage_marks_plan_source_default_when_no_override(tmp_path):
     assert job.provider == "default-provider"
     assert job.model == "default-model"
     assert job.metadata["plan_source"] == "default"
+
+
+_FAKE_PROVIDER = Path(__file__).parent / "fake_provider.py"
+
+
+class _SlowFakeRunner:
+    """Provider 'fake': slow, so a queued job behind it leaves an edit window."""
+
+    provider_id = "fake"
+
+    def is_available(self):
+        return True
+
+    def build_invocation(self, model, plan, prompt_path):
+        import sys
+
+        return Invocation(
+            argv=[sys.executable, str(_FAKE_PROVIDER)],
+            env={"FAKE_DELAY": "1", "FAKE_STDOUT": "FROM-FAKE\n"},
+        )
+
+    def parse_response(self, stdout):
+        return ProviderResponse(text=stdout, metadata={})
+
+
+class _SecondFakeRunner(_SlowFakeRunner):
+    provider_id = "fake2"
+
+    def build_invocation(self, model, plan, prompt_path):
+        import sys
+
+        return Invocation(
+            argv=[sys.executable, str(_FAKE_PROVIDER)],
+            env={"FAKE_STDOUT": "FROM-FAKE2\n"},
+        )
+
+
+def _post(port, token, path, body=None):
+    conn = http.client.HTTPConnection("127.0.0.1", port)
+    conn.request(
+        "POST",
+        path,
+        body=json.dumps(body) if body is not None else None,
+        headers={"X-EP-Token": token, "Content-Type": "application/json"},
+    )
+    resp = conn.getresponse()
+    payload = json.loads(resp.read() or b"{}")
+    conn.close()
+    return resp.status, payload
+
+
+def _get(port, token, path):
+    conn = http.client.HTTPConnection("127.0.0.1", port)
+    conn.request("GET", path, headers={"X-EP-Token": token})
+    resp = conn.getresponse()
+    payload = json.loads(resp.read() or b"{}")
+    conn.close()
+    return resp.status, payload
+
+
+def test_worker_reresolves_overrides_edited_while_job_was_queued(tmp_path):
+    """Queued-then-edited: overrides written after enqueue still govern execution.
+
+    A slow job holds the single worker; a draft job enqueued behind it freezes
+    plan-A values on its record; the run's overrides are then edited to pin
+    draft to a different provider. When the worker finally executes the draft
+    job it must re-resolve and spawn the override provider, not the frozen one.
+    """
+
+    register_runner(_SlowFakeRunner())
+    register_runner(_SecondFakeRunner())
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "model-catalog.toml").write_text(
+        '[[providers]]\nid = "fake"\n[[providers.models]]\nid = "m"\n'
+        '[[providers]]\nid = "fake2"\n[[providers.models]]\nid = "m2"\n',
+        encoding="utf-8",
+    )
+    (cfg / "model-plan.toml").write_text(
+        'provider = "fake"\n'
+        '[stages.outline]\nmodel = "m"\n'
+        '[stages.draft]\nmodel = "m"\n',
+        encoding="utf-8",
+    )
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    for stage in ("outline", "draft"):
+        prompt = runs.stage_paths("t", stage).prompt_path
+        prompt.parent.mkdir(parents=True, exist_ok=True)
+        prompt.write_text("PROMPT", encoding="utf-8")
+
+    ready = threading.Event()
+    thread = threading.Thread(target=serve, args=(tmp_path,), kwargs={"ready": ready}, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=10)
+    record = lifecycle.read_discovery(tmp_path)
+    assert record is not None
+    port, token = record["port"], record["token"]
+    try:
+        # A slow outline job occupies the single worker for ~1s.
+        status, _ = _post(port, token, "/v1/jobs", {"topic_id": "t", "stage": "outline"})
+        assert status == 200
+        # The draft job queues behind it, its record frozen with fake/m.
+        status, draft_job = _post(port, token, "/v1/jobs", {"topic_id": "t", "stage": "draft"})
+        assert status == 200
+        assert draft_job["provider"] == "fake"
+        # While the draft job sits queued, the run's overrides are edited.
+        runs.write_plan_overrides(
+            "t", {"stages": {"draft": {"provider": "fake2", "model": "m2"}}}
+        )
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            status, job = _get(port, token, f"/v1/jobs/{draft_job['id']}")
+            if job["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
+                break
+            time.sleep(0.05)
+        assert job["status"] == "succeeded"
+        # Execution used the edited overrides (plan B), not the frozen record.
+        assert (
+            runs.response_path("t", "draft").read_text(encoding="utf-8") == "FROM-FAKE2\n"
+        )
+    finally:
+        _post(port, token, "/v1/shutdown")
+        thread.join(timeout=10)

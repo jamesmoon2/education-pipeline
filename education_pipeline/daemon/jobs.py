@@ -260,16 +260,27 @@ class JobRunner:
         job.started_at = _utcnow().isoformat()
         self.store.save(job)
         try:
+            # Re-stamp the job with the *effective* stage plan carried by this
+            # runner (the daemon re-resolves global plan + run overrides when
+            # the worker picks the job up). The enqueue-time fields are only a
+            # snapshot for display; overrides edited while the job sat queued
+            # must govern what actually executes — and the record/manifest
+            # must reflect what really ran.
+            stage_plan = self.plan.stage(job.stage)
+            job.provider = stage_plan.provider or self.plan.provider
+            job.model = stage_plan.model
+            job.effort = stage_plan.effort
+            self.store.save(job)
+
             runner = get_runner(job.provider)
             if not runner.is_available():
                 return self._fail(job, f"provider {job.provider!r} is not available on PATH")
 
             model = self._resolve_model(job)
-            plan = self.plan.stage(job.stage)
             prompt_path = self.runs.stage_paths(job.topic_id, job.stage).prompt_path
             if not prompt_path.exists():
                 return self._fail(job, f"prompt not written for stage {job.stage!r}")
-            invocation = runner.build_invocation(model, plan, prompt_path)
+            invocation = runner.build_invocation(model, stage_plan, prompt_path)
             stdout, stdout_truncated, exit_code, timed_out, canceled = self._spawn(
                 job, invocation, prompt_path, cancel
             )
