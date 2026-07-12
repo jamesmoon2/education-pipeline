@@ -240,11 +240,19 @@ class RunStore:
 
         path = self.plan_overrides_path(topic_id)
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ConfigError(f"invalid model-plan overrides file: {path}") from exc
+        if not isinstance(data, dict):
+            raise ConfigError(f"invalid model-plan overrides file: {path} (must be a JSON object)")
+        stages = data.get("stages", {})
+        if stages is not None and not isinstance(stages, dict):
+            raise ConfigError(
+                f"invalid model-plan overrides file: {path} ('stages' must be a JSON object)"
+            )
+        return data
 
     def write_plan_overrides(self, topic_id: str, overrides: dict) -> None:
         """Atomically persist sparse per-run model-plan overrides."""

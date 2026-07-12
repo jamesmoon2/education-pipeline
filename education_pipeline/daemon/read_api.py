@@ -338,5 +338,10 @@ def run_plan_payload(
                 f"stored override is invalid: {errors[stage_name]} "
                 "-- reset this stage to clear it."
             )
-        stage_entry["command"] = _stage_command(catalog, stage_plan, runs, topic_id)
+        if stage_entry.get("override_error"):
+            # The command preview would be computed from the fallback plan,
+            # which looks runnable but isn't -- enqueue of this stage 400s.
+            stage_entry["command"] = None
+        else:
+            stage_entry["command"] = _stage_command(catalog, stage_plan, runs, topic_id)
     return payload

@@ -1299,6 +1299,26 @@ def test_put_run_plan_missing_overrides_field_is_400(run_plan_server):
     assert body["error"]["code"] == "bad_request"
 
 
+def test_get_run_plan_with_json_array_overrides_file_is_400_not_500(run_plan_server, tmp_path):
+    RunStore(tmp_path).plan_overrides_path("t").write_text("[]", encoding="utf-8")
+
+    status, body = _req(run_plan_server, "GET", "/v1/runs/t/plan")
+
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
+def test_get_run_plan_with_non_mapping_stages_overrides_file_is_400(run_plan_server, tmp_path):
+    RunStore(tmp_path).plan_overrides_path("t").write_text(
+        '{"stages": []}', encoding="utf-8"
+    )
+
+    status, body = _req(run_plan_server, "GET", "/v1/runs/t/plan")
+
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
 def test_get_run_plan_degrades_stage_when_stored_override_invalidated_by_catalog_change(
     tmp_path, monkeypatch
 ):
@@ -1386,6 +1406,10 @@ def test_get_run_plan_degrades_stage_when_stored_override_invalidated_by_catalog
         # Effective values fall back to what would ACTUALLY run (the
         # override is refused), not to the invalid override itself.
         assert stages["draft"]["model"] == "balanced"
+        # A broken stage's command preview must not look runnable -- enqueue
+        # of this stage 400s below, so the UI shouldn't show a command as if
+        # it would actually execute.
+        assert stages["draft"]["command"] is None
         # Other stages are unaffected.
         assert stages["qa"]["source"] == "default"
         assert "override_error" not in stages["qa"]

@@ -1840,6 +1840,24 @@ def test_read_plan_overrides_rejects_malformed_json(tmp_path: Path) -> None:
         runs.read_plan_overrides("systems-thinking")
 
 
+def test_read_plan_overrides_rejects_json_array_top_level(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+    path = runs.plan_overrides_path("systems-thinking")
+    path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="model-plan overrides"):
+        runs.read_plan_overrides("systems-thinking")
+
+
+def test_read_plan_overrides_rejects_non_mapping_stages(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+    path = runs.plan_overrides_path("systems-thinking")
+    path.write_text('{"stages": []}', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="model-plan overrides"):
+        runs.read_plan_overrides("systems-thinking")
+
+
 def test_write_plan_overrides_empty_dict_writes_empty_overrides(tmp_path: Path) -> None:
     runs = _create_legacy_run(tmp_path)
 
