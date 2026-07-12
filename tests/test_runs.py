@@ -362,7 +362,7 @@ def test_manifest_events_record_current_artifact_hashes(tmp_path: Path) -> None:
     assert "response_file_sha256" not in event
 
 
-def test_manifest_write_is_atomic_no_partial_file(tmp_path: Path, monkeypatch) -> None:
+def test_manifest_write_goes_through_atomic_writer(tmp_path: Path, monkeypatch) -> None:
     """_write_manifest must go through the temp-file + os.replace path."""
     from education_pipeline import runs as runs_mod
 
@@ -397,6 +397,60 @@ def test_concurrent_manifest_events_are_all_recorded(tmp_path: Path) -> None:
     assert sorted(actions) == sorted(f"evt-{n}" for n in range(50))
     # File must still be valid JSON (no torn write)
     json.loads(store.manifest_path("locked-topic").read_text(encoding="utf-8"))
+
+
+def test_concurrent_mixed_manifest_writers_all_recorded(tmp_path: Path) -> None:
+    """Mirrors the daemon worker path (jobs.py): concurrent threads drive both
+    ``_append_event`` (via ``ingest_response(force=True)``, as ``ingest_response``
+    does on a re-ingest) and ``record_stage_provenance`` against the same
+    topic's manifest. Every provenance entry and every event must survive, and
+    the manifest must remain valid JSON. This is expected to fail if either
+    the ``_append_event`` lock or the ``record_stage_provenance`` lock is
+    removed, since both do an unlocked read-modify-write of the same file
+    against a shared list of pre-existing entries.
+    """
+    store = _create_legacy_run(tmp_path, "mixed-writers-topic")
+    store.write_spec_prompt("mixed-writers-topic", title="Mixed Writers")
+    store.ingest_response("mixed-writers-topic", "spec", "initial response")
+
+    event_count = 40
+    provenance_count = 40
+
+    def append_event(n: int) -> None:
+        store.ingest_response(
+            "mixed-writers-topic", "spec", f"replacement response {n}", force=True
+        )
+
+    def append_provenance(n: int) -> None:
+        store.record_stage_provenance(
+            "mixed-writers-topic",
+            "spec",
+            provider="claude-code",
+            model="claude-x",
+            effort=f"effort-{n}",
+            source="provider",
+            job_id=f"job-{n}",
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+        futures = [pool.submit(append_event, n) for n in range(event_count)]
+        futures += [pool.submit(append_provenance, n) for n in range(provenance_count)]
+        for future in futures:
+            future.result()
+
+    manifest = store.read_manifest("mixed-writers-topic")
+
+    replaced_events = [e for e in manifest["events"] if e.get("action") == "response_replaced"]
+    assert len(replaced_events) == event_count
+
+    provenance_entries = manifest["stage_provenance"]
+    assert len(provenance_entries) == provenance_count
+    assert sorted(e["effort"] for e in provenance_entries) == sorted(
+        f"effort-{n}" for n in range(provenance_count)
+    )
+
+    # File must still be valid JSON (no torn write from either writer path)
+    json.loads(store.manifest_path("mixed-writers-topic").read_text(encoding="utf-8"))
 
 
 def test_write_spec_prompt_writes_prompt_and_response_stub(tmp_path: Path) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import ClassVar
 import hashlib
 import json
 import re
@@ -187,6 +188,12 @@ class RunStore:
     """Create run directories and write stage prompt/response artifacts."""
 
     root: Path
+    # Per-instance runtime state, not dataclass fields: assigned in __init__ via
+    # object.__setattr__ because the dataclass is frozen. Annotated as ClassVar
+    # so the dataclass machinery does not treat them as fields (which would
+    # pull them into __init__/__repr__/__eq__ and require defaults).
+    _manifest_locks: ClassVar[dict[str, threading.Lock]]
+    _manifest_locks_guard: ClassVar[threading.Lock]
 
     def __init__(self, root: str | Path) -> None:
         object.__setattr__(self, "root", Path(root))
@@ -196,13 +203,21 @@ class RunStore:
     def _manifest_lock(self, topic_id: str) -> threading.Lock:
         """Return the per-topic lock guarding manifest read-modify-write cycles.
 
-        Serialization is in-process only (protects concurrent daemon threads
-        writing the same run's manifest). Cross-process CLI concurrency is out
-        of scope here.
+        Serialization is scoped to this ``RunStore`` instance only: it
+        protects concurrent threads (e.g. daemon workers) sharing one
+        ``RunStore`` over the same workspace from racing on the same run's
+        manifest. Two ``RunStore`` instances over the same workspace share no
+        locks, and cross-process concurrency (e.g. concurrent CLI invocations)
+        is out of scope here. Callers must share a single ``RunStore`` per
+        workspace to get this guarantee.
         """
 
         with self._manifest_locks_guard:
-            return self._manifest_locks.setdefault(topic_id, threading.Lock())
+            existing = self._manifest_locks.get(topic_id)
+            if existing is None:
+                existing = threading.Lock()
+                self._manifest_locks[topic_id] = existing
+            return existing
 
     @property
     def runs_dir(self) -> Path:
@@ -1577,10 +1592,10 @@ class RunStore:
         files: dict[str, Path],
         extra: dict[str, object] | None = None,
     ) -> None:
-        run = self.run_dir(topic_id)
         safe_id = _artifact_id(topic_id, "topic id")
+        run = self.run_dir(safe_id)
         with self._manifest_lock(safe_id):
-            manifest = self.read_manifest(topic_id)
+            manifest = self.read_manifest(safe_id)
             event: dict[str, str] = {"stage": stage, "action": action}
             for label, path in files.items():
                 event[label] = _relative_to(path, run)
