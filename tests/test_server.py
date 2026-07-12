@@ -332,13 +332,15 @@ def test_manifest_endpoint(server):
     assert isinstance(body["events"], list)
 
 
-def _raw_get(port, path, host=None):
+def _raw_get(port, path, host=None, token=None):
     conn = http.client.HTTPConnection("127.0.0.1", port)
-    if host is None:
+    if host is None and token is None:
         conn.request("GET", path)
     else:
         conn.putrequest("GET", path, skip_host=True)
-        conn.putheader("Host", host)
+        conn.putheader("Host", host if host is not None else "127.0.0.1")
+        if token is not None:
+            conn.putheader("X-EP-Token", token)
         conn.endheaders()
     resp = conn.getresponse()
     body = resp.read()
@@ -376,6 +378,29 @@ def test_static_traversal_rejected(ui_server):
 def test_static_still_checks_host(ui_server):
     status, _, _ = _raw_get(ui_server, "/", host="evil.example.com")
     assert status == 400
+
+
+def test_cockpit_html_carries_csp_header(ui_server):
+    status, _, headers = _raw_get(ui_server, "/")
+    assert status == 200
+    csp = headers.get("Content-Security-Policy", "")
+    assert "default-src 'self'" in csp
+    assert "object-src 'none'" in csp
+
+
+def test_asset_response_has_no_csp_header(ui_server):
+    status, _, headers = _raw_get(ui_server, "/assets/app-abc.js")
+    assert status == 200
+    assert "Content-Security-Policy" not in headers
+
+
+def test_json_api_response_has_no_csp_header(server):
+    status, body = _req(server, "GET", "/v1/health")
+    assert status == 200
+    # confirm via the raw header-capturing helper too
+    status, _, headers = _raw_get(server, "/v1/health", token="secret-token")
+    assert status == 200
+    assert "Content-Security-Policy" not in headers
 
 
 def test_no_dist_returns_503(server):

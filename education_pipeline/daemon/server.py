@@ -193,6 +193,14 @@ def _make_handler(context: DaemonContext):
             self.send_header("Content-Type", static.content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", static.cache_control)
+            if static.content_type.startswith("text/html"):
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                    "connect-src 'self'; frame-src 'self'; object-src 'none'; "
+                    "base-uri 'none'; form-action 'none'",
+                )
             self.end_headers()
             self.wfile.write(body)
 
