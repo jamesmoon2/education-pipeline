@@ -297,6 +297,15 @@ def _make_handler(context: DaemonContext):
                 return self._send_file(
                     path, "text/markdown; charset=utf-8", f"{topic_id}-guide.bundle.md"
                 )
+            m = re.match(r"^/v1/runs/([^/?]+)/plan$", self.path)
+            if m:
+                catalog, plan = context.config.load()
+                return self._send(
+                    200,
+                    read_api.run_plan_payload(
+                        catalog, plan, context.config.plan_sha256(), context.runs, m.group(1)
+                    ),
+                )
             m = re.match(r"^/v1/runs/([^/?]+)$", self.path)
             if m:
                 return self._send(

@@ -11,9 +11,16 @@ import hashlib
 import json
 from pathlib import Path
 
-from education_pipeline.config import STAGE_ORDER, ConfigError, ModelCatalog, ModelPlan, weak_stage_warning
+from education_pipeline.config import (
+    STAGE_ORDER,
+    ConfigError,
+    ModelCatalog,
+    ModelOption,
+    ModelPlan,
+    weak_stage_warning,
+)
 from education_pipeline.providers import get_runner
-from education_pipeline.runs import RunStore
+from education_pipeline.runs import SUPPORTED_STAGES, RunStore
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 
@@ -275,3 +282,48 @@ def plan_payload(catalog: ModelCatalog, plan: ModelPlan, plan_sha256: str) -> di
         "plan_sha256": plan_sha256,
         "stages": stages,
     }
+
+
+def _stage_command(
+    catalog: ModelCatalog, stage_plan, runs: RunStore, topic_id: str
+) -> list[str] | None:
+    """The argv the daemon would spawn for this stage, or None if unresolvable.
+
+    Unresolvable covers: manual/unset provider, a stage the run engine doesn't
+    drive through a model, an unregistered provider, a non-executable runner,
+    and an unknown model id — none of these are errors, they just mean there's
+    nothing to preview yet.
+    """
+
+    provider_id = stage_plan.provider
+    if provider_id in (None, "manual") or stage_plan.stage not in SUPPORTED_STAGES:
+        return None
+    try:
+        runner = get_runner(provider_id)
+        if not runner.executable:
+            return None
+        provider = catalog.require_provider(provider_id)
+        if stage_plan.model is not None:
+            model = provider.models.get(stage_plan.model)
+            if model is None:
+                return None
+        else:
+            model = ModelOption(id="", label="")
+        prompt_path = runs.stage_paths(topic_id, stage_plan.stage).prompt_path
+        return list(runner.build_invocation(model, stage_plan, prompt_path).argv)
+    except ConfigError:
+        return None
+
+
+def run_plan_payload(
+    catalog: ModelCatalog, plan: ModelPlan, plan_sha256: str, runs: RunStore, topic_id: str
+) -> dict:
+    """The effective plan for one run, plus per-stage source + command preview."""
+
+    require_run(runs, topic_id)
+    payload = plan_payload(catalog, plan, plan_sha256)
+    for stage_entry in payload["stages"]:
+        stage_plan = plan.stage(stage_entry["stage"])
+        stage_entry["source"] = "default"  # Wave 3 adds "override"
+        stage_entry["command"] = _stage_command(catalog, stage_plan, runs, topic_id)
+    return payload

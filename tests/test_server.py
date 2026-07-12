@@ -924,3 +924,61 @@ def test_config_plan_includes_sha_and_warnings(config_server):
     assert isinstance(stages["outline"]["warning"], str) and stages["outline"]["warning"]
     assert stages["finalize"]["recommendation"] == "local_only"
     assert stages["export"]["recommendation"] == "local_only"
+
+
+@pytest.fixture
+def run_plan_server(tmp_path, monkeypatch):
+    # Provider/model ids drawn from config/model-catalog.example.toml.
+    catalog = parse_model_catalog(
+        {
+            "providers": [
+                {"id": "manual", "models": [{"id": "prompt-only"}]},
+                {
+                    "id": "claude-code",
+                    "models": [
+                        {"id": "balanced", "argv_model": "claude-sonnet-5"},
+                    ],
+                },
+            ]
+        }
+    )
+    plan = parse_model_plan(
+        {
+            "provider": "claude-code",
+            "stages": {
+                "draft": {"model": "balanced"},
+                "qa": {"provider": "manual", "model": "prompt-only"},
+            },
+        },
+        catalog,
+    )
+    srv, worker = _start_server(tmp_path, monkeypatch, catalog=catalog, plan=plan)
+    yield srv.server_port
+    worker.stop()
+    srv.shutdown()
+
+
+def test_run_plan_includes_source_and_command_preview(run_plan_server):
+    status, payload = _req(run_plan_server, "GET", "/v1/runs/t/plan")
+    assert status == 200
+    assert len(payload["plan_sha256"]) == 64
+    stages = {s["stage"]: s for s in payload["stages"]}
+    assert set(stages) == set(STAGE_ORDER)
+    assert all(s["source"] == "default" for s in stages.values())
+
+    draft_command = stages["draft"]["command"]
+    assert draft_command is not None
+    assert draft_command[0] == "claude"
+    assert "--model" in draft_command
+    assert "claude-sonnet-5" in draft_command
+
+    # manual provider -> no invocable command
+    assert stages["qa"]["command"] is None
+    # not a model-driven stage -> no invocable command regardless of provider
+    assert stages["finalize"]["command"] is None
+
+
+def test_run_plan_404_for_unknown_topic(run_plan_server):
+    status, body = _req(run_plan_server, "GET", "/v1/runs/nope/plan")
+    assert status == 404
+    assert body["error"]["code"] == "not_found"
