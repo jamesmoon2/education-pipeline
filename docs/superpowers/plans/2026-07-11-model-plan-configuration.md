@@ -62,6 +62,7 @@ This plan is executed **one wave per manager session**. Context is cleared betwe
 | 0 | 2026-07-11 | 7b91f41 | 411 | 79 | 38 | Gate ran at code commit 7b91f41; this docs-only plan-record commit sits on top (HEAD after Wave 0). Delta is docs-only, so trust these counts without re-running. +7 pytest (0.1:3, 0.2:1, 0.3:3). DEVIATION (owner FYI): Task 0.1's brief sample fallback `label (href)` and its interface prose conflict with the brief's own test forbidding the `javascript:` substring; resolved by rendering `label` only for unsafe links (safer; honors the written test). Reviewer confirmed it's the only resolution satisfying the test. Pre-existing daemon-test stderr noise (`ConnectionResetError`) is unrelated to Wave 0 and harmless. Wave 1 must add read-only `/v1` config endpoints only — no write path. |
 | 1 | 2026-07-11 | dc72ee8 | 419 | 79 | 38 | Gate ran at code commit dc72ee8; this docs-only plan-record commit sits on top. +8 pytest (1.1:2, 1.2:1, 1.3:3, 1.4:2). All four tasks landed as specified; read-only constraint held (`write_plan` raises NotImplementedError; no PUT routes). Final wave review: ready to merge, zero Critical/Important. MUST-KNOW for Wave 2 (Task 2.2): the plan GET routes call `config.load()` then `config.plan_sha256()` as two separate disk reads — a TOCTOU window; once the SHA seeds the PUT guard this can pass the guard on a stale view. Fix by deriving parse+hash from one read of the plan bytes (e.g. `load_with_sha()`). Also: `StaticConfigSource.plan_sha256()` is an interim `repr()`-hash — Task 2.2 replaces it with sha of emitted TOML per the self-review notes. `ConfigSource` Protocol lives in `server.py` (circular-import constraint); if Wave 2 grows it, consider a `daemon/config_source.py`. |
 | 2 | 2026-07-12 | 1061467 | 427 | 99 | 38 | Gate ran at code commit 1061467; this docs-only plan-record commit sits on top. +8 pytest (2.1:2, 2.2:5, +1 fix HTTP test), +20 vitest (2.3:5, 2.4:8 PlanStageRow + 5 SettingsPage + 2 fix-regression). Global plan is now writable (SHA-guarded full-replace PUT) with Settings UI. Whole-wave review (Opus): READY TO MERGE, zero Critical/Important. One CRITICAL was found+fixed mid-wave in Task 2.4: SettingsPage seeded overrides off `stage.source`, but the global `/v1/config/plan` payload has NO `source` field (that's per-run only) → seed was always `{}` → full-replace Save silently wiped persisted overrides on untouched stages. Fixed: Settings now seeds every non-local stage and Save transmits the COMPLETE plan (regression test guards it). SHA-TOCTOU carry-forward assessed: real but benign for the loopback single-user daemon (guard is advisory, not CAS; only a millisecond-aligned concurrent hand-edit triggers a lost update). DEVIATION (owner FYI): Task 2.4 replaced the brief's Step-1(d) test ("Save sends only edited stages") — that instruction is a data-loss bug against the spec §2 full-replace PUT, which governs. MINORS deferred to Wave 5 final-review triage: (a) PlanStageRow renders a DUPLICATE `manual` provider option (catalog already defines `manual` + component appends one unconditionally) — cosmetic, in the SHARED component Waves 3–4 reuse as-is, so it won't self-fix; fix = append fallback only when catalog lacks `manual`; (b) custom per-stage `recommendation` hand-edits not round-tripped through Settings Save (StageOverride excludes recommendation; no recommendation UI in Wave 2) — accepted; cockpit-only users never have a custom value to lose; (c) non-dict JSON body to PUT /v1/config/plan → 500 not 400 (matches existing PUT-builder pattern, not a regression); (d) emitter doesn't escape U+007F/DEL (unreachable for ids-only schema). |
+| 3 | 2026-07-12 | dd7ec0c | 457 | 105 | 38 | Gate ran at code commit dd7ec0c; this docs-only plan-record commit sits on top. +30 pytest, +6 vitest. All five tasks landed; 3.2→3.3 ordering held (plan_source set in enqueue_stage, re-stamped in `_runner_for`, read by provenance). One CRITICAL found+fixed in task review of 3.2: execution-time re-resolution was behaviorally inert (JobRunner.execute read frozen Job fields; provider adapters ignore the stage-plan arg) — fixed by re-stamping job provider/model/effort from the re-resolved plan at execution start, proven by a queued-then-edited live-daemon integration test. Whole-wave review (Fable): READY TO RECORD, zero Critical. **MUST-FIX recorded for Wave 5 (Important, Wave-2×3 interaction): editing global defaults can invalidate existing run overrides → `GET /v1/runs/{t}/plan` 400s → RunPlanPanel renders only the load error with no in-UI recovery (clearing works only via API `PUT {"stage": null}`); enqueue also 400s. Fix shape: degrade `run_plan_payload` per-stage or add a clear-overrides affordance on load error.** Also Wave 5 triage: overrides file holding a JSON array → AttributeError/500 not 400 (add shape check); PUT run-plan replaces a stage's override wholesale, not key-merge (document before Wave 4 reuse); next-stage line can name finalize/export; manual next-stage line doubles the word "manual"; provenance adds a second writer class (HTTP ingest thread vs worker) to the non-atomic `_write_manifest` (pre-existing; fix with milestone). Wave 4 note: RunPlanPanel takes `topicId` + `nextStage` props from RunBoardPage — embed the same way from the wizard; fresh runs have no overrides so the must-fix does not affect Wave 4. |
 
 ---
 
@@ -670,8 +671,8 @@ def apply_overrides(plan: ModelPlan, overrides: Mapping[str, Any], catalog: Mode
     every existing validation rule applies to the merged result."""
 ```
 
-- [ ] **Step 1: Failing tests** — overlay changes only the overridden stage; unknown stage/model in overrides raises `ConfigError`; `read_plan_overrides` returns `{}` for a fresh run and survives a daemon-restart round-trip (write → new RunStore → read).
-- [ ] **Step 2: Implement, verify, commit** — `git commit -m "feat(runs): sparse per-run model-plan overrides with validated overlay"`
+- [x] **Step 1: Failing tests** — overlay changes only the overridden stage; unknown stage/model in overrides raises `ConfigError`; `read_plan_overrides` returns `{}` for a fresh run and survives a daemon-restart round-trip (write → new RunStore → read).
+- [x] **Step 2: Implement, verify, commit** — `git commit -m "feat(runs): sparse per-run model-plan overrides with validated overlay"`
 
 ### Task 3.2: Resolve fresh at enqueue + execution
 
@@ -683,8 +684,8 @@ def apply_overrides(plan: ModelPlan, overrides: Mapping[str, Any], catalog: Mode
 - Consumes: `apply_overrides`, `read_plan_overrides` from Task 3.1.
 - Produces: `enqueue_stage` and the worker's `_runner_for(job)` both compute `plan = apply_overrides(loaded_plan, runs.read_plan_overrides(topic_id), catalog)` before use. Job records therefore carry the *effective* provider/model/effort at creation, and the runner re-resolves at execution (covers queued-then-edited windows).
 
-- [ ] **Step 1: Failing test** — write overrides pinning `draft` to a different provider, call `enqueue_stage`, assert the created Job's provider/model/effort match the override, not the global plan.
-- [ ] **Step 2: Implement, verify, commit** — `git commit -m "feat(daemon): resolve effective plan (global + run overrides) at enqueue and execution"`
+- [x] **Step 1: Failing test** — write overrides pinning `draft` to a different provider, call `enqueue_stage`, assert the created Job's provider/model/effort match the override, not the global plan.
+- [x] **Step 2: Implement, verify, commit** — `git commit -m "feat(daemon): resolve effective plan (global + run overrides) at enqueue and execution"`
 
 ### Task 3.3: Stage provenance
 
@@ -708,8 +709,8 @@ def record_stage_provenance(self, topic_id: str, stage: str, *, provider: str,
 - Call sites: `JobRunner.execute` success path (right beside the existing `append_manifest_event` call) with `source` = `"override"` if the job's stage was overridden else `"default"` — thread that through job.metadata: set `job.metadata["plan_source"]` in `enqueue_stage` (Task 3.2 knows which stages were overridden); `write_api.ingest_response` records `provider="manual", model=None, effort=None, source="manual"` after a successful ingest.
 - `read_api.run_status_payload` gains `"stage_provenance": manifest.get("stage_provenance", [])`.
 
-- [ ] **Step 1: Failing tests** — (a) `record_stage_provenance` appends and preserves prior entries; (b) a successful `JobRunner.execute` (reuse `tests/fake_provider.py` fixtures already used by `test_job_runner.py`) leaves a provenance entry with the job's id; (c) POST response ingest records a `manual` entry; (d) run status payload surfaces the list and omits nothing on legacy manifests.
-- [ ] **Step 2: Implement, verify, commit** — `git commit -m "feat(runs): record effective provider/model/effort as stage provenance"`
+- [x] **Step 1: Failing tests** — (a) `record_stage_provenance` appends and preserves prior entries; (b) a successful `JobRunner.execute` (reuse `tests/fake_provider.py` fixtures already used by `test_job_runner.py`) leaves a provenance entry with the job's id; (c) POST response ingest records a `manual` entry; (d) run status payload surfaces the list and omits nothing on legacy manifests.
+- [x] **Step 2: Implement, verify, commit** — `git commit -m "feat(runs): record effective provider/model/effort as stage provenance"`
 
 ### Task 3.4: `PUT /v1/runs/{topic}/plan` + `source` in the run-plan payload
 
@@ -731,8 +732,8 @@ def update_run_plan(runs: RunStore, config, topic_id: str, body: dict) -> dict
 - Route: `PUT ^/v1/runs/([^/?]+)/plan$` in `_api_put_routes`.
 - `run_plan_payload` change: load overrides, `effective = apply_overrides(plan, overrides, catalog)`, per-stage `source = "override"` when the stage appears in overrides else `"default"`; warnings and command computed from the *effective* stage plan.
 
-- [ ] **Step 1: Failing tests** — set an override → GET shows `source: "override"` + changed command; clear with `null` → back to `default`; invalid model in the body → 400 and stored overrides unchanged.
-- [ ] **Step 2: Implement, verify, commit** — `git commit -m "feat(daemon): per-run plan override endpoint"`
+- [x] **Step 1: Failing tests** — set an override → GET shows `source: "override"` + changed command; clear with `null` → back to `default`; invalid model in the body → 400 and stored overrides unchanged.
+- [x] **Step 2: Implement, verify, commit** — `git commit -m "feat(daemon): per-run plan override endpoint"`
 
 ### Task 3.5: Run plan editor + pre-run preview + provenance display
 
@@ -755,12 +756,12 @@ export interface StageProvenance { stage: string; provider: string; model: strin
 - `RunPlanPanel` (collapsible section on `RunBoardPage`, near the existing JobsPanel): fetches `getRunPlan` + `getConfigCatalog` + `getConfigProviders`; renders `PlanStageRow` per model-powered stage with `source === "override"` rows visually tagged ("overridden"); edits call `putRunPlan` immediately per row change (no batch-save — run overrides are low-stakes and per-stage); shows the **next stage's** effective line prominently: `Next: draft — codex / gpt-5.4 / high` plus the `command` argv rendered in a `<code>` block when non-null ("runs locally as: …"), and "manual — you run the prompt yourself" when provider is manual.
 - Provenance display: `RunBoardPage` reads `stage_provenance` from the run status payload it already fetches and renders, on each completed stage's card/row, the latest entry for that stage: `ran on {provider}{model ? ` / ${model}` : ""}{effort ? ` / ${effort}` : ""} ({source})`.
 
-- [ ] **Step 1: Failing tests** — (a) panel renders rows from `getRunPlan` and tags overridden rows; (b) changing a row's model fires `putRunPlan` with `{stage: {…}}`; (c) "Use recommended" fires `putRunPlan` with `{stage: null}`; (d) next-stage command preview renders the argv; (e) RunBoardPage shows a provenance line for a stage present in `stage_provenance`.
-- [ ] **Step 2: Implement.** **Step 3:** `npm test -- --run` + `npm run build` green; commit `feat(web): per-run plan editor with command preview and provenance display`.
+- [x] **Step 1: Failing tests** — (a) panel renders rows from `getRunPlan` and tags overridden rows; (b) changing a row's model fires `putRunPlan` with `{stage: {…}}`; (c) "Use recommended" fires `putRunPlan` with `{stage: null}`; (d) next-stage command preview renders the argv; (e) RunBoardPage shows a provenance line for a stage present in `stage_provenance`.
+- [x] **Step 2: Implement.** **Step 3:** `npm test -- --run` + `npm run build` green; commit `feat(web): per-run plan editor with command preview and provenance display`.
 
 ### Wave 3 exit gate
 
-- [ ] Full gate; Wave Log; commit plan file.
+- [x] Full gate; Wave Log; commit plan file. **Done: pytest 457, vitest 105, build clean, e2e 38.**
 
 **Handoff → Wave 4** (return this to the owner verbatim as your final message):
 
