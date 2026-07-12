@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from education_pipeline import ContentContract, RunStore, parse_model_catalog, parse_model_plan
+from education_pipeline import (
+    STAGE_ORDER,
+    ContentContract,
+    RunStore,
+    parse_model_catalog,
+    parse_model_plan,
+)
 from education_pipeline.daemon import StaticConfigSource
 from education_pipeline.daemon.jobs import JobRunner, JobStore, Worker
 from education_pipeline.daemon.server import DaemonContext, build_server
@@ -30,7 +36,7 @@ class FakeRunner:
         return ProviderResponse(text=stdout, metadata={})
 
 
-def _start_server(tmp_path, monkeypatch, web_dist=None):
+def _start_server(tmp_path, monkeypatch, web_dist=None, catalog=None, plan=None):
     monkeypatch.setenv("FAKE_STDOUT", "GENERATED\n")
     register_runner(FakeRunner())
     runs = RunStore(tmp_path)
@@ -50,8 +56,10 @@ def _start_server(tmp_path, monkeypatch, web_dist=None):
         'schema_version = 1\nid = "p"\ntarget_learner = "team cohort"\n',
         encoding="utf-8",
     )
-    catalog = parse_model_catalog({"providers": [{"id": "fake", "models": [{"id": "m"}]}]})
-    plan = parse_model_plan({"provider": "fake", "stages": {"draft": {"model": "m"}}}, catalog)
+    if catalog is None:
+        catalog = parse_model_catalog({"providers": [{"id": "fake", "models": [{"id": "m"}]}]})
+    if plan is None:
+        plan = parse_model_plan({"provider": "fake", "stages": {"draft": {"model": "m"}}}, catalog)
     store = JobStore(tmp_path)
     worker = Worker(store, lambda job: JobRunner(store, runs, catalog, plan, timeout=30))
     context = DaemonContext(
@@ -78,6 +86,39 @@ def _start_server(tmp_path, monkeypatch, web_dist=None):
 @pytest.fixture
 def server(tmp_path, monkeypatch):
     srv, worker = _start_server(tmp_path, monkeypatch)
+    yield srv.server_port
+    worker.stop()
+    srv.shutdown()
+
+
+@pytest.fixture
+def config_server(tmp_path, monkeypatch):
+    catalog = parse_model_catalog(
+        {
+            "providers": [
+                {"id": "manual"},
+                {
+                    "id": "fake",
+                    "models": [
+                        {"id": "m", "quality": "fast"},
+                        {"id": "strong-m", "quality": "strong"},
+                    ],
+                },
+                {"id": "nope"},
+            ]
+        }
+    )
+    plan = parse_model_plan(
+        {
+            "provider": "fake",
+            "stages": {
+                "outline": {"model": "m"},
+                "draft": {"model": "m"},
+            },
+        },
+        catalog,
+    )
+    srv, worker = _start_server(tmp_path, monkeypatch, catalog=catalog, plan=plan)
     yield srv.server_port
     worker.stop()
     srv.shutdown()
@@ -852,3 +893,34 @@ def test_guide_preview_error_semantics(server):
     assert status == 400 and body["error"]["code"] == "invalid_guide_json"
     status, body = _req(server, "POST", "/v1/guide-preview", body={"text": "{}"})
     assert status == 422 and body["error"]["code"] == "guide_not_renderable"
+
+
+def test_config_providers_reports_availability(config_server):
+    status, payload = _req(config_server, "GET", "/v1/config/providers")
+    assert status == 200
+    by_id = {p["id"]: p for p in payload["providers"]}
+    assert by_id["manual"]["available"] is True and by_id["manual"]["executable"] is False
+    assert by_id["manual"]["reason"] is None
+    assert by_id["fake"]["available"] is True and by_id["fake"]["executable"] is True
+    assert by_id["nope"]["available"] is False
+    assert "no runner registered" in by_id["nope"]["reason"]
+
+
+def test_config_catalog_lists_providers_and_models(config_server):
+    status, payload = _req(config_server, "GET", "/v1/config/catalog")
+    assert status == 200
+    by_id = {p["id"]: p for p in payload["providers"]}
+    fake_models = {m["id"]: m for m in by_id["fake"]["models"]}
+    assert fake_models["m"]["quality"] == "fast"
+    assert fake_models["strong-m"]["quality"] == "strong"
+
+
+def test_config_plan_includes_sha_and_warnings(config_server):
+    status, payload = _req(config_server, "GET", "/v1/config/plan")
+    assert status == 200
+    assert len(payload["plan_sha256"]) == 64
+    stages = {s["stage"]: s for s in payload["stages"]}
+    assert set(stages) == set(STAGE_ORDER)
+    assert isinstance(stages["outline"]["warning"], str) and stages["outline"]["warning"]
+    assert stages["finalize"]["recommendation"] == "local_only"
+    assert stages["export"]["recommendation"] == "local_only"

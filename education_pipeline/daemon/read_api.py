@@ -11,7 +11,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from education_pipeline.config import ConfigError
+from education_pipeline.config import STAGE_ORDER, ConfigError, ModelCatalog, ModelPlan, weak_stage_warning
+from education_pipeline.providers import get_runner
 from education_pipeline.runs import RunStore
 from education_pipeline.workspace import ProfileStore, TopicStore
 
@@ -201,3 +202,76 @@ def export_download_path(runs: RunStore, topic_id: str, format: str) -> Path:
     if not path.is_file():
         raise NotFoundError(f"no {format} export produced for topic {topic_id!r}")
     return path
+
+
+def providers_payload(catalog: ModelCatalog) -> dict:
+    providers = []
+    for provider in catalog.providers.values():
+        available = False
+        reason: str | None = None
+        executable = False
+        try:
+            runner = get_runner(provider.id)
+        except ConfigError:
+            reason = f"no runner registered for {provider.id!r}"
+        else:
+            executable = runner.executable
+            if runner.is_available():
+                available = True
+            else:
+                reason = f"{provider.id} CLI not found on PATH"
+        providers.append(
+            {
+                "id": provider.id,
+                "label": provider.label,
+                "description": provider.description,
+                "executable": executable,
+                "available": available,
+                "reason": reason,
+            }
+        )
+    return {"providers": providers}
+
+
+def catalog_payload(catalog: ModelCatalog) -> dict:
+    providers = []
+    for provider in catalog.providers.values():
+        providers.append(
+            {
+                "id": provider.id,
+                "label": provider.label,
+                "description": provider.description,
+                "models": [
+                    {
+                        "id": model.id,
+                        "label": model.label,
+                        "description": model.description,
+                        "quality": model.quality,
+                        "default_effort": model.default_effort,
+                    }
+                    for model in provider.models.values()
+                ],
+            }
+        )
+    return {"providers": providers}
+
+
+def plan_payload(catalog: ModelCatalog, plan: ModelPlan, plan_sha256: str) -> dict:
+    stages = []
+    for stage_name in STAGE_ORDER:
+        stage_plan = plan.stage(stage_name)
+        stages.append(
+            {
+                "stage": stage_plan.stage,
+                "provider": stage_plan.provider,
+                "model": stage_plan.model,
+                "effort": stage_plan.effort,
+                "recommendation": stage_plan.recommendation,
+                "warning": weak_stage_warning(catalog, stage_plan),
+            }
+        )
+    return {
+        "provider": plan.provider,
+        "plan_sha256": plan_sha256,
+        "stages": stages,
+    }

@@ -241,6 +241,18 @@ def _make_handler(context: DaemonContext):
                 return self._send(
                     200, read_api.get_profile(context.profiles, m.group(1))
                 )
+            if self.path == "/v1/config/providers":
+                catalog, _ = context.config.load()
+                return self._send(200, read_api.providers_payload(catalog))
+            if self.path == "/v1/config/catalog":
+                catalog, _ = context.config.load()
+                return self._send(200, read_api.catalog_payload(catalog))
+            if self.path == "/v1/config/plan":
+                catalog, plan = context.config.load()
+                return self._send(
+                    200,
+                    read_api.plan_payload(catalog, plan, context.config.plan_sha256()),
+                )
             if self.path == "/v1/runs":
                 return self._send(200, read_api.list_runs(context.runs))
             m = re.match(r"^/v1/runs/([^/?]+)/manifest$", self.path)
