@@ -49,10 +49,21 @@ export interface StageStatus {
   approved: boolean;
 }
 
+export interface StageProvenance {
+  stage: string;
+  provider: string;
+  model: string | null;
+  effort: string | null;
+  source: string;
+  job_id: string | null;
+  recorded_at: string;
+}
+
 export interface RunStatus {
   topic_id: string;
   finalized: boolean;
   content_contract: ContentContract;
+  stage_provenance: StageProvenance[];
   validations: { draft: ValidationStatus; final: ValidationStatus };
   stages: StageStatus[];
   next_action: NextAction;

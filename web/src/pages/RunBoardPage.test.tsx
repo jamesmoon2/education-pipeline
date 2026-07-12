@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunStatus } from "../api/types";
 import RunBoardPage from "./RunBoardPage";
 
@@ -21,15 +21,57 @@ vi.mock("../api/client", async () => {
     downloadFinal: vi.fn(),
     downloadExport: vi.fn(),
     cancelJob: vi.fn(),
+    getConfigProviders: vi.fn(),
+    getConfigCatalog: vi.fn(),
+    getRunPlan: vi.fn(),
+    putRunPlan: vi.fn(),
   };
 });
 
-import { ApiRequestError, getJobs, getRunStatus, postAdvance } from "../api/client";
+import {
+  ApiRequestError,
+  getConfigCatalog,
+  getConfigProviders,
+  getJobs,
+  getRunPlan,
+  getRunStatus,
+  postAdvance,
+} from "../api/client";
+
+const planProviders = [
+  { id: "claude-code", label: "Claude Code", description: "", executable: true, available: true, reason: null },
+];
+const planCatalog = [
+  {
+    id: "claude-code",
+    label: "Claude Code",
+    description: "",
+    models: [{ id: "sonnet", label: "Sonnet", description: "", quality: "strong", default_effort: null }],
+  },
+];
+const PLAN_STAGES = ["profile", "spec", "outline", "draft", "qa", "repair", "finalize", "export"];
+function makePlan() {
+  return {
+    provider: "claude-code",
+    plan_sha256: "sha-1",
+    stages: PLAN_STAGES.map((stage) => ({
+      stage,
+      provider: "claude-code",
+      model: stage === "finalize" || stage === "export" ? null : "sonnet",
+      effort: null,
+      recommendation: "x",
+      warning: null,
+      source: "default" as const,
+      command: null,
+    })),
+  };
+}
 
 const status: RunStatus = {
   topic_id: "t",
   finalized: false,
   content_contract: { kind: "legacy_markdown" },
+  stage_provenance: [],
   validations: {
     draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
     final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
@@ -60,6 +102,12 @@ function renderAt(path: string) {
 }
 
 describe("RunBoardPage", () => {
+  beforeEach(() => {
+    vi.mocked(getConfigProviders).mockResolvedValue({ providers: planProviders });
+    vi.mocked(getConfigCatalog).mockResolvedValue({ providers: planCatalog });
+    vi.mocked(getRunPlan).mockResolvedValue(makePlan());
+  });
+
   it("renders stages, next action, and jobs", async () => {
     vi.mocked(getRunStatus).mockResolvedValue(status);
     vi.mocked(getJobs).mockResolvedValue({
@@ -119,5 +167,28 @@ describe("RunBoardPage", () => {
     const advance = await screen.findByRole("button", { name: "Advance" });
     await userEvent.click(advance);
     expect(postAdvance).toHaveBeenCalledWith("t");
+  });
+
+  it("shows a provenance line for a stage present in stage_provenance", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      ...status,
+      stage_provenance: [
+        {
+          stage: "spec",
+          provider: "codex",
+          model: "gpt-5.4",
+          effort: "high",
+          source: "override",
+          job_id: "job-1",
+          recorded_at: "2026-07-10T00:00:00Z",
+        },
+      ],
+    });
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    expect(
+      await screen.findByText("ran on codex / gpt-5.4 / high (override)"),
+    ).toBeInTheDocument();
   });
 });

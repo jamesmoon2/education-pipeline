@@ -29,6 +29,7 @@ const summary: TopicSummary = {
     topic_id: "systems-thinking",
     finalized: false,
     content_contract: { kind: "legacy_markdown" },
+    stage_provenance: [],
     validations: {
       draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
       final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },

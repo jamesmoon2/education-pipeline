@@ -259,3 +259,8 @@ export const putConfigPlan = (
   });
 export const getRunPlan = (topicId: string) =>
   api<PlanPayload>(`/v1/runs/${encodeURIComponent(topicId)}/plan`);
+export const putRunPlan = (
+  topicId: string,
+  overrides: Record<string, StageOverride | null>,
+) =>
+  apiPut<PlanPayload>(`/v1/runs/${encodeURIComponent(topicId)}/plan`, { overrides });
