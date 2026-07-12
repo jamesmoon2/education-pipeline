@@ -262,6 +262,7 @@ export interface PlanStage {
   recommendation: string;
   warning: string | null;
   source?: "default" | "override";
+  override_error?: string | null;
   command?: string[] | null;
 }
 

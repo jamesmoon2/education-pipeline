@@ -114,6 +114,11 @@ export default function PlanStageRow({
           {stage.warning}
         </p>
       )}
+      {stage.override_error && (
+        <p role="alert" className="plan-stage-override-error">
+          {stage.override_error}
+        </p>
+      )}
     </div>
   );
 }

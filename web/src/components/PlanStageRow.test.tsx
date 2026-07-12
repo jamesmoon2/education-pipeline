@@ -88,6 +88,25 @@ describe("PlanStageRow", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("weak choice for outline");
   });
 
+  it("renders stage.override_error in a role=alert element", () => {
+    const onChange = vi.fn();
+    const broken: PlanStage = {
+      ...outlineStage,
+      source: "override",
+      override_error: "stored override is invalid: unknown model 'x' -- reset this stage to clear it.",
+    };
+    render(<PlanStageRow stage={broken} catalog={catalog} providers={providers} onChange={onChange} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("reset this stage");
+  });
+
+  it("does not render an override_error element when stage.override_error is absent", () => {
+    const onChange = vi.fn();
+    render(
+      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} onChange={onChange} />,
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("does not render a warning element when stage.warning is null", () => {
     const onChange = vi.fn();
     render(
