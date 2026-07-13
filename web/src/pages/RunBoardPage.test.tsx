@@ -169,6 +169,26 @@ describe("RunBoardPage", () => {
     expect(postAdvance).toHaveBeenCalledWith("t");
   });
 
+  it("shows a per-stage findings-count badge from findings_by_stage", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      ...status,
+      validations: {
+        draft: {
+          state: "current",
+          blocking: 2,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { outline: 2 },
+        },
+        final: { state: "missing", blocking: 0, errors: 0, warnings: 0, findings_by_stage: {} },
+      },
+    });
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    expect(await screen.findByRole("status", { name: "2 findings" })).toBeInTheDocument();
+  });
+
   it("shows a provenance line for a stage present in stage_provenance", async () => {
     vi.mocked(getRunStatus).mockResolvedValue({
       ...status,

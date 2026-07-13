@@ -34,6 +34,7 @@ const report: ValidationReport = {
       message: "Unsafe content.",
       remediation: "Remove it.",
       related_ids: ["block-one"],
+      stage: "draft",
     },
     {
       id: "quality:two",
@@ -44,6 +45,7 @@ const report: ValidationReport = {
       path: "/modules/0/sections/1",
       message: "Improve this section.",
       remediation: "Add detail.",
+      stage: "draft",
     },
   ],
 };
@@ -178,16 +180,21 @@ describe("ValidationFindingsPanel", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
-  it("maps final findings to the repair stage", async () => {
+  it("links each finding to its own responsible stage, not the panel's phase", async () => {
     vi.mocked(getValidation).mockResolvedValue({
       state: "current",
-      report: { ...report, phase: "final" },
+      report: {
+        ...report,
+        phase: "final",
+        findings: [
+          { ...report.findings[0], stage: "outline" },
+          { ...report.findings[1], stage: "repair" },
+        ],
+      },
     });
     renderPanel("current", { phase: "final" });
     const links = await screen.findAllByRole("link", { name: /Open source/ });
-    expect(links).not.toHaveLength(0);
-    for (const link of links) {
-      expect(link).toHaveAttribute("href", expect.stringContaining("/stages/repair?"));
-    }
+    expect(links[0]).toHaveAttribute("href", expect.stringContaining("/stages/outline?"));
+    expect(links[1]).toHaveAttribute("href", expect.stringContaining("/stages/repair?"));
   });
 });

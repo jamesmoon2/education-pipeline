@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiRequestError, getRunStatus, postAdvance } from "../api/client";
-import type { StageProvenance } from "../api/types";
+import type { RunStatus, StageProvenance } from "../api/types";
 import JobsPanel from "../components/JobsPanel";
 import PrimaryAction from "../components/PrimaryAction";
 import RunPlanPanel from "../components/RunPlanPanel";
@@ -26,6 +26,19 @@ function formatProvenance(entry: StageProvenance): string {
   const model = entry.model ? ` / ${entry.model}` : "";
   const effort = entry.effort ? ` / ${entry.effort}` : "";
   return `ran on ${entry.provider}${model}${effort} (${entry.source})`;
+}
+
+// Blocking-or-error findings by stage, combined across the draft and final
+// validation reports, so a stage badges up if either phase flagged it.
+function combinedFindingsByStage(status: RunStatus): Record<string, number> {
+  const merged: Record<string, number> = {};
+  for (const phase of ["draft", "final"] as const) {
+    const byStage: Record<string, number> = status.validations[phase].findings_by_stage ?? {};
+    for (const [stage, count] of Object.entries(byStage)) {
+      merged[stage] = (merged[stage] ?? 0) + count;
+    }
+  }
+  return merged;
 }
 
 export default function RunBoardPage() {
@@ -58,6 +71,7 @@ export default function RunBoardPage() {
   if (!status) return <p>Loading…</p>;
 
   const provenanceByStage = latestProvenanceByStage(status.stage_provenance);
+  const findingsByStage = combinedFindingsByStage(status);
 
   return (
     <div>
@@ -97,18 +111,31 @@ export default function RunBoardPage() {
           <tr>
             <th>Stage</th>
             <th>State</th>
+            <th>Findings</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           {status.stages.map((s) => {
             const provenance = provenanceByStage.get(s.stage);
+            const findingsCount = findingsByStage[s.stage] ?? 0;
             return (
               <tr key={s.stage}>
                 <td>{s.stage}</td>
                 <td>
                   <span className={`state state-${s.state}`}>{s.state}</span>
                   {provenance && <p className="stage-provenance">{formatProvenance(provenance)}</p>}
+                </td>
+                <td>
+                  {findingsCount > 0 && (
+                    <span
+                      className="findings-badge"
+                      role="status"
+                      aria-label={`${findingsCount} findings`}
+                    >
+                      {findingsCount}
+                    </span>
+                  )}
                 </td>
                 <td>
                   <Link to={`/topics/${status.topic_id}/stages/${s.stage}`}>view</Link>

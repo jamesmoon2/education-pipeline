@@ -39,6 +39,7 @@ export interface ValidationCounts {
 
 export interface ValidationStatus extends ValidationCounts {
   state: ValidationState;
+  findings_by_stage?: Record<string, number>;
 }
 
 export interface StageStatus {
@@ -183,6 +184,7 @@ export interface ValidationFinding {
   message: string;
   remediation: string;
   related_ids?: string[];
+  stage: string;
 }
 
 export interface ValidationReport {
