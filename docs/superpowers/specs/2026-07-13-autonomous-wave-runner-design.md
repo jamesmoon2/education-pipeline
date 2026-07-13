@@ -39,17 +39,39 @@ plan:
 1. Parse the plan doc for the first unclosed wave and the current
    model/effort recommendation (fallback when no final-message JSON exists,
    e.g. first wave or crash recovery).
-2. Generate a session UUID and launch from the repo root:
+2. **Synthesize the kickoff prompt** from the playbook template (plan path +
+   wave number + status-dependent preamble, e.g. "doc shows tasks 1–3
+   done"). Under the runner, managers no longer print kickoff prompts —
+   the wave-close checklist's print step applies only to human-driven runs.
+3. Generate a session UUID and launch from the repo root:
 
    ```
    claude -p "<kickoff prompt>" --session-id <uuid> --model <m> --effort <e> \
-     --output-format json --permission-mode bypassPermissions \
+     --output-format stream-json --permission-mode auto \
      --max-budget-usd <cap>
    ```
 
-3. Interpret the outcome (see Control channel) and either advance, recover,
+   **Permission posture:** `auto`, not `bypassPermissions`. In headless mode
+   anything `auto` would prompt about is *denied* instead — the safe failure
+   direction. The project allowlist in `.claude/settings.json` is the
+   pressure valve: the supervised first run doubles as allowlist
+   calibration (each denial that blocks a wave gets a rule added).
+   `bypassPermissions` remains a documented last-resort override.
+
+4. **Liveness watchdog:** the runner consumes the stream-json output; no
+   output for N minutes (default 30, configurable) means the session is
+   stalled → kill it and route into the recovery path. Streamed events are
+   also appended to a per-wave log file for postmortems.
+5. Interpret the outcome (see Control channel) and either advance, recover,
    park, or halt.
-4. After the final wave: notify with the milestone summary.
+6. After the final wave: notify with the milestone summary.
+
+**Pre-flight checks (before wave 1, hard-fail if any miss):** clean working
+tree, expected branch, `claude` authenticated, no stray daemon/Playwright
+processes from a previous run, adequate disk space. The runner records the
+plan-path HEAD SHA at each wave start for trust-but-verify. The runner is
+invoked under `caffeinate -is` (wrapper script or documented invocation) so
+the machine cannot sleep mid-run.
 
 State: `wave-runner-status.json` next to the plan (gitignored) records the
 current wave, session UUID, attempt count, and last outcome — enough to
@@ -69,8 +91,8 @@ final message to be exactly:
  "notes": "one line for the next manager / the human"}
 ```
 
-With `--output-format json` this arrives in the runner's stdout `result`
-field — no markdown parsing for control flow. The plan doc + Wave Log remain
+With stream-json output this arrives in the final `result` event — no
+markdown parsing for control flow. The plan doc + Wave Log remain
 the human-readable handoff and the recovery source of truth when a session
 dies before emitting JSON.
 
@@ -78,8 +100,8 @@ dies before emitting JSON.
 
 On `"closed"`, the runner cross-checks cheaply before advancing:
 
-- the plan doc was committed since wave start (`git log --since` on the plan
-  path), and
+- the plan doc was committed since the wave-start SHA recorded by the
+  runner (commit-graph comparison, not wall-clock `--since`), and
 - the Wave Log row for wave N exists in the doc.
 
 It never re-runs tests (per the playbook, the gate is the manager's job).
@@ -118,12 +140,20 @@ measure, it reports "unknown" and the manager proceeds (Layer 1 catches the
 miss).
 
 `--max-budget-usd` per wave is a generous circuit breaker against runaways,
-not a pacer.
+not a pacer. **Verify at build time:** whether it is meaningful under
+subscription auth (headless may report $0.00); if not, the liveness
+watchdog plus anomaly halting are the runaway bounds.
 
 ### 5. Failure handling
 
-Anomaly = non-JSON final message, `"blocked"`, failed trust-but-verify, or a
-second failure after one recovery attempt. On anomaly the runner:
+**Progress notifications (success path):** every wave close sends a
+notification carrying the gate counts, the manager's `notes` line, and
+cumulative usage/cost accumulated from the session results — the runner
+replaces the spend-monitoring the human used to do by sitting there.
+
+Anomaly = non-JSON final message, `"blocked"`, failed trust-but-verify,
+liveness-watchdog kill after recovery was already attempted, or a second
+failure after one recovery attempt. On anomaly the runner:
 
 1. writes diagnosis + exact manual-resume instructions into
    `wave-runner-status.json`,
@@ -138,7 +168,8 @@ second failure after one recovery attempt. On anomaly the runner:
 selected via env var) simulating: clean close → advance; limit-hit →
 fresh-relaunch recovery; limit-hit → resume recovery; parked → sleep +
 relaunch; blocked → halt + notify; malformed JSON → halt; trust-but-verify
-mismatch → halt; multi-plan sequencing. No real tokens in tests. First
+mismatch → halt; stalled output → watchdog kill + recovery; pre-flight
+failures → refuse to start; multi-plan sequencing. No real tokens in tests. First
 real-world run: a low-stakes plan supervised by the human.
 
 ## Out of scope (v1)
