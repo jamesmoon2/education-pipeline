@@ -1268,8 +1268,17 @@ class RunStore:
         report = validate_guide(guide, phase="final", context=result.context)
         return report, result.document, guide
 
-    def validate_run(self, topic_id: str, phase: str) -> Path:
-        """Run deterministic validation and write the phase report atomically."""
+    def _compute_phase_report(
+        self, topic_id: str, phase: str
+    ) -> tuple[str, str, Path, Path, ValidationReport]:
+        """Shared validation core for ``validate_run``, ``gate_result``, and
+        ``validate_and_gate``: read the approved phase source and compute its
+        report, without writing anything.
+
+        Returns ``(safe_id, source_stage, source_path, report_path, report)``.
+        Raises ``ConfigError`` when there is no approved source for the phase
+        yet (nothing to validate).
+        """
 
         safe_id = _artifact_id(topic_id, "topic id")
         if not self._is_guide_v1(safe_id):
@@ -1290,6 +1299,14 @@ class RunStore:
             report = validate_guide(source_text, phase=phase)
         report_path = (
             self.draft_report_path(safe_id) if phase == "draft" else self.final_report_path(safe_id)
+        )
+        return safe_id, source_stage, source_path, report_path, report
+
+    def validate_run(self, topic_id: str, phase: str) -> Path:
+        """Run deterministic validation and write the phase report atomically."""
+
+        safe_id, source_stage, source_path, report_path, report = self._compute_phase_report(
+            topic_id, phase
         )
         self.create_run(safe_id)
         _write_bytes_atomic(report_path, canonical_report_bytes(report))
@@ -1319,23 +1336,31 @@ class RunStore:
         a traceback.
         """
 
-        safe_id = _artifact_id(topic_id, "topic id")
-        if not self._is_guide_v1(safe_id):
-            raise ConfigError("validation applies only to guide runs")
-        if phase not in {"draft", "final"}:
-            raise ConfigError(f"phase must be 'draft' or 'final'; got {phase!r}")
+        safe_id, _, _, _, report = self._compute_phase_report(topic_id, phase)
+        return apply_waivers(report, self._load_waiver_set(safe_id))
 
-        source_stage = "draft" if phase == "draft" else "repair"
-        source_path = self.stage_paths(safe_id, source_stage).approved_path
-        if not source_path.is_file():
-            raise ConfigError(
-                f"approved {source_stage} response not found: {source_path}"
-            )
-        source_text = source_path.read_text(encoding="utf-8")
-        if phase == "final":
-            report, _, _ = self._validated_final(safe_id, source_text)
-        else:
-            report = validate_guide(source_text, phase=phase)
+    def validate_and_gate(self, topic_id: str, phase: str) -> WaiverResult:
+        """Validate a phase, persist the report, and return the resulting gate.
+
+        Equivalent to calling ``validate_run`` followed by ``gate_result``,
+        but computes the (expensive, parse+normalize+static-checks) report
+        exactly once instead of twice. Intended for callers -- like the CLI's
+        ``validate`` command -- that need both the persisted-report side
+        effect and the gate outcome from a single invocation.
+        """
+
+        safe_id, source_stage, source_path, report_path, report = self._compute_phase_report(
+            topic_id, phase
+        )
+        self.create_run(safe_id)
+        _write_bytes_atomic(report_path, canonical_report_bytes(report))
+        self._append_event(
+            safe_id,
+            stage=source_stage,
+            action="validated",
+            files={"report_file": report_path, "source_file": source_path},
+            extra={"phase": phase},
+        )
         return apply_waivers(report, self._load_waiver_set(safe_id))
 
     def write_spec_prompt(

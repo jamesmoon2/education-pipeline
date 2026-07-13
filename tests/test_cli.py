@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -332,22 +334,147 @@ def exported_guide_workspace(tmp_path: Path):
     return root, topic_id
 
 
+def _mismatched_minutes_guide_json(base: str) -> str:
+    """Mutate a guide-fixture JSON body so course/module minutes disagree.
+
+    Produces a ``time.module_total_mismatch`` finding, whose rule maps to the
+    "outline" stage -- distinct from both the draft-phase default stage
+    ("draft") and the finding-stage default ("draft"), so tests built on it
+    can only pass if real rule-to-stage attribution is flowing end to end.
+    """
+
+    data = json.loads(base)
+    data["course"]["estimated_minutes"] += 5
+    return json.dumps(data)
+
+
+@pytest.fixture
+def workspace_with_mixed_findings(tmp_path: Path):
+    """A validated draft carrying both a blocking (draft-stage) finding and a
+    non-blocking (outline-stage) finding -- lets tests assert real stage
+    attribution and real --blocking filtering, not fixture coincidence."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    body = _mismatched_minutes_guide_json(test_runs._prompt_leak_guide_json())
+    test_runs._drive_guide_to_draft_approved(runs, topic_id, draft_body=body)
+    runs.validate_run(topic_id, "draft")
+    return root, topic_id
+
+
+@pytest.fixture
+def workspace_with_stale_draft_report(tmp_path: Path):
+    """A draft validated once, then edited without revalidating -- the
+    on-disk draft report is now stale relative to the approved draft."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    test_runs._drive_guide_to_draft_approved(runs, topic_id)
+    runs.validate_run(topic_id, "draft")
+
+    draft_paths = runs.stage_paths(topic_id, "draft")
+    base_sha = hashlib.sha256(draft_paths.response_path.read_bytes()).hexdigest()
+    edited = test_runs._edit_course_description(
+        draft_paths.response_path.read_text(encoding="utf-8"),
+        "Edited after validation so the draft report goes stale.",
+    )
+    runs.edit_response(topic_id, "draft", edited, base_sha256=base_sha)
+    runs.approve_stage(topic_id, "draft", overwrite=True)
+    assert runs.report_state(topic_id, "draft") == "stale"
+    return root, topic_id
+
+
+@pytest.fixture
+def workspace_with_stale_final_report(tmp_path: Path):
+    """A repair validated once, then edited without revalidating -- the
+    on-disk final report is now stale relative to the approved repair."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    test_runs._drive_guide_to_finalize_ready(runs, topic_id)
+
+    repair_paths = runs.stage_paths(topic_id, "repair")
+    base_sha = hashlib.sha256(repair_paths.response_path.read_bytes()).hexdigest()
+    edited = test_runs._edit_course_description(
+        repair_paths.response_path.read_text(encoding="utf-8"),
+        "Edited after final validation so the final report goes stale.",
+    )
+    runs.edit_response(topic_id, "repair", edited, base_sha256=base_sha)
+    runs.approve_stage(topic_id, "repair", overwrite=True)
+    assert runs.report_state(topic_id, "final") == "stale"
+    return root, topic_id
+
+
 def test_validate_command_exit_codes_track_the_gate(guide_v1_workspace, capsys):
     root, topic_id = guide_v1_workspace
     assert main(["--workspace", str(root), "validate", topic_id, "--phase", "final"]) == 0
 
 
-def test_findings_command_lists_stage_attributed_findings(workspace_with_blockers, capsys):
+def test_validate_command_exit_code_is_1_when_gate_is_blocked(workspace_with_blockers, capsys):
     root, topic_id = workspace_with_blockers
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "draft"]) == 1
+    out = capsys.readouterr().out
+    assert "gate blocked" in out
+
+
+def test_findings_command_lists_stage_attributed_findings(workspace_with_mixed_findings, capsys):
+    root, topic_id = workspace_with_mixed_findings
     assert main(["--workspace", str(root), "findings", topic_id, "--phase", "draft"]) == 0
     out = capsys.readouterr().out
-    assert "\tdraft\t" in out  # stage column present
+    # The rule->stage map attributes time.module_total_mismatch to "outline",
+    # not the draft-phase default ("draft"); this line can only appear if the
+    # CLI is threading the finding's real stage through, not the fallback.
+    assert "\toutline\t" in out
+    assert "time.module_total_mismatch" in out
+
+
+def test_findings_command_blocking_filter(workspace_with_mixed_findings, capsys):
+    root, topic_id = workspace_with_mixed_findings
+    assert main(["--workspace", str(root), "findings", topic_id, "--phase", "draft"]) == 0
+    unfiltered = capsys.readouterr().out.strip().splitlines()
+
+    assert (
+        main(["--workspace", str(root), "findings", topic_id, "--phase", "draft", "--blocking"])
+        == 0
+    )
+    filtered = capsys.readouterr().out.strip().splitlines()
+
+    assert len(filtered) < len(unfiltered)
+    assert all("content.prompt_leak" in line for line in filtered)
+    assert not any("time.module_total_mismatch" in line for line in filtered)
+
+
+def test_findings_command_warns_on_stale_report(workspace_with_stale_draft_report, capsys):
+    root, topic_id = workspace_with_stale_draft_report
+    assert main(["--workspace", str(root), "findings", topic_id, "--phase", "draft"]) == 0
+    err = capsys.readouterr().err
+    assert "stale" in err.lower()
 
 
 def test_report_command_prints_sidecar_after_export(exported_guide_workspace, capsys):
     root, topic_id = exported_guide_workspace
     assert main(["--workspace", str(root), "report", topic_id]) == 0
     assert '"quality_report_schema_version"' in capsys.readouterr().out
+
+
+def test_report_command_prints_final_report_when_not_exported(guide_v1_workspace, capsys):
+    """No export sidecar exists yet -- falls back to the raw final validation report."""
+
+    root, topic_id = guide_v1_workspace
+    assert main(["--workspace", str(root), "report", topic_id]) == 0
+    out = capsys.readouterr().out
+    assert '"phase": "final"' in out
+    assert '"quality_report_schema_version"' not in out
+
+
+def test_report_command_warns_on_stale_report(workspace_with_stale_final_report, capsys):
+    root, topic_id = workspace_with_stale_final_report
+    main(["--workspace", str(root), "report", topic_id])
+    err = capsys.readouterr().err
+    assert "stale" in err.lower()
 
 
 def test_daemon_status_prints_cockpit_url(tmp_path, capsys, monkeypatch):

@@ -256,14 +256,43 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 def _cmd_validate(args: argparse.Namespace) -> int:
     runs = RunStore(_root(args))
-    runs.validate_run(args.topic_id, args.phase)
-    result = runs.gate_result(args.topic_id, args.phase)
+    result = runs.validate_and_gate(args.topic_id, args.phase)
     state = "open" if result.gate_open else "blocked"
-    print(
+    parts = [
         f"validate ({args.phase}): gate {state}; "
         f"{result.effective_blocking} blocking finding(s) remain"
-    )
+    ]
+    if result.stale:
+        parts.append("stale waivers were ignored")
+    if result.rejected_finding_ids:
+        parts.append(
+            "non-waivable or empty-reason waivers were rejected: "
+            + ", ".join(result.rejected_finding_ids)
+        )
+    print("; ".join(parts))
     return 0 if result.gate_open else 1
+
+
+def _warn_if_report_stale(runs: RunStore, topic_id: str, phase: str) -> None:
+    """Print a staleness warning to stderr when the on-disk report for
+    ``phase`` no longer matches its approved source.
+
+    Read commands (``findings``, ``report``) still print whatever is on
+    disk rather than refusing outright -- unlike gate/write commands
+    (``validate``, ``finalize``, export), which fail closed via
+    ``report_state`` (see ``RunStore._export_guide_v1``) because they would
+    otherwise act on stale content. A read command has no such side effect,
+    so a clear warning keeps the output usable while making the staleness
+    visible, instead of silently disagreeing with a freshly recomputed gate.
+    """
+
+    if runs.report_state(topic_id, phase) == "stale":
+        print(
+            f"warning: {phase} validation report for {topic_id!r} is stale "
+            "(the approved source changed since this report was written); "
+            "run `validate` again for current results",
+            file=sys.stderr,
+        )
 
 
 def _cmd_findings(args: argparse.Namespace) -> int:
@@ -279,12 +308,18 @@ def _cmd_findings(args: argparse.Namespace) -> int:
         raise ConfigError(
             f"no {args.phase} validation report for {args.topic_id!r}; run `validate` first"
         )
+    _warn_if_report_stale(runs, args.topic_id, args.phase)
     report = json.loads(report_path.read_text(encoding="utf-8"))
     findings = report.get("findings", [])
     if args.blocking:
         findings = [f for f in findings if f.get("blocking")]
+    # Pre-v2 reports (written before findings carried a stage) have no
+    # finding["stage"]; fall back to the phase-derived stage the cockpit
+    # uses (see web's findingHref): draft-phase -> draft, final-phase ->
+    # repair.
+    default_stage = "draft" if args.phase == "draft" else "repair"
     for finding in findings:
-        stage = finding.get("stage", "draft")
+        stage = finding.get("stage", default_stage)
         print(
             f"{finding['severity']}\t{finding['rule_id']}\t{stage}\t"
             f"{finding['path']}\t{finding['message']}"
@@ -307,6 +342,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
             raise ConfigError(
                 f"no final validation report for {args.topic_id!r}; run `validate` first"
             )
+        _warn_if_report_stale(runs, args.topic_id, "final")
         text = report_path.read_text(encoding="utf-8")
         gate_open = runs.gate_result(args.topic_id, "final").gate_open
     print(text, end="")
