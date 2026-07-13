@@ -1880,6 +1880,52 @@ def test_guide_v1_export_uses_canonical_final_and_records_provenance(tmp_path: P
     assert len(event["runtime_js_sha256"]) == 64
 
 
+def test_final_validation_report_includes_computed_static_checks(tmp_path: Path) -> None:
+    """A healthy run's final report has no runtime.* findings; the context was computed."""
+    tid = "systems-thinking"
+    store = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_qa(store, tid)
+    repair = store.write_repair_prompt(tid)
+    repair.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    store.approve_stage(tid, "repair")
+    report_path = store.validate_run(tid, "final")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert not [f for f in report["findings"] if f["rule_id"].startswith("runtime.")]
+
+
+def test_export_refuses_when_render_fails(tmp_path: Path, monkeypatch) -> None:
+    tid = "systems-thinking"
+    store = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_finalize_ready(store, tid)
+
+    from education_pipeline import runs as runs_mod
+    from education_pipeline.guides.static_checks import StaticCheckResult
+    from education_pipeline.guides.validation import ValidationContext
+
+    def broken(guide, assets=None):
+        return StaticCheckResult(ValidationContext(render_succeeded=False), None)
+
+    monkeypatch.setattr(runs_mod, "compute_static_checks", broken)
+    store.validate_run(tid, "final")
+    with pytest.raises(runs_mod.ConfigError, match="blocking finding"):
+        store.finalize_run(tid, overwrite=True)
+
+
+def test_export_writes_exactly_the_checked_document(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    store = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_finalize_ready(store, tid)
+    store.validate_run(tid, "final")
+    store.finalize_run(tid, overwrite=True)
+    export_path = store.export_run(tid, format="html", overwrite=True)
+
+    from education_pipeline.guides import compute_static_checks
+
+    source = store.read_approved(tid, "repair")
+    guide = normalize_guide(parse_guide(source))
+    assert export_path.read_text(encoding="utf-8") == compute_static_checks(guide).document
+
+
 def test_legacy_run_untouched_by_guide_validation(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
     runs = _create_legacy_run(tmp_path)

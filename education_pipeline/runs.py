@@ -26,6 +26,7 @@ from education_pipeline.guides import (
     canonical_guide_bytes,
     canonical_report_bytes,
     check_contract_conflict,
+    compute_static_checks,
     extract_outline_contract,
     extract_spec_contract,
     guide_sha256,
@@ -33,7 +34,7 @@ from education_pipeline.guides import (
     parse_guide,
     project_guide_markdown,
     validate_guide,
-    assemble_guide_document,
+    ValidationReport,
 )
 from education_pipeline.guide_runtime import load_runtime_assets
 from education_pipeline.prompts import (
@@ -556,7 +557,7 @@ class RunStore:
             )
 
         source_text = self.read_approved(topic_id, "repair")
-        report = validate_guide(source_text, phase="final")
+        report, _ = self._validated_final(topic_id, source_text)
         waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
         if not waiver_result.gate_open:
             return NextAction(
@@ -956,7 +957,7 @@ class RunStore:
             raise ConfigError("final validation is missing or stale; revalidate before export")
 
         source_text = final_json.read_text(encoding="utf-8")
-        report = validate_guide(source_text, phase="final")
+        report, document = self._validated_final(topic_id, source_text)
         waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
         if not waiver_result.gate_open:
             raise ConfigError(
@@ -968,7 +969,14 @@ class RunStore:
             raise ConfigError("final/guide.json is not a renderable guide")
         guide = normalize_guide(parsed)
         assets = load_runtime_assets()
-        content = assemble_guide_document(guide, assets=assets, mode="export")
+        if document is None:
+            # An open waiver gate guarantees no render_failed blocker, so the
+            # checked document is present. Guard defensively against a None
+            # write, keeping the failure on the 422-mapped ConfigError path.
+            raise ConfigError(
+                f"cannot export {topic_id!r}: the checked guide document is unavailable"
+            )
+        content = document
         export_path = self.export_path(topic_id, "html")
         if export_path.exists() and not overwrite:
             raise ConfigError(f"refusing to overwrite existing file: {export_path}")
@@ -1109,7 +1117,7 @@ class RunStore:
                 "run final validation before finalizing"
             )
 
-        report = validate_guide(source_text, phase="final")
+        report, _ = self._validated_final(topic_id, source_text)
         waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
         if not waiver_result.gate_open:
             parts = [
@@ -1198,6 +1206,23 @@ class RunStore:
             return "current"
         return "stale"
 
+    def _validated_final(
+        self, topic_id: str, source_text: str
+    ) -> tuple[ValidationReport, str | None]:
+        """Validate final-phase content with computed static checks.
+
+        Returns (report, assembled_document). document is None when the source
+        does not parse (schema blockers already in the report) or assembly failed.
+        """
+
+        parsed = parse_guide(source_text)
+        if not parsed.ok:
+            return validate_guide(source_text, phase="final"), None
+        guide = normalize_guide(parsed)
+        result = compute_static_checks(guide)
+        report = validate_guide(guide, phase="final", context=result.context)
+        return report, result.document
+
     def validate_run(self, topic_id: str, phase: str) -> Path:
         """Run deterministic validation and write the phase report atomically."""
 
@@ -1214,7 +1239,10 @@ class RunStore:
                 f"approved {source_stage} response not found: {source_path}"
             )
         source_text = source_path.read_text(encoding="utf-8")
-        report = validate_guide(source_text, phase=phase)
+        if phase == "final":
+            report, _ = self._validated_final(safe_id, source_text)
+        else:
+            report = validate_guide(source_text, phase=phase)
         report_path = (
             self.draft_report_path(safe_id) if phase == "draft" else self.final_report_path(safe_id)
         )
