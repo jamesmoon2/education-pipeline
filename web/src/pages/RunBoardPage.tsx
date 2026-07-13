@@ -30,10 +30,14 @@ function formatProvenance(entry: StageProvenance): string {
 
 // Blocking-or-error findings by stage, combined across the draft and final
 // validation reports, so a stage badges up if either phase flagged it.
+// Only "current" reports contribute: stale or missing reports describe
+// superseded content and would misrepresent actionable work.
 function combinedFindingsByStage(status: RunStatus): Record<string, number> {
   const merged: Record<string, number> = {};
   for (const phase of ["draft", "final"] as const) {
-    const byStage: Record<string, number> = status.validations[phase].findings_by_stage ?? {};
+    const validation = status.validations[phase];
+    if (validation.state !== "current") continue;
+    const byStage: Record<string, number> = validation.findings_by_stage ?? {};
     for (const [stage, count] of Object.entries(byStage)) {
       merged[stage] = (merged[stage] ?? 0) + count;
     }

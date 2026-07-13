@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -169,7 +169,7 @@ describe("RunBoardPage", () => {
     expect(postAdvance).toHaveBeenCalledWith("t");
   });
 
-  it("shows a per-stage findings-count badge from findings_by_stage", async () => {
+  it("shows per-stage findings-count badges combining current draft and final reports", async () => {
     vi.mocked(getRunStatus).mockResolvedValue({
       ...status,
       validations: {
@@ -180,13 +180,52 @@ describe("RunBoardPage", () => {
           warnings: 0,
           findings_by_stage: { outline: 2 },
         },
-        final: { state: "missing", blocking: 0, errors: 0, warnings: 0, findings_by_stage: {} },
+        final: {
+          state: "current",
+          blocking: 1,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { outline: 1, repair: 3 },
+        },
       },
     });
     vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
     renderAt("/topics/t");
 
-    expect(await screen.findByRole("status", { name: "2 findings" })).toBeInTheDocument();
+    // outline: 2 (draft) + 1 (final) summed; repair: 3 from the final report only.
+    const repairRow = await screen.findByRole("row", { name: /repair/ });
+    expect(within(repairRow).getByRole("status", { name: "3 findings" })).toBeInTheDocument();
+    const outlineRow = screen.getByRole("row", { name: /outline/ });
+    expect(within(outlineRow).getByRole("status", { name: "3 findings" })).toBeInTheDocument();
+  });
+
+  it("ignores findings_by_stage from a phase whose report is not current", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      ...status,
+      validations: {
+        // Stale draft counts describe superseded content and must not badge.
+        draft: {
+          state: "stale",
+          blocking: 5,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { outline: 5 },
+        },
+        final: {
+          state: "current",
+          blocking: 1,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { repair: 1 },
+        },
+      },
+    });
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    const repairRow = await screen.findByRole("row", { name: /repair/ });
+    expect(within(repairRow).getByRole("status", { name: "1 findings" })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "5 findings" })).not.toBeInTheDocument();
   });
 
   it("shows a provenance line for a stage present in stage_provenance", async () => {
