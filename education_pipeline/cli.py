@@ -124,6 +124,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("topic_id")
     p.set_defaults(func=_cmd_report)
 
+    p = sub.add_parser("waive", help="waive a waivable blocking finding to open the gate")
+    p.add_argument("topic_id")
+    p.add_argument("finding_id")
+    p.add_argument("--reason", required=True, help="reason the finding is being waived")
+    p.add_argument("--phase", default="final", choices=["draft", "final"])
+    p.set_defaults(func=_cmd_waive)
+
+    p = sub.add_parser("unwaive", help="remove a previously recorded waiver")
+    p.add_argument("topic_id")
+    p.add_argument("finding_id")
+    p.add_argument("--phase", default="final", choices=["draft", "final"])
+    p.set_defaults(func=_cmd_unwaive)
+
     p = sub.add_parser("run", help="enqueue the next-stage provider run for a topic")
     p.add_argument("topic_id")
     p.add_argument("--stage", default=None, help="override the stage to run")
@@ -347,6 +360,49 @@ def _cmd_report(args: argparse.Namespace) -> int:
         gate_open = runs.gate_result(args.topic_id, "final").gate_open
     print(text, end="")
     return 0 if gate_open else 1
+
+
+def _cmd_waive(args: argparse.Namespace) -> int:
+    """Waive a blocking finding so the gate can open.
+
+    Exit codes deliberately diverge from ``validate``/``report``: this is an
+    action command (0 = the waiver was recorded), not a gate-status probe,
+    so a still-blocked gate after waiving one of several blockers is not a
+    failure. An empty reason or a finding that doesn't exist / isn't
+    waivable is a usage error (2), caught here rather than left to `main`'s
+    generic ``ConfigError`` handler -- which returns 1 -- so usage errors
+    stay distinct from the gate's blocked-exit-1 convention.
+    """
+
+    runs = RunStore(_root(args))
+    try:
+        result = runs.record_waiver(args.topic_id, args.phase, args.finding_id, args.reason)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    state = "open" if result.gate_open else "blocked"
+    print(
+        f"waive ({args.phase}): {args.finding_id} waived; gate {state}; "
+        f"{result.effective_blocking} blocking finding(s) remain"
+    )
+    return 0
+
+
+def _cmd_unwaive(args: argparse.Namespace) -> int:
+    """Remove a previously recorded waiver, potentially closing the gate again."""
+
+    runs = RunStore(_root(args))
+    try:
+        result = runs.remove_waiver(args.topic_id, args.phase, args.finding_id)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    state = "open" if result.gate_open else "blocked"
+    print(
+        f"unwaive ({args.phase}): {args.finding_id} waiver removed; gate {state}; "
+        f"{result.effective_blocking} blocking finding(s) remain"
+    )
+    return 0
 
 
 def _cmd_run(args: argparse.Namespace) -> int:

@@ -126,7 +126,18 @@ def create_waiver(
     # ``load_waiver_set`` internally, so the schema-validation guarantee
     # described below still holds: a malformed persisted waivers file is
     # never silently propagated into the new file.
-    waiver_set = runs.record_waiver(topic_id, guide_sha256, finding_id, reason.strip())
+    #
+    # record_waiver now hash-binds to a fresh recompute of the current
+    # report itself and returns a WaiverResult (gate outcome), not the
+    # persisted WaiverSet -- the preconditions above (current hash,
+    # non-empty reason, finding exists and is waivable) already hold by
+    # this point, so record_waiver's own equivalent checks are a formality
+    # on this path; they matter for its other caller, the CLI's `waive`
+    # command, which has no read_api.validation_payload precondition of its
+    # own. Re-load the persisted set afterward to build the response shape
+    # this endpoint has always returned.
+    runs.record_waiver(topic_id, phase, finding_id, reason.strip())
+    waiver_set = runs.load_waiver_set(topic_id)
     value = {
         "schema_version": waiver_set.schema_version,
         "guide_sha256": waiver_set.guide_sha256,

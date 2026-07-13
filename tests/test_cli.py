@@ -511,6 +511,138 @@ def test_report_command_warns_on_stale_report(workspace_with_stale_final_report,
     assert "stale" in err.lower()
 
 
+def _blocking_finding_id(root, topic_id, phase="draft"):
+    report = json.loads(
+        RunStore(root).draft_report_path(topic_id).read_text(encoding="utf-8")
+        if phase == "draft"
+        else RunStore(root).final_report_path(topic_id).read_text(encoding="utf-8")
+    )
+    return next(f["id"] for f in report["findings"] if f["blocking"] and f["waivable"])
+
+
+def test_waive_command_opens_the_gate(workspace_with_blockers, capsys):
+    """The waive command's whole point is flipping a blocked gate open --
+    not just writing a waivers file. Assert the gate transition via a
+    follow-up `validate` run, not just the waive command's own exit code,
+    so this test fails if the gate math regresses even though `waive`
+    itself still exits 0."""
+
+    root, topic_id = workspace_with_blockers
+    finding_id = _blocking_finding_id(root, topic_id)
+
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "draft"]) == 1
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                "--workspace",
+                str(root),
+                "waive",
+                topic_id,
+                finding_id,
+                "--reason",
+                "Intentional example text.",
+                "--phase",
+                "draft",
+            ]
+        )
+        == 0
+    )
+
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "draft"]) == 0
+
+
+def test_waive_command_empty_reason_exits_2(workspace_with_blockers, capsys):
+    root, topic_id = workspace_with_blockers
+    finding_id = _blocking_finding_id(root, topic_id)
+
+    exit_code = main(
+        [
+            "--workspace",
+            str(root),
+            "waive",
+            topic_id,
+            finding_id,
+            "--reason",
+            "   ",
+            "--phase",
+            "draft",
+        ]
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "error:" in err
+
+    # The gate must remain blocked: no waiver should have been recorded.
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "draft"]) == 1
+
+
+def test_waive_command_non_waivable_finding_exits_2(tmp_path, capsys):
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    bad = json.loads(test_runs.GUIDE_FIXTURE)
+    bad["schema_version"] = "2.0"
+    test_runs._drive_guide_to_draft_approved(runs, topic_id, draft_body=json.dumps(bad))
+    runs.validate_run(topic_id, "draft")
+    report = json.loads(runs.draft_report_path(topic_id).read_text(encoding="utf-8"))
+    finding = next(f for f in report["findings"] if f["blocking"] and not f["waivable"])
+
+    exit_code = main(
+        [
+            "--workspace",
+            str(root),
+            "waive",
+            topic_id,
+            finding["id"],
+            "--reason",
+            "Please let this through.",
+            "--phase",
+            "draft",
+        ]
+    )
+    assert exit_code == 2
+
+
+def test_unwaive_command_closes_the_gate_again(workspace_with_blockers, capsys):
+    """The inverse contract: unwaive must flip a previously-opened gate back
+    closed. Only checking unwaive's own exit code (which is 0 either way in
+    a no-waiver-existed case) would not prove the removal actually mutated
+    the waiver set, so this asserts the gate via a follow-up `validate`."""
+
+    root, topic_id = workspace_with_blockers
+    finding_id = _blocking_finding_id(root, topic_id)
+
+    assert (
+        main(
+            [
+                "--workspace",
+                str(root),
+                "waive",
+                topic_id,
+                finding_id,
+                "--reason",
+                "Intentional example text.",
+                "--phase",
+                "draft",
+            ]
+        )
+        == 0
+    )
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "draft"]) == 0
+    capsys.readouterr()
+
+    assert (
+        main(
+            ["--workspace", str(root), "unwaive", topic_id, finding_id, "--phase", "draft"]
+        )
+        == 0
+    )
+
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "draft"]) == 1
+
+
 def test_daemon_status_prints_cockpit_url(tmp_path, capsys, monkeypatch):
     from education_pipeline import cli
 

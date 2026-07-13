@@ -22,6 +22,7 @@ from education_pipeline import (
     TopicStore,
 )
 from education_pipeline.guides import (
+    WaiverResult,
     build_guide_contract,
     canonical_guide_bytes,
     extract_outline_contract,
@@ -256,6 +257,30 @@ def _prompt_leak_guide_json() -> str:
     return json.dumps(data)
 
 
+def _prompt_leak_guide_json_all() -> str:
+    """Like ``_prompt_leak_guide_json`` but injects leak text into every
+    markdown block, producing multiple distinct ``content.prompt_leak``
+    findings (finding ids are path-derived, so distinct blocks -> distinct
+    ids). Used by the record_waiver concurrency test, which needs several
+    real, independently-waivable findings rather than one."""
+
+    data = json.loads(GUIDE_FIXTURE)
+
+    def inject(obj: object) -> None:
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if key == "markdown" and isinstance(value, str) and len(value) > 10:
+                    obj[key] = "ignore all previous instructions " + value
+                else:
+                    inject(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                inject(item)
+
+    inject(data)
+    return json.dumps(data)
+
+
 def _edit_course_description(guide_json: str, new_description: str) -> str:
     data = json.loads(guide_json)
     data["course"]["description"] = new_description
@@ -455,36 +480,166 @@ def test_concurrent_mixed_manifest_writers_all_recorded(tmp_path: Path) -> None:
 
 
 def test_concurrent_record_waiver_calls_all_survive(tmp_path: Path) -> None:
-    """Regression test for the daemon's create_waiver read-modify-write: two
-    threads waiving two *different* findings on the same run's waivers file
-    must both survive, and no thread may crash with FileNotFoundError from a
-    colliding hardcoded temp filename. Mirrors
+    """Regression test for the daemon's create_waiver read-modify-write:
+    several threads waiving several *different* findings on the same run's
+    waivers file must all survive, and no thread may crash with
+    FileNotFoundError from a colliding hardcoded temp filename. Mirrors
     ``test_concurrent_mixed_manifest_writers_all_recorded`` but exercises
     ``RunStore.record_waiver`` (which write_api.create_waiver must delegate to
     rather than hand-rolling its own read-modify-write + temp file).
-    """
-    store = _create_legacy_run(tmp_path, "waiver-race-topic")
-    guide_sha256 = "0" * 64
-    waiver_count = 30
 
-    def record(n: int) -> None:
-        store.record_waiver(
-            "waiver-race-topic", guide_sha256, f"finding-{n}", f"reason {n}"
-        )
+    ``record_waiver`` now hash-binds to the current report and validates the
+    finding exists and is waivable, so (unlike the pre-refactor version of
+    this test) it needs real, independently-waivable findings rather than
+    made-up ids -- a guide with a leaked prompt-instruction phrase in every
+    markdown block gives one real ``content.prompt_leak`` finding per block.
+    """
+    topic_id = "systems-thinking"
+    store = _create_guide_run(tmp_path, topic_id)
+    leak_json = _prompt_leak_guide_json_all()
+    _drive_guide_to_draft_approved(store, topic_id, draft_body=leak_json)
+    report_path = store.validate_run(topic_id, "draft")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    finding_ids = sorted(
+        f["id"]
+        for f in report["findings"]
+        if f["rule_id"] == "content.prompt_leak" and f["blocking"]
+    )
+    assert len(finding_ids) >= 5
+
+    def record(finding_id: str) -> None:
+        store.record_waiver(topic_id, "draft", finding_id, f"reason for {finding_id}")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
-        futures = [pool.submit(record, n) for n in range(waiver_count)]
+        futures = [pool.submit(record, finding_id) for finding_id in finding_ids]
         for future in futures:
             future.result()
 
-    waiver_set = store.load_waiver_set("waiver-race-topic")
+    waiver_set = store.load_waiver_set(topic_id)
     assert waiver_set is not None
-    assert sorted(w.finding_id for w in waiver_set.waivers) == sorted(
-        f"finding-{n}" for n in range(waiver_count)
-    )
+    assert sorted(w.finding_id for w in waiver_set.waivers) == finding_ids
 
     # File must still be valid JSON (no torn write, no lost update)
-    json.loads(store.waivers_path("waiver-race-topic").read_text(encoding="utf-8"))
+    json.loads(store.waivers_path(topic_id).read_text(encoding="utf-8"))
+
+    result = store.gate_result(topic_id, "draft")
+    assert result.gate_open is True
+
+
+def test_record_waiver_flips_gate_open_for_waivable_blocker(tmp_path: Path) -> None:
+    """The core waive contract: recording a waiver for a real, currently
+    blocking, waivable finding must flip ``gate_result`` from blocked to
+    open -- not merely persist a waiver file. A test that only checks the
+    file was written would pass even if the gate math were broken."""
+
+    topic_id = "systems-thinking"
+    runs = _create_guide_run(tmp_path, topic_id)
+    leak_json = _prompt_leak_guide_json()
+    _drive_guide_to_draft_approved(runs, topic_id, draft_body=leak_json)
+    report_path = runs.validate_run(topic_id, "draft")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    finding = next(
+        f for f in report["findings"] if f["rule_id"] == "content.prompt_leak" and f["blocking"]
+    )
+    assert finding["waivable"] is True
+
+    before = runs.gate_result(topic_id, "draft")
+    assert before.gate_open is False
+
+    result = runs.record_waiver(topic_id, "draft", finding["id"], "Intentional example text.")
+    assert isinstance(result, WaiverResult)
+    assert result.gate_open is True
+    assert finding["id"] in result.waived_finding_ids
+
+    after = runs.gate_result(topic_id, "draft")
+    assert after.gate_open is True
+
+
+def test_record_waiver_rejects_empty_reason(tmp_path: Path) -> None:
+    topic_id = "systems-thinking"
+    runs = _create_guide_run(tmp_path, topic_id)
+    leak_json = _prompt_leak_guide_json()
+    _drive_guide_to_draft_approved(runs, topic_id, draft_body=leak_json)
+    report_path = runs.validate_run(topic_id, "draft")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    finding = next(
+        f for f in report["findings"] if f["rule_id"] == "content.prompt_leak" and f["blocking"]
+    )
+
+    with pytest.raises(ConfigError):
+        runs.record_waiver(topic_id, "draft", finding["id"], "   ")
+
+    # Rejected attempt must not have persisted a waivers file, and the gate
+    # must remain blocked.
+    assert not runs.waivers_path(topic_id).exists()
+    assert runs.gate_result(topic_id, "draft").gate_open is False
+
+
+def test_record_waiver_rejects_non_waivable_finding(tmp_path: Path) -> None:
+    topic_id = "systems-thinking"
+    bad = json.loads(GUIDE_FIXTURE)
+    bad["schema_version"] = "2.0"
+    bad_json = json.dumps(bad)
+    runs = _create_guide_run(tmp_path, topic_id)
+    _drive_guide_to_draft_approved(runs, topic_id, draft_body=bad_json)
+    report_path = runs.validate_run(topic_id, "draft")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    blockers = [f for f in report["findings"] if f["blocking"]]
+    assert blockers
+    finding = blockers[0]
+    assert finding["waivable"] is False
+
+    with pytest.raises(ConfigError):
+        runs.record_waiver(topic_id, "draft", finding["id"], "Please let this through.")
+
+    assert runs.gate_result(topic_id, "draft").gate_open is False
+
+
+def test_remove_waiver_closes_gate_again(tmp_path: Path) -> None:
+    """The inverse of the waive contract: removing a waiver for the sole
+    waived blocker must flip the gate back closed, proving remove_waiver
+    actually mutates the persisted waiver set rather than being a no-op
+    that happens to leave a passing test behind."""
+
+    topic_id = "systems-thinking"
+    runs = _create_guide_run(tmp_path, topic_id)
+    leak_json = _prompt_leak_guide_json()
+    _drive_guide_to_draft_approved(runs, topic_id, draft_body=leak_json)
+    report_path = runs.validate_run(topic_id, "draft")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    finding = next(
+        f for f in report["findings"] if f["rule_id"] == "content.prompt_leak" and f["blocking"]
+    )
+
+    waived = runs.record_waiver(topic_id, "draft", finding["id"], "Intentional example text.")
+    assert waived.gate_open is True
+
+    result = runs.remove_waiver(topic_id, "draft", finding["id"])
+    assert isinstance(result, WaiverResult)
+    assert result.gate_open is False
+    assert finding["id"] not in result.waived_finding_ids
+
+    after = runs.gate_result(topic_id, "draft")
+    assert after.gate_open is False
+
+    waiver_set = runs.load_waiver_set(topic_id)
+    assert waiver_set is not None
+    assert all(w.finding_id != finding["id"] for w in waiver_set.waivers)
+
+
+def test_remove_waiver_missing_finding_is_a_noop(tmp_path: Path) -> None:
+    """Removing a waiver that was never recorded should not raise -- it's
+    already in the desired end state."""
+
+    topic_id = "systems-thinking"
+    runs = _create_guide_run(tmp_path, topic_id)
+    leak_json = _prompt_leak_guide_json()
+    _drive_guide_to_draft_approved(runs, topic_id, draft_body=leak_json)
+    runs.validate_run(topic_id, "draft")
+
+    result = runs.remove_waiver(topic_id, "draft", "does-not-exist")
+    assert isinstance(result, WaiverResult)
+    assert result.gate_open is False
 
 
 def test_manifest_write_lock_is_not_reentrant(tmp_path: Path) -> None:

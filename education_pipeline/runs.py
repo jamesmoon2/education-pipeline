@@ -1736,9 +1736,21 @@ class RunStore:
         return self._load_waiver_set(topic_id)
 
     def record_waiver(
-        self, topic_id: str, guide_sha256: str, finding_id: str, reason: str
-    ) -> WaiverSet:
-        """Atomically add or replace a waiver for ``finding_id`` on this topic.
+        self, topic_id: str, phase: str, finding_id: str, reason: str
+    ) -> WaiverResult:
+        """Waive one finding for ``phase`` and return the resulting gate.
+
+        Hash-bound to the current report's ``guide_sha256``: rather than
+        trusting a caller-supplied hash, this recomputes the phase report
+        fresh from the approved source (the same computation
+        :meth:`gate_result` performs) and binds the waiver to that hash, so
+        a waiver can never be recorded against stale content by accident.
+
+        Validates the reason is non-empty and the finding both exists in
+        the current report and is waivable, raising ``ConfigError``
+        otherwise -- so CLI callers get a clean, typed error instead of
+        silently persisting a waiver :func:`apply_waivers` would just
+        reject later.
 
         Read-modify-write of the waivers file is a critical section: the
         daemon's ``create_waiver`` endpoint runs on a ``ThreadingHTTPServer``,
@@ -1755,35 +1767,81 @@ class RunStore:
         different guide hash) is discarded rather than carried forward.
         """
 
-        safe_id = _artifact_id(topic_id, "topic id")
-        path = self.waivers_path(safe_id)
+        safe_id, _, _, _, report = self._compute_phase_report(topic_id, phase)
+        if not isinstance(reason, str) or not reason.strip():
+            raise ConfigError("waiver reason must not be empty")
+        reason = reason.strip()
+        finding = next((item for item in report.findings if item.id == finding_id), None)
+        if finding is None:
+            raise ConfigError(f"no finding {finding_id!r} in the current {phase} report")
+        if not finding.waivable:
+            raise ConfigError(f"finding {finding_id!r} is not waivable")
+
+        guide_sha256 = report.guide_sha256
         with self._manifest_write_lock(safe_id):
-            existing_set = self._load_waiver_set(safe_id)
-            existing: list[dict] = []
-            if existing_set is not None and existing_set.guide_sha256 == guide_sha256:
-                existing = [
-                    {"finding_id": w.finding_id, "reason": w.reason}
-                    for w in existing_set.waivers
-                    if w.finding_id != finding_id
-                ]
-            existing.append({"finding_id": finding_id, "reason": reason})
-            existing.sort(key=lambda item: item["finding_id"])
-            value = {
-                "schema_version": 1,
-                "guide_sha256": guide_sha256,
-                "waivers": existing,
-            }
-            _write_bytes_atomic(
-                path, (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
-            )
-            return WaiverSet(
-                guide_sha256=guide_sha256,
-                waivers=tuple(
-                    Waiver(finding_id=item["finding_id"], reason=item["reason"])
-                    for item in existing
-                ),
-                schema_version=1,
-            )
+            items = self._current_waiver_items_locked(safe_id, guide_sha256)
+            items = [item for item in items if item["finding_id"] != finding_id]
+            items.append({"finding_id": finding_id, "reason": reason})
+            new_set = self._write_waiver_set_locked(safe_id, guide_sha256, items)
+        return apply_waivers(report, new_set)
+
+    def remove_waiver(self, topic_id: str, phase: str, finding_id: str) -> WaiverResult:
+        """Remove one finding's waiver for ``phase`` and return the resulting gate.
+
+        Symmetric with :meth:`record_waiver`: hash-bound to a fresh
+        recompute of the current report, same locking discipline, same
+        atomic write. Removing a waiver that was never recorded (or
+        belonged to a stale hash, which is discarded rather than carried
+        forward) is a no-op -- the desired end state (no waiver for this
+        finding) already holds.
+        """
+
+        safe_id, _, _, _, report = self._compute_phase_report(topic_id, phase)
+        guide_sha256 = report.guide_sha256
+        with self._manifest_write_lock(safe_id):
+            items = self._current_waiver_items_locked(safe_id, guide_sha256)
+            items = [item for item in items if item["finding_id"] != finding_id]
+            new_set = self._write_waiver_set_locked(safe_id, guide_sha256, items)
+        return apply_waivers(report, new_set)
+
+    def _current_waiver_items_locked(self, topic_id: str, guide_sha256: str) -> list[dict]:
+        """Read the persisted waiver set as plain dicts, dropping it if stale.
+
+        Caller must already hold ``_manifest_write_lock(topic_id)``. Exists
+        so :meth:`record_waiver` and :meth:`remove_waiver` share one
+        read-side of the read-modify-write cycle instead of two divergent
+        copies.
+        """
+
+        existing_set = self._load_waiver_set(topic_id)
+        if existing_set is None or existing_set.guide_sha256 != guide_sha256:
+            return []
+        return [{"finding_id": w.finding_id, "reason": w.reason} for w in existing_set.waivers]
+
+    def _write_waiver_set_locked(
+        self, topic_id: str, guide_sha256: str, items: list[dict]
+    ) -> WaiverSet:
+        """Atomically write ``items`` as this topic's waivers file.
+
+        Caller must already hold ``_manifest_write_lock(topic_id)``. Exists
+        so :meth:`record_waiver` and :meth:`remove_waiver` share one
+        write-side of the read-modify-write cycle instead of two divergent
+        copies.
+        """
+
+        items = sorted(items, key=lambda item: item["finding_id"])
+        path = self.waivers_path(topic_id)
+        value = {"schema_version": 1, "guide_sha256": guide_sha256, "waivers": items}
+        _write_bytes_atomic(
+            path, (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        )
+        return WaiverSet(
+            guide_sha256=guide_sha256,
+            waivers=tuple(
+                Waiver(finding_id=item["finding_id"], reason=item["reason"]) for item in items
+            ),
+            schema_version=1,
+        )
 
     def _load_waiver_set(self, topic_id: str) -> WaiverSet | None:
         path = self.waivers_path(topic_id)
