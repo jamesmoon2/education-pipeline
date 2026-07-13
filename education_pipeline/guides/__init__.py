@@ -26,6 +26,7 @@ from .document import (
     render_guide_markdown,
 )
 from .reports import Finding, ValidationReport, ValidationSummary, canonical_report_bytes
+from .static_checks import StaticCheckResult, compute_static_checks
 from .validation import ValidationContext, validate_guide
 from .waivers import Waiver, WaiverResult, WaiverSet, apply_waivers
 
@@ -38,6 +39,7 @@ __all__ = [
     "GuideParseError",
     "ParseDiagnostic",
     "ParseResult",
+    "StaticCheckResult",
     "ValidationReport",
     "ValidationSummary",
     "ValidationContext",
@@ -50,6 +52,7 @@ __all__ = [
     "canonical_guide_bytes",
     "canonical_report_bytes",
     "check_contract_conflict",
+    "compute_static_checks",
     "extract_outline_contract",
     "extract_spec_contract",
     "guide_sha256",
