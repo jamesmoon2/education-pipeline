@@ -529,6 +529,13 @@ milestone's Wave 2 (stage attribution + sidecar report).
 
 ### P1 — First-run and course-management experience
 
+**Status: Design specified 2026-07-12** in
+[`docs/superpowers/specs/2026-07-12-first-run-course-management-design.md`](superpowers/specs/2026-07-12-first-run-course-management-design.md).
+Launcher-first approach: cockpit assets bundle into the wheel, a user-level
+workspace registry backs `education-pipeline ui`, and library/error work lands
+as thin layers on existing surfaces. Profile editing and blueprint
+recommendation stay in their own P1 milestones.
+
 - Add workspace selection and setup validation.
 - Add a guided New Course flow.
 - Add course library filtering, duplication, archiving, and reveal-in-files.
