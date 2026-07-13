@@ -61,7 +61,7 @@ next wave's manager recommendation and kickoff prompt).
 | 1 — Static checks | **complete** | `3103042..b0e5fd3` (5) | 557 | 114 | 41 | clean | See "Wave 1 outcome" below. The `assets_match`-on-assembly-failure semantics are settled — do not re-litigate. |
 | 2 — Attribution + report | **complete** | `ee3ceac..d0a291f` (7) | 565 | 123 | 41 | clean | See "Wave 2 outcome" below. `_validated_final` now returns a 3-tuple; sidecar + `export_report_path` shipped for Task 3.1's `report` command. |
 | 3 — CLI parity | **complete** | `c03bb24..f4e4f39` (10) | 592 | 127 | 41 | clean | See "Wave 3 outcome" below. Task 3.1b (waiver-aware badges) was folded in by owner decision. **Read the waivers-file existence contract before touching `remove_waiver` or `read_api`.** |
-| 4 — Acceptance + closeout | not started | | | | | | |
+| 4 — Acceptance + closeout | **complete** | `918caf3..762c684` (7, +4 interleaved docs-only from a parallel wave-runner session) | 600 | 127 | 42 | clean | See "Wave 4 outcome" below. **Milestone closed** — exit criterion met; five acceptance tests + UI-loop e2e are the executable record. |
 
 Baseline at plan time: pytest 478, vitest 114, e2e 41, build clean (commit `57f715e`).
 
@@ -169,6 +169,31 @@ Task 2.3 says the sidecar write and the exported-event append "sit inside the Ta
 - `read_api._validation_summary` still defaults stage-less findings to a flat `"draft"` while the CLI and the web both derive it from the phase. Legacy-only and self-healing, but it is now the last surface out of three.
 - `report` reflects **export-time** gate state (the frozen sidecar) while `validate` reflects **current** state; now warned about on stderr, still worth a docs line in Task 4.3.
 - Carried from earlier waves: `role="status"` live region on the findings badge; `report_state` ignores `report_schema_version` (a v1 report against unchanged content stays "current" forever); `_finalize_guide_v1` still does its own parse; the heading-order rule tracks the deepest heading seen rather than the previous one.
+
+### Wave 4 outcome (milestone close — read before the post-milestone audit)
+
+**Gate:** pytest 600, vitest 127, e2e 42/42, build clean at `762c684`. Whole-wave review (Fable): READY TO RECORD after two fix-before-close items (below); the reviewer independently re-verified both fixes' RED evidence in an isolated worktree, per this milestone's standard.
+
+**Exit criterion: MET.** The executable record is `tests/test_release_gate_acceptance.py` (five tests) plus `web/e2e/release-gates.spec.ts`:
+
+- structural refusal — `test_structural_refusal_export_raises_and_leaves_no_artifacts`;
+- privacy refusal — `test_privacy_refusal_blocks_export_until_waived` (its RED was re-verified against pre-wave code: `private_values` was **dead end-to-end** before this wave — `privacy.exact_private_value` could never fire from a real run; wired via `RunStore._private_profile_values` in `918caf3`);
+- reproducibility — `test_export_and_sidecar_are_byte_identical_across_independent_runs` (two independent workspaces, stronger than the plan's wording);
+- stale waivers never open the gate — `test_stale_waiver_never_reopens_the_gate`;
+- export's own last-line gate — `test_export_refuses_after_unwaive_following_finalize` (`95f452b`, found by the final review: waive → finalize → `unwaive` leaves the run finalized and the report "current", so the internal `apply_waivers` gate at `runs.py:985` is the *sole* defense on that reachable path; sabotage-RED re-verified line-targeted);
+- UI loop — seed → draft badge → stage link → repair in editor → re-run → waive with reason → export → on-disk `gate.open === true` (+ page-wide axe). Every acceptance test carries sabotage-RED evidence (Wave 3's test-quality warning held: one real milestone gap and one untested last-line gate were found this wave).
+
+**Behavior changes beyond the plan (owner should know):**
+
+- Wiring `private_values` means **draft-phase validation now screens profile leaks too** (via `_compute_phase_report`) — draft reports are now profile-sensitive inputs; a run quoting its attached profile verbatim can newly block (waivable; fail-closed under waiver hash-binding). The field-selection policy (free-text/identity fields in, categorical out) is implementer-derived with no backing spec — record it in the design spec during the audit.
+- CLI exit codes unified (`762c684`, triage ruling): engine `ConfigError` → exit 2 in `validate`/`findings`/`report` (previously leaked to `main()` → exit 1, colliding with "gate blocked"). 0 = open/success, 1 = gate blocked, 2 = usage/config error; README synced. `waive`/`unwaive` by design never exit 1 (0 = recorded even if the gate stays blocked).
+- `web/e2e/helpers/daemon.ts` (`bootDaemon`) extracted (this spec would have been the 6th inline daemon-boot copy); existing specs deliberately not migrated.
+
+**Final triage of the milestone's deferred-Minor roll-up (adjudicated by the final review):**
+
+- **Resolved this wave:** CLI exit-code non-uniformity; export-internal-gate test gap; unused `HEADING_PATH`.
+- **Deferred to the post-milestone audit** (carry verbatim into the audit doc): no daemon DELETE/unwaive route (cockpit parity); `write_api` → private `runs._record_waiver` (promote a public method); `_validation_summary`'s flat `"draft"` default for stage-less findings; `report_state` ignores `report_schema_version` (recommendation: treat `< 2` as stale); `role="status"` live region on the findings badge; `_finalize_guide_v1`'s duplicate parse; heading-order rule tracks deepest-seen not previous (plan-level, owner policy call); `load_runtime_assets()` OSError → last-resort 500 on status polling; truncated-body handler hang (pre-existing, loopback+auth only); `_private_profile_values` field-selection spec paragraph; migrating older e2e specs onto `bootDaemon`; **pytest-timeout** (a lock-nesting regression still hangs CI silently — needs a new dev dependency, so issue-first per repo rules).
+- **Note-level (accepted):** README's blanket "all five commands share one exit-code contract" sentence is slightly loose for `waive`/`unwaive` (per-command bullets are precise); `_cmd_report`'s `ConfigError → 2` catch is a shade wider than "nonexistent run / no report"; page-wide axe scan is stricter than the plan asked.
 
 ---
 
@@ -1158,11 +1183,11 @@ git commit -m "feat(cli): waive/unwaive commands backed by shared store waiver m
 3. **Reproducibility:** full validate→finalize→export twice on the same content ⇒ export HTML and sidecar report both byte-identical.
 4. **Stale waivers never open the gate:** mutate the repair content after waiving ⇒ `apply_waivers` reports `stale` and export refuses.
 
-- [ ] **Step 1: Write all four tests, run, and triage** — some may pass immediately (earlier waves built the behavior); that is fine, they are the acceptance record. Any failure is a real gap: fix it in this task with its own red-green cycle.
+- [x] **Step 1: Write all four tests, run, and triage** — some may pass immediately (earlier waves built the behavior); that is fine, they are the acceptance record. Any failure is a real gap: fix it in this task with its own red-green cycle.
 
-- [ ] **Step 2: Run** `python3 -m pytest tests/test_release_gate_acceptance.py -v` → PASS.
+- [x] **Step 2: Run** `python3 -m pytest tests/test_release_gate_acceptance.py -v` → PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/test_release_gate_acceptance.py tests/fixtures/guides/
@@ -1182,9 +1207,9 @@ seed a guide-v1 run whose draft content contains a placeholder blocker → run b
 
 Include the suite's standard `@axe-core` accessibility check on the findings panel and badge states.
 
-- [ ] **Step 1: Write the spec, run it, iterate to green** — `cd web && npx playwright test e2e/release-gates.spec.ts` → PASS.
+- [x] **Step 1: Write the spec, run it, iterate to green** — `cd web && npx playwright test e2e/release-gates.spec.ts` → PASS.
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add web/e2e/
@@ -1197,9 +1222,9 @@ git commit -m "test(e2e): finding -> repair -> rerun -> waive -> export acceptan
 - Modify: `README.md` (document the CLI gate commands and the sidecar quality report), `docs/product-requirements.md` (§10 mark "P0 — Establish deterministic release gates" delivered with evidence links, same pattern as the model-plan closeout at line 485)
 - Modify: this plan document (final Wave Log row)
 
-- [ ] **Step 1: Update README** — a short "Release gates" subsection: what blocks export, how to read the sidecar report, the five CLI commands, waiver semantics (hash-bound, reason required). Keep it domain-neutral.
-- [ ] **Step 2: Update the PRD** §10 status line linking this plan and spec.
-- [ ] **Step 3: Commit**
+- [x] **Step 1: Update README** — a short "Release gates" subsection: what blocks export, how to read the sidecar report, the five CLI commands, waiver semantics (hash-bound, reason required). Keep it domain-neutral.
+- [x] **Step 2: Update the PRD** §10 status line linking this plan and spec.
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md docs/product-requirements.md docs/superpowers/plans/2026-07-12-deterministic-release-gates.md
@@ -1208,4 +1233,4 @@ git commit -m "docs: close deterministic-release-gates milestone"
 
 ### Wave 4 close
 
-- [ ] Run the wave-close checklist. This is the final wave: instead of a next-wave kickoff prompt, print a milestone summary (exit criterion met? evidence: which tests) and a recommendation for whether a post-milestone audit session (Opus or Fable, and effort) is warranted, mirroring `docs/superpowers/specs/2026-07-12-model-plan-configuration-post-milestone-audit.md`.
+- [x] Run the wave-close checklist. This is the final wave: instead of a next-wave kickoff prompt, print a milestone summary (exit criterion met? evidence: which tests) and a recommendation for whether a post-milestone audit session (Opus or Fable, and effort) is warranted, mirroring `docs/superpowers/specs/2026-07-12-model-plan-configuration-post-milestone-audit.md`.
