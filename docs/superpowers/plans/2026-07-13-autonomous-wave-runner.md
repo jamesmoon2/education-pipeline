@@ -413,6 +413,7 @@ def parse_reset_time(text: str, now: datetime) -> datetime | None:
 - Consumes: `WaveInfo` from Task 0.1.
 - Produces:
   - `kickoff.kickoff_prompt(plan_path: str, wave: WaveInfo) -> str` — the playbook template with plan path and `wave.number` substituted; when `wave.tasks_done > 0` it prepends the continue-preamble: `"This wave was interrupted. The plan doc's checkboxes are canonical: {done}/{total} tasks are already complete — do NOT redo them."` Every prompt ends with the contract clause: `"Your final message must be exactly one JSON object: {\"wave\": N, \"status\": \"closed\"|\"blocked\"|\"parked\", \"gate\": {...}, \"next_wave\": ..., \"next_model\": ..., \"next_effort\": ..., \"notes\": \"...\"} — no prose before or after it."`
+  - `kickoff.resume_prompt() -> str` — the short continuation message for `--resume` launches: the resumed session already holds the whole wave in context, so it must NOT be re-sent the kickoff (which would invite starting over) — only "continue, don't redo" plus the contract clause.
   - `status.RunnerStatus` dataclass: `plan: str, wave: int, session_id: str, attempt: int, state: str, detail: str, cumulative_cost_usd: float, updated_at: str`
   - `status.save(path: Path, s: RunnerStatus) -> None` (atomic: temp + `os.replace`), `status.load(path: Path) -> RunnerStatus | None` (`None` if missing or malformed — the status file is advisory, never fatal).
 
@@ -437,6 +438,12 @@ def test_fresh_kickoff_mentions_plan_wave_and_contract():
 def test_continue_kickoff_carries_progress():
     p = kickoff.kickoff_prompt("docs/plans/x.md", WaveInfo(2, False, 5, 3))
     assert "3/5 tasks are already complete" in p and "interrupted" in p
+
+def test_resume_prompt_is_short_and_restates_contract():
+    p = kickoff.resume_prompt()
+    assert "interrupted" in p and "do not redo completed work" in p
+    assert "final message must be exactly one JSON object" in p
+    assert "Read " not in p  # a resumed session already has the plan in context
 
 def test_status_roundtrip_and_malformed(tmp_path):
     f = tmp_path / "wave-runner-status.json"
@@ -487,6 +494,11 @@ def kickoff_prompt(plan_path: str, wave: WaveInfo) -> str:
         prompt += _CONTINUE.format(done=wave.tasks_done, total=wave.tasks_total)
     prompt += _TEMPLATE.format(plan=plan_path, wave=wave.number)
     return prompt + _CONTRACT
+
+def resume_prompt() -> str:
+    return ("Your session was interrupted (usage limit or crash) and has been "
+            "resumed. Continue the wave from exactly where you left off; "
+            "do not redo completed work. " + _CONTRACT)
 ```
 
 ```python
@@ -571,7 +583,7 @@ def load(path: Path) -> RunnerStatus | None:
 - Produces:
   - `@dataclass(frozen=True) SessionSpec(prompt: str, session_id: str, model: str, effort: str, resume: str | None = None, max_budget_usd: float | None = None, claude_bin: str = "claude")`
   - `build_command(spec: SessionSpec) -> list[str]` — fresh launch uses `-p <prompt> --session-id <id>`; `spec.resume` set uses `-p <prompt> -r <resume>` (no `--session-id`). Always: `--model`, `--effort`, `--output-format stream-json --verbose`, `--permission-mode auto`; `--max-budget-usd` only when given.
-  - `@dataclass SessionOutcome(kind: str, exit_code: int | None, result_text: str, is_error: bool, cost_usd: float)` — `kind ∈ {"result", "stalled", "died"}`. `result_text` is the final `result` event's `result` field (empty for stalled/died); `cost_usd` from the result event's `total_cost_usd` (0.0 if absent).
+  - `@dataclass SessionOutcome(kind: str, exit_code: int | None, result_text: str, is_error: bool, cost_usd: float, tail: str)` — `kind ∈ {"result", "stalled", "died"}`. `result_text` is the final `result` event's `result` field (empty for stalled/died); `cost_usd` from the result event's `total_cost_usd` (0.0 if absent); `tail` is the last ~20 raw output lines regardless of kind — **a limit-hit may kill the session without emitting a result event, so limit detection must have something to read on `died`/`stalled` too.**
   - `run_session(cmd: list[str], log_path: Path, stall_timeout_s: float) -> SessionOutcome` — spawns the process, appends every stdout line to `log_path` as it arrives (reader thread + `queue.Queue`), and: no line for `stall_timeout_s` → `terminate()`, 10 s grace, `kill()` → `kind="stalled"`; EOF with a `{"type": "result", ...}` line seen → `kind="result"`; EOF without one → `kind="died"`.
   - The fake executable: `tests/fake_claude/fake_claude.py`, driven by the env var `FAKE_CLAUDE_SCRIPT` naming a JSON file of directives: `{"mode": "result"|"hang"|"die", "result": "...", "is_error": false, "cost": 0.5, "delay_s": 0, "hang_after_lines": 2}`. In `result` mode it prints two assistant stream lines then the result event and exits 0; `hang` prints `hang_after_lines` lines then sleeps 3600 s; `die` prints one line and exits 1 without a result event. It records its argv to `FAKE_CLAUDE_ARGV_LOG` (one JSON line per invocation) so tests can assert flags.
 
@@ -678,6 +690,7 @@ def test_run_session_death_without_result(fake_env, tmp_path):
     script.write_text(json.dumps({"mode": "die"}))
     out = session.run_session(_cmd(), tmp_path / "wave.log", stall_timeout_s=30)
     assert out.kind == "died" and out.exit_code == 1
+    assert "working" in out.tail  # tail survives even when no result event does
 ```
 
 - [ ] **Step 3: Run to verify failure** → FAIL (`session` has no attributes).
@@ -692,6 +705,7 @@ import json
 import queue
 import subprocess
 import threading
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -712,6 +726,7 @@ class SessionOutcome:
     result_text: str
     is_error: bool
     cost_usd: float
+    tail: str                  # last output lines; the only evidence when no result event exists
 
 def build_command(spec: SessionSpec) -> list[str]:
     cmd = [spec.claude_bin, "-p", spec.prompt]
@@ -737,6 +752,7 @@ def run_session(cmd: list[str], log_path: Path, stall_timeout_s: float) -> Sessi
     q: queue.Queue = queue.Queue()
     threading.Thread(target=_reader, args=(proc.stdout, q), daemon=True).start()
     result_event = None
+    tail: deque[str] = deque(maxlen=20)
     with open(log_path, "a", encoding="utf-8") as log:
         while True:
             try:
@@ -748,11 +764,13 @@ def run_session(cmd: list[str], log_path: Path, stall_timeout_s: float) -> Sessi
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait()
-                return SessionOutcome("stalled", proc.returncode, "", True, 0.0)
+                return SessionOutcome("stalled", proc.returncode, "", True,
+                                      0.0, "".join(tail))
             if line is None:
                 break
             log.write(line)
             log.flush()
+            tail.append(line)
             try:
                 event = json.loads(line)
             except ValueError:
@@ -761,12 +779,13 @@ def run_session(cmd: list[str], log_path: Path, stall_timeout_s: float) -> Sessi
                 result_event = event
     exit_code = proc.wait()
     if result_event is None:
-        return SessionOutcome("died", exit_code, "", True, 0.0)
+        return SessionOutcome("died", exit_code, "", True, 0.0, "".join(tail))
     return SessionOutcome(
         "result", exit_code,
         str(result_event.get("result") or ""),
         bool(result_event.get("is_error", False)),
         float(result_event.get("total_cost_usd") or 0.0),
+        "".join(tail),
     )
 ```
 
@@ -1253,11 +1272,11 @@ if __name__ == "__main__":
   - `class Halt(Exception)` — the diagnosis of an anomaly that stops the whole run. Raised anywhere inside a wave, caught once in `run_plans`.
   - `run_plans(config: RunnerConfig) -> int` — exit code 0 = all plans complete, 2 = halted on anomaly (pre-flight refusal → 1 lives in the CLI). Thin: create one `_Run`, iterate plans, catch `Halt` → record + notify + return 2.
   - `class _Run` — holds the cross-wave state (`config`, injected `wait`, `cumulative_cost`, `carried: WaveResult | None`, `last_attempt`) so no method needs more than two parameters. Methods, each single-purpose:
-    - `execute_plan(plan_path)` — `while (wave := first open wave)` → `_execute_wave`; then milestone notification.
-    - `_execute_wave(plan_path, wave) -> WaveResult` — the per-wave loop: snapshot via `recovery.snapshot_wave_start`, `_launch`, then classify. `closed` → `_confirm_close` + `_announce_close` + return. `parked` → `_park` (raises `Halt` past `max_consecutive_parks`; notifies; waits; does **not** consume the attempt) then relaunch fresh. `blocked` / `ContractViolation` / second failure → raise `Halt`. First failure → `_wait_if_limit` (limit message ⇒ notify + wait until reset), then `wave_progressed(start)` ? relaunch fresh : relaunch with `resume=session_id`; consumes the wave's single recovery attempt.
-    - `_launch(attempt: _Attempt) -> SessionOutcome` — builds the `SessionSpec` (kickoff prompt from the re-read `WaveInfo`), saves `state="running"` status, runs the session, accumulates cost. `_Attempt` is a frozen dataclass `(plan_path, wave: WaveInfo, model, effort, resume_id, session_id)`.
+    - `execute_plan(plan_path)` — resets `carried` (recommendations never cross plan boundaries), then `while (wave := first open wave)` → `_execute_wave`; then milestone notification.
+    - `_execute_wave(plan_path, wave) -> WaveResult` — the per-wave loop: snapshot via `recovery.snapshot_wave_start`, `_launch`, then classify. `closed` → `_confirm_close` + `_announce_close` + return. `parked` → `_park` (raises `Halt` past `max_consecutive_parks`; notifies; waits; does **not** consume the attempt) then relaunch fresh. `blocked` / `ContractViolation` / second failure → raise `Halt`. First failure → `_wait_if_limit` (scans `result_text` **and** `tail` — a limit death may emit no result event; limit evidence ⇒ notify + wait until reset), then `wave_progressed(start)` ? relaunch fresh : relaunch with `resume=session_id`; consumes the wave's single recovery attempt.
+    - `_launch(attempt: _Attempt) -> SessionOutcome` — builds the `SessionSpec` (`kickoff_prompt` from the re-read `WaveInfo` for fresh launches, `resume_prompt()` when `attempt.resume_id` is set), saves `state="running"` status, runs the session, accumulates cost. `_Attempt` is a frozen dataclass `(plan_path, wave: WaveInfo, model, effort, resume_id, session_id)`.
     - `_model_and_effort(plan_path, wave_number)` — carried JSON `next_model`/`next_effort` if set, else `manager_line`, else config defaults.
-    - `_confirm_close(start: WaveStart)` — raises `Halt` unless the plan file appears in `git log <start.sha>..HEAD --name-only` **and** the working-tree Wave Log row for `start.wave` is `complete`. Never re-runs tests.
+    - `_confirm_close(start: WaveStart)` — raises `Halt` unless the plan file's **repo-relative path** appears as a line of `git log <start.sha>..HEAD --name-only` (basename matching would let any same-named file fake a close) **and** the working-tree Wave Log row for `start.wave` is `complete`. Never re-runs tests.
     - `record_halt(plan_path, reason)` — saves `state="halted"` status with the diagnosis + exact manual-resume command (`claude -r <session-id>`), notifies `"Wave runner HALTED"`.
   - `tools/wave_runner.py` — argparse CLI: `wave_runner.py PLAN [PLAN ...] [--branch main] [--claude-bin claude] [--stall-timeout 1800] [--max-budget-usd X] [--ntfy-topic T] [--log-dir .wave-runner-logs]`; maps onto `RunnerConfig`, runs pre-flight (exit 1 with the failure list printed), then `run_plans`.
   - `tools/run_waves.sh` — two lines: `#!/bin/sh` and `exec caffeinate -is python3 "$(dirname "$0")/wave_runner.py" "$@"`; `chmod +x`.
@@ -1495,6 +1514,7 @@ class _Run:
         self.last_attempt: _Attempt | None = None
 
     def execute_plan(self, plan_path: Path) -> None:
+        self.carried = None  # recommendations never cross plan boundaries
         while (wave := self._first_open_wave(plan_path)) is not None:
             self.carried = self._execute_wave(plan_path, wave)
         notify(f"Plan complete: {plan_path.name}",
@@ -1537,8 +1557,10 @@ class _Run:
     def _launch(self, attempt: _Attempt) -> session.SessionOutcome:
         self.last_attempt = attempt
         self._save_status(attempt, "running", "")
+        prompt = (kickoff.resume_prompt() if attempt.resume_id
+                  else kickoff.kickoff_prompt(str(attempt.plan_path), attempt.wave))
         spec = session.SessionSpec(
-            prompt=kickoff.kickoff_prompt(str(attempt.plan_path), attempt.wave),
+            prompt=prompt,
             session_id=attempt.session_id, model=attempt.model,
             effort=attempt.effort, resume=attempt.resume_id,
             max_budget_usd=self.config.max_budget_usd)
@@ -1568,10 +1590,10 @@ class _Run:
 
     def _wait_if_limit(self, wave: plandoc.WaveInfo,
                        outcome: session.SessionOutcome) -> None:
-        if outcome.kind != "result" or not contract.is_limit_message(outcome.result_text):
+        evidence = f"{outcome.result_text}\n{outcome.tail}"
+        if not contract.is_limit_message(evidence):
             return
-        reset_at = contract.parse_reset_time(outcome.result_text,
-                                             dt.datetime.now())
+        reset_at = contract.parse_reset_time(evidence, dt.datetime.now())
         notify(f"Usage limit hit (wave {wave.number})",
                f"sleeping until {reset_at or 'unknown — polling'}",
                self.config.notify_config)
@@ -1581,7 +1603,8 @@ class _Run:
         log = subprocess.run(
             ["git", "log", "--name-only", f"{start.sha}..HEAD"],
             cwd=start.repo_root, capture_output=True, text=True, timeout=30)
-        if start.plan_path.name not in log.stdout:
+        rel = start.plan_path.resolve().relative_to(start.repo_root.resolve())
+        if str(rel) not in log.stdout.splitlines():
             raise Halt("plan document was not committed during the wave")
         waves = plandoc.parse_waves(start.plan_path.read_text(encoding="utf-8"))
         if not any(w.number == start.wave and w.closed for w in waves):
@@ -1726,7 +1749,7 @@ exec caffeinate -is python3 "$(dirname "$0")/wave_runner.py" "$@"
   7. verify-close mismatch (fake claims closed, never edits plan) → exit 2;
   8. stall (hang mode, `--stall-timeout 1`) → watchdog kill → recovery → exit 0;
   9. pre-flight failure (dirty tree, no `--skip-preflight`) → exit 1, nothing launched (argv log empty);
-  10. two plans sequenced → exit 0, second plan's waves closed after first.
+  10. two plans sequenced → exit 0, second plan's waves closed after first, **and** the second plan's wave 0 launches with its own `**Wave 0 manager:**` model (assert via the argv log) — not the first plan's carried final-wave recommendation.
 - [ ] **Step 2: Run** — `python3 -m pytest tests/test_waverunner_e2e.py -v` → all PASS (fix the code, not the scenario, on failure).
 - [ ] **Step 3: Commit** — `git commit -m "test(waverunner): end-to-end scenario matrix through the CLI"`
 

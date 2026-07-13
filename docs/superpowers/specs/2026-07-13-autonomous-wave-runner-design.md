@@ -111,7 +111,9 @@ Mismatch → anomaly path.
 ### 4. Budget handling (three layers)
 
 **Layer 1 — recovery on limit-hit.** Detected via the JSON error result or
-nonzero exit carrying the limit message. Parse the reset time if present;
+nonzero exit carrying the limit message; because a limit death may emit no
+result event at all, the session supervisor keeps a tail of the last output
+lines and limit detection scans both. Parse the reset time if present;
 otherwise retry on a capped backoff (every 20 min). Recovery picks the
 cheaper of two modes by inspecting the plan doc/git:
 
