@@ -60,7 +60,7 @@ next wave's manager recommendation and kickoff prompt).
 | 0 — Hardening | **complete** | `5f03d56..d492ccc` (10) | 543 | 114 | 41 | clean | See "Wave 0 outcome" below. **Read the manifest-lock composition contract before touching `RunStore`.** |
 | 1 — Static checks | **complete** | `3103042..b0e5fd3` (5) | 557 | 114 | 41 | clean | See "Wave 1 outcome" below. The `assets_match`-on-assembly-failure semantics are settled — do not re-litigate. |
 | 2 — Attribution + report | **complete** | `ee3ceac..d0a291f` (7) | 565 | 123 | 41 | clean | See "Wave 2 outcome" below. `_validated_final` now returns a 3-tuple; sidecar + `export_report_path` shipped for Task 3.1's `report` command. |
-| 3 — CLI parity | not started | | | | | | |
+| 3 — CLI parity | **complete** | `c03bb24..f4e4f39` (10) | 592 | 127 | 41 | clean | See "Wave 3 outcome" below. Task 3.1b (waiver-aware badges) was folded in by owner decision. **Read the waivers-file existence contract before touching `remove_waiver` or `read_api`.** |
 | 4 — Acceptance + closeout | not started | | | | | | |
 
 Baseline at plan time: pytest 478, vitest 114, e2e 41, build clean (commit `57f715e`).
@@ -135,6 +135,40 @@ Task 2.3 says the sidecar write and the exported-event append "sit inside the Ta
 - Sidecar write `OSError` after the HTML write lands on the last-resort 500 (same exposure class as the pre-existing HTML write; pairs with Wave 1's `load_runtime_assets` OSError item).
 - `_validation_summary`'s flat `"draft"` default for stage-less findings vs `findingHref`'s phase-derived fallback — legacy-only, self-healing, accepted.
 - `ValidationFindingsPanel.test.tsx` fixture says `report_schema_version: 1` while its findings carry `stage` (a hybrid that doesn't exist); the exported event carries redundant-but-equal `quality_report_file_sha256` + `quality_report_sha256`; `_finalize_guide_v1` still does its own parse (fold into closeout cleanup).
+
+### Wave 3 outcome (read before Wave 4)
+
+**Gate:** pytest 592, vitest 127, e2e 41/41, build clean at `f4e4f39`. Whole-wave review (Opus): READY TO RECORD after two Important fixes (below). The reviewer independently re-derived the `_manifest_write_lock` audit (7 lock sites, 8 `_locked` primitive calls, every one inside a lock, zero outside) and re-verified the fixes' RED evidence in an isolated worktree rather than trusting the report.
+
+**Scope addition (owner-approved, not in the original plan): Task 3.1b.** Wave 2's reviewer flagged the cockpit's badges and re-run affordance as waiver-blind; the owner folded the fix into this wave rather than deferring it. The daemon's `_validation_summary` now reports a post-waiver `effective_blocking`, and the RunBoard badges + `ValidationFindingsPanel`'s re-run button key off it, so a fully-waived (gate-open) run no longer shows a red badge or an un-clearable re-run button. `findings_by_stage` is netted post-waiver **server-side**.
+
+**⚠️ The waivers-file existence contract — three components are now coupled through it.**
+
+`read_api._validation_summary` skips an expensive per-poll `gate_result` recompute (full parse + normalize + static checks; plus a runtime render + a11y pass for `final`) **only when `load_waiver_set(topic_id) is None`** — i.e. only when the waivers file *does not exist*. Two consequences that bit twice in this wave:
+
+- **No writer may leave an empty waivers file behind.** `remove_waiver` originally wrote `{"waivers": []}` unconditionally, so `unwaive` of a typo'd id — and later, of the *last* real waiver — created a file that was semantically identical to "no waivers" but permanently defeated the short-circuit for that topic, with nothing to heal it. Both paths are now closed: a no-op removal writes nothing, and removing the last waiver `unlink`s the file. `_write_waiver_set_locked` is the **sole** writer of `waivers_path`; keep it that way.
+- **`load_waiver_set` RAISES `ConfigError` on a malformed file and returns `None` only for "no file".** Conflating the two produced the wave's nastiest bug: a `load_waiver_set` call placed *outside* a `ConfigError` handler turned a graceful degrade into an **HTTP 400 on `GET /v1/runs/{topic}`** — the endpoint the cockpit polls every 5 seconds — and because `read_api.py:49` builds the topic-list payload by calling `run_status_payload` for *every* topic, **one** corrupt waivers file on **one** run 400'd the entire `/v1/topics` list. Every read-path call site is now guarded (`_validation_summary`, `_next_action_guide_v1`); the remaining raising sites (`_export_guide_v1`, `_finalize_guide_v1`) are fail-closed **write** paths where raising is correct, and `waivers_payload` raises by documented contract.
+
+**Two notions of "the report" now coexist — do not pair them.** The on-disk report JSON, and the report freshly recomputed by `_compute_phase_report`. Pairing a *stale* on-disk body with a *fresh* recomputed gate makes a surface disagree with itself, and this bug was found independently in **both** `_cmd_report` and `_validation_summary`. The rule: only trust a recomputed gate when `report_state` is `"current"`; otherwise fall back to the raw counts and let the stale banner do its job. Waivers are hash-bound, so the recompute is fail-safe in the other direction — a waiver set recorded against different content is dropped and the gate **closes**; it can never silently open one.
+
+**Interfaces Wave 4 builds on (as shipped):**
+
+- `RunStore.gate_result(topic_id, phase) -> WaiverResult`, `RunStore.validate_and_gate(...)`, and the shared private `RunStore._compute_phase_report(...)`. `gate_result` **recomputes** from the approved source (there is no `ValidationReport.from_dict()`, and adding one would be new untested schema surface for zero gain — the reviewer adjudicated the recompute sound and fail-safe).
+- `RunStore.record_waiver(topic_id, phase, finding_id, reason) -> WaiverResult` and `RunStore.remove_waiver(topic_id, phase, finding_id) -> WaiverResult`. Both hash-bound, atomic, single-critical-section. `write_api.create_waiver` builds its response payload from the `WaiverSet` written **inside** the lock (via the private `_record_waiver`), not from an unlocked re-read — the re-read was racy and dereferenced an unchecked Optional.
+- CLI: `education-pipeline validate | findings | report | waive | unwaive`. **Exit codes: 0 = gate open/success, 1 = gate blocked, 2 = usage error.** `waive`/`unwaive` catch `ConfigError` locally → 2; `validate`/`findings`/`report` let it reach `main()` → 1 (see carry-forward #2 — the surfaces disagree about what 1 means).
+- `_warn_if_report_stale` (`cli.py`) — read commands print the on-disk body but warn on stderr when it is stale, keeping stdout pipeable while the exit code carries current truth. Gate/write paths still fail closed.
+- Daemon: `_validation_summary` carries `effective_blocking` (post-waiver). TS `effective_blocking` is **optional** with a raw-count fallback (the `d0a291f` precedent — an absent field must never silently read as 0 and hide a blocker).
+
+**Test-quality note for Wave 4 (this wave's recurring defect).** Every review in this wave caught tests that would pass against unfixed code — including, at the extreme, a regression test that could never reach the path named in its own docstring (its fixture was draft-only and the guarded line required a finalize-ready run), and an existing test that had **encoded the old buggy behavior** and would have actively defended the bug. Wave 4 is the acceptance suite; for every test, verify it is genuinely RED against the unfixed code before believing it.
+
+**Residual items for milestone final triage (accepted this wave, not blockers):**
+
+- No `DELETE` waiver route: the cockpit can create waivers but cannot remove them, though the store now supports it. CLI/cockpit parity gap this wave opened.
+- CLI exit-code convention is not uniform: `ConfigError` → 2 in `waive`/`unwaive`, but → 1 (via `main`) in `validate`/`findings`/`report`, colliding with "gate blocked". `education-pipeline validate typo-topic` exits 1, so `validate "$t" || echo blocked` mislabels a nonexistent run as a blocked gate.
+- `write_api.py` reaches into the private `runs._record_waiver` (deliberate and documented — it needs the locked-write `WaiverSet` without a racy re-read — but the layering is wrong; promote a public method returning both).
+- `read_api._validation_summary` still defaults stage-less findings to a flat `"draft"` while the CLI and the web both derive it from the phase. Legacy-only and self-healing, but it is now the last surface out of three.
+- `report` reflects **export-time** gate state (the frozen sidecar) while `validate` reflects **current** state; now warned about on stderr, still worth a docs line in Task 4.3.
+- Carried from earlier waves: `role="status"` live region on the findings badge; `report_state` ignores `report_schema_version` (a v1 report against unchanged content stays "current" forever); `_finalize_guide_v1` still does its own parse; the heading-order rule tracks the deepest heading seen rather than the previous one.
 
 ---
 
@@ -1005,13 +1039,15 @@ git commit -m "feat(web): re-run validation affordance for the repair loop"
 - Test: `tests/test_cli.py`
 
 **Interfaces:**
-- Consumes: `RunStore.validate_run(topic_id, phase)`, `report_state`, report files via `draft_report_path`/`final_report_path`, `apply_waivers` + `RunStore._load_waiver_set` — expose the latter properly: add a public `RunStore.gate_result(topic_id, phase) -> WaiverResult` wrapper so the CLI never touches privates.
+- Consumes: `RunStore.validate_run(topic_id, phase)`, `report_state`, report files via `draft_report_path`/`final_report_path`, `apply_waivers` + `RunStore.load_waiver_set` — add a public `RunStore.gate_result(topic_id, phase) -> WaiverResult` wrapper so the CLI never touches privates.
+
+> **As shipped:** `load_waiver_set` was already **public** (Wave 0), not `_load_waiver_set` as this line originally said. `gate_result` **recomputes** the report from the approved source via the shared `_compute_phase_report` rather than deserializing the on-disk JSON — there is no `ValidationReport.from_dict()`, and the recompute is fail-safe because waivers are hash-bound. `validate_and_gate` was added so `validate` does not compute the same report twice.
 - Produces:
   - `education-pipeline validate <topic> [--phase draft|final]` (default `final`) — runs validation, prints the summary line, exit 0 if the gate is open, exit 1 if blocking findings remain.
   - `education-pipeline findings <topic> [--phase] [--blocking]` — prints one line per finding: `severity  rule_id  stage  path  message` (tab-separated), exit 0 always (listing is not a gate).
   - `education-pipeline report <topic>` — prints the export sidecar quality report (`export_report_path`) verbatim if present, else the final validation report; exit 0/1 by `gate.open`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_cli.py (follow the module's existing main([...]) invocation + capsys pattern)
@@ -1033,18 +1069,33 @@ def test_report_command_prints_sidecar_after_export(exported_guide_workspace, ca
 
 Match `test_cli.py`'s real invocation helper and root-flag spelling (read the module's existing `_cmd_status` tests first). Build fixtures from the existing guide-v1 run helpers used by `tests/test_runs.py`.
 
-- [ ] **Step 2: Run, verify failures** — `python3 -m pytest tests/test_cli.py -k "validate_command or findings_command or report_command" -v` → FAIL (unknown command).
+- [x] **Step 2: Run, verify failures** — `python3 -m pytest tests/test_cli.py -k "validate_command or findings_command or report_command" -v` → FAIL (unknown command).
 
-- [ ] **Step 3: Implement** the three parsers + `_cmd_validate`, `_cmd_findings`, `_cmd_report`, and `RunStore.gate_result`. Follow the existing `_cmd_finalize`/`_cmd_status` structure (`_root(args)`, print, return int). No new output frameworks — plain `print`.
+- [x] **Step 3: Implement** the three parsers + `_cmd_validate`, `_cmd_findings`, `_cmd_report`, and `RunStore.gate_result`. Follow the existing `_cmd_finalize`/`_cmd_status` structure (`_root(args)`, print, return int). No new output frameworks — plain `print`.
 
-- [ ] **Step 4: Run** `python3 -m pytest tests/test_cli.py tests/test_runs.py -v` → PASS. Also run the CI smoke: `education-pipeline --help` exits 0.
+- [x] **Step 4: Run** `python3 -m pytest tests/test_cli.py tests/test_runs.py -v` → PASS. Also run the CI smoke: `education-pipeline --help` exits 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/cli.py education_pipeline/runs.py tests/test_cli.py
 git commit -m "feat(cli): validate, findings, and report commands with gate exit codes"
 ```
+
+### Task 3.1b: Waiver-aware badges and re-run affordance (added mid-wave, owner-approved)
+
+Not in the original plan. Wave 2's whole-wave reviewer flagged that the cockpit's per-stage findings badges and "Re-run validation" button were **waiver-blind** — a run whose blockers were all waived (gate open, ready to export) still showed a red badge and an un-clearable re-run button, telling the user there was actionable work when there was none. Task 3.1 builds `RunStore.gate_result` anyway, which is the natural vehicle, so the owner folded the fix into this wave rather than deferring it to closeout.
+
+**Files:** `education_pipeline/daemon/read_api.py` (`_validation_summary`); `web/src/api/types.ts`, `web/src/pages/RunBoardPage.tsx`, `web/src/components/ValidationFindingsPanel.tsx`; tests in `tests/test_server.py`, `web/src/components/ValidationFindingsPanel.test.tsx`, `web/src/pages/RunBoardPage.test.tsx`.
+
+**As shipped:** `_validation_summary` reports `effective_blocking` (blocking findings remaining *after* waivers), and nets `findings_by_stage` post-waiver server-side. The badge and the re-run button key off it; waived findings still **list** in the panel (they are not hidden — only the badge and button change). A stale report still offers re-run regardless of waivers, and badges still count only reports whose `state === "current"` (`58f422f`). TS `effective_blocking` is optional with a raw-count fallback.
+
+Two traps this task had to avoid, both of which it hit first and fixed — see the Wave 3 outcome block for the full contract:
+
+- the recompute must not run on every 5-second status poll (short-circuited: no waivers file ⇒ `effective_blocking` *is* the raw count, so skip it) — but the short-circuit's `load_waiver_set` call must sit **inside** the `ConfigError` handler, or a malformed waivers file 400s the cockpit's hot endpoint;
+- a stale on-disk report body must never be paired with a freshly recomputed gate.
+
+- [x] Complete. Commits `e8ee4f8..18804c0`.
 
 ### Task 3.2: `waive` / `unwaive` subcommands
 
@@ -1068,15 +1119,15 @@ Both are hash-bound to the current report's `guide_sha256`, write atomically, an
 - `education-pipeline waive <topic> <finding-id> --reason "..." [--phase]` — exit 0 on success; refuses empty reasons and non-waivable findings with the engine's `ConfigError` message, exit 2 (argparse-style usage errors stay distinct from gate exit 1).
 - `education-pipeline unwaive <topic> <finding-id> [--phase]`.
 
-- [ ] **Step 1: Write the failing tests** — store-level: `record_waiver` waives a waivable blocker and `gate_result` flips open; rejects empty reason and non-waivable ids with `ConfigError`; `remove_waiver` restores the closed gate. CLI-level: `waive` then `validate` exits 0; `waive` with empty reason exits 2. Write-api-level: existing `create_waiver` tests keep passing unchanged (that *is* the refactor test).
+- [x] **Step 1: Write the failing tests** — store-level: `record_waiver` waives a waivable blocker and `gate_result` flips open; rejects empty reason and non-waivable ids with `ConfigError`; `remove_waiver` restores the closed gate. CLI-level: `waive` then `validate` exits 0; `waive` with empty reason exits 2. Write-api-level: existing `create_waiver` tests keep passing unchanged (that *is* the refactor test).
 
-- [ ] **Step 2: Run, verify failures** — `python3 -m pytest tests/test_runs.py tests/test_cli.py -k waive -v` → FAIL.
+- [x] **Step 2: Run, verify failures** — `python3 -m pytest tests/test_runs.py tests/test_cli.py -k waive -v` → FAIL.
 
-- [ ] **Step 3: Implement** store methods (move, don't duplicate, the merge logic), rewire `write_api.create_waiver`, add CLI parsers/commands.
+- [x] **Step 3: Implement** store methods (move, don't duplicate, the merge logic), rewire `write_api.create_waiver`, add CLI parsers/commands.
 
-- [ ] **Step 4: Run** `python3 -m pytest tests/test_runs.py tests/test_cli.py tests/test_write_api.py tests/test_server.py -v` → PASS.
+- [x] **Step 4: Run** `python3 -m pytest tests/test_runs.py tests/test_cli.py tests/test_write_api.py tests/test_server.py -v` → PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/cli.py education_pipeline/runs.py education_pipeline/daemon/write_api.py tests/
@@ -1085,7 +1136,7 @@ git commit -m "feat(cli): waive/unwaive commands backed by shared store waiver m
 
 ### Wave 3 close
 
-- [ ] Run the wave-close checklist in the Wave Protocol section.
+- [x] Run the wave-close checklist in the Wave Protocol section.
 - Suggested next-wave recommendation to print: **Fable, high effort** for Wave 4 — the acceptance e2e choreographs daemon, fixtures, and UI timing, historically where this repo's subtle bugs surface.
 
 ---
