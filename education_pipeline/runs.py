@@ -19,6 +19,7 @@ from education_pipeline.export import (
 )
 from education_pipeline.guides import (
     ContractError,
+    Guide,
     MAX_GUIDE_SOURCE_BYTES,
     Waiver,
     WaiverSet,
@@ -34,6 +35,7 @@ from education_pipeline.guides import (
     normalize_guide,
     parse_guide,
     project_guide_markdown,
+    quality_report_bytes,
     validate_guide,
     ValidationReport,
 )
@@ -558,7 +560,7 @@ class RunStore:
             )
 
         source_text = self.read_approved(topic_id, "repair")
-        report, _ = self._validated_final(topic_id, source_text)
+        report, _, _ = self._validated_final(topic_id, source_text)
         waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
         if not waiver_result.gate_open:
             return NextAction(
@@ -911,6 +913,16 @@ class RunStore:
         name = "guide.bundle.md" if format == "markdown" else "guide.html"
         return self.final_path(topic_id).with_name(name)
 
+    def export_report_path(self, topic_id: str) -> Path:
+        """Path of the sidecar quality report for the HTML export.
+
+        The HTML export path with a ``.report.json`` suffix appended to its
+        stem, in the same directory (``guide.html`` -> ``guide.report.json``).
+        """
+
+        export_path = self.export_path(topic_id, "html")
+        return export_path.with_name(export_path.stem + ".report.json")
+
     def export_run(
         self,
         topic_id: str,
@@ -958,48 +970,69 @@ class RunStore:
             raise ConfigError("final validation is missing or stale; revalidate before export")
 
         source_text = final_json.read_text(encoding="utf-8")
-        report, document = self._validated_final(topic_id, source_text)
-        waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
+        waiver_set = self._load_waiver_set(topic_id)
+        report, document, guide = self._validated_final(topic_id, source_text)
+        waiver_result = apply_waivers(report, waiver_set)
         if not waiver_result.gate_open:
             raise ConfigError(
                 f"cannot export {topic_id!r}: "
                 f"{waiver_result.effective_blocking} blocking finding(s) remain"
             )
-        parsed = parse_guide(source_text)
-        if not parsed.ok:
-            raise ConfigError("final/guide.json is not a renderable guide")
-        guide = normalize_guide(parsed)
-        assets = load_runtime_assets()
-        if document is None:
+        if document is None or guide is None:
             # An open waiver gate guarantees no render_failed blocker, so the
-            # checked document is present. Guard defensively against a None
-            # write, keeping the failure on the 400-mapped ConfigError path
-            # (any mapped status is fine; the last-resort 500 handler is not).
+            # checked document and its guide are present. Guard defensively
+            # against a None write, keeping the failure on the 400-mapped
+            # ConfigError path (any mapped status is fine; the last-resort 500
+            # handler is not).
             raise ConfigError(
                 f"cannot export {topic_id!r}: the checked guide document is unavailable"
             )
+        assets = load_runtime_assets()
         content = document
         export_path = self.export_path(topic_id, "html")
         if export_path.exists() and not overwrite:
             raise ConfigError(f"refusing to overwrite existing file: {export_path}")
         _write_text_atomic(export_path, content)
-        self._append_event(
-            topic_id,
-            stage="export",
-            action="exported",
-            files={
-                "export_file": export_path,
-                "source_file": final_json,
-                "report_file": self.final_report_path(topic_id),
-            },
-            extra={
-                "guide_schema_version": guide.schema_version,
-                "runtime_version": assets.version,
-                "runtime_css_sha256": hashlib.sha256(assets.css.encode("utf-8")).hexdigest(),
-                "runtime_js_sha256": hashlib.sha256(assets.javascript.encode("utf-8")).hexdigest(),
-                "model_stage_provenance": self._model_stage_provenance(topic_id),
-            },
+
+        export_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        runtime_css_sha256 = hashlib.sha256(assets.css.encode("utf-8")).hexdigest()
+        runtime_js_sha256 = hashlib.sha256(assets.javascript.encode("utf-8")).hexdigest()
+        sidecar_bytes = quality_report_bytes(
+            report,
+            waiver_result,
+            waiver_set,
+            export_sha256=export_sha256,
+            runtime_css_sha256=runtime_css_sha256,
+            runtime_js_sha256=runtime_js_sha256,
+            runtime_version=assets.version,
         )
+        report_path = self.export_report_path(topic_id)
+        _write_bytes_atomic(report_path, sidecar_bytes)
+
+        # Build the event payload before entering the (non-reentrant) manifest
+        # lock; ``_model_stage_provenance`` reads the manifest.
+        model_stage_provenance = self._model_stage_provenance(topic_id)
+        safe_id = _artifact_id(topic_id, "topic id")
+        with self._manifest_write_lock(safe_id):
+            self._append_event_locked(
+                safe_id,
+                stage="export",
+                action="exported",
+                files={
+                    "export_file": export_path,
+                    "source_file": final_json,
+                    "report_file": self.final_report_path(topic_id),
+                    "quality_report_file": report_path,
+                },
+                extra={
+                    "guide_schema_version": guide.schema_version,
+                    "runtime_version": assets.version,
+                    "runtime_css_sha256": runtime_css_sha256,
+                    "runtime_js_sha256": runtime_js_sha256,
+                    "quality_report_sha256": hashlib.sha256(sidecar_bytes).hexdigest(),
+                    "model_stage_provenance": model_stage_provenance,
+                },
+            )
         return export_path
 
     def _model_stage_provenance(self, topic_id: str) -> dict[str, dict[str, str | None]]:
@@ -1119,7 +1152,7 @@ class RunStore:
                 "run final validation before finalizing"
             )
 
-        report, _ = self._validated_final(topic_id, source_text)
+        report, _, _ = self._validated_final(topic_id, source_text)
         waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
         if not waiver_result.gate_open:
             parts = [
@@ -1210,25 +1243,29 @@ class RunStore:
 
     def _validated_final(
         self, topic_id: str, source_text: str
-    ) -> tuple[ValidationReport, str | None]:
+    ) -> tuple[ValidationReport, str | None, Guide | None]:
         """Validate final-phase content with computed static checks.
 
-        Returns (report, assembled_document). document is None when the source
-        does not parse (schema blockers already in the report) or assembly failed.
+        Returns ``(report, assembled_document, guide)``. Both ``document`` and
+        ``guide`` are ``None`` when the source does not parse (schema blockers
+        already in the report) or exceeds ``MAX_GUIDE_SOURCE_BYTES``. When the
+        source parses but assembly failed, ``document`` is ``None`` while
+        ``guide`` is the normalized guide. Surfacing ``guide`` lets callers
+        reuse the single parse instead of re-parsing the source.
         """
 
         if len(source_text.encode("utf-8")) > MAX_GUIDE_SOURCE_BYTES:
             # The raw str path applies the size cap before parsing and records
             # the raw-source sha as the report digest, matching
             # ``_guide_source_sha`` so report_state stays "current".
-            return validate_guide(source_text, phase="final"), None
+            return validate_guide(source_text, phase="final"), None, None
         parsed = parse_guide(source_text)
         if not parsed.ok:
-            return validate_guide(source_text, phase="final"), None
+            return validate_guide(source_text, phase="final"), None, None
         guide = normalize_guide(parsed)
         result = compute_static_checks(guide)
         report = validate_guide(guide, phase="final", context=result.context)
-        return report, result.document
+        return report, result.document, guide
 
     def validate_run(self, topic_id: str, phase: str) -> Path:
         """Run deterministic validation and write the phase report atomically."""
@@ -1247,7 +1284,7 @@ class RunStore:
             )
         source_text = source_path.read_text(encoding="utf-8")
         if phase == "final":
-            report, _ = self._validated_final(safe_id, source_text)
+            report, _, _ = self._validated_final(safe_id, source_text)
         else:
             report = validate_guide(source_text, phase=phase)
         report_path = (
@@ -1766,20 +1803,50 @@ class RunStore:
         files: dict[str, Path],
         extra: dict[str, object] | None = None,
     ) -> None:
+        """Append one structured stage event to the manifest.
+
+        Thin lock-taking wrapper around :meth:`_append_event_locked`. Do not
+        call this from inside another ``_manifest_write_lock``-holding method
+        on the same thread -- the lock is not reentrant, so that deadlocks by
+        design. Compose by calling :meth:`_append_event_locked` directly
+        instead.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        with self._manifest_write_lock(safe_id):
+            self._append_event_locked(
+                safe_id, stage=stage, action=action, files=files, extra=extra
+            )
+
+    def _append_event_locked(
+        self,
+        topic_id: str,
+        *,
+        stage: str,
+        action: str,
+        files: dict[str, Path],
+        extra: dict[str, object] | None = None,
+    ) -> None:
+        """Unlocked read-modify-write of one structured stage event.
+
+        Caller must already hold ``_manifest_write_lock(topic_id)``. Exists so
+        callers that need to compose this write with another manifest mutation
+        in a single critical section can do so without re-entering the lock.
+        """
+
         safe_id = _artifact_id(topic_id, "topic id")
         run = self.run_dir(safe_id)
-        with self._manifest_write_lock(safe_id):
-            manifest = self.read_manifest(safe_id)
-            event: dict[str, str] = {"stage": stage, "action": action}
-            for label, path in files.items():
-                event[label] = _relative_to(path, run)
-                if path.is_file():
-                    event[f"{label}_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-            if extra:
-                event.update(extra)
-            event["recorded_at"] = datetime.now(timezone.utc).isoformat()
-            manifest.setdefault("events", []).append(event)
-            _write_manifest(run / "manifest.json", manifest)
+        manifest = self.read_manifest(safe_id)
+        event: dict[str, str] = {"stage": stage, "action": action}
+        for label, path in files.items():
+            event[label] = _relative_to(path, run)
+            if path.is_file():
+                event[f"{label}_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        if extra:
+            event.update(extra)
+        event["recorded_at"] = datetime.now(timezone.utc).isoformat()
+        manifest.setdefault("events", []).append(event)
+        _write_manifest(run / "manifest.json", manifest)
 
 
 def _guide_source_sha(text: str) -> str:

@@ -1942,6 +1942,44 @@ def test_export_writes_exactly_the_checked_document(tmp_path: Path) -> None:
     assert export_path.read_text(encoding="utf-8") == compute_static_checks(guide).document
 
 
+@pytest.fixture
+def guide_v1_run(tmp_path: Path):
+    tid = "systems-thinking"
+    store = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_finalize_ready(store, tid)
+    return store, tid
+
+
+def test_export_writes_sidecar_quality_report_and_manifest_event(guide_v1_run):
+    store, topic_id = guide_v1_run
+    store.validate_run(topic_id, "final")
+    store.finalize_run(topic_id, overwrite=True)
+    export_path = store.export_run(topic_id, format="html", overwrite=True)
+    sidecar = store.export_report_path(topic_id)
+    assert sidecar.is_file()
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert payload["gate"]["open"] is True
+    assert payload["export"]["file_sha256"] == hashlib.sha256(export_path.read_bytes()).hexdigest()
+    manifest = store.read_manifest(topic_id)
+    exported = [e for e in manifest["events"] if e.get("action") == "exported"][-1]
+    assert exported["quality_report_sha256"] == hashlib.sha256(sidecar.read_bytes()).hexdigest()
+    assert exported["quality_report_file"] == _relative_to_run(sidecar, store, topic_id)
+
+
+def test_reexport_produces_byte_identical_quality_report(guide_v1_run):
+    store, topic_id = guide_v1_run
+    store.validate_run(topic_id, "final")
+    store.finalize_run(topic_id, overwrite=True)
+    store.export_run(topic_id, format="html", overwrite=True)
+    first = store.export_report_path(topic_id).read_bytes()
+    store.export_run(topic_id, format="html", overwrite=True)
+    assert store.export_report_path(topic_id).read_bytes() == first
+
+
+def _relative_to_run(path: Path, store, topic_id: str) -> str:
+    return path.relative_to(store.run_dir(topic_id)).as_posix()
+
+
 def test_legacy_run_untouched_by_guide_validation(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
     runs = _create_legacy_run(tmp_path)

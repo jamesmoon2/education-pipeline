@@ -19,6 +19,7 @@ from .parse import (
     parse_guide,
 )
 from .projection import project_guide_markdown
+from .quality_report import QUALITY_REPORT_SCHEMA_VERSION, quality_report_bytes
 from .document import (
     DocumentMode,
     GuideDocumentError,
@@ -40,6 +41,7 @@ __all__ = [
     "GuideParseError",
     "ParseDiagnostic",
     "ParseResult",
+    "QUALITY_REPORT_SCHEMA_VERSION",
     "StaticCheckResult",
     "ValidationReport",
     "ValidationSummary",
@@ -60,6 +62,7 @@ __all__ = [
     "normalize_guide",
     "parse_guide",
     "project_guide_markdown",
+    "quality_report_bytes",
     "render_guide_markdown",
     "validate_guide",
     "validate_outline_contract",
