@@ -27,12 +27,13 @@ from .document import (
 )
 from .reports import Finding, ValidationReport, ValidationSummary, canonical_report_bytes
 from .static_checks import StaticCheckResult, compute_static_checks
-from .validation import ValidationContext, validate_guide
+from .validation import MAX_GUIDE_SOURCE_BYTES, ValidationContext, validate_guide
 from .waivers import Waiver, WaiverResult, WaiverSet, apply_waivers
 
 __all__ = [
     "Guide",
     "ContractError",
+    "MAX_GUIDE_SOURCE_BYTES",
     "DocumentMode",
     "Finding",
     "GuideDocumentError",

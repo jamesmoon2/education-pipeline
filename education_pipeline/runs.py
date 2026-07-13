@@ -19,6 +19,7 @@ from education_pipeline.export import (
 )
 from education_pipeline.guides import (
     ContractError,
+    MAX_GUIDE_SOURCE_BYTES,
     Waiver,
     WaiverSet,
     apply_waivers,
@@ -1216,6 +1217,11 @@ class RunStore:
         does not parse (schema blockers already in the report) or assembly failed.
         """
 
+        if len(source_text.encode("utf-8")) > MAX_GUIDE_SOURCE_BYTES:
+            # The raw str path applies the size cap before parsing and records
+            # the raw-source sha as the report digest, matching
+            # ``_guide_source_sha`` so report_state stays "current".
+            return validate_guide(source_text, phase="final"), None
         parsed = parse_guide(source_text)
         if not parsed.ok:
             return validate_guide(source_text, phase="final"), None
@@ -1780,7 +1786,7 @@ def _guide_source_sha(text: str) -> str:
     """Hash the guide source the same way ``validate_guide`` records ``guide_sha256``."""
 
     raw = text.encode("utf-8")
-    if len(raw) > 2_000_000:
+    if len(raw) > MAX_GUIDE_SOURCE_BYTES:
         return hashlib.sha256(raw).hexdigest()
     parsed = parse_guide(text)
     if not parsed.ok:

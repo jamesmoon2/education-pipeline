@@ -1911,6 +1911,22 @@ def test_export_refuses_when_render_fails(tmp_path: Path, monkeypatch) -> None:
         store.finalize_run(tid, overwrite=True)
 
 
+def test_final_validation_size_limit_applies_before_parsing(tmp_path: Path) -> None:
+    """An oversized-but-parseable final source keeps the size-limit blocker and a current report."""
+    tid = "systems-thinking"
+    store = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_qa(store, tid)
+    oversized = GUIDE_FIXTURE + " " * 2_000_001
+    repair = store.write_repair_prompt(tid)
+    repair.response_path.write_text(oversized, encoding="utf-8")
+    store.approve_stage(tid, "repair")
+
+    report_path = store.validate_run(tid, "final")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert "schema.size_limit" in [f["rule_id"] for f in report["findings"]]
+    assert store.report_state(tid, "final") == "current"
+
+
 def test_export_writes_exactly_the_checked_document(tmp_path: Path) -> None:
     tid = "systems-thinking"
     store = _create_guide_run(tmp_path, tid)

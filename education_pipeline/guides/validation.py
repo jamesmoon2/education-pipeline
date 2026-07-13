@@ -12,6 +12,11 @@ from .model import Callout, Guide, KnowledgeCheck, RichText, Scenario, WorkedRev
 from .parse import ParseDiagnostic, normalize_guide, parse_guide
 from .reports import Finding, ValidationReport
 
+#: Raw-source validation size cap, applied before any parsing. Shared with
+#: ``runs.py`` (``_guide_source_sha`` and ``_validated_final``) so the cap
+#: cannot drift between sites.
+MAX_GUIDE_SOURCE_BYTES = 2_000_000
+
 
 @dataclass(frozen=True)
 class Rule:
@@ -147,7 +152,7 @@ def validate_guide(
         guide = value
     else:
         raw = value.encode("utf-8") if isinstance(value, str) else value
-        if len(raw) > 2_000_000:
+        if len(raw) > MAX_GUIDE_SOURCE_BYTES:
             digest = hashlib.sha256(raw).hexdigest()
             finding = _finding("schema.size_limit", "", "Guide exceeds the 2,000,000-byte validation limit.")
             return ValidationReport("1.0", phase, digest, (finding,))
