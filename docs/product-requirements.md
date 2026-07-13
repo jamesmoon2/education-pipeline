@@ -505,6 +505,15 @@ underlying local configuration.
 
 ### P0 — Establish deterministic release gates
 
+**Status: Delivered 2026-07-13** (closeout evidence in
+[`docs/superpowers/plans/2026-07-12-deterministic-release-gates.md`](superpowers/plans/2026-07-12-deterministic-release-gates.md)
+Wave Log, acceptance tests `tests/test_release_gate_acceptance.py`, and e2e
+`web/e2e/release-gates.spec.ts`).
+
+Milestone specification:
+
+- [`docs/superpowers/specs/2026-07-12-deterministic-release-gates-design.md`](superpowers/specs/2026-07-12-deterministic-release-gates-design.md)
+
 - Implement structured validator results and severities.
 - Add schema, privacy, outcome coverage, link, interaction, accessibility, and
   browser-runtime checks.
