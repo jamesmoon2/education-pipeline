@@ -136,7 +136,8 @@ education-pipeline -C ./workspace unwaive systems-thinking <finding-id>
   reports the gate (exit 0 if open, 1 if blocked).
 - `findings <topic> [--phase] [--blocking]` lists a validation report's
   findings as tab-separated `severity  rule_id  stage  path  message` (exit 0
-  always).
+  on success — listing is not a gate; exits 1 if no report exists yet — run
+  `validate` first).
 - `report <topic>` prints the export sidecar quality report verbatim if one
   exists, otherwise the final validation report; its exit code tracks
   `gate.open`.
