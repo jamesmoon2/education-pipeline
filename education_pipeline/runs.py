@@ -38,6 +38,7 @@ from education_pipeline.guides import (
     quality_report_bytes,
     validate_guide,
     ValidationReport,
+    WaiverResult,
 )
 from education_pipeline.guide_runtime import load_runtime_assets
 from education_pipeline.prompts import (
@@ -1300,6 +1301,42 @@ class RunStore:
             extra={"phase": phase},
         )
         return report_path
+
+    def gate_result(self, topic_id: str, phase: str) -> WaiverResult:
+        """Compute the effective waiver gate for a phase, without writing anything.
+
+        Recomputes the validation report fresh from the approved source (the
+        same computation ``validate_run`` performs) rather than trusting a
+        possibly-stale persisted report file, then applies the topic's waiver
+        set via :func:`apply_waivers`. This mirrors the recompute-then-gate
+        pattern already used internally (e.g. ``run_status``'s next-action
+        check and ``_export_guide_v1``), so callers never touch
+        ``_load_waiver_set`` directly.
+
+        Raises ``ConfigError`` when there is no approved source for the phase
+        yet (nothing to validate) -- the same precondition ``validate_run``
+        enforces -- so CLI/daemon callers can print a clean error instead of
+        a traceback.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        if not self._is_guide_v1(safe_id):
+            raise ConfigError("validation applies only to guide runs")
+        if phase not in {"draft", "final"}:
+            raise ConfigError(f"phase must be 'draft' or 'final'; got {phase!r}")
+
+        source_stage = "draft" if phase == "draft" else "repair"
+        source_path = self.stage_paths(safe_id, source_stage).approved_path
+        if not source_path.is_file():
+            raise ConfigError(
+                f"approved {source_stage} response not found: {source_path}"
+            )
+        source_text = source_path.read_text(encoding="utf-8")
+        if phase == "final":
+            report, _, _ = self._validated_final(safe_id, source_text)
+        else:
+            report = validate_guide(source_text, phase=phase)
+        return apply_waivers(report, self._load_waiver_set(safe_id))
 
     def write_spec_prompt(
         self,

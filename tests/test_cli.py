@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+import test_runs
 from education_pipeline import ContentContract, RunStore
 from education_pipeline.cli import main
 
@@ -292,6 +293,61 @@ def test_create_command_conflicting_contract_exits_1(
     assert _run(ws, "create", "systems-thinking", "--legacy-markdown") == 1
     err = capsys.readouterr().err
     assert "immutable content contract" in err
+
+
+@pytest.fixture
+def guide_v1_workspace(tmp_path: Path):
+    """A guide-v1 run driven to an approved repair with a current, open final report."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    test_runs._drive_guide_to_finalize_ready(runs, topic_id)
+    return root, topic_id
+
+
+@pytest.fixture
+def workspace_with_blockers(tmp_path: Path):
+    """A guide-v1 run with an approved, validated draft carrying blocking findings."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    leak_json = test_runs._prompt_leak_guide_json()
+    test_runs._drive_guide_to_draft_approved(runs, topic_id, draft_body=leak_json)
+    runs.validate_run(topic_id, "draft")
+    return root, topic_id
+
+
+@pytest.fixture
+def exported_guide_workspace(tmp_path: Path):
+    """A guide-v1 run finalized and exported to HTML, with its sidecar report."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    test_runs._drive_guide_to_finalize_ready(runs, topic_id)
+    runs.finalize_run(topic_id)
+    runs.export_run(topic_id, format="html")
+    return root, topic_id
+
+
+def test_validate_command_exit_codes_track_the_gate(guide_v1_workspace, capsys):
+    root, topic_id = guide_v1_workspace
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "final"]) == 0
+
+
+def test_findings_command_lists_stage_attributed_findings(workspace_with_blockers, capsys):
+    root, topic_id = workspace_with_blockers
+    assert main(["--workspace", str(root), "findings", topic_id, "--phase", "draft"]) == 0
+    out = capsys.readouterr().out
+    assert "\tdraft\t" in out  # stage column present
+
+
+def test_report_command_prints_sidecar_after_export(exported_guide_workspace, capsys):
+    root, topic_id = exported_guide_workspace
+    assert main(["--workspace", str(root), "report", topic_id]) == 0
+    assert '"quality_report_schema_version"' in capsys.readouterr().out
 
 
 def test_daemon_status_prints_cockpit_url(tmp_path, capsys, monkeypatch):
