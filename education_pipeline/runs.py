@@ -562,7 +562,15 @@ class RunStore:
 
         source_text = self.read_approved(topic_id, "repair")
         report, _, _ = self._validated_final(topic_id, source_text)
-        waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
+        try:
+            waiver_set = self._load_waiver_set(topic_id)
+        except ConfigError:
+            # Degrade gracefully on a malformed waivers file: fall back to
+            # the raw (un-waived) gate rather than 400ing the whole run
+            # status -- and, transitively, the /v1/topics list -- the same
+            # degradation _validation_summary already applies.
+            waiver_set = None
+        waiver_result = apply_waivers(report, waiver_set)
         if not waiver_result.gate_open:
             return NextAction(
                 topic_id=topic_id,
@@ -1836,8 +1844,11 @@ class RunStore:
             filtered = [item for item in items if item["finding_id"] != finding_id]
             if filtered == items:
                 new_set = self._build_waiver_set(guide_sha256, items)
-            else:
+            elif filtered:
                 new_set = self._write_waiver_set_locked(safe_id, guide_sha256, filtered)
+            else:
+                self.waivers_path(safe_id).unlink(missing_ok=True)
+                new_set = self._build_waiver_set(guide_sha256, [])
         return apply_waivers(report, new_set)
 
     def _current_waiver_items_locked(self, topic_id: str, guide_sha256: str) -> list[dict]:

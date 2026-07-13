@@ -346,6 +346,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
     runs = RunStore(_root(args))
     export_report_path = runs.export_report_path(args.topic_id)
     if export_report_path.is_file():
+        _warn_if_report_stale(runs, args.topic_id, "final")
         text = export_report_path.read_text(encoding="utf-8")
         data = json.loads(text)
         gate_open = bool(data.get("gate", {}).get("open"))

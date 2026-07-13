@@ -622,9 +622,12 @@ def test_remove_waiver_closes_gate_again(tmp_path: Path) -> None:
     after = runs.gate_result(topic_id, "draft")
     assert after.gate_open is False
 
-    waiver_set = runs.load_waiver_set(topic_id)
-    assert waiver_set is not None
-    assert all(w.finding_id != finding["id"] for w in waiver_set.waivers)
+    # This was the sole waiver on the topic, so removing it must delete the
+    # waivers file entirely rather than leaving a `{"waivers": []}` husk on
+    # disk -- see test_unwaive_of_the_last_waiver_deletes_the_waivers_file
+    # for why that matters (it silently defeats a poll optimization).
+    assert not runs.waivers_path(topic_id).exists()
+    assert runs.load_waiver_set(topic_id) is None
 
 
 def test_remove_waiver_missing_finding_is_a_noop(tmp_path: Path) -> None:
@@ -695,6 +698,43 @@ def test_unwaive_that_removes_nothing_does_not_rewrite_existing_waivers_file(
 
     assert waivers_path.stat().st_mtime_ns == before_mtime_ns
     assert waivers_path.read_bytes() == before_bytes
+
+
+def test_unwaive_of_the_last_waiver_deletes_the_waivers_file(tmp_path: Path) -> None:
+    """Regression for Important #1 of the Wave-3 whole-wave review:
+    ``remove_waiver`` used to write ``{"waivers": []}`` back to disk when the
+    removed waiver was the last one, instead of deleting the file. An
+    empty-but-present waivers file is not equivalent to no waivers file --
+    the daemon's poll handler (``read_api.py``, around line 196) skips its
+    expensive per-poll ``gate_result`` recompute only when
+    ``load_waiver_set(...) is None``, so a lingering empty file silently and
+    permanently defeats that optimization for the rest of the run's life.
+
+    This waives a real blocking finding (closing the gate), then unwaives it
+    (the only waiver on the topic), and asserts both that the file is gone
+    from disk *and* that ``load_waiver_set`` -- the exact call the poll
+    optimization guards on -- reports ``None``, not an empty WaiverSet."""
+
+    topic_id = "systems-thinking"
+    runs = _create_guide_run(tmp_path, topic_id)
+    leak_json = _prompt_leak_guide_json()
+    _drive_guide_to_draft_approved(runs, topic_id, draft_body=leak_json)
+    report_path = runs.validate_run(topic_id, "draft")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    finding = next(
+        f for f in report["findings"] if f["rule_id"] == "content.prompt_leak" and f["blocking"]
+    )
+
+    waived = runs.record_waiver(topic_id, "draft", finding["id"], "Intentional example text.")
+    assert waived.gate_open is True
+    assert runs.waivers_path(topic_id).exists()
+
+    result = runs.remove_waiver(topic_id, "draft", finding["id"])
+    assert isinstance(result, WaiverResult)
+    assert result.gate_open is False
+
+    assert not runs.waivers_path(topic_id).exists()
+    assert runs.load_waiver_set(topic_id) is None
 
 
 def test_manifest_write_lock_is_not_reentrant(tmp_path: Path) -> None:

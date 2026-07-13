@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import test_runs
 from education_pipeline import (
     STAGE_ORDER,
     ContentContract,
@@ -538,6 +539,60 @@ def test_run_status_degrades_gracefully_when_waivers_file_is_malformed(server, t
     assert status == 200
     summary = body["validations"]["draft"]
     assert summary["effective_blocking"] == summary["blocking"]
+
+
+def test_run_status_degrades_gracefully_when_waivers_file_is_malformed_at_finalize_ready(
+    server, tmp_path
+):
+    """The test above only reaches ``_validation_summary``'s guard -- a
+    draft-only fixture can never reach ``run_status`` -> ``_next_action_guide_v1``
+    (runs.py), which requires an approved repair *and* a current final
+    report before its own, previously-unguarded
+    ``self._load_waiver_set(topic_id)`` call at runs.py:565. Commit 18804c0
+    claimed to fix "malformed waivers file in run status" but only guarded
+    the summary path, leaving this one to raise ``ConfigError`` -> 400
+    straight out of ``GET /v1/runs/{topic}``. Drive "g" all the way to
+    finalize-ready so this test actually exercises that call."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    guide_text = json.dumps(guide)
+    # ``_next_action_guide_v1`` derives the next action from manifest-recorded
+    # stage status (spec/outline/draft/qa/repair approval events), not just
+    # from approved_path's existence on disk -- so this must drive the real
+    # prompt/response/approve flow through every stage, not just drop files
+    # into approved_path. The server fixture pre-seeds "g" with a stub draft
+    # prompt (for the file's other, draft-only tests); remove it first so
+    # ``_drive_guide_to_finalize_ready``'s own ``write_draft_prompt`` call
+    # doesn't collide with it.
+    runs.stage_paths("g", "draft").prompt_path.unlink()
+    test_runs._drive_guide_to_finalize_ready(
+        runs, "g", draft_body=guide_text, repair_body=guide_text
+    )
+    report = json.loads(runs.final_report_path("g").read_text(encoding="utf-8"))
+    assert report["summary"]["blocking"] > 0
+
+    # Hand-corrupt the waivers file directly, bypassing the write API that
+    # would normally validate it -- this is what a malformed/partially
+    # written file on disk looks like.
+    runs.waivers_path("g").write_text(
+        json.dumps({"schema_version": 99, "guide_sha256": "x", "waivers": []}),
+        encoding="utf-8",
+    )
+
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    # A malformed waivers file must degrade to the raw (un-waived) gate --
+    # not 400 -- so next_action still reflects real gate state (a real
+    # blocking finding remains, so the run cannot finalize).
+    assert body["next_action"]["stage"] == "repair"
+    assert body["next_action"]["action"] == "resolve_findings"
+
+    # The one-run corruption must not take down the topics list either --
+    # /v1/topics calls run_status_payload for every topic, unguarded.
+    status, body = _req(server, "GET", "/v1/topics")
+    assert status == 200
+    assert {i["id"] for i in body["topics"]} == {"g", "t"}
 
 
 def test_stage_content_returns_prompt_and_nulls(server):
