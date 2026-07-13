@@ -174,6 +174,12 @@ def test_manager_line():
 def test_malformed_plan_raises():
     with pytest.raises(plandoc.PlanDocError):
         plandoc.parse_waves("# no waves here\n")
+
+def test_other_numeric_tables_do_not_poison_wave_log():
+    poisoned = PLAN + "\n## Appendix\n| 0 | **complete** |\n| 1 | **complete** |\n"
+    waves = plandoc.parse_waves(poisoned)
+    # Wave 1 must still read as open despite the appendix table.
+    assert not next(w for w in waves if w.number == 1).closed
 ```
 
 - [ ] **Step 2: Run to verify failure** — `python3 -m pytest tests/test_waverunner_plandoc.py -v` → FAIL (`ModuleNotFoundError: waverunner`).
@@ -198,17 +204,29 @@ class WaveInfo:
     tasks_done: int
 
 _WAVE_HEADING = re.compile(r"^## Wave (\d+)\b", re.M)
+_LOG_HEADING = re.compile(r"^#{2,4} Wave Log\s*$", re.M)
+_NEXT_HEADING = re.compile(r"^#{1,4} ", re.M)
 _LOG_ROW = re.compile(r"^\|\s*(\d+)[^|]*\|\s*([^|]*)\|", re.M)
 _MANAGER = re.compile(r"^\*\*Wave (\d+) manager:\*\*\s*(\w+),\s*(\w+)", re.M)
 _TICKED = re.compile(r"^\s*- \[x\]", re.M)
 _UNTICKED = re.compile(r"^\s*- \[ \]", re.M)
+
+def _wave_log_section(text: str) -> str:
+    """Rows are parsed ONLY inside the '### Wave Log' section — other tables
+    with numeric first columns (task tables) must not poison the map."""
+    m = _LOG_HEADING.search(text)
+    if not m:
+        raise PlanDocError("no 'Wave Log' heading found")
+    rest = text[m.end():]
+    nxt = _NEXT_HEADING.search(rest)
+    return rest[:nxt.start()] if nxt else rest
 
 def parse_waves(text: str) -> list[WaveInfo]:
     headings = list(_WAVE_HEADING.finditer(text))
     if not headings:
         raise PlanDocError("no '## Wave N' sections found")
     closed = {int(m.group(1)): "complete" in m.group(2).lower()
-              for m in _LOG_ROW.finditer(text)}
+              for m in _LOG_ROW.finditer(_wave_log_section(text))}
     if not closed:
         raise PlanDocError("no Wave Log table rows found")
     waves = []
@@ -235,7 +253,7 @@ def manager_line(text: str, wave: int) -> tuple[str, str] | None:
     return None
 ```
 
-- [ ] **Step 4: Run to verify pass** — same command → PASS (4 tests).
+- [ ] **Step 4: Run to verify pass** — same command → PASS (5 tests).
 - [ ] **Step 5: Commit** — `git add tools/waverunner tests/test_waverunner_plandoc.py && git commit -m "feat(waverunner): plan-document parsing (waves, ticks, manager lines)"`
 
 ### Task 0.2: Final-message contract + outcome classification (`contract.py`)
@@ -749,7 +767,7 @@ def run_session(cmd: list[str], log_path: Path, stall_timeout_s: float) -> Sessi
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `preflight_failures(repo_root: Path, expected_branch: str, claude_bin: str = "claude", min_free_gb: float = 5.0, check_processes: bool = True) -> list[str]` — empty list means go. Checks, each contributing one human-readable string on failure: clean `git status --porcelain`; current branch == expected; `<claude_bin> --version` exits 0 within 30 s; free disk (`shutil.disk_usage(repo_root)`) ≥ `min_free_gb`; when `check_processes`, no live `playwright`/`education-pipeline`-daemon processes (`pgrep -f`, failure only when pgrep exits 0). Tests pass `check_processes=False` so a developer's own running daemon/Playwright can't flake the suite.
+- Produces: `preflight_failures(repo_root: Path, expected_branch: str, claude_bin: str = "claude", min_free_gb: float = 5.0, process_patterns: tuple[str, ...] = ()) -> list[str]` — empty list means go. Checks, each contributing one human-readable string on failure: clean `git status --porcelain --untracked-files=no` (**tracked** changes only — stray untracked files must not kill an unattended run); current branch == expected; `<claude_bin> --version` exits 0 within 30 s; free disk (`shutil.disk_usage(repo_root)`) ≥ `min_free_gb`; for each of `process_patterns`, no live process matches (`pgrep -f`, failure only when pgrep exits 0). Patterns default to empty — repo-specific patterns are the *caller's* knowledge (this repo's CLI passes `("playwright", "education-pipeline.*daemon")` as its default; OSS users pass their own). Tests pass no patterns so a developer's running daemon/Playwright can't flake the suite.
 
 - [ ] **Step 1: Write the failing tests** — use `tmp_path` git repos and `sys.executable` stand-ins:
 
@@ -777,13 +795,20 @@ def _git_repo(tmp_path, branch="main", dirty=False):
 def test_clean_repo_passes(tmp_path):
     root = _git_repo(tmp_path)
     fails = preflight.preflight_failures(root, "main", claude_bin=sys.executable,
-                                         min_free_gb=0.001, check_processes=False)
+                                         min_free_gb=0.001)
+    assert fails == []
+
+def test_untracked_files_do_not_fail(tmp_path):
+    root = _git_repo(tmp_path)
+    (root / "scratch-notes.md").write_text("untracked")
+    fails = preflight.preflight_failures(root, "main", claude_bin=sys.executable,
+                                         min_free_gb=0.001)
     assert fails == []
 
 def test_dirty_tree_and_wrong_branch_reported(tmp_path):
     root = _git_repo(tmp_path, branch="feature", dirty=True)
     fails = preflight.preflight_failures(root, "main", claude_bin=sys.executable,
-                                         min_free_gb=0.001, check_processes=False)
+                                         min_free_gb=0.001)
     assert any("working tree" in f for f in fails)
     assert any("branch" in f for f in fails)
 
@@ -791,7 +816,7 @@ def test_missing_claude_reported(tmp_path):
     root = _git_repo(tmp_path)
     fails = preflight.preflight_failures(root, "main",
                                          claude_bin="/nonexistent/claude",
-                                         min_free_gb=0.001, check_processes=False)
+                                         min_free_gb=0.001)
     assert any("claude" in f.lower() for f in fails)
 ```
 
@@ -812,9 +837,10 @@ def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess
 
 def preflight_failures(repo_root: Path, expected_branch: str,
                        claude_bin: str = "claude", min_free_gb: float = 5.0,
-                       check_processes: bool = True) -> list[str]:
+                       process_patterns: tuple[str, ...] = ()) -> list[str]:
     fails: list[str] = []
-    porcelain = _run(["git", "status", "--porcelain"], cwd=repo_root)
+    porcelain = _run(["git", "status", "--porcelain", "--untracked-files=no"],
+                     cwd=repo_root)
     if porcelain.returncode != 0 or porcelain.stdout.strip():
         fails.append("working tree is not clean (or not a git repo)")
     branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root)
@@ -828,9 +854,7 @@ def preflight_failures(repo_root: Path, expected_branch: str,
     free_gb = shutil.disk_usage(repo_root).free / 1e9
     if free_gb < min_free_gb:
         fails.append(f"only {free_gb:.1f} GB free (need {min_free_gb})")
-    if not check_processes:
-        return fails
-    for pattern in ("playwright", "education-pipeline.*daemon"):
+    for pattern in process_patterns:
         try:
             if _run(["pgrep", "-f", pattern]).returncode == 0:
                 fails.append(f"live process matches {pattern!r} — clean up before running")
@@ -839,7 +863,7 @@ def preflight_failures(repo_root: Path, expected_branch: str,
     return fails
 ```
 
-- [ ] **Step 4: Run to verify pass** → PASS (3 tests).
+- [ ] **Step 4: Run to verify pass** → PASS (4 tests).
 - [ ] **Step 5: Commit** — `git commit -m "feat(waverunner): pre-flight checks"`
 
 ### Task 1.3: Notifications (`notify.py`)
@@ -1297,6 +1321,17 @@ def test_contract_violation_halts(env, monkeypatch):
     monkeypatch.setattr(runner, "notify", lambda *a: None)
     assert runner.run_plans(cfg) == 2
 
+def test_park_loop_capped(env, monkeypatch):
+    root, plan, script, cfg, _ = env
+    parked = json.dumps({"wave": 0, "status": "parked", "next_wave": 0,
+                         "next_model": None, "next_effort": None})
+    cfg.max_consecutive_parks = 2
+    script.write_text(json.dumps([{"mode": "result", "result": parked}] * 4))
+    monkeypatch.setattr(runner, "notify", lambda *a: None)
+    assert runner.run_plans(cfg, _wait=lambda *a, **k: None) == 2
+    st = json.loads((root / "wave-runner-status.json").read_text())
+    assert "parked" in st["detail"]
+
 def test_verify_close_rejects_unchanged_plan(env, monkeypatch):
     root, plan, script, cfg, _ = env
     # Manager claims closed but never touched the plan doc.
@@ -1360,6 +1395,7 @@ class RunnerConfig:
     log_dir: Path = Path(".wave-runner-logs")
     default_model: str = "opus"
     default_effort: str = "high"
+    max_consecutive_parks: int = 15  # ≈ one 5-h window at the 20-min poll
 
 def _head_sha(repo: Path) -> str:
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
@@ -1402,6 +1438,7 @@ def run_plans(config: RunnerConfig, _wait=recovery.wait_for_reset) -> int:
                     or (config.default_model, config.default_effort))
 
             attempt_used = False
+            parks = 0
             resume_id: str | None = None
             while True:  # one wave, possibly one recovery
                 start_sha = _head_sha(config.repo_root)
@@ -1443,6 +1480,13 @@ def run_plans(config: RunnerConfig, _wait=recovery.wait_for_reset) -> int:
                     if result.status == "blocked":
                         return _halt(f"manager reported blocked: {result.notes}")
                     if result.status == "parked":
+                        parks += 1
+                        if parks > config.max_consecutive_parks:
+                            return _halt(f"parked {parks} times in a row — "
+                                         "headroom gate looks stuck")
+                        notify(f"Wave {wave.number} parked ({parks})",
+                               "low headroom — waiting for the window to breathe",
+                               config.notify_config)
                         _wait(None)
                         wave = plandoc.first_open_wave(plandoc.parse_waves(
                             plan_path.read_text(encoding="utf-8"))) or wave
@@ -1464,8 +1508,12 @@ def run_plans(config: RunnerConfig, _wait=recovery.wait_for_reset) -> int:
                     return _halt(f"second failure in wave (kind={outcome.kind})")
                 attempt_used = True
                 if outcome.kind == "result" and contract.is_limit_message(outcome.result_text):
-                    _wait(contract.parse_reset_time(outcome.result_text,
-                                                    dt.datetime.now()))
+                    reset_at = contract.parse_reset_time(outcome.result_text,
+                                                         dt.datetime.now())
+                    notify(f"Usage limit hit (wave {wave.number})",
+                           f"sleeping until {reset_at or 'unknown — polling'}",
+                           config.notify_config)
+                    _wait(reset_at)
                 progressed = recovery.wave_progressed(
                     config.repo_root, plan_path, wave.number, start_sha, ticks_at_start)
                 wave = plandoc.first_open_wave(plandoc.parse_waves(
@@ -1474,7 +1522,7 @@ def run_plans(config: RunnerConfig, _wait=recovery.wait_for_reset) -> int:
     return 0
 ```
 
-- [ ] **Step 5: Run to verify pass** — `python3 -m pytest tests/test_waverunner_runner.py -v` → PASS (7 tests).
+- [ ] **Step 5: Run to verify pass** — `python3 -m pytest tests/test_waverunner_runner.py -v` → PASS (8 tests).
 
 - [ ] **Step 6: Write the CLI + wrapper**
 
@@ -1507,7 +1555,8 @@ def main(argv=None) -> int:
     repo_root = Path.cwd()
     if not args.skip_preflight:
         failures = preflight.preflight_failures(
-            repo_root, args.branch, claude_bin=args.claude_bin.split()[0])
+            repo_root, args.branch, claude_bin=args.claude_bin.split()[0],
+            process_patterns=("playwright", "education-pipeline.*daemon"))
         if failures:
             print("Pre-flight refused to start:", file=sys.stderr)
             for f in failures:
@@ -1580,4 +1629,22 @@ exec caffeinate -is python3 "$(dirname "$0")/wave_runner.py" "$@"
 - [ ] **Step 4: Four-suite milestone gate** — `python3 -m pytest`; `cd web && npm run test && npm run e2e && npm run build` → all green (this milestone should not have touched web; the gate is assurance, not diagnosis).
 - [ ] **Step 5: Commit** — `git commit -m "docs(waverunner): operator guide, verify-at-build findings, CLAUDE.md pointer"`
 
-- [ ] **Wave 3 close** — run the wave-close checklist; this is the final wave, so print a **milestone summary** and a post-milestone-audit recommendation instead of a kickoff prompt. Include in the summary: the headroom spike outcome, both verify-at-build findings, and the reminder that the first real run must be supervised (allowlist calibration).
+### Task 3.3: Open-source extraction (`wave-runner` standalone package)
+
+**Files:**
+- Create: `dist-oss/wave-runner/` (gitignored export directory — add `dist-oss/` to `.gitignore` in this task) containing: `waverunner/` (the package, copied), `wave_runner.py`, `headroom.py`, `run_waves.sh`, `tests/` (all `test_waverunner_*.py` + `fake_claude/`), `pyproject.toml`, `LICENSE` (MIT, copyright James Mooney), `README.md`, `.github/workflows/ci.yml`
+- Create: `tools/export_oss.py` — the deterministic copier that assembles `dist-oss/wave-runner/` from the sources above (so the export is reproducible after future fixes, per this repo's extraction-manifest ethos)
+
+**Interfaces:**
+- Consumes: everything shipped in Waves 0–2; no repo-specific content may survive (grep the export for `education-pipeline` — only the README's "developed for" credit line may match).
+- Produces: a directory that passes `python3 -m pytest` **from inside `dist-oss/wave-runner/`** with no reference to this repo.
+
+- [ ] **Step 1: Write the failing test** — `tests/test_oss_export.py`: run `python3 tools/export_oss.py`, then assert the export contains the file list above, that `subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=export_dir)` exits 0, and that `grep -r "education-pipeline" dist-oss/wave-runner --include="*.py"` finds nothing.
+- [ ] **Step 2: Run to verify failure** → FAIL (`export_oss.py` missing).
+- [ ] **Step 3: Implement `export_oss.py`** (shutil.copytree with an explicit source list; rewrites the tests' `sys.path` shim from `parents[1] / "tools"` to `parents[1]` since the package sits at the export root). Write the README: what it does (one paragraph), the plan-format contract (wave headings, `### Wave Log`, `**Wave N manager:**` lines, checkbox discipline, final-message JSON — copied from the playbook's runner-mode section), quick start (`./run_waves.sh docs/plans/my-plan.md --ntfy-topic mytopic`), configuration table (flags + env vars), the three-layer budget design (three sentences), failure semantics, and the supervised-first-run/allowlist-calibration warning. `pyproject.toml`: `[project] name = "wave-runner" requires-python = ">=3.11"` + pytest dev extra. `ci.yml`: checkout + setup-python 3.11/3.12 + `pip install pytest` + `pytest -q`.
+- [ ] **Step 4: Run to verify pass** → PASS.
+- [ ] **Step 5: Commit** — `git commit -m "feat(oss): reproducible wave-runner OSS export"`
+- [ ] **Step 6 (HUMAN step — the manager prints this instruction, never executes it):** create the public repo and push:
+  `cd dist-oss/wave-runner && git init -b main && git add -A && git commit -m "wave-runner v0.1" && gh repo create wave-runner --public --source=. --push`
+
+- [ ] **Wave 3 close** — run the wave-close checklist; this is the final wave, so print a **milestone summary** and a post-milestone-audit recommendation instead of a kickoff prompt. Include in the summary: the headroom spike outcome, both verify-at-build findings, the OSS publish command for the human, and the reminder that the first real run must be supervised (allowlist calibration).

@@ -67,7 +67,8 @@ plan:
 6. After the final wave: notify with the milestone summary.
 
 **Pre-flight checks (before wave 1, hard-fail if any miss):** clean working
-tree, expected branch, `claude` authenticated, no stray daemon/Playwright
+tree (tracked files only — `--untracked-files=no`; stray untracked files
+must not kill an unattended run), expected branch, `claude` authenticated, no stray daemon/Playwright
 processes from a previous run, adequate disk space. The runner records the
 plan-path HEAD SHA at each wave start for trust-but-verify. The runner is
 invoked under `caffeinate -is` (wrapper script or documented invocation) so
@@ -128,6 +129,15 @@ cheaper of two modes by inspecting the plan doc/git:
 checkbox and committing after every task is mandatory, not customary. This
 is what makes fresh relaunch cheap and correct.
 
+**Park-loop bound:** consecutive parks are capped (default 15, ≈ one full
+5-hour window at the 20-minute poll interval). Past the cap the runner
+halts + notifies — endless low-headroom churn means something is
+mis-measured, and each park cycle burns a session startup.
+
+**Wait visibility:** entering any wait (limit reset, park poll) sends a
+notification stating why and until when, so a silent multi-hour sleep is
+distinguishable from a hang.
+
 **Layer 3 — pre-task headroom gate.** `tools/headroom.py`: prints remaining
 usage-window capacity. The wave protocol adds: before dispatching each task,
 the manager runs it; if headroom < ~one task's estimated spend, checkpoint
@@ -171,6 +181,27 @@ relaunch; blocked → halt + notify; malformed JSON → halt; trust-but-verify
 mismatch → halt; stalled output → watchdog kill + recovery; pre-flight
 failures → refuse to start; multi-plan sequencing. No real tokens in tests. First
 real-world run: a low-stakes plan supervised by the human.
+
+## Open-source packaging
+
+The runner ships as a standalone public repo (working name: `wave-runner`)
+so practitioners can adopt it without this codebase:
+
+- Developed here under `tools/` with the full TDD harness; the final wave
+  **extracts** `tools/waverunner/`, `tools/wave_runner.py`,
+  `tools/headroom.py`, `tools/run_waves.sh`, the tests, and the fake-claude
+  harness into a self-contained export directory with `pyproject.toml`
+  (pytest as the only dev dependency), MIT `LICENSE`, a GitHub Actions
+  pytest workflow, and a README documenting the plan-format contract (wave
+  headings, Wave Log, manager lines, checkbox discipline, final-message
+  JSON) — the contract *is* the product; the runner is useless without it.
+- Nothing repo-specific may survive extraction: pre-flight process
+  patterns are a parameter (this repo passes its daemon/Playwright
+  patterns), and the kickoff template's superpowers-skill references are
+  documented in the README as an editable convention.
+- **Publishing (creating the public GitHub repo and pushing) is a human
+  step**, listed in the plan but never executed by the runner or a wave
+  manager autonomously.
 
 ## Out of scope (v1)
 
