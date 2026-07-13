@@ -58,7 +58,7 @@ next wave's manager recommendation and kickoff prompt).
 | Wave | Status | Commits | pytest | vitest | e2e | build | Notes for the next wave |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 0 — Hardening | **complete** | `5f03d56..d492ccc` (10) | 543 | 114 | 41 | clean | See "Wave 0 outcome" below. **Read the manifest-lock composition contract before touching `RunStore`.** |
-| 1 — Static checks | not started | | | | | | |
+| 1 — Static checks | **complete** | `3103042..b0e5fd3` (5) | 557 | 114 | 41 | clean | See "Wave 1 outcome" below. The `assets_match`-on-assembly-failure semantics are settled — do not re-litigate. |
 | 2 — Attribution + report | not started | | | | | | |
 | 3 — CLI parity | not started | | | | | | |
 | 4 — Acceptance + closeout | not started | | | | | | |
@@ -89,6 +89,28 @@ Task 2.3 says the sidecar write and the exported-event append "sit inside the Ta
 **Residual Minors for milestone final triage:** `_locked` primitives' "caller holds the lock" contract is documented, not enforced (a `lock.locked()` heuristic assert would catch the dev-time error); the lock's name still says "manifest" though it also guards waivers; no pytest timeout, so a lock-nesting regression hangs CI; loader-accepted extra keys in `waivers.json` are now dropped from the GET payload rather than echoed; a truncated request body (`Content-Length` > bytes sent) hangs a handler thread forever (**pre-existing**, reproduces at `d46406a`, post-auth + loopback only).
 
 **Wave 0 manager recommendation (initial):** Opus, medium effort — mechanical hardening with well-scoped tests; Fable is not needed until the cross-surface design work in Waves 1–2.
+
+### Wave 1 outcome (read before Wave 2)
+
+**Gate:** pytest 557, vitest 114, e2e 41/41, build clean at `b0e5fd3`. Whole-wave review (Fable): READY TO RECORD after one Important fix (see below). Three docs-only commits from a parallel session (`5c6ad44`, `6f71bbc`, `7b8c123`) are interleaved in the range and are not part of this wave.
+
+**Settled adjudication — do not re-litigate in Wave 2:** the Task 1.1 prose "on assembly failure every other check reports True" conflicts with the task's own reference code; ruled in favor of the code. `assets_match` is input-derived and stays *computed* when assembly fails (forcing True would mask real tampering); only the document-derived checks (`controls_have_labels`, `heading_order_valid`) default True. Pinned by `test_render_failure_keeps_assets_match_computed`. The whole-wave reviewer independently endorsed the ruling.
+
+**Interfaces Wave 2 builds on (as shipped):**
+
+- `compute_static_checks(guide, assets=None) -> StaticCheckResult` and `StaticCheckResult(context, document)` exported from `education_pipeline.guides`; `runs.py` imports `compute_static_checks` into its own namespace (tests monkeypatch `runs_mod.compute_static_checks`).
+- `RunStore._validated_final(topic_id, source_text) -> (ValidationReport, str | None)` — `document` is `None` in **three** cases: source does not parse, assembly failed, or the source exceeds `MAX_GUIDE_SOURCE_BYTES` (its docstring still lists only the first two — touch it up when Task 2.3 edits the function). The oversized case falls back to the raw `validate_guide` path *before parsing*, restoring the `schema.size_limit` blocker and the raw-sha digest (an Important found by the whole-wave review: parsing first had silently dropped the size gate and livelocked `report_state` at "stale").
+- `MAX_GUIDE_SOURCE_BYTES` (2,000,000) now lives in `guides/validation.py` and is the single constant behind all three cap sites (`validate_guide`, `_guide_source_sha`, `_validated_final`). Do not reintroduce the literal.
+- `_export_guide_v1` writes exactly `_validated_final`'s document and *re-parses the source a second time* only for event provenance (schema_version, assets). When Task 2.3 rewires the exported-event append, prefer surfacing the guide/assets from `_validated_final` instead of keeping the duplicate parse.
+- `controls_have_labels` requires the wrapping `<label>` to have non-empty text (deferred verdict at `</label>`); any descendant text counts, per the plan's wording.
+
+**Residual items for milestone final triage (accepted this wave, not blockers):**
+
+- Heading-order rule is as the plan specified — "no more than one level deeper than the *deepest seen so far*" — which passes `h1,h2,h3` then `h2→h4`, and a document whose first heading is `h4`. Plan-level weakness, not an implementation bug; if real WCAG-style skip detection is wanted, track the *previous* heading instead. Owner call at closeout.
+- Status polling (`_next_action_guide_v1`) now assembles the full export document per status call (~1.4 ms on the canonical fixture; deterministic; plan-mandated). Perf note only.
+- New GET-path surface: a corrupted install (missing runtime assets) makes `load_runtime_assets()` raise `OSError` during status polling → last-resort 500. Finalize/export POST paths already had this exposure pre-wave; a `try/except OSError → ConfigError` or caching would close it.
+- Analyzer latent shell-coupling: `<input type="hidden">` would be treated as needing a label, and script/style CDATA inside a label counts as label text. Unreachable through today's assembler output; add a hidden-input exemption whenever `static_checks.py` is next touched.
+- Unclosed `<label>` at EOF escapes the label check (assembled documents cannot produce one).
 
 ---
 
@@ -375,7 +397,7 @@ Check semantics:
 - `controls_have_labels` — parse the document with `html.parser.HTMLParser`; every `<button>` has non-empty text content or a non-empty `aria-label`; every `<select>`, `<input>`, `<textarea>` has a non-empty `aria-label`/`aria-labelledby` or is a descendant of a `<label>` element with text.
 - `heading_order_valid` — collecting `h1..h6` in document order, no heading is more than one level deeper than the deepest heading seen so far (h2 → h4 is a skip; h4 → h2 is fine).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_guide_static_checks.py
@@ -460,12 +482,12 @@ def test_aria_labeled_and_label_wrapped_controls_pass():
     assert _analyze_document(doc).controls_have_labels is True
 ```
 
-- [ ] **Step 2: Run tests, verify import failure**
+- [x] **Step 2: Run tests, verify import failure**
 
 Run: `python3 -m pytest tests/test_guide_static_checks.py -v`
 Expected: FAIL — `ImportError: cannot import name 'compute_static_checks'`.
 
-- [ ] **Step 3: Implement `static_checks.py`**
+- [x] **Step 3: Implement `static_checks.py`**
 
 ```python
 """Deterministic static checks computed from the assembled export document.
@@ -582,12 +604,12 @@ def compute_static_checks(guide: Guide, assets: RuntimeAssets | None = None) -> 
 
 Note `ValidationContext` also has `sources_required`; it is a policy input, not a computed check — leave it at its default here (callers merge it, see Task 1.2). Export `compute_static_checks` and `StaticCheckResult` from `guides/__init__.py` following its existing `__all__` style.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_guide_static_checks.py tests/test_guide_validation.py -v`
 Expected: PASS (new file green; validation suite untouched).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/guides/static_checks.py education_pipeline/guides/__init__.py tests/test_guide_static_checks.py
@@ -615,7 +637,7 @@ def _validated_final(self, topic_id: str, source_text: str) -> tuple[ValidationR
 
 Behavior: parse the source; if it parses, `normalize_guide` → `compute_static_checks` → `validate_guide(guide, phase="final", context=result.context)`; if it does not parse, fall back to `validate_guide(source_text, phase="final")` exactly as today. `_export_guide_v1` writes `result.document` (the checked string) instead of calling `assemble_guide_document` itself.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Build on this module's existing guide-v1 run helpers (there are existing finalize/export tests — reuse their fixture-driven run setup):
 
@@ -659,24 +681,24 @@ def test_export_writes_exactly_the_checked_document(guide_v1_run):
 
 Match the actual fixture/helper names in `tests/test_runs.py` (read its existing `finalize`/`export` tests first); the bodies above are the required behavior, not the required fixture plumbing.
 
-- [ ] **Step 2: Run tests, verify failures**
+- [x] **Step 2: Run tests, verify failures**
 
 Run: `python3 -m pytest tests/test_runs.py -k "static_checks or checked_document or render_fails" -v`
 Expected: FAIL — `runs.py` has no `compute_static_checks` import; reports carry no computed context; export assembles independently.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 - Import `compute_static_checks` in `runs.py`.
 - Add `_validated_final` per the interface block. Use it in `validate_run` (final phase only; draft keeps plain `validate_guide`), `_finalize_guide_v1`, `_export_guide_v1`, and the `_next_action_guide_v1` re-check at ~line 507.
 - In `_export_guide_v1`, replace the direct `assemble_guide_document` call: take `report, document = self._validated_final(...)`; after the waiver gate opens, `document` must be non-`None` (a `None` document implies blocking findings, which the gate already refused) — write `document` via `_write_text_atomic`.
 - Keep the existing "final validation is missing or stale" precondition checks unchanged.
 
-- [ ] **Step 4: Run the affected suites**
+- [x] **Step 4: Run the affected suites**
 
 Run: `python3 -m pytest tests/test_runs.py tests/test_guide_static_checks.py tests/test_write_api.py tests/test_server.py -v`
 Expected: PASS. (Daemon validate route flows through `validate_run`, so server tests exercise the wiring.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/runs.py tests/test_runs.py
@@ -685,7 +707,7 @@ git commit -m "feat(runs): gate finalize/export on computed static checks; expor
 
 ### Wave 1 close
 
-- [ ] Run the wave-close checklist in the Wave Protocol section.
+- [x] Run the wave-close checklist in the Wave Protocol section.
 - Suggested next-wave recommendation to print: **Fable, high effort** for Wave 2 — it spans validator schema, daemon payloads, and three cockpit surfaces in one wave.
 
 ---
