@@ -37,6 +37,12 @@ function combinedFindingsByStage(status: RunStatus): Record<string, number> {
   for (const phase of ["draft", "final"] as const) {
     const validation = status.validations[phase];
     if (validation.state !== "current") continue;
+    // A phase whose every blocker is waived has an open gate and no
+    // actionable work left, even if findings_by_stage still carries a raw,
+    // pre-waiver entry -- skip it so the badge doesn't relight. Phases with
+    // no effective_blocking (older payloads/fixtures) fall back to trusting
+    // findings_by_stage as-is, same as before this field existed.
+    if (validation.effective_blocking === 0) continue;
     const byStage: Record<string, number> = validation.findings_by_stage ?? {};
     for (const [stage, count] of Object.entries(byStage)) {
       merged[stage] = (merged[stage] ?? 0) + count;
@@ -105,6 +111,7 @@ export default function RunBoardPage() {
               topicId={status.topic_id}
               phase={phase}
               state={status.validations[phase].state}
+              effectiveBlocking={status.validations[phase].effective_blocking}
               onChanged={refresh}
             />
           ))}

@@ -40,6 +40,11 @@ export interface ValidationCounts {
 export interface ValidationStatus extends ValidationCounts {
   state: ValidationState;
   findings_by_stage?: Record<string, number>;
+  // Post-waiver blocking count (RunStore.gate_result). Optional: omitted by
+  // non-guide runs and by any payload/fixture predating this field -- kept
+  // optional rather than required for the same reason findings_by_stage was
+  // (a required field broke four out-of-scope fixtures last time).
+  effective_blocking?: number;
 }
 
 export interface StageStatus {

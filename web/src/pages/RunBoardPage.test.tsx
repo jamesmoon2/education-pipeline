@@ -228,6 +228,42 @@ describe("RunBoardPage", () => {
     expect(screen.queryByRole("status", { name: "5 findings" })).not.toBeInTheDocument();
   });
 
+  it("suppresses a phase's findings badges once every blocker is waived (effective_blocking 0)", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      ...status,
+      validations: {
+        // Every blocker in draft carries an accepted waiver: the gate is
+        // open (effective_blocking 0) even though a raw finding still sits
+        // on disk under "outline" -- no actionable work remains, so no
+        // badge should render for it.
+        draft: {
+          state: "current",
+          blocking: 1,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { outline: 1 },
+          effective_blocking: 0,
+        },
+        // final still has a real, unwaived blocker: its badge must survive.
+        final: {
+          state: "current",
+          blocking: 1,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { repair: 1 },
+          effective_blocking: 1,
+        },
+      },
+    });
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    const repairRow = await screen.findByRole("row", { name: /repair/ });
+    expect(within(repairRow).getByRole("status", { name: "1 finding" })).toBeInTheDocument();
+    const outlineRow = screen.getByRole("row", { name: /outline/ });
+    expect(within(outlineRow).queryByRole("status")).not.toBeInTheDocument();
+  });
+
   it("shows a provenance line for a stage present in stage_provenance", async () => {
     vi.mocked(getRunStatus).mockResolvedValue({
       ...status,

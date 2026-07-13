@@ -164,6 +164,26 @@ describe("ValidationFindingsPanel", () => {
     expect(screen.queryByRole("button", { name: "Re-run validation" })).not.toBeInTheDocument();
   });
 
+  it("does not offer Re-run validation when every blocker is waived (effectiveBlocking 0) despite raw blocking findings", async () => {
+    // report.summary.blocking is 1 (unwaived on disk), but the caller
+    // supplies the post-waiver gate count of 0: the raw finding still
+    // lists (marked waived) but there is nothing left to re-run for.
+    renderPanel("current", { effectiveBlocking: 0 });
+    await screen.findByText("The draft validation report is current.");
+    expect(screen.queryByRole("button", { name: "Re-run validation" })).not.toBeInTheDocument();
+  });
+
+  it("offers Re-run validation when effectiveBlocking is greater than 0", async () => {
+    renderPanel("current", { effectiveBlocking: 2 });
+    expect(await screen.findByRole("button", { name: "Re-run validation" })).toBeInTheDocument();
+  });
+
+  it("offers Re-run validation for a stale report regardless of effectiveBlocking", async () => {
+    vi.mocked(getValidation).mockResolvedValue({ state: "stale", report });
+    renderPanel("stale", { effectiveBlocking: 0 });
+    expect(await screen.findByRole("button", { name: "Re-run validation" })).toBeInTheDocument();
+  });
+
   it("re-runs validation, disables the button while in flight, updates counts, and notifies the parent", async () => {
     let resolvePost!: (value: {
       state: "current";

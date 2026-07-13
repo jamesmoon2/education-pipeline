@@ -30,11 +30,17 @@ export default function ValidationFindingsPanel({
   topicId,
   phase,
   state,
+  effectiveBlocking,
   onChanged,
 }: {
   topicId: string;
   phase: Phase;
   state: ValidationState;
+  // Post-waiver blocking count for this phase (RunStatus.validations[phase]
+  // .effective_blocking). Optional: callers on older payloads/fixtures that
+  // don't carry it fall back to the raw report.summary.blocking count, same
+  // as before this field existed.
+  effectiveBlocking?: number;
   onChanged: () => void;
 }) {
   const [report, setReport] = useState<ValidationReport | null>(null);
@@ -137,7 +143,16 @@ export default function ValidationFindingsPanel({
     return <section aria-label={`${phase} validation findings`}><p>No {phase} validation report yet.</p></section>;
   }
 
-  const canRerun = state === "stale" || (report !== null && report.summary.blocking > 0);
+  // A stale report always offers re-run (its waivers are void by definition
+  // -- see report_state). Otherwise, prefer the post-waiver
+  // effective_blocking count when the caller has it: a report whose every
+  // blocker is waived has an open gate and nothing left to re-run for, even
+  // though report.summary.blocking (the raw, pre-waiver count) is still
+  // positive. Fall back to the raw count when effectiveBlocking is absent.
+  const canRerun =
+    state === "stale" ||
+    (report !== null &&
+      (effectiveBlocking !== undefined ? effectiveBlocking > 0 : report.summary.blocking > 0));
 
   return (
     <section className="validation-findings" aria-label={`${phase} validation findings`}>
