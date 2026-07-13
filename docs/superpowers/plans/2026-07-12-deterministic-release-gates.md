@@ -59,7 +59,7 @@ next wave's manager recommendation and kickoff prompt).
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 0 — Hardening | **complete** | `5f03d56..d492ccc` (10) | 543 | 114 | 41 | clean | See "Wave 0 outcome" below. **Read the manifest-lock composition contract before touching `RunStore`.** |
 | 1 — Static checks | **complete** | `3103042..b0e5fd3` (5) | 557 | 114 | 41 | clean | See "Wave 1 outcome" below. The `assets_match`-on-assembly-failure semantics are settled — do not re-litigate. |
-| 2 — Attribution + report | not started | | | | | | |
+| 2 — Attribution + report | **complete** | `ee3ceac..d0a291f` (7) | 565 | 123 | 41 | clean | See "Wave 2 outcome" below. `_validated_final` now returns a 3-tuple; sidecar + `export_report_path` shipped for Task 3.1's `report` command. |
 | 3 — CLI parity | not started | | | | | | |
 | 4 — Acceptance + closeout | not started | | | | | | |
 
@@ -111,6 +111,30 @@ Task 2.3 says the sidecar write and the exported-event append "sit inside the Ta
 - New GET-path surface: a corrupted install (missing runtime assets) makes `load_runtime_assets()` raise `OSError` during status polling → last-resort 500. Finalize/export POST paths already had this exposure pre-wave; a `try/except OSError → ConfigError` or caching would close it.
 - Analyzer latent shell-coupling: `<input type="hidden">` would be treated as needing a label, and script/style CDATA inside a label counts as label text. Unreachable through today's assembler output; add a hidden-input exemption whenever `static_checks.py` is next touched.
 - Unclosed `<label>` at EOF escapes the label check (assembled documents cannot produce one).
+
+### Wave 2 outcome (read before Wave 3)
+
+**Gate:** pytest 565, vitest 123, e2e 41/41, build clean at `d0a291f`. Whole-wave review (Fable): READY TO RECORD after one Important fix (see below). The Wave 0 deadlock trap was fully defused — the reviewer independently re-audited every `_append_event`/`_append_event_locked`/`_manifest_write_lock` call site and the one-RMW-per-critical-section contract holds throughout.
+
+**Interfaces Wave 3 builds on (as shipped):**
+
+- `RunStore._validated_final(topic_id, source_text)` now returns a **3-tuple** `(ValidationReport, str | None, Guide | None)` — the guide is surfaced so `_export_guide_v1` no longer re-parses for event provenance. Any code unpacking the old 2-tuple is stale. Docstring lists all three `None`-document cases.
+- `_append_event_locked` is the unlocked primitive; `_append_event` remains the lock-taking wrapper. Same composition contract as Wave 0 — one read-modify-write per critical section, primitives only under the lock.
+- `quality_report_bytes(report, waiver_result, waiver_set, *, export_sha256, runtime_css_sha256, runtime_js_sha256, runtime_version) -> bytes` and `QUALITY_REPORT_SCHEMA_VERSION = 1` exported from `education_pipeline.guides`; `RunStore.export_report_path(topic_id)` maps `guide.html → guide.report.json` (same directory). Task 3.1's `report` command consumes these as planned.
+- Findings carry `stage` (report schema v2, 45 rules: 34 draft / 6 outline / 5 repair); the daemon's validation summaries carry `findings_by_stage` (blocking-or-error only, missing stage defaults `"draft"`); TS `ValidationFinding.stage` is **optional** with a phase-derived fallback in `findingHref` (pre-v2 reports on disk have no stage — the Important the whole-wave review caught: required TS field + direct interpolation produced `/stages/undefined` links; fixed in `d0a291f`).
+- RunBoard badges count only reports whose `state === "current"` (stale counts were inflating the actionable-work signal — Important found by Task 2.2's review, fixed `58f422f`). "Re-run validation" button lives in `ValidationFindingsPanel` (its sole render site), via the pre-existing `postValidate` helper — the plan's `/validation/{phase}` route spelling was wrong; the real route is `POST /v1/runs/{topic}/validate` with phase in the body.
+
+**Endorsed deviation (recorded, not a defect):** the sidecar `_write_bytes_atomic` sits immediately *before* the lock-held critical section, not inside it as the task prose said. The manifest RMW invariant fully holds; sidecar bytes are deterministic so concurrent re-export cannot desync the event's two sha fields; shorter lock hold.
+
+**Wave-3 candidate (reviewer recommendation, not yet scoped):** badges and the re-run affordance are waiver-blind — a run whose blockers are all waived (gate open) still shows badges and an un-clearable re-run button. Task 3.1's planned `RunStore.gate_result` is the natural vehicle: surface `effective_blocking` into `_validation_summary` while wiring it. Owner may fold this into 3.1 or defer to closeout.
+
+**Residual items for milestone final triage (accepted this wave, not blockers):**
+
+- `role="status"` on the always-present findings badge is a live region; with 5 s polling, count changes re-announce to screen readers. Plain `span` + `aria-label` (or visually-hidden text) is more appropriate.
+- `report_state` ignores `report_schema_version` — a v1 report against unchanged content stays "current" forever. Policy question for the owner: treating `< 2` as stale would self-heal legacy workspaces via one re-validation prompt.
+- Sidecar write `OSError` after the HTML write lands on the last-resort 500 (same exposure class as the pre-existing HTML write; pairs with Wave 1's `load_runtime_assets` OSError item).
+- `_validation_summary`'s flat `"draft"` default for stage-less findings vs `findingHref`'s phase-derived fallback — legacy-only, self-healing, accepted.
+- `ValidationFindingsPanel.test.tsx` fixture says `report_schema_version: 1` while its findings carry `stage` (a hybrid that doesn't exist); the exported event carries redundant-but-equal `quality_report_file_sha256` + `quality_report_sha256`; `_finalize_guide_v1` still does its own parse (fold into closeout cleanup).
 
 ---
 
@@ -727,7 +751,7 @@ git commit -m "feat(runs): gate finalize/export on computed static checks; expor
   - `runtime.*`, `a11y.*` → `repair`
   - everything else (`json.*`, `schema.*`, `content.*`, `link.*`, `privacy.*`, `source.*`, `markdown.*`, `knowledge_check.*`, `scenario.*`, `worked_reveal.*`, `personalization.*`) → `draft`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_guide_validation.py
@@ -749,12 +773,12 @@ def test_findings_carry_stage_and_report_schema_bumped():
 
 Adapt to this module's existing imports/helpers.
 
-- [ ] **Step 2: Run tests, verify failures**
+- [x] **Step 2: Run tests, verify failures**
 
 Run: `python3 -m pytest tests/test_guide_validation.py -v`
 Expected: FAIL — `Rule` has no `stage`, findings have no `stage`, schema version is 1.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 - Add `stage: str` to `Rule` and to every entry in `RULES` per the attribution map above (44 one-line edits).
 - Add `stage: str = "draft"` to `Finding`; include `"stage"` in `to_dict()`; extend `__post_init__` to validate the stage value.
@@ -762,12 +786,12 @@ Expected: FAIL — `Rule` has no `stage`, findings have no `stage`, schema versi
 - Bump `ValidationReport.report_schema_version` default to `2`.
 - Grep for consumers of `report_schema_version` and finding dict keys (`read_api.py`, `web/src/api/types.ts` is Task 2.2's problem — Python-side only here).
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `python3 -m pytest tests/test_guide_validation.py tests/test_guide_waivers.py tests/test_runs.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/guides/reports.py education_pipeline/guides/validation.py tests/test_guide_validation.py
@@ -785,7 +809,7 @@ git commit -m "feat(guides): attribute every finding to its responsible stage (r
 - Consumes: `Finding.stage` (Task 2.1), existing `validations` block in `run_status_payload`.
 - Produces: `_validation_summary` adds `"findings_by_stage": {stage: count}` (blocking-or-error findings only, so badges signal actionable work); `ValidationFinding` TS type gains `stage: string`; `ValidationFindingsPanel`'s stage link (currently hardcoded `phase === "draft" ? "draft" : "repair"` at line 20) uses `finding.stage`; `RunBoardPage` renders a per-stage findings-count badge from `findings_by_stage`.
 
-- [ ] **Step 1: Write the failing Python test**
+- [x] **Step 1: Write the failing Python test**
 
 ```python
 # tests/test_server.py (follow this module's daemon-boot helper conventions)
@@ -796,7 +820,7 @@ def test_run_status_reports_findings_by_stage(daemon_env_with_validated_guide_ru
     assert all(isinstance(v, int) for v in summary["findings_by_stage"].values())
 ```
 
-- [ ] **Step 2: Run, verify failure; implement `_validation_summary`**
+- [x] **Step 2: Run, verify failure; implement `_validation_summary`**
 
 Run: `python3 -m pytest tests/test_server.py -k findings_by_stage -v` → FAIL.
 
@@ -818,13 +842,13 @@ git add education_pipeline/daemon/read_api.py tests/test_server.py
 git commit -m "feat(daemon): report findings-by-stage counts in run status validations"
 ```
 
-- [ ] **Step 3: Write the failing web tests**
+- [x] **Step 3: Write the failing web tests**
 
 In `ValidationFindingsPanel.test.tsx`: a finding with `stage: "outline"` renders a link to `/topics/{id}/stages/outline` (today it would link to draft/repair). In the RunBoard test file: a stage row whose `findings_by_stage` count is ≥1 shows a badge with the count and an accessible name like `"2 findings"`. Follow the files' existing render/msw-or-stub patterns exactly.
 
 Run: `cd web && npm run test` → new tests FAIL.
 
-- [ ] **Step 4: Implement the web side**
+- [x] **Step 4: Implement the web side**
 
 - `types.ts`: add `stage: string` to `ValidationFinding`; add `findings_by_stage: Record<string, number>` to the validation-summary type.
 - `ValidationFindingsPanel.tsx`: replace the line-20 hardcode with `finding.stage` when building each finding's stage link (the panel-level phase link may keep its current target).
@@ -832,7 +856,7 @@ Run: `cd web && npm run test` → new tests FAIL.
 
 Run: `cd web && npm run test && npm run build` → PASS, clean.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/api/types.ts web/src/components/ValidationFindingsPanel.tsx web/src/pages/RunBoardPage.tsx web/src
@@ -871,7 +895,7 @@ Returns canonical bytes (`json.dumps(..., ensure_ascii=False, indent=2, sort_key
 
 `RunStore` gains `export_report_path(topic_id) -> Path` (the export HTML path with a `.report.json` suffix appended to its stem, in the same directory).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_quality_report.py
@@ -915,12 +939,12 @@ def test_reexport_produces_byte_identical_quality_report(guide_v1_run):
 
 (Adapt manifest-event access to the real event shape, as in Task 0.1.)
 
-- [ ] **Step 2: Run, verify failures**
+- [x] **Step 2: Run, verify failures**
 
 Run: `python3 -m pytest tests/test_quality_report.py tests/test_runs.py -k quality -v`
 Expected: FAIL — module and path helper don't exist.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 - Write `quality_report.py` per the interface block; export from `guides/__init__.py`.
 - Add `export_report_path` to `RunStore`.
@@ -928,12 +952,12 @@ Expected: FAIL — module and path helper don't exist.
 
 > **⚠️ CORRECTION (Wave 0 shipped a different shape — following the line above verbatim deadlocks).** The lock is `_manifest_write_lock`, **non-reentrant**. The `exported` event is recorded by `_append_event`, which is a *lock-taking wrapper*. Taking the lock and then calling it re-enters the same lock and **hangs the daemon thread forever** (there is no pytest timeout, so this surfaces as a CI hang). **First extract `_append_event_locked`** — the unlocked primitive, following the existing `_append_manifest_event_locked` / `_record_stage_provenance_locked` pattern — then take the lock once and call *that* from inside the critical section. One read-modify-write cycle per critical section. Full contract in "Wave 0 outcome" in the Wave Log.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `python3 -m pytest tests/test_quality_report.py tests/test_runs.py tests/test_server.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/guides/quality_report.py education_pipeline/guides/__init__.py education_pipeline/runs.py tests/test_quality_report.py tests/test_runs.py
@@ -950,15 +974,15 @@ git commit -m "feat(export): ship a canonical sidecar quality report with every 
 - Consumes: existing `POST /v1/runs/{topic}/validation/{phase}` route (`write_api.validate_run`, already implemented) and whatever client helper wraps it (check `client.ts` for an existing `postValidation`/`validateRun`; add one if absent).
 - Produces: a visible "Re-run validation" button wherever a validation summary shows state `stale` or blocking findings, which calls the POST and refreshes the status payload.
 
-- [ ] **Step 1: Write the failing test** — clicking "Re-run validation" issues the POST and re-renders updated summary counts (stub the client per the file's existing pattern).
+- [x] **Step 1: Write the failing test** — clicking "Re-run validation" issues the POST and re-renders updated summary counts (stub the client per the file's existing pattern).
 
 Run: `cd web && npm run test` → FAIL.
 
-- [ ] **Step 2: Implement** the button + client helper; loading/disabled state while in flight; surface `ApiRequestError` message per the panel's existing error pattern.
+- [x] **Step 2: Implement** the button + client helper; loading/disabled state while in flight; surface `ApiRequestError` message per the panel's existing error pattern.
 
 Run: `cd web && npm run test && npm run build` → PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add web/src
@@ -967,7 +991,7 @@ git commit -m "feat(web): re-run validation affordance for the repair loop"
 
 ### Wave 2 close
 
-- [ ] Run the wave-close checklist in the Wave Protocol section.
+- [x] Run the wave-close checklist in the Wave Protocol section.
 - Suggested next-wave recommendation to print: **Opus, medium effort** for Wave 3 — CLI subcommands over existing engine paths, well-trodden patterns in `cli.py`.
 
 ---
