@@ -1303,19 +1303,18 @@ class RunStore:
         return safe_id, source_stage, source_path, report_path, report
 
     def validate_run(self, topic_id: str, phase: str) -> Path:
-        """Run deterministic validation and write the phase report atomically."""
+        """Run deterministic validation and write the phase report atomically.
 
-        safe_id, source_stage, source_path, report_path, report = self._compute_phase_report(
-            topic_id, phase
-        )
-        self.create_run(safe_id)
-        _write_bytes_atomic(report_path, canonical_report_bytes(report))
-        self._append_event(
-            safe_id,
-            stage=source_stage,
-            action="validated",
-            files={"report_file": report_path, "source_file": source_path},
-            extra={"phase": phase},
+        Delegates to :meth:`validate_and_gate` for the persist step (compute,
+        write, provenance) and discards the gate result -- keeping the
+        "validated" event's provenance identical regardless of which method a
+        caller uses.
+        """
+
+        self.validate_and_gate(topic_id, phase)
+        safe_id = _artifact_id(topic_id, "topic id")
+        report_path = (
+            self.draft_report_path(safe_id) if phase == "draft" else self.final_report_path(safe_id)
         )
         return report_path
 

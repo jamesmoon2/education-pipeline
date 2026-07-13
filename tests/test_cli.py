@@ -454,6 +454,40 @@ def test_findings_command_warns_on_stale_report(workspace_with_stale_draft_repor
     assert "stale" in err.lower()
 
 
+def test_findings_command_falls_back_to_repair_stage_for_pre_v2_finding(
+    guide_v1_workspace, capsys
+):
+    """A pre-v2 report on disk has no ``stage`` key on its findings (that field
+    was added later). The CLI must fall back to the phase-derived stage
+    ("final" phase -> "repair", matching the web's findingHref convention in
+    d0a291f) rather than a hardcoded "draft" -- reverting to a hardcoded
+    fallback would make this test fail while every other findings test (whose
+    fixtures always carry ``stage`` on disk) stays green."""
+
+    root, topic_id = guide_v1_workspace
+    runs = RunStore(root)
+    report_path = runs.final_report_path(topic_id)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    stage_less_finding = {
+        "id": "pre-v2-finding",
+        "rule_id": "content.pre_v2_example",
+        "severity": "warning",
+        "blocking": False,
+        "waivable": True,
+        "path": "modules[0]",
+        "message": "pre-v2 report with no stage on this finding",
+        "remediation": "n/a",
+        # no "stage" key -- this is what a pre-v2 report looks like on disk.
+    }
+    report["findings"] = [stage_less_finding]
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    assert main(["--workspace", str(root), "findings", topic_id, "--phase", "final"]) == 0
+    out = capsys.readouterr().out
+    assert "\trepair\t" in out
+    assert "\tdraft\t" not in out
+
+
 def test_report_command_prints_sidecar_after_export(exported_guide_workspace, capsys):
     root, topic_id = exported_guide_workspace
     assert main(["--workspace", str(root), "report", topic_id]) == 0
