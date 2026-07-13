@@ -24,6 +24,7 @@ class Rule:
     blocking: bool
     waivable: bool
     remediation: str
+    stage: str
 
 
 @dataclass(frozen=True)
@@ -38,51 +39,51 @@ class ValidationContext:
 
 
 RULES = {
-    "json.invalid": Rule("blocker", True, False, "Provide one valid UTF-8 JSON object."),
-    "json.invalid_utf8": Rule("blocker", True, False, "Encode the guide as UTF-8."),
-    "schema.unsupported_version": Rule("blocker", True, False, "Use guide schema version 1.0."),
-    "schema.missing_field": Rule("blocker", True, False, "Add the required field."),
-    "schema.unknown_field": Rule("error", True, False, "Remove the unregistered field."),
-    "schema.invalid_type": Rule("blocker", True, False, "Use the required JSON value type."),
-    "schema.invalid_id": Rule("error", True, False, "Use a stable lowercase guide ID."),
-    "schema.duplicate_id": Rule("blocker", True, False, "Give every guide object a unique ID."),
-    "schema.unknown_reference": Rule("blocker", True, False, "Reference a registered guide ID."),
-    "schema.unknown_block_type": Rule("blocker", True, False, "Use a supported guide block type."),
-    "schema.size_limit": Rule("blocker", True, False, "Reduce the guide to the supported size."),
-    "schema.cardinality": Rule("blocker", True, False, "Provide the required number of items."),
-    "schema.invalid_value": Rule("blocker", True, False, "Use a supported value."),
-    "schema.duplicate_reference": Rule("error", True, False, "Remove the duplicate reference."),
-    "content.raw_html": Rule("blocker", True, False, "Remove raw HTML and use safe Markdown."),
-    "link.unsafe_scheme": Rule("blocker", True, False, "Use https, http, or a known guide fragment."),
-    "link.unsafe_target": Rule("blocker", True, False, "Use https, http, or a known guide fragment."),
-    "link.image_not_supported": Rule("blocker", True, False, "Remove the Markdown image."),
-    "link.unknown_internal_target": Rule("error", True, False, "Link to a registered guide ID."),
-    "privacy.exact_private_value": Rule("blocker", True, True, "Remove or generalize the private value."),
-    "privacy.possible_identifier": Rule("warning", False, True, "Review and remove private identifiers."),
-    "content.prompt_leak": Rule("blocker", True, True, "Remove generation instructions from learner content."),
-    "content.placeholder": Rule("error", True, True, "Replace placeholder text with complete content."),
-    "outcome.unassigned": Rule("error", True, True, "Assign the outcome to a module."),
-    "outcome.untaught": Rule("error", True, True, "Teach the outcome in rich text or a callout."),
-    "outcome.unassessed": Rule("error", True, True, "Reference the outcome from an interactive block."),
-    "module.no_interaction": Rule("error", True, True, "Add an interaction to the module."),
-    "interaction.missing_required_type": Rule("error", True, True, "Add the required interaction type."),
-    "knowledge_check.invalid_answer_set": Rule("blocker", True, False, "Configure a valid correct-answer set."),
-    "scenario.invalid_quality_set": Rule("blocker", True, False, "Configure exactly one best choice."),
-    "worked_reveal.too_few_steps": Rule("error", True, True, "Provide at least two reveal steps."),
-    "personalization.no_visible_connection": Rule("warning", False, True, "Add an appropriate learner-facing connection."),
-    "time.module_total_mismatch": Rule("warning", False, True, "Align course and module time estimates."),
-    "content.empty": Rule("blocker", True, False, "Provide non-empty learner content."),
-    "content.excessive_length": Rule("warning", False, True, "Split or shorten the content."),
-    "source.unknown_reference": Rule("blocker", True, False, "Reference a registered source."),
-    "source.missing_for_required_claim": Rule("warning", False, True, "Add a source for the claim."),
-    "source.invalid_url": Rule("error", True, False, "Use an absolute http or https source URL."),
-    "markdown.invalid_heading_level": Rule("error", True, True, "Use headings below the runtime-owned page structure."),
-    "markdown.unclosed_fence": Rule("error", True, True, "Close the fenced code block."),
-    "runtime.render_failed": Rule("blocker", True, False, "Correct content that the runtime cannot render."),
-    "runtime.asset_mismatch": Rule("blocker", True, False, "Use the matching packaged runtime assets."),
-    "a11y.control_label_missing": Rule("blocker", True, False, "Provide a visible control label."),
-    "a11y.heading_order": Rule("error", True, True, "Use a logical heading order."),
-    "a11y.color_only_instruction": Rule("error", True, True, "Describe the cue without relying on color alone."),
+    "json.invalid": Rule("blocker", True, False, "Provide one valid UTF-8 JSON object.", "draft"),
+    "json.invalid_utf8": Rule("blocker", True, False, "Encode the guide as UTF-8.", "draft"),
+    "schema.unsupported_version": Rule("blocker", True, False, "Use guide schema version 1.0.", "draft"),
+    "schema.missing_field": Rule("blocker", True, False, "Add the required field.", "draft"),
+    "schema.unknown_field": Rule("error", True, False, "Remove the unregistered field.", "draft"),
+    "schema.invalid_type": Rule("blocker", True, False, "Use the required JSON value type.", "draft"),
+    "schema.invalid_id": Rule("error", True, False, "Use a stable lowercase guide ID.", "draft"),
+    "schema.duplicate_id": Rule("blocker", True, False, "Give every guide object a unique ID.", "draft"),
+    "schema.unknown_reference": Rule("blocker", True, False, "Reference a registered guide ID.", "draft"),
+    "schema.unknown_block_type": Rule("blocker", True, False, "Use a supported guide block type.", "draft"),
+    "schema.size_limit": Rule("blocker", True, False, "Reduce the guide to the supported size.", "draft"),
+    "schema.cardinality": Rule("blocker", True, False, "Provide the required number of items.", "draft"),
+    "schema.invalid_value": Rule("blocker", True, False, "Use a supported value.", "draft"),
+    "schema.duplicate_reference": Rule("error", True, False, "Remove the duplicate reference.", "draft"),
+    "content.raw_html": Rule("blocker", True, False, "Remove raw HTML and use safe Markdown.", "draft"),
+    "link.unsafe_scheme": Rule("blocker", True, False, "Use https, http, or a known guide fragment.", "draft"),
+    "link.unsafe_target": Rule("blocker", True, False, "Use https, http, or a known guide fragment.", "draft"),
+    "link.image_not_supported": Rule("blocker", True, False, "Remove the Markdown image.", "draft"),
+    "link.unknown_internal_target": Rule("error", True, False, "Link to a registered guide ID.", "draft"),
+    "privacy.exact_private_value": Rule("blocker", True, True, "Remove or generalize the private value.", "draft"),
+    "privacy.possible_identifier": Rule("warning", False, True, "Review and remove private identifiers.", "draft"),
+    "content.prompt_leak": Rule("blocker", True, True, "Remove generation instructions from learner content.", "draft"),
+    "content.placeholder": Rule("error", True, True, "Replace placeholder text with complete content.", "draft"),
+    "outcome.unassigned": Rule("error", True, True, "Assign the outcome to a module.", "outline"),
+    "outcome.untaught": Rule("error", True, True, "Teach the outcome in rich text or a callout.", "outline"),
+    "outcome.unassessed": Rule("error", True, True, "Reference the outcome from an interactive block.", "outline"),
+    "module.no_interaction": Rule("error", True, True, "Add an interaction to the module.", "outline"),
+    "interaction.missing_required_type": Rule("error", True, True, "Add the required interaction type.", "outline"),
+    "knowledge_check.invalid_answer_set": Rule("blocker", True, False, "Configure a valid correct-answer set.", "draft"),
+    "scenario.invalid_quality_set": Rule("blocker", True, False, "Configure exactly one best choice.", "draft"),
+    "worked_reveal.too_few_steps": Rule("error", True, True, "Provide at least two reveal steps.", "draft"),
+    "personalization.no_visible_connection": Rule("warning", False, True, "Add an appropriate learner-facing connection.", "draft"),
+    "time.module_total_mismatch": Rule("warning", False, True, "Align course and module time estimates.", "outline"),
+    "content.empty": Rule("blocker", True, False, "Provide non-empty learner content.", "draft"),
+    "content.excessive_length": Rule("warning", False, True, "Split or shorten the content.", "draft"),
+    "source.unknown_reference": Rule("blocker", True, False, "Reference a registered source.", "draft"),
+    "source.missing_for_required_claim": Rule("warning", False, True, "Add a source for the claim.", "draft"),
+    "source.invalid_url": Rule("error", True, False, "Use an absolute http or https source URL.", "draft"),
+    "markdown.invalid_heading_level": Rule("error", True, True, "Use headings below the runtime-owned page structure.", "draft"),
+    "markdown.unclosed_fence": Rule("error", True, True, "Close the fenced code block.", "draft"),
+    "runtime.render_failed": Rule("blocker", True, False, "Correct content that the runtime cannot render.", "repair"),
+    "runtime.asset_mismatch": Rule("blocker", True, False, "Use the matching packaged runtime assets.", "repair"),
+    "a11y.control_label_missing": Rule("blocker", True, False, "Provide a visible control label.", "repair"),
+    "a11y.heading_order": Rule("error", True, True, "Use a logical heading order.", "repair"),
+    "a11y.color_only_instruction": Rule("error", True, True, "Describe the cue without relying on color alone.", "repair"),
 }
 
 _PLACEHOLDER = re.compile(r"\b(?:todo|tbd|lorem ipsum|insert (?:text|content) here)\b", re.I)
@@ -94,7 +95,7 @@ _GENERIC_PRIVATE = {"none", "unknown", "n/a", "na", "user", "learner", "student"
 def _finding(rule_id: str, path: str, message: str, identity: str = "", related_ids: tuple[str, ...] = ()) -> Finding:
     rule = RULES[rule_id]
     suffix = identity or path or "root"
-    return Finding(f"{rule_id}:{suffix}", rule_id, rule.severity, rule.blocking, rule.waivable, path, message, rule.remediation, related_ids)
+    return Finding(f"{rule_id}:{suffix}", rule_id, rule.severity, rule.blocking, rule.waivable, path, message, rule.remediation, related_ids, rule.stage)
 
 
 def _diagnostic_finding(item: ParseDiagnostic, private_values: tuple[str, ...]) -> Finding:
