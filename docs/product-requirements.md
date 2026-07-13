@@ -1,7 +1,7 @@
 # Education Pipeline Product Requirements
 
 **Status:** Authoritative product direction
-**Last updated:** 2026-07-11
+**Last updated:** 2026-07-12
 **Target:** Local-first public application, initial release `v0.1`
 **Supersedes:** `docs/archive/roadmap.md`,
 `docs/archive/open-source-readiness-plan.md`, and
@@ -515,6 +515,12 @@ underlying local configuration.
 cannot silently package structurally invalid or privacy-leaking content.
 
 ### P1 — Make personalization visible and safe
+
+**Status: Design specified 2026-07-12** in
+[`docs/superpowers/specs/2026-07-12-personalization-design.md`](superpowers/specs/2026-07-12-personalization-design.md).
+Implementation waves 1–2 (privacy engine, profiles UI) may start
+alongside the release-gates milestone tail; wave 3 onward requires that
+milestone's Wave 2 (stage attribution + sidecar report).
 
 - Build profile creation/editing and publishable-summary UI.
 - Add privacy classification and warnings.
