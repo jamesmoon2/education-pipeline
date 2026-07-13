@@ -362,6 +362,29 @@ def test_run_status_unknown_topic_is_404(server):
     assert status == 404
 
 
+def test_run_status_reports_findings_by_stage(server, tmp_path):
+    """The draft validations summary breaks blocking-or-error findings down
+    by the stage responsible for fixing them (Task 2.1's Finding.stage),
+    so the cockpit can badge/link each stage with actionable work."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report_path = runs.validate_run("g", "draft")
+    report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    finding = next(
+        item for item in report_payload["findings"] if item["blocking"] or item["severity"] == "error"
+    )
+
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    summary = body["validations"]["draft"]
+    assert "findings_by_stage" in summary
+    assert all(isinstance(v, int) for v in summary["findings_by_stage"].values())
+    assert summary["findings_by_stage"].get(finding["stage"], 0) >= 1
+
+
 def test_stage_content_returns_prompt_and_nulls(server):
     status, body = _req(server, "GET", "/v1/runs/t/stages/draft")
     assert status == 200

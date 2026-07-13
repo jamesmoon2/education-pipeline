@@ -138,19 +138,25 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
 
 def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
     if runs.content_contract(topic_id).kind != "interactive_guide":
-        return {"state": "missing", "blocking": 0, "errors": 0, "warnings": 0}
+        return {"state": "missing", "blocking": 0, "errors": 0, "warnings": 0, "findings_by_stage": {}}
     state = runs.report_state(topic_id, phase)
     counts = {"blocking": 0, "errors": 0, "warnings": 0}
+    by_stage: dict[str, int] = {}
     path = runs.draft_report_path(topic_id) if phase == "draft" else runs.final_report_path(topic_id)
     if path.is_file():
         try:
-            summary = json.loads(path.read_text(encoding="utf-8")).get("summary", {})
+            report = json.loads(path.read_text(encoding="utf-8"))
+            summary = report.get("summary", {})
             for key in counts:
                 if isinstance(summary.get(key), int):
                     counts[key] = summary[key]
+            for finding in report.get("findings", []):
+                if finding.get("blocking") or finding.get("severity") == "error":
+                    stage = finding.get("stage", "draft")
+                    by_stage[stage] = by_stage.get(stage, 0) + 1
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
             pass
-    return {"state": state, **counts}
+    return {"state": state, **counts, "findings_by_stage": by_stage}
 
 
 def validation_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
