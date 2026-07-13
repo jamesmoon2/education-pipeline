@@ -224,7 +224,7 @@ describe("RunBoardPage", () => {
     renderAt("/topics/t");
 
     const repairRow = await screen.findByRole("row", { name: /repair/ });
-    expect(within(repairRow).getByRole("status", { name: "1 findings" })).toBeInTheDocument();
+    expect(within(repairRow).getByRole("status", { name: "1 finding" })).toBeInTheDocument();
     expect(screen.queryByRole("status", { name: "5 findings" })).not.toBeInTheDocument();
   });
 

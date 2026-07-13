@@ -16,11 +16,14 @@ function feedbackFor(error: unknown): string {
   return error instanceof Error ? error.message : "Validation request failed.";
 }
 
-function findingHref(topicId: string, finding: ValidationFinding): string {
+function findingHref(topicId: string, phase: Phase, finding: ValidationFinding): string {
   const params = new URLSearchParams({ json_path: finding.path });
   const relatedId = finding.related_ids?.[0];
   if (relatedId) params.set("related_id", relatedId);
-  return `/topics/${encodeURIComponent(topicId)}/stages/${finding.stage}?${params.toString()}`;
+  // Pre-v2 reports (written before findings carried a stage) have no
+  // finding.stage; fall back to the phase-derived stage the old links used.
+  const stage = finding.stage ?? (phase === "draft" ? "draft" : "repair");
+  return `/topics/${encodeURIComponent(topicId)}/stages/${stage}?${params.toString()}`;
 }
 
 export default function ValidationFindingsPanel({
@@ -193,7 +196,7 @@ export default function ValidationFindingsPanel({
                     </p>
                     <p>{finding.message}</p>
                     <p>Suggested action: {finding.remediation}</p>
-                    <a href={findingHref(topicId, finding)}>
+                    <a href={findingHref(topicId, phase, finding)}>
                       Open source at {finding.path}
                     </a>
                     {finding.waivable && !waived && state === "current" && (

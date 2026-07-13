@@ -184,7 +184,7 @@ export interface ValidationFinding {
   message: string;
   remediation: string;
   related_ids?: string[];
-  stage: string;
+  stage?: string;
 }
 
 export interface ValidationReport {

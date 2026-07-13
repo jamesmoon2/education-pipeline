@@ -135,7 +135,7 @@ export default function RunBoardPage() {
                     <span
                       className="findings-badge"
                       role="status"
-                      aria-label={`${findingsCount} findings`}
+                      aria-label={`${findingsCount} ${findingsCount === 1 ? "finding" : "findings"}`}
                     >
                       {findingsCount}
                     </span>

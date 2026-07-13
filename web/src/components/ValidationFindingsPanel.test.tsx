@@ -290,4 +290,34 @@ describe("ValidationFindingsPanel", () => {
     expect(links[0]).toHaveAttribute("href", expect.stringContaining("/stages/outline?"));
     expect(links[1]).toHaveAttribute("href", expect.stringContaining("/stages/repair?"));
   });
+
+  it("falls back to the repair stage for a pre-v2 finding with no stage on a final-phase report", async () => {
+    const { stage: _stage, ...findingWithoutStage } = report.findings[0];
+    vi.mocked(getValidation).mockResolvedValue({
+      state: "current",
+      report: {
+        ...report,
+        phase: "final",
+        findings: [findingWithoutStage as typeof report.findings[0]],
+      },
+    });
+    renderPanel("current", { phase: "final" });
+    const link = await screen.findByRole("link", { name: /Open source/ });
+    expect(link).toHaveAttribute("href", expect.stringContaining("/stages/repair?"));
+  });
+
+  it("falls back to the draft stage for a pre-v2 finding with no stage on a draft-phase report", async () => {
+    const { stage: _stage, ...findingWithoutStage } = report.findings[0];
+    vi.mocked(getValidation).mockResolvedValue({
+      state: "current",
+      report: {
+        ...report,
+        phase: "draft",
+        findings: [findingWithoutStage as typeof report.findings[0]],
+      },
+    });
+    renderPanel("current", { phase: "draft" });
+    const link = await screen.findByRole("link", { name: /Open source/ });
+    expect(link).toHaveAttribute("href", expect.stringContaining("/stages/draft?"));
+  });
 });
