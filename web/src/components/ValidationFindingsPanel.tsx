@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ApiRequestError, getValidation, getWaivers, postWaiver } from "../api/client";
+import { ApiRequestError, getValidation, getWaivers, postValidate, postWaiver } from "../api/client";
 import type {
   ValidationFinding,
   ValidationReport,
@@ -44,6 +44,7 @@ export default function ValidationFindingsPanel({
   const [waiverFinding, setWaiverFinding] = useState<ValidationFinding | null>(null);
   const [reason, setReason] = useState("");
   const [waiving, setWaiving] = useState(false);
+  const [rerunning, setRerunning] = useState(false);
 
   useEffect(() => {
     setReport(null);
@@ -114,9 +115,26 @@ export default function ValidationFindingsPanel({
     }
   };
 
+  const rerunValidation = async () => {
+    if (rerunning) return;
+    setRerunning(true);
+    setFeedback(null);
+    try {
+      const result = await postValidate(topicId, phase);
+      setReport(result.report);
+      onChanged();
+    } catch (error) {
+      setFeedback(feedbackFor(error));
+    } finally {
+      setRerunning(false);
+    }
+  };
+
   if (state === "missing") {
     return <section aria-label={`${phase} validation findings`}><p>No {phase} validation report yet.</p></section>;
   }
+
+  const canRerun = state === "stale" || (report !== null && report.summary.blocking > 0);
 
   return (
     <section className="validation-findings" aria-label={`${phase} validation findings`}>
@@ -125,6 +143,11 @@ export default function ValidationFindingsPanel({
           ? `The ${phase} validation report is stale. Findings may not match the current guide.`
           : `The ${phase} validation report is current.`}
       </p>
+      {canRerun && (
+        <button type="button" disabled={rerunning} onClick={() => void rerunValidation()}>
+          {rerunning ? "Re-running validation…" : "Re-run validation"}
+        </button>
+      )}
       {loading && <p>Loading findings…</p>}
       {waiverState === "stale" && (
         <p className="error">Saved waivers are stale and do not apply to this guide hash.</p>
