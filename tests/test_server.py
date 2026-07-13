@@ -419,6 +419,94 @@ def test_run_status_reports_effective_blocking_after_waivers(server, tmp_path):
     summary = body["validations"]["draft"]
     assert summary["blocking"] > 0
     assert summary["effective_blocking"] == 0
+    # The stage responsible for the now-waived blocker must net out of the
+    # badge breakdown too -- a fully-waived stage has no actionable work
+    # left, so findings_by_stage should agree with effective_blocking == 0
+    # instead of still showing the raw pre-waiver count.
+    assert summary["findings_by_stage"] == {}
+
+
+def test_run_status_effective_blocking_falls_back_when_report_is_stale(server, tmp_path):
+    """``_validation_summary`` (read_api.py) only trusts a recomputed
+    ``gate_result`` when ``report_state`` says the on-disk report is
+    "current" -- otherwise it would pair a stale on-disk report body with a
+    freshly recomputed gate, and the two could disagree (the exact trap
+    Task 3.1's review caught in the CLI's ``_cmd_report``).
+
+    This isolates that guard from the (separate) hash-bound staleness that
+    ``apply_waivers`` already provides for free: the approved draft source
+    is left untouched here -- only the on-disk report's recorded
+    ``guide_sha256`` is corrupted after waiving, so ``report_state`` flips
+    to "stale" while a freshly recomputed ``gate_result`` (which reads the
+    approved source, not the report file) would still consider the waiver
+    valid and *not* stale. Without the ``state == "current"`` guard, the
+    recomputed gate would still be trusted and net the badge away even
+    though the on-disk report -- the thing the ``blocking``/
+    ``findings_by_stage`` counts above are drawn from -- no longer agrees
+    with it."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report_path = runs.validate_run("g", "draft")
+    report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    finding = next(item for item in report_payload["findings"] if item["waivable"])
+    assert finding["blocking"] or finding["severity"] == "error"
+
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/runs/g/validation/draft/waivers",
+        body={
+            "finding_id": finding["id"],
+            "guide_sha256": report_payload["guide_sha256"],
+            "reason": "accepted",
+        },
+    )
+    assert status == 200
+
+    # Corrupt only the on-disk report's recorded hash -- not the approved
+    # source. report_state now reads "stale" (recorded hash mismatch), but
+    # a fresh gate_result recompute (from the unchanged approved source)
+    # would still match the waiver's guide_sha256 and report not-stale.
+    corrupted = dict(report_payload)
+    corrupted["guide_sha256"] = "0" * 64
+    report_path.write_text(json.dumps(corrupted), encoding="utf-8")
+
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    summary = body["validations"]["draft"]
+    assert summary["state"] == "stale"
+    assert summary["blocking"] > 0
+    assert summary["effective_blocking"] == summary["blocking"]
+    assert summary["findings_by_stage"].get(finding["stage"], 0) >= 1
+
+
+def test_run_status_effective_blocking_matches_blocking_without_waivers(server, tmp_path):
+    """Perf fix: ``_validation_summary`` skips the ``gate_result`` recompute
+    (a full parse + normalize + static-checks pass, doubled again for
+    ``final``) when the topic has no waiver set at all -- overwhelmingly the
+    common case, since ``apply_waivers`` with ``waiver_set=None`` always
+    returns ``effective_blocking = len(blocking findings)``, exactly
+    ``counts["blocking"]`` for a "current" report. This pins that the
+    short-circuit is semantically a no-op: with no waivers recorded,
+    ``effective_blocking`` must still equal the raw ``blocking`` count."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    runs.validate_run("g", "draft")
+
+    assert runs.load_waiver_set("g") is None
+
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    summary = body["validations"]["draft"]
+    assert summary["state"] == "current"
+    assert summary["blocking"] > 0
+    assert summary["effective_blocking"] == summary["blocking"]
 
 
 def test_stage_content_returns_prompt_and_nulls(server):

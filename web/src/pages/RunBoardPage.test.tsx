@@ -228,20 +228,26 @@ describe("RunBoardPage", () => {
     expect(screen.queryByRole("status", { name: "5 findings" })).not.toBeInTheDocument();
   });
 
-  it("suppresses a phase's findings badges once every blocker is waived (effective_blocking 0)", async () => {
+  it("shows no badge for a phase whose every blocker is waived (server-netted findings_by_stage)", async () => {
     vi.mocked(getRunStatus).mockResolvedValue({
       ...status,
       validations: {
-        // Every blocker in draft carries an accepted waiver: the gate is
-        // open (effective_blocking 0) even though a raw finding still sits
-        // on disk under "outline" -- no actionable work remains, so no
-        // badge should render for it.
+        // Every blocker in draft carries an accepted waiver: the server
+        // (_validation_summary, read_api.py) nets waived findings out of
+        // findings_by_stage itself, so a fully-waived stage arrives here as
+        // {} -- not as a raw pre-waiver count paired with effective_blocking
+        // 0. (findings_by_stage: { outline: 1 } alongside effective_blocking:
+        // 0 is a payload the server can never emit: findings_by_stage counts
+        // blocking OR severity === "error", while effective_blocking counts
+        // blocking only, and the server nets both from the same waived-id
+        // set, so a fully-waived blocking finding always empties out of
+        // both.)
         draft: {
           state: "current",
           blocking: 1,
           errors: 0,
           warnings: 0,
-          findings_by_stage: { outline: 1 },
+          findings_by_stage: {},
           effective_blocking: 0,
         },
         // final still has a real, unwaived blocker: its badge must survive.

@@ -151,6 +151,7 @@ def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
     by_stage: dict[str, int] = {}
     waived_ids: set[str] = set()
     path = runs.draft_report_path(topic_id) if phase == "draft" else runs.final_report_path(topic_id)
+    report: dict | None = None
     if path.is_file():
         try:
             report = json.loads(path.read_text(encoding="utf-8"))
@@ -163,7 +164,7 @@ def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
                     stage = finding.get("stage", "draft")
                     by_stage[stage] = by_stage.get(stage, 0) + 1
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
-            pass
+            report = None
 
     # Waivers are hash-bound (apply_waivers, guides/waivers.py): a waiver set
     # recorded against different content is dropped, so a recomputed gate on
@@ -178,8 +179,18 @@ def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
     # on-disk report is confirmed "current"; otherwise leave it equal to the
     # raw blocking count and let the stale banner + re-run button do their
     # job.
+    #
+    # gate_result's recompute is a full parse + normalize + static-checks
+    # pass (plus, for final, a runtime render and a11y pass) -- expensive
+    # enough that paying for it on every 5s cockpit poll matters for large
+    # guides. Skip it entirely when the topic has no waiver set: with
+    # waiver_set=None, apply_waivers always returns
+    # effective_blocking == len(blocking findings), which for a "current"
+    # report is exactly counts["blocking"] already computed above -- so the
+    # short-circuit is semantically a no-op for the overwhelmingly common
+    # no-waivers case.
     effective_blocking = counts["blocking"]
-    if state == "current":
+    if state == "current" and runs.load_waiver_set(topic_id) is not None:
         try:
             gate = runs.gate_result(topic_id, phase)
         except ConfigError:
@@ -188,21 +199,17 @@ def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
             effective_blocking = gate.effective_blocking
             waived_ids = set(gate.waived_finding_ids)
 
-    if waived_ids and by_stage:
-        try:
-            report = json.loads(path.read_text(encoding="utf-8"))
-            for finding in report.get("findings", []):
-                if finding.get("id") not in waived_ids:
-                    continue
-                if not (finding.get("blocking") or finding.get("severity") == "error"):
-                    continue
-                stage = finding.get("stage", "draft")
-                if by_stage.get(stage):
-                    by_stage[stage] -= 1
-                    if by_stage[stage] <= 0:
-                        del by_stage[stage]
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
-            pass
+    if waived_ids and by_stage and report is not None:
+        for finding in report.get("findings", []):
+            if finding.get("id") not in waived_ids:
+                continue
+            if not (finding.get("blocking") or finding.get("severity") == "error"):
+                continue
+            stage = finding.get("stage", "draft")
+            if by_stage.get(stage):
+                by_stage[stage] -= 1
+                if by_stage[stage] <= 0:
+                    del by_stage[stage]
 
     return {
         "state": state,
