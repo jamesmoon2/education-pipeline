@@ -39,13 +39,14 @@ class _Analyzer(HTMLParser):
         self.controls_ok = True
         self.heading_ok = True
         self._deepest_heading = 0
-        self._label_depth = 0
+        # {"has_text": bool, "wraps_unnamed": bool} per open <label>
+        self._open_labels: list[dict[str, bool]] = []
         self._open_buttons: list[dict[str, bool]] = []  # {"named": bool}
 
     def handle_starttag(self, tag, attrs):
         attributes = dict(attrs)
         if tag == "label":
-            self._label_depth += 1
+            self._open_labels.append({"has_text": False, "wraps_unnamed": False})
         if tag in _HEADINGS:
             level = _HEADINGS[tag]
             if self._deepest_heading and level > self._deepest_heading + 1:
@@ -57,16 +58,26 @@ class _Analyzer(HTMLParser):
             named = bool((attributes.get("aria-label") or "").strip()) or bool(
                 (attributes.get("aria-labelledby") or "").strip()
             )
-            if not named and self._label_depth == 0:
-                self.controls_ok = False
+            if not named:
+                if self._open_labels:
+                    # Defer the verdict to </label>: text anywhere inside the
+                    # label (before or after the control) names it.
+                    self._open_labels[-1]["wraps_unnamed"] = True
+                else:
+                    self.controls_ok = False
 
     def handle_data(self, data):
-        if data.strip() and self._open_buttons:
-            self._open_buttons[-1]["named"] = True
+        if data.strip():
+            for label in self._open_labels:
+                label["has_text"] = True
+            if self._open_buttons:
+                self._open_buttons[-1]["named"] = True
 
     def handle_endtag(self, tag):
-        if tag == "label" and self._label_depth:
-            self._label_depth -= 1
+        if tag == "label" and self._open_labels:
+            label = self._open_labels.pop()
+            if label["wraps_unnamed"] and not label["has_text"]:
+                self.controls_ok = False
         if tag == "button" and self._open_buttons:
             if not self._open_buttons.pop()["named"]:
                 self.controls_ok = False
@@ -84,8 +95,9 @@ def _sha(text: str) -> str:
 
 
 def compute_static_checks(guide: Guide, assets: RuntimeAssets | None = None) -> StaticCheckResult:
-    assets = assets or load_runtime_assets()
     packaged = load_runtime_assets()
+    if assets is None:
+        assets = packaged
     assets_match = (
         assets.version == RUNTIME_VERSION
         and _sha(assets.css) == _sha(packaged.css)
@@ -94,6 +106,10 @@ def compute_static_checks(guide: Guide, assets: RuntimeAssets | None = None) -> 
     try:
         document = assemble_guide_document(guide, assets=assets, mode="export")
     except GuideDocumentError:
+        # assets_match is input-derived, so it stays computed even when
+        # assembly fails; the document-derived checks (controls, headings)
+        # default to True because they are unknowable without a document —
+        # the render failure itself is the finding.
         return StaticCheckResult(
             ValidationContext(render_succeeded=False, assets_match=assets_match), None
         )

@@ -1,6 +1,4 @@
 """Static checks computed from the assembled export document (stdlib only)."""
-import dataclasses
-import json
 from pathlib import Path
 
 import pytest
@@ -52,6 +50,25 @@ def test_render_failure_is_reported_and_document_is_none(guide, monkeypatch):
     assert result.document is None
 
 
+def test_render_failure_keeps_assets_match_computed(guide, monkeypatch):
+    # assets_match is input-derived, so it stays real (False here) even when
+    # assembly fails; only document-derived checks default to True.
+    from education_pipeline.guides import static_checks as mod
+    from education_pipeline.guides.document import GuideDocumentError
+
+    def boom(*args, **kwargs):
+        raise GuideDocumentError("forced")
+
+    monkeypatch.setattr(mod, "assemble_guide_document", boom)
+    packaged = load_runtime_assets()
+    tampered = RuntimeAssets(css=packaged.css + "/*x*/", javascript=packaged.javascript)
+    result = compute_static_checks(guide, assets=tampered)
+    ctx = result.context
+    assert (ctx.render_succeeded, ctx.assets_match, ctx.controls_have_labels,
+            ctx.heading_order_valid) == (False, False, True, True)
+    assert result.document is None
+
+
 def test_unlabeled_button_fails_controls_check(guide):
     # Exercise the HTML analyzer directly: the assembled document is trusted
     # input, so the analyzer is what needs adversarial coverage.
@@ -76,4 +93,18 @@ def test_aria_labeled_and_label_wrapped_controls_pass():
     doc = ('<select aria-label="Theme"><option>x</option></select>'
            '<label>Name<input type="text"></label>'
            '<button aria-label="Close"></button><h2>a</h2>')
+    assert _analyze_document(doc).controls_have_labels is True
+
+
+def test_textless_label_wrapped_control_fails_controls_check():
+    from education_pipeline.guides.static_checks import _analyze_document
+
+    doc = '<label><input type="text"></label><h2>a</h2>'
+    assert _analyze_document(doc).controls_have_labels is False
+
+
+def test_label_text_after_control_passes_controls_check():
+    from education_pipeline.guides.static_checks import _analyze_document
+
+    doc = '<label><input type="text">Name</label><h2>a</h2>'
     assert _analyze_document(doc).controls_have_labels is True
