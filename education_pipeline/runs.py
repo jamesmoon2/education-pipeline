@@ -972,7 +972,8 @@ class RunStore:
         if document is None:
             # An open waiver gate guarantees no render_failed blocker, so the
             # checked document is present. Guard defensively against a None
-            # write, keeping the failure on the 422-mapped ConfigError path.
+            # write, keeping the failure on the 400-mapped ConfigError path
+            # (any mapped status is fine; the last-resort 500 handler is not).
             raise ConfigError(
                 f"cannot export {topic_id!r}: the checked guide document is unavailable"
             )
