@@ -190,9 +190,13 @@ def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
     # short-circuit is semantically a no-op for the overwhelmingly common
     # no-waivers case.
     effective_blocking = counts["blocking"]
-    if state == "current" and runs.load_waiver_set(topic_id) is not None:
+    if state == "current":
         try:
-            gate = runs.gate_result(topic_id, phase)
+            gate = (
+                runs.gate_result(topic_id, phase)
+                if runs.load_waiver_set(topic_id) is not None
+                else None
+            )
         except ConfigError:
             gate = None
         if gate is not None and not gate.stale:

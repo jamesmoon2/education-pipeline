@@ -509,6 +509,37 @@ def test_run_status_effective_blocking_matches_blocking_without_waivers(server, 
     assert summary["effective_blocking"] == summary["blocking"]
 
 
+def test_run_status_degrades_gracefully_when_waivers_file_is_malformed(server, tmp_path):
+    """``RunStore._load_waiver_set`` (runs.py) raises ``ConfigError`` on a
+    malformed waivers file -- it only returns ``None`` to mean "no file
+    exists". ``_validation_summary`` (read_api.py) calls
+    ``runs.load_waiver_set(topic_id)`` to decide whether the ``gate_result``
+    recompute is worth paying for, and that call must stay inside the same
+    ``try/except ConfigError`` guard as the recompute itself: otherwise a
+    single corrupt waivers file turns a graceful degrade-to-raw-counts (the
+    behavior before the short-circuit) into a 400 that takes down
+    ``GET /v1/runs/{topic}`` -- the endpoint the cockpit polls every 5s."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    runs.validate_run("g", "draft")
+
+    # Hand-corrupt the waivers file directly, bypassing the write API that
+    # would normally validate it -- this is what a malformed/partially
+    # written file on disk looks like.
+    runs.waivers_path("g").write_text(
+        json.dumps({"schema_version": 99, "guide_sha256": "x", "waivers": []}),
+        encoding="utf-8",
+    )
+
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    summary = body["validations"]["draft"]
+    assert summary["effective_blocking"] == summary["blocking"]
+
+
 def test_stage_content_returns_prompt_and_nulls(server):
     status, body = _req(server, "GET", "/v1/runs/t/stages/draft")
     assert status == 200
