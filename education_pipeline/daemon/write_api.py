@@ -128,16 +128,21 @@ def create_waiver(
     # never silently propagated into the new file.
     #
     # record_waiver now hash-binds to a fresh recompute of the current
-    # report itself and returns a WaiverResult (gate outcome), not the
-    # persisted WaiverSet -- the preconditions above (current hash,
-    # non-empty reason, finding exists and is waivable) already hold by
-    # this point, so record_waiver's own equivalent checks are a formality
-    # on this path; they matter for its other caller, the CLI's `waive`
-    # command, which has no read_api.validation_payload precondition of its
-    # own. Re-load the persisted set afterward to build the response shape
-    # this endpoint has always returned.
-    runs.record_waiver(topic_id, phase, finding_id, reason.strip())
-    waiver_set = runs.load_waiver_set(topic_id)
+    # report itself and returns a WaiverResult (gate outcome); the
+    # preconditions above (current hash, non-empty reason, finding exists
+    # and is waivable) already hold by this point, so record_waiver's own
+    # equivalent checks are a formality on this path -- they matter for its
+    # other caller, the CLI's `waive` command, which has no
+    # read_api.validation_payload precondition of its own.
+    #
+    # Use the private `_record_waiver`, which also returns the WaiverSet
+    # that was written *inside* the locked critical section, instead of
+    # taking a second, unlocked `load_waiver_set` snapshot afterward: that
+    # extra read would be racy (a concurrent writer bound to a different
+    # guide_sha256 could land between the two calls and cause this
+    # response to silently drop the waiver just recorded) and would
+    # dereference `load_waiver_set`'s Optional return without a guard.
+    _, waiver_set = runs._record_waiver(topic_id, phase, finding_id, reason.strip())
     value = {
         "schema_version": waiver_set.schema_version,
         "guide_sha256": waiver_set.guide_sha256,

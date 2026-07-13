@@ -642,6 +642,61 @@ def test_remove_waiver_missing_finding_is_a_noop(tmp_path: Path) -> None:
     assert result.gate_open is False
 
 
+def test_unwaive_nonexistent_finding_on_topic_with_no_waivers_file_creates_none(
+    tmp_path: Path,
+) -> None:
+    """Regression for the hot-path optimization in the daemon's poll handler
+    (``read_api.py``, which skips the expensive ``gate_result`` recompute
+    only when ``load_waiver_set(...) is None``, i.e. no waivers file on
+    disk): ``unwaive`` of a finding id that was never waived, on a topic
+    with no waivers file, must leave NO waivers file on disk. Writing an
+    empty ``{"waivers": []}`` file here would silently and permanently
+    defeat that optimization for this topic."""
+
+    topic_id = "systems-thinking"
+    runs = _create_guide_run(tmp_path, topic_id)
+    leak_json = _prompt_leak_guide_json()
+    _drive_guide_to_draft_approved(runs, topic_id, draft_body=leak_json)
+    runs.validate_run(topic_id, "draft")
+
+    assert not runs.waivers_path(topic_id).exists()
+
+    result = runs.remove_waiver(topic_id, "draft", "does-not-exist")
+    assert isinstance(result, WaiverResult)
+    assert not runs.waivers_path(topic_id).exists()
+
+
+def test_unwaive_that_removes_nothing_does_not_rewrite_existing_waivers_file(
+    tmp_path: Path,
+) -> None:
+    """An ``unwaive`` call for a finding id that is not present in an
+    *existing* waiver set must be a true no-op on disk -- it must not
+    rewrite (and thereby risk destroying) the persisted file, even though
+    the resulting logical waiver set is unchanged either way."""
+
+    topic_id = "systems-thinking"
+    runs = _create_guide_run(tmp_path, topic_id)
+    leak_json = _prompt_leak_guide_json()
+    _drive_guide_to_draft_approved(runs, topic_id, draft_body=leak_json)
+    report_path = runs.validate_run(topic_id, "draft")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    finding = next(
+        f for f in report["findings"] if f["rule_id"] == "content.prompt_leak" and f["blocking"]
+    )
+
+    runs.record_waiver(topic_id, "draft", finding["id"], "Intentional example text.")
+    waivers_path = runs.waivers_path(topic_id)
+    before_mtime_ns = waivers_path.stat().st_mtime_ns
+    before_bytes = waivers_path.read_bytes()
+
+    result = runs.remove_waiver(topic_id, "draft", "does-not-exist")
+    assert isinstance(result, WaiverResult)
+    assert result.gate_open is True
+
+    assert waivers_path.stat().st_mtime_ns == before_mtime_ns
+    assert waivers_path.read_bytes() == before_bytes
+
+
 def test_manifest_write_lock_is_not_reentrant(tmp_path: Path) -> None:
     """``_manifest_write_lock`` must be a plain, non-reentrant lock: a second
     acquisition on the SAME thread must block (never silently succeed).
