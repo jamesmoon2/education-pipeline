@@ -420,6 +420,18 @@ def test_validate_command_exit_code_is_1_when_gate_is_blocked(workspace_with_blo
     assert "gate blocked" in out
 
 
+def test_validate_command_nonexistent_topic_exits_2(tmp_path: Path, capsys) -> None:
+    """A typo'd/nonexistent topic id is a usage/config error (exit 2), not a
+    blocked gate (exit 1) -- scripts must be able to tell "no such run" apart
+    from "gate blocked" by exit code alone."""
+
+    root = tmp_path / "ws"
+    exit_code = main(["--workspace", str(root), "validate", "no-such-topic", "--phase", "draft"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "error:" in err
+
+
 def test_findings_command_lists_stage_attributed_findings(workspace_with_mixed_findings, capsys):
     root, topic_id = workspace_with_mixed_findings
     assert main(["--workspace", str(root), "findings", topic_id, "--phase", "draft"]) == 0
@@ -488,6 +500,20 @@ def test_findings_command_falls_back_to_repair_stage_for_pre_v2_finding(
     assert "\tdraft\t" not in out
 
 
+def test_findings_command_no_report_exits_2(tmp_path: Path, capsys) -> None:
+    """No validation report has been written yet: this is a usage/config
+    error (exit 2), not a blocked gate (exit 1)."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    test_runs._create_guide_run(root, topic_id)
+
+    exit_code = main(["--workspace", str(root), "findings", topic_id, "--phase", "draft"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "error:" in err
+
+
 def test_report_command_prints_sidecar_after_export(exported_guide_workspace, capsys):
     root, topic_id = exported_guide_workspace
     assert main(["--workspace", str(root), "report", topic_id]) == 0
@@ -509,6 +535,17 @@ def test_report_command_warns_on_stale_report(workspace_with_stale_final_report,
     main(["--workspace", str(root), "report", topic_id])
     err = capsys.readouterr().err
     assert "stale" in err.lower()
+
+
+def test_report_command_nonexistent_topic_exits_2(tmp_path: Path, capsys) -> None:
+    """A typo'd/nonexistent topic id is a usage/config error (exit 2), not a
+    blocked gate (exit 1)."""
+
+    root = tmp_path / "ws"
+    exit_code = main(["--workspace", str(root), "report", "no-such-topic"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "error:" in err
 
 
 def _blocking_finding_id(root, topic_id, phase="draft"):

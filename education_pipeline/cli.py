@@ -268,8 +268,21 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
+    """Validate a phase and report the resulting gate.
+
+    Caught locally (rather than left to `main`'s generic `ConfigError`
+    handler, which returns 1) so a nonexistent run or bad phase -- a usage
+    error -- exits 2, distinct from a real, computed "gate blocked" (1).
+    Without this, `education-pipeline validate typo-topic` and a genuine
+    blocked gate would be indistinguishable to a script checking exit codes.
+    """
+
     runs = RunStore(_root(args))
-    result = runs.validate_and_gate(args.topic_id, args.phase)
+    try:
+        result = runs.validate_and_gate(args.topic_id, args.phase)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     state = "open" if result.gate_open else "blocked"
     parts = [
         f"validate ({args.phase}): gate {state}; "
@@ -309,20 +322,32 @@ def _warn_if_report_stale(runs: RunStore, topic_id: str, phase: str) -> None:
 
 
 def _cmd_findings(args: argparse.Namespace) -> int:
+    """Print a phase's validation findings.
+
+    ``ConfigError`` (nonexistent run, bad phase, no report on disk yet) is
+    caught locally rather than left to `main`'s generic handler (which
+    returns 1) -- a usage/config error must exit 2, distinct from the
+    findings-listing itself, which always exits 0 once a report exists.
+    """
+
     import json
 
     runs = RunStore(_root(args))
-    report_path = (
-        runs.draft_report_path(args.topic_id)
-        if args.phase == "draft"
-        else runs.final_report_path(args.topic_id)
-    )
-    if not report_path.is_file():
-        raise ConfigError(
-            f"no {args.phase} validation report for {args.topic_id!r}; run `validate` first"
+    try:
+        report_path = (
+            runs.draft_report_path(args.topic_id)
+            if args.phase == "draft"
+            else runs.final_report_path(args.topic_id)
         )
-    _warn_if_report_stale(runs, args.topic_id, args.phase)
-    report = json.loads(report_path.read_text(encoding="utf-8"))
+        if not report_path.is_file():
+            raise ConfigError(
+                f"no {args.phase} validation report for {args.topic_id!r}; run `validate` first"
+            )
+        _warn_if_report_stale(runs, args.topic_id, args.phase)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     findings = report.get("findings", [])
     if args.blocking:
         findings = [f for f in findings if f.get("blocking")]
@@ -341,24 +366,36 @@ def _cmd_findings(args: argparse.Namespace) -> int:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
+    """Print the export sidecar report, or the raw final report if not yet exported.
+
+    ``ConfigError`` (nonexistent run, no final report on disk yet) is caught
+    locally rather than left to `main`'s generic handler (which returns 1)
+    -- a usage/config error must exit 2, distinct from a genuinely computed
+    "gate blocked" (1).
+    """
+
     import json
 
     runs = RunStore(_root(args))
-    export_report_path = runs.export_report_path(args.topic_id)
-    if export_report_path.is_file():
-        _warn_if_report_stale(runs, args.topic_id, "final")
-        text = export_report_path.read_text(encoding="utf-8")
-        data = json.loads(text)
-        gate_open = bool(data.get("gate", {}).get("open"))
-    else:
-        report_path = runs.final_report_path(args.topic_id)
-        if not report_path.is_file():
-            raise ConfigError(
-                f"no final validation report for {args.topic_id!r}; run `validate` first"
-            )
-        _warn_if_report_stale(runs, args.topic_id, "final")
-        text = report_path.read_text(encoding="utf-8")
-        gate_open = runs.gate_result(args.topic_id, "final").gate_open
+    try:
+        export_report_path = runs.export_report_path(args.topic_id)
+        if export_report_path.is_file():
+            _warn_if_report_stale(runs, args.topic_id, "final")
+            text = export_report_path.read_text(encoding="utf-8")
+            data = json.loads(text)
+            gate_open = bool(data.get("gate", {}).get("open"))
+        else:
+            report_path = runs.final_report_path(args.topic_id)
+            if not report_path.is_file():
+                raise ConfigError(
+                    f"no final validation report for {args.topic_id!r}; run `validate` first"
+                )
+            _warn_if_report_stale(runs, args.topic_id, "final")
+            text = report_path.read_text(encoding="utf-8")
+            gate_open = runs.gate_result(args.topic_id, "final").gate_open
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     print(text, end="")
     return 0 if gate_open else 1
 

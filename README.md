@@ -132,15 +132,22 @@ education-pipeline -C ./workspace waive systems-thinking <finding-id> --reason "
 education-pipeline -C ./workspace unwaive systems-thinking <finding-id>
 ```
 
+All five commands share one exit-code contract: `0` = open/success, `1` =
+gate blocked, `2` = usage/config error (nonexistent run, bad `--phase`, no
+report on disk yet) — so a script can always tell "no such run" apart from
+"gate blocked" by exit code alone.
+
 - `validate <topic> [--phase draft|final]` runs deterministic validation and
-  reports the gate (exit 0 if open, 1 if blocked).
+  reports the gate (exit 0 if open, 1 if blocked, 2 on a usage/config error
+  such as a nonexistent run).
 - `findings <topic> [--phase] [--blocking]` lists a validation report's
   findings as tab-separated `severity  rule_id  stage  path  message` (exit 0
-  on success — listing is not a gate; exits 1 if no report exists yet — run
-  `validate` first).
+  on success — listing is not a gate; exits 2 if no report exists yet — run
+  `validate` first — or the run doesn't exist).
 - `report <topic>` prints the export sidecar quality report verbatim if one
   exists, otherwise the final validation report; its exit code tracks
-  `gate.open`.
+  `gate.open` (0 open, 1 blocked), or 2 on a usage/config error (nonexistent
+  run, or no final report exists yet).
 - `waive <topic> <finding-id> --reason "..." [--phase]` and
   `unwaive <topic> <finding-id> [--phase]` record or remove a waiver. Usage
   errors (bad finding id, non-waivable rule, empty reason) exit 2, distinct
