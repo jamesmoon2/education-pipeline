@@ -175,3 +175,48 @@ def test_stale_waiver_never_reopens_the_gate(tmp_path: Path) -> None:
         runs.finalize_run(tid, overwrite=True)
     with pytest.raises(ConfigError):
         runs.export_run(tid, format="html", overwrite=True)
+
+
+def test_export_refuses_after_unwaive_following_finalize(tmp_path: Path) -> None:
+    """Waive a waivable blocking finding, finalize, then remove the waiver
+    (the CLI ``unwaive`` path) without touching content or revalidating.
+
+    The run stays finalized and ``report_state`` stays "current" -- every
+    export precondition still passes. The only thing standing between this
+    state and a bad export is ``_export_guide_v1``'s own
+    ``apply_waivers``/gate check: it must still refuse, and export must
+    leave no artifacts behind.
+    """
+
+    tid = "systems-thinking"
+    runs = test_runs._create_guide_run(tmp_path, tid)
+    leak_json = test_runs._prompt_leak_guide_json()
+    test_runs._drive_guide_to_finalize_ready(runs, tid, draft_body=leak_json, repair_body=leak_json)
+
+    report = json.loads(runs.final_report_path(tid).read_text(encoding="utf-8"))
+    leak_findings = [
+        f for f in report["findings"] if f["rule_id"] == "content.prompt_leak" and f["blocking"]
+    ]
+    assert leak_findings
+    finding_id = leak_findings[0]["id"]
+    assert leak_findings[0]["waivable"] is True
+
+    waived = runs.record_waiver(tid, "final", finding_id, "Intentional red-team phrase in example.")
+    assert waived.gate_open is True
+
+    runs.finalize_run(tid)
+    assert runs.is_finalized(tid)
+
+    unwaived = runs.remove_waiver(tid, "final", finding_id)
+    assert unwaived.gate_open is False
+
+    # Nothing about finalize state or report freshness changed: the internal
+    # gate in `_export_guide_v1` is the sole remaining defense.
+    assert runs.is_finalized(tid)
+    assert runs.report_state(tid, "final") == "current"
+
+    with pytest.raises(ConfigError, match=r"blocking finding\(s\) remain"):
+        runs.export_run(tid, format="html")
+
+    assert not runs.export_path(tid, "html").exists()
+    assert not runs.export_report_path(tid).exists()

@@ -26,7 +26,6 @@ let baseURL: string;
 let ws: string;
 
 const TOPIC = "rg";
-const HEADING_PATH = "/modules/0/sections/0/blocks/1/markdown";
 const PLACEHOLDER_PATH = "/modules/0/sections/0/blocks/0/markdown";
 
 // Reused verbatim from full-run.spec's passing guide-v1 baseline: a spec and
