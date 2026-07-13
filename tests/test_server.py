@@ -385,6 +385,42 @@ def test_run_status_reports_findings_by_stage(server, tmp_path):
     assert summary["findings_by_stage"].get(finding["stage"], 0) >= 1
 
 
+def test_run_status_reports_effective_blocking_after_waivers(server, tmp_path):
+    """A run whose every blocker carries an accepted waiver has an open gate
+    and no actionable work left, but ``_validation_summary`` used to report
+    the raw on-disk blocking count -- waiver-blind -- so the cockpit badge
+    and re-run button stayed lit even though there was nothing left to do.
+    ``effective_blocking`` must reflect the post-waiver reality while the
+    raw ``blocking`` count (and the stage breakdown) still shows the true
+    on-disk finding so the panel can keep listing it as waived."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report_path = runs.validate_run("g", "draft")
+    report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    finding = next(item for item in report_payload["findings"] if item["waivable"])
+
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/runs/g/validation/draft/waivers",
+        body={
+            "finding_id": finding["id"],
+            "guide_sha256": report_payload["guide_sha256"],
+            "reason": "accepted",
+        },
+    )
+    assert status == 200
+
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    summary = body["validations"]["draft"]
+    assert summary["blocking"] > 0
+    assert summary["effective_blocking"] == 0
+
+
 def test_stage_content_returns_prompt_and_nulls(server):
     status, body = _req(server, "GET", "/v1/runs/t/stages/draft")
     assert status == 200

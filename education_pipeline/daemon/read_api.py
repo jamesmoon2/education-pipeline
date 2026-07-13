@@ -138,10 +138,18 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
 
 def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
     if runs.content_contract(topic_id).kind != "interactive_guide":
-        return {"state": "missing", "blocking": 0, "errors": 0, "warnings": 0, "findings_by_stage": {}}
+        return {
+            "state": "missing",
+            "blocking": 0,
+            "errors": 0,
+            "warnings": 0,
+            "findings_by_stage": {},
+            "effective_blocking": 0,
+        }
     state = runs.report_state(topic_id, phase)
     counts = {"blocking": 0, "errors": 0, "warnings": 0}
     by_stage: dict[str, int] = {}
+    waived_ids: set[str] = set()
     path = runs.draft_report_path(topic_id) if phase == "draft" else runs.final_report_path(topic_id)
     if path.is_file():
         try:
@@ -156,7 +164,52 @@ def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
                     by_stage[stage] = by_stage.get(stage, 0) + 1
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
             pass
-    return {"state": state, **counts, "findings_by_stage": by_stage}
+
+    # Waivers are hash-bound (apply_waivers, guides/waivers.py): a waiver set
+    # recorded against different content is dropped, so a recomputed gate on
+    # changed content closes automatically. effective_blocking inherits that
+    # fail-safe for free -- no extra staleness logic needed here.
+    #
+    # gate_result recomputes the report from the approved source, while
+    # counts/by_stage above come from the report *file on disk*. Pairing a
+    # stale on-disk body with a fresh recomputed gate would make this summary
+    # disagree with itself -- the exact trap Task 3.1's review caught in the
+    # CLI's _cmd_report. Only trust a recomputed effective_blocking when the
+    # on-disk report is confirmed "current"; otherwise leave it equal to the
+    # raw blocking count and let the stale banner + re-run button do their
+    # job.
+    effective_blocking = counts["blocking"]
+    if state == "current":
+        try:
+            gate = runs.gate_result(topic_id, phase)
+        except ConfigError:
+            gate = None
+        if gate is not None and not gate.stale:
+            effective_blocking = gate.effective_blocking
+            waived_ids = set(gate.waived_finding_ids)
+
+    if waived_ids and by_stage:
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+            for finding in report.get("findings", []):
+                if finding.get("id") not in waived_ids:
+                    continue
+                if not (finding.get("blocking") or finding.get("severity") == "error"):
+                    continue
+                stage = finding.get("stage", "draft")
+                if by_stage.get(stage):
+                    by_stage[stage] -= 1
+                    if by_stage[stage] <= 0:
+                        del by_stage[stage]
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            pass
+
+    return {
+        "state": state,
+        **counts,
+        "findings_by_stage": by_stage,
+        "effective_blocking": effective_blocking,
+    }
 
 
 def validation_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
