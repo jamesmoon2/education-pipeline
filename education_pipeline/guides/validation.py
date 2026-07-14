@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 import hashlib
+import json
 import re
 from typing import Iterable
+
+from education_pipeline.privacy import normalize_private_value, private_value_fingerprint
 
 from .canonical import guide_sha256
 from .model import Callout, Guide, KnowledgeCheck, RichText, Scenario, WorkedReveal
@@ -36,6 +39,18 @@ class ValidationContext:
     assets_match: bool = True
     controls_have_labels: bool = True
     heading_order_valid: bool = True
+
+
+@dataclass(frozen=True)
+class PersonalizationValidationContext:
+    """Run-owned personalization state supplied to deterministic validation.
+
+    Standalone validation omits this context. Wave 2 consumes the frozen
+    authoritative-goal shape when guide-source goal annotations are added.
+    """
+
+    profile_present: bool
+    authoritative_goal_ids: tuple[str, ...] = ()
 
 
 RULES = {
@@ -71,6 +86,7 @@ RULES = {
     "scenario.invalid_quality_set": Rule("blocker", True, False, "Configure exactly one best choice.", "draft"),
     "worked_reveal.too_few_steps": Rule("error", True, True, "Provide at least two reveal steps.", "draft"),
     "personalization.no_visible_connection": Rule("warning", False, True, "Add an appropriate learner-facing connection.", "draft"),
+    "personalization.no_profile": Rule("info", False, False, "Attach a learner profile to enable personalization checks.", "draft"),
     "time.module_total_mismatch": Rule("warning", False, True, "Align course and module time estimates.", "outline"),
     "content.empty": Rule("blocker", True, False, "Provide non-empty learner content.", "draft"),
     "content.excessive_length": Rule("warning", False, True, "Split or shorten the content.", "draft"),
@@ -112,7 +128,8 @@ def _diagnostic_finding(item: ParseDiagnostic, private_values: tuple[str, ...]) 
         rule_id = "schema.invalid_value"
     message = item.message
     for private in private_values:
-        message = re.sub(re.escape(private), "[redacted]", message, flags=re.I)
+        flexible_whitespace = re.escape(private).replace(r"\ ", r"\s+")
+        message = re.sub(flexible_whitespace, "[redacted]", message, flags=re.I)
     stable_id = ""
     match = re.search(r"['\"]([a-z][a-z0-9-]{0,63})['\"]", message)
     if match and rule_id in {
@@ -121,6 +138,145 @@ def _diagnostic_finding(item: ParseDiagnostic, private_values: tuple[str, ...]) 
     }:
         stable_id = match.group(1)
     return _finding(rule_id, item.path, message, stable_id)
+
+
+def _replace_invalid_scalar_codepoints(value: str) -> str:
+    return "".join(
+        "\N{REPLACEMENT CHARACTER}" if 0xD800 <= ord(character) <= 0xDFFF else character
+        for character in value
+    )
+
+
+def _has_invalid_scalar_codepoints(value: str) -> bool:
+    return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+
+
+def _normalize_validation_text(value: str) -> str:
+    """Normalize untrusted guide/report text without weakening profile parsing."""
+
+    return normalize_private_value(_replace_invalid_scalar_codepoints(value))
+
+
+def _sanitize_guide_value(value: object) -> object:
+    if isinstance(value, str):
+        return _replace_invalid_scalar_codepoints(value)
+    if isinstance(value, tuple):
+        return tuple(_sanitize_guide_value(child) for child in value)
+    if is_dataclass(value):
+        return replace(
+            value,
+            **{
+                field.name: _sanitize_guide_value(getattr(value, field.name))
+                for field in fields(value)
+            },
+        )
+    return value
+
+
+def _value_has_invalid_scalar_codepoints(value: object) -> bool:
+    if isinstance(value, str):
+        return _has_invalid_scalar_codepoints(value)
+    if isinstance(value, dict):
+        return any(
+            _value_has_invalid_scalar_codepoints(key)
+            or _value_has_invalid_scalar_codepoints(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_value_has_invalid_scalar_codepoints(child) for child in value)
+    if is_dataclass(value):
+        return any(
+            _value_has_invalid_scalar_codepoints(getattr(value, field.name))
+            for field in fields(value)
+        )
+    return False
+
+
+def _json_input_has_invalid_scalar_codepoints(value: str | bytes) -> bool:
+    try:
+        decoded = value.decode("utf-8") if isinstance(value, bytes) else value
+        return _value_has_invalid_scalar_codepoints(json.loads(decoded))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+
+
+def _invalid_scalar_finding() -> Finding:
+    return _finding(
+        "schema.invalid_value",
+        "",
+        "Guide contains an invalid Unicode scalar value.",
+        "invalid-unicode-scalar",
+    )
+
+
+def _contains_private_value(value: str, private_values: tuple[str, ...]) -> bool:
+    normalized = _normalize_validation_text(value)
+    return any(private in normalized for private in private_values)
+
+
+def _sanitize_finding(item: Finding, private_values: tuple[str, ...]) -> Finding:
+    """Remove protected values from every source-derived finding surface."""
+
+    item = replace(
+        item,
+        id=_replace_invalid_scalar_codepoints(item.id),
+        path=_replace_invalid_scalar_codepoints(item.path),
+        message=_replace_invalid_scalar_codepoints(item.message),
+        remediation=_replace_invalid_scalar_codepoints(item.remediation),
+        related_ids=tuple(
+            _replace_invalid_scalar_codepoints(value) for value in item.related_ids
+        ),
+    )
+    if not private_values:
+        return item
+
+    exact_private_finding = item.rule_id == "privacy.exact_private_value"
+    finding_id = item.id
+    if not exact_private_finding and _contains_private_value(finding_id, private_values):
+        safe_identity = hashlib.sha256(
+            _normalize_validation_text(finding_id).encode("utf-8")
+        ).hexdigest()[:12]
+        finding_id = f"{item.rule_id}:[redacted-{safe_identity}]"
+    path = (
+        "/[redacted]"
+        if _contains_private_value(item.path, private_values)
+        else item.path
+    )
+    message = item.message
+    if not exact_private_finding and _contains_private_value(message, private_values):
+        message = "[redacted]"
+    remediation = (
+        "[redacted]"
+        if _contains_private_value(item.remediation, private_values)
+        else item.remediation
+    )
+    related_ids = tuple(
+        "[redacted]" if _contains_private_value(value, private_values) else value
+        for value in item.related_ids
+    )
+    return replace(
+        item,
+        id=finding_id,
+        path=path,
+        message=message,
+        remediation=remediation,
+        related_ids=related_ids,
+    )
+
+
+def _validation_report(
+    guide_schema_version: str,
+    phase: str,
+    guide_digest: str,
+    findings: Iterable[Finding],
+    private_values: tuple[str, ...],
+) -> ValidationReport:
+    return ValidationReport(
+        guide_schema_version,
+        phase,
+        guide_digest,
+        tuple(_sanitize_finding(item, private_values) for item in findings),
+    )
 
 
 def _text_fields(value: object, path: str = "") -> Iterable[tuple[str, str]]:
@@ -135,43 +291,118 @@ def _text_fields(value: object, path: str = "") -> Iterable[tuple[str, str]]:
         yield path, value
 
 
+def validation_guide_sha256(value: Guide | str | bytes) -> str:
+    """Hash the exact fail-closed guide projection used by validation."""
+
+    if isinstance(value, Guide):
+        sanitized = _sanitize_guide_value(value)
+        assert isinstance(sanitized, Guide)
+        return guide_sha256(sanitized)
+
+    parse_input = (
+        _replace_invalid_scalar_codepoints(value)
+        if isinstance(value, str)
+        else value
+    )
+    raw = parse_input.encode("utf-8") if isinstance(parse_input, str) else parse_input
+    if len(raw) > MAX_GUIDE_SOURCE_BYTES:
+        return hashlib.sha256(raw).hexdigest()
+    parsed = parse_guide(parse_input)
+    if not parsed.ok:
+        return hashlib.sha256(raw).hexdigest()
+    guide = _sanitize_guide_value(normalize_guide(parsed))
+    assert isinstance(guide, Guide)
+    return guide_sha256(guide)
+
+
 def validate_guide(
     value: Guide | str | bytes,
     *,
     phase: str = "final",
     private_values: Iterable[str] = (),
     context: ValidationContext = ValidationContext(),
+    personalization_context: PersonalizationValidationContext | None = None,
 ) -> ValidationReport:
     """Return a canonical, timestamp-free report for a guide or raw guide JSON."""
+    normalized_private = tuple(_normalize_validation_text(item) for item in private_values)
     supplied_private = tuple(
-        " ".join(item.split())
-        for item in private_values
-        if len(" ".join(item.split())) >= 5
-        and " ".join(item.split()).casefold() not in _GENERIC_PRIVATE
+        item
+        for item in normalized_private
+        if len(item) >= 5 and item not in _GENERIC_PRIVATE
     )
+    personalization_findings = ()
+    if personalization_context is not None and not personalization_context.profile_present:
+        personalization_findings = (
+            _finding(
+                "personalization.no_profile",
+                "",
+                "No learner profile snapshot is attached; personalization checks were skipped.",
+            ),
+        )
+    invalid_scalar_replaced = False
     if isinstance(value, Guide):
-        guide = value
+        invalid_scalar_replaced = _value_has_invalid_scalar_codepoints(value)
+        guide = _sanitize_guide_value(value)
+        assert isinstance(guide, Guide)
     else:
-        raw = value.encode("utf-8") if isinstance(value, str) else value
+        invalid_scalar_replaced = (
+            isinstance(value, str) and _has_invalid_scalar_codepoints(value)
+        )
+        parse_input = (
+            _replace_invalid_scalar_codepoints(value)
+            if isinstance(value, str)
+            else value
+        )
+        raw = parse_input.encode("utf-8") if isinstance(parse_input, str) else parse_input
         if len(raw) > MAX_GUIDE_SOURCE_BYTES:
             digest = hashlib.sha256(raw).hexdigest()
             finding = _finding("schema.size_limit", "", "Guide exceeds the 2,000,000-byte validation limit.")
-            return ValidationReport("1.0", phase, digest, (finding,))
-        parsed = parse_guide(value)
+            invalid_findings = (
+                (_invalid_scalar_finding(),) if invalid_scalar_replaced else ()
+            )
+            return _validation_report(
+                "1.0",
+                phase,
+                digest,
+                (finding,) + invalid_findings + personalization_findings,
+                supplied_private,
+            )
+        parsed = parse_guide(parse_input)
         if not parsed.ok:
             digest = hashlib.sha256(raw).hexdigest()
-            return ValidationReport("1.0", phase, digest, tuple(_diagnostic_finding(x, supplied_private) for x in parsed.diagnostics))
-        guide = normalize_guide(parsed)
+            invalid_scalar_replaced = (
+                invalid_scalar_replaced
+                or _json_input_has_invalid_scalar_codepoints(parse_input)
+            )
+            invalid_findings = (
+                (_invalid_scalar_finding(),) if invalid_scalar_replaced else ()
+            )
+            return _validation_report(
+                "1.0",
+                phase,
+                digest,
+                tuple(_diagnostic_finding(x, supplied_private) for x in parsed.diagnostics)
+                + invalid_findings
+                + personalization_findings,
+                supplied_private,
+            )
+        normalized_guide = normalize_guide(parsed)
+        invalid_scalar_replaced = (
+            invalid_scalar_replaced
+            or _value_has_invalid_scalar_codepoints(normalized_guide)
+        )
+        guide = _sanitize_guide_value(normalized_guide)
+        assert isinstance(guide, Guide)
 
-    findings: list[Finding] = []
+    findings: list[Finding] = list(personalization_findings)
+    if invalid_scalar_replaced:
+        findings.append(_invalid_scalar_finding())
     texts = tuple(_text_fields(guide))
     denylist = []
     for supplied in supplied_private:
-        normalized = " ".join(supplied.split()).casefold()
-        if len(normalized) >= 5 and normalized not in _GENERIC_PRIVATE:
-            denylist.append((normalized, hashlib.sha256(normalized.encode()).hexdigest()[:12]))
+        denylist.append((supplied, private_value_fingerprint(supplied)))
     for path, text in texts:
-        folded = " ".join(text.split()).casefold()
+        folded = _normalize_validation_text(text)
         for private, fingerprint in denylist:
             if private in folded:
                 findings.append(_finding("privacy.exact_private_value", path, f"Content matches a private denylist value (fingerprint {fingerprint}).", fingerprint))
@@ -219,4 +450,10 @@ def validate_guide(
     for passed, rule_id, message in static_checks:
         if not passed:
             findings.append(_finding(rule_id, "/modules", message))
-    return ValidationReport(guide.schema_version, phase, guide_sha256(guide), tuple(findings))
+    return _validation_report(
+        guide.schema_version,
+        phase,
+        validation_guide_sha256(guide),
+        findings,
+        supplied_private,
+    )

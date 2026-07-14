@@ -396,6 +396,23 @@ def test_profile_private_values_excludes_short_generic_low_risk_and_summary_valu
     ).hexdigest()[:12]
 
 
+def test_private_value_normalization_canonicalizes_unicode_before_dedup_and_hashing() -> None:
+    composed = "Caf\N{LATIN SMALL LETTER E WITH ACUTE} Confidentiel"
+    decomposed = "Cafe\N{COMBINING ACUTE ACCENT} Confidentiel"
+    profile = parse_learner_profile(
+        {
+            "id": "unicode-profile",
+            "target_learner": composed,
+            "learning_goals": [decomposed],
+        }
+    )
+
+    assert normalize_private_value(composed) == "caf\N{LATIN SMALL LETTER E WITH ACUTE} confidentiel"
+    assert normalize_private_value(decomposed) == normalize_private_value(composed)
+    assert private_value_fingerprint(decomposed) == private_value_fingerprint(composed)
+    assert profile_private_values(profile).count(normalize_private_value(composed)) == 1
+
+
 def test_profile_summary_warnings_are_safe_field_path_fingerprint_only() -> None:
     profile = parse_learner_profile(
         {

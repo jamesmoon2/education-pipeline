@@ -41,6 +41,11 @@ from education_pipeline.guides import (
     WaiverResult,
 )
 from education_pipeline.guide_runtime import load_runtime_assets
+from education_pipeline.guides.validation import (
+    PersonalizationValidationContext,
+    validation_guide_sha256,
+)
+from education_pipeline.privacy import profile_private_values
 from education_pipeline.prompts import (
     PromptArtifact,
     SpecPromptInput,
@@ -1263,50 +1268,58 @@ class RunStore:
         reuse the single parse instead of re-parsing the source.
         """
 
-        private_values = self._private_profile_values(topic_id)
+        private_values, personalization_context = self._profile_validation_inputs(topic_id)
         if len(source_text.encode("utf-8")) > MAX_GUIDE_SOURCE_BYTES:
             # The raw str path applies the size cap before parsing and records
             # the raw-source sha as the report digest, matching
             # ``_guide_source_sha`` so report_state stays "current".
-            return validate_guide(source_text, phase="final", private_values=private_values), None, None
+            return validate_guide(
+                source_text,
+                phase="final",
+                private_values=private_values,
+                personalization_context=personalization_context,
+            ), None, None
         parsed = parse_guide(source_text)
         if not parsed.ok:
-            return validate_guide(source_text, phase="final", private_values=private_values), None, None
+            return validate_guide(
+                source_text,
+                phase="final",
+                private_values=private_values,
+                personalization_context=personalization_context,
+            ), None, None
         guide = normalize_guide(parsed)
         result = compute_static_checks(guide)
         report = validate_guide(
-            guide, phase="final", context=result.context, private_values=private_values
+            guide,
+            phase="final",
+            context=result.context,
+            private_values=private_values,
+            personalization_context=personalization_context,
         )
         return report, result.document, guide
 
     def _private_profile_values(self, topic_id: str) -> tuple[str, ...]:
-        """Free-text, potentially-identifying fields from the topic's attached
-        learner profile, used as the ``privacy.exact_private_value`` denylist
-        so drafted or repaired guide content that leaks a learner's private
-        context verbatim is caught by validation.
+        """Return the shared protected-value policy for an attached profile.
 
-        Only free-text fields that could carry a name, cohort, institution, or
-        other identifying detail are included; categorical/enumerated
-        preference fields (reading level, pace, tone, ...) are excluded since
-        they are not personally identifying. Returns ``()`` when no profile is
-        attached to this run.
+        Kept as a compatibility wrapper for callers that inspect the run's
+        active validation denylist. Returns ``()`` when no profile is attached.
         """
 
         profile = self._load_attached_profile(topic_id)
         if profile is None:
             return ()
-        values: list[str] = [profile.target_learner]
-        for value in (
-            profile.prior_education,
-            profile.prior_experience,
-            profile.professional_experience,
-            profile.current_skill_level,
-        ):
-            if value:
-                values.append(value)
-        values.extend(profile.sensitive_areas)
-        values.extend(profile.accessibility_constraints)
-        return tuple(values)
+        return profile_private_values(profile)
+
+    def _profile_validation_inputs(
+        self, topic_id: str
+    ) -> tuple[tuple[str, ...], PersonalizationValidationContext]:
+        """Load one snapshot for both profile presence and protected values."""
+
+        profile = self._load_attached_profile(topic_id)
+        return (
+            profile_private_values(profile) if profile is not None else (),
+            PersonalizationValidationContext(profile_present=profile is not None),
+        )
 
     def _compute_phase_report(
         self, topic_id: str, phase: str
@@ -1336,8 +1349,12 @@ class RunStore:
         if phase == "final":
             report, _, _ = self._validated_final(safe_id, source_text)
         else:
+            private_values, personalization_context = self._profile_validation_inputs(safe_id)
             report = validate_guide(
-                source_text, phase=phase, private_values=self._private_profile_values(safe_id)
+                source_text,
+                phase=phase,
+                private_values=private_values,
+                personalization_context=personalization_context,
             )
         report_path = (
             self.draft_report_path(safe_id) if phase == "draft" else self.final_report_path(safe_id)
@@ -2070,13 +2087,7 @@ class RunStore:
 def _guide_source_sha(text: str) -> str:
     """Hash the guide source the same way ``validate_guide`` records ``guide_sha256``."""
 
-    raw = text.encode("utf-8")
-    if len(raw) > MAX_GUIDE_SOURCE_BYTES:
-        return hashlib.sha256(raw).hexdigest()
-    parsed = parse_guide(text)
-    if not parsed.ok:
-        return hashlib.sha256(raw).hexdigest()
-    return guide_sha256(normalize_guide(parsed))
+    return validation_guide_sha256(text)
 
 
 def _stub_text(paths: StagePaths) -> str:

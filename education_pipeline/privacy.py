@@ -14,6 +14,7 @@ import math
 import re
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
+import unicodedata
 
 from education_pipeline.config import ConfigError
 from education_pipeline.profiles import LearnerProfile, parse_learner_profile
@@ -97,7 +98,8 @@ def normalize_private_value(value: str) -> str:
     """Apply the exact normalization shared with guide leak validation."""
 
     _require_unicode_scalar(value, "private value")
-    return " ".join(value.split()).casefold()
+    canonical = unicodedata.normalize("NFC", value)
+    return " ".join(canonical.split()).casefold()
 
 
 def private_value_fingerprint(value: str) -> str:
