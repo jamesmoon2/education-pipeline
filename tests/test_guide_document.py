@@ -124,6 +124,16 @@ def test_print_visible_content_survives_progressive_disclosure_markup() -> None:
     assert "Draft a private loop map" in document  # reflection placeholder attribute
 
 
+def test_markdown_headings_nest_one_level_under_the_section_heading() -> None:
+    """The shell owns <h1> (course title) and <h2> (section title). '##' is the
+    shallowest heading a learner-Markdown author may write (markdown.invalid_
+    heading_level bans '#'), so it must render as <h3> -- directly under the
+    section heading, skipping nothing."""
+    assert render_guide_markdown("## Foo", {"known"}) == "<h3>Foo</h3>"
+    assert render_guide_markdown("### Bar", {"known"}) == "<h4>Bar</h4>"
+    assert render_guide_markdown("###### Deep", {"known"}) == "<h6>Deep</h6>"
+
+
 def test_unknown_schema_runtime_and_mode_fail_closed() -> None:
     value = guide()
     with pytest.raises(GuideDocumentError, match="schema"):

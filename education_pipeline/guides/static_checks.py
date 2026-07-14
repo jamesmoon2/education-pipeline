@@ -38,7 +38,7 @@ class _Analyzer(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.controls_ok = True
         self.heading_ok = True
-        self._deepest_heading = 0
+        self._previous_heading = 0
         # {"has_text": bool, "wraps_unnamed": bool} per open <label>
         self._open_labels: list[dict[str, bool]] = []
         self._open_buttons: list[dict[str, bool]] = []  # {"named": bool}
@@ -49,9 +49,15 @@ class _Analyzer(HTMLParser):
             self._open_labels.append({"has_text": False, "wraps_unnamed": False})
         if tag in _HEADINGS:
             level = _HEADINGS[tag]
-            if self._deepest_heading and level > self._deepest_heading + 1:
+            # Skip detection is relative to the *previous* heading, not the
+            # deepest seen so far: after h1,h2,h3, a later h2 -> h4 skips h3
+            # even though an h3 appeared earlier in the document. A document
+            # whose first heading is deeper than h1 has skipped the levels
+            # above it. Going shallower is never a skip.
+            allowed = self._previous_heading + 1 if self._previous_heading else 1
+            if level > allowed:
                 self.heading_ok = False
-            self._deepest_heading = max(self._deepest_heading, level)
+            self._previous_heading = level
         if tag == "button":
             self._open_buttons.append({"named": bool((attributes.get("aria-label") or "").strip())})
         if tag in _LABELABLE:

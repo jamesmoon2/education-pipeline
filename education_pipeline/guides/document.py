@@ -98,7 +98,14 @@ def render_guide_markdown(markdown: str, known_ids: Iterable[str]) -> str:
         elif not line.strip():
             flush()
         elif match := re.match(r"^(#{1,6})\s+(.+)$", line):
-            flush(); level = min(6, len(match.group(1)) + 2)
+            # Learner Markdown nests *under* the shell's structure: the shell
+            # owns <h1> (course title) and <h2> (section titles), and
+            # markdown.invalid_heading_level bans a level-one Markdown
+            # heading -- so the shallowest heading an author may write, '##',
+            # must render as <h3>, one level below the section heading it sits
+            # under. A +2 offset put it at <h4>, skipping a level in any
+            # section whose first block is a heading-leading rich_text block.
+            flush(); level = min(6, len(match.group(1)) + 1)
             rendered.append(f"<h{level}>{_inline(match.group(2), ids)}</h{level}>")
         elif match := re.match(r"^>\s?(.*)$", line):
             flush(); rendered.append(f"<blockquote><p>{_inline(match.group(1), ids)}</p></blockquote>")
