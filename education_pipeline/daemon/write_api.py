@@ -154,6 +154,31 @@ def create_waiver(
     return {"waivers": value, **read_api.validation_payload(runs, topic_id, phase)}
 
 
+def delete_waiver(runs: RunStore, topic_id: str, phase: str, finding_id: str) -> dict:
+    """Remove one waiver and return the resulting waiver set plus validation payload.
+
+    Mirrors ``create_waiver``'s response shape so the cockpit reuses one type.
+
+    No ``guide_sha256`` guard, unlike ``create_waiver``: removal is fail-safe
+    by construction. ``remove_waiver_with_set`` recomputes the report and
+    hash-binds internally, and a removal can only ever close a gate, never
+    open one -- so an optimistic-concurrency check would add a failure mode
+    without preventing one. Uses the public tuple method so the rendered set
+    is the one written inside the locked critical section (an unlocked re-read
+    would be racy).
+    """
+
+    _, waiver_set = runs.remove_waiver_with_set(topic_id, phase, finding_id)
+    value = {
+        "schema_version": waiver_set.schema_version,
+        "guide_sha256": waiver_set.guide_sha256,
+        "waivers": [
+            {"finding_id": w.finding_id, "reason": w.reason} for w in waiver_set.waivers
+        ],
+    }
+    return {"waivers": value, **read_api.validation_payload(runs, topic_id, phase)}
+
+
 def ingest_response(
     runs: RunStore,
     jobs: JobStore,

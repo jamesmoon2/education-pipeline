@@ -1517,6 +1517,82 @@ def test_get_waivers_over_http_with_corrupt_file_returns_400_not_200(server, tmp
     assert body["error"]["code"] == "bad_request"
 
 
+def test_delete_waiver_route_removes_the_waiver(server, tmp_path):
+    """DELETE .../waivers/{finding_id} closes a gate the cockpit previously
+    opened with POST -- adapting this module's daemon boot helper and its
+    existing POST-waiver test to the new verb."""
+    from urllib.parse import quote
+
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(tmp_path, topic_id)
+    leak_json = test_runs._prompt_leak_guide_json()
+    test_runs._drive_guide_to_finalize_ready(
+        runs, topic_id, draft_body=leak_json, repair_body=leak_json
+    )
+    finding_id = test_runs._first_waivable_blocking_finding_id(runs, topic_id, "final")
+    report_sha = json.loads(
+        runs.final_report_path(topic_id).read_text(encoding="utf-8")
+    )["guide_sha256"]
+
+    status, body = _req(
+        server,
+        "POST",
+        f"/v1/runs/{topic_id}/validation/final/waivers",
+        body={"finding_id": finding_id, "guide_sha256": report_sha, "reason": "accepted"},
+    )
+    assert status == 200
+    assert runs.waivers_path(topic_id).exists()
+
+    status, body = _req(
+        server,
+        "DELETE",
+        f"/v1/runs/{topic_id}/validation/final/waivers/{quote(finding_id, safe='')}",
+    )
+    assert status == 200
+    assert body["waivers"]["waivers"] == []
+
+
+def test_delete_waiver_leaves_no_empty_waivers_file(server, tmp_path):
+    """The waivers-file existence contract: read_api skips its per-poll gate
+    recompute only when the file is ABSENT. Removing the last waiver over HTTP
+    must unlink it, not write '{"waivers": []}'."""
+    from urllib.parse import quote
+
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(tmp_path, topic_id)
+    leak_json = test_runs._prompt_leak_guide_json()
+    test_runs._drive_guide_to_finalize_ready(
+        runs, topic_id, draft_body=leak_json, repair_body=leak_json
+    )
+    finding_id = test_runs._first_waivable_blocking_finding_id(runs, topic_id, "final")
+    report_sha = json.loads(
+        runs.final_report_path(topic_id).read_text(encoding="utf-8")
+    )["guide_sha256"]
+
+    status, _ = _req(
+        server,
+        "POST",
+        f"/v1/runs/{topic_id}/validation/final/waivers",
+        body={"finding_id": finding_id, "guide_sha256": report_sha, "reason": "accepted"},
+    )
+    assert status == 200
+    assert runs.waivers_path(topic_id).exists()
+
+    status, _ = _req(
+        server,
+        "DELETE",
+        f"/v1/runs/{topic_id}/validation/final/waivers/{quote(finding_id, safe='')}",
+    )
+    assert status == 200
+    assert not runs.waivers_path(topic_id).exists()
+
+
+def test_delete_unknown_path_is_404(server):
+    status, body = _req(server, "DELETE", "/v1/runs/nope/nonsense")
+    assert status == 404
+    assert body["error"]["code"] == "not_found"
+
+
 def test_unhandled_exception_returns_500_envelope_not_dropped_connection(server, monkeypatch):
     """The daemon's last-resort handler must convert any unexpected exception
     into a diagnosable 500, never a dropped connection."""

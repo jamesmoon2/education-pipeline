@@ -553,6 +553,31 @@ def test_create_waiver_does_not_reach_into_private_store_methods(monkeypatch, wa
     assert [w["finding_id"] for w in payload["waivers"]["waivers"]] == [finding_id]
 
 
+def test_delete_waiver_removes_it_and_returns_the_remaining_set(waiver_env):
+    """Record a waiver, then delete it: the gate re-closes and the file is gone."""
+    runs, topic_id, finding_id = waiver_env
+    write_api.create_waiver(
+        runs, topic_id, "final", finding_id, _report_sha(runs, topic_id), "reviewed"
+    )
+    assert runs.waivers_path(topic_id).exists()
+
+    payload = write_api.delete_waiver(runs, topic_id, "final", finding_id)
+
+    assert payload["waivers"]["waivers"] == []
+    assert payload["report"]["summary"]["blocking"] >= 1
+    assert not runs.waivers_path(topic_id).exists()
+
+
+def test_delete_waiver_for_an_unwaived_finding_is_a_no_op(waiver_env):
+    """Removing an id that was never waived must not create the waivers file."""
+    runs, topic_id, _ = waiver_env
+
+    payload = write_api.delete_waiver(runs, topic_id, "final", "never.waived:/root")
+
+    assert payload["waivers"]["waivers"] == []
+    assert not runs.waivers_path(topic_id).exists()
+
+
 def test_waiver_rejects_wrong_shape_persisted_waivers_file(tmp_path):
     """A corrupted/non-object waivers file on disk must surface as ConfigError
     (400), not crash the process with AttributeError when the builder calls

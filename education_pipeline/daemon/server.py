@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Protocol
+from urllib.parse import unquote
 
 from education_pipeline.config import (
     ConfigError,
@@ -649,6 +650,44 @@ def _make_handler(context: DaemonContext):
                         m.group(2),
                         _require_str(body, "text"),
                         base_sha256=_require_str(body, "base_sha256"),
+                    ),
+                )
+            self._error(404, "not_found", "unknown path")
+
+        def do_DELETE(self):
+            # Wrap the whole verb, including the pre-route _guard() check,
+            # so nothing on this path can escape to socketserver.
+            self._response_started = False
+            try:
+                if not self._guard():
+                    return
+                return self._api_delete_routes()
+            except read_api.NotFoundError as exc:
+                return self._error(404, "not_found", str(exc))
+            except write_api.ConflictError as exc:
+                return self._error(409, exc.code, str(exc))
+            except write_api.UnprocessableError as exc:
+                return self._error(422, exc.code, str(exc), exc.details)
+            except (GuideDocumentError, ContractError, GuideParseError) as exc:
+                return self._error(422, "guide_not_renderable", str(exc))
+            except ConfigError as exc:
+                return self._error(400, "bad_request", str(exc))
+            except Exception as exc:  # last resort: never drop the connection
+                return self._last_resort(exc)
+
+        def _api_delete_routes(self):
+            m = re.match(
+                r"^/v1/runs/([^/?]+)/validation/(draft|final)/waivers/([^/?]+)$", self.path
+            )
+            if m:
+                # Finding ids embed a JSON path (e.g. "a11y.heading_order:/sections/0"),
+                # so the client percent-encodes the segment. The decoded id is only
+                # string-compared against waiver entries -- never used to build a
+                # filesystem path -- so decoding adds no traversal surface.
+                return self._send(
+                    200,
+                    write_api.delete_waiver(
+                        context.runs, m.group(1), m.group(2), unquote(m.group(3))
                     ),
                 )
             self._error(404, "not_found", "unknown path")
