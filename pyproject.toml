@@ -30,7 +30,7 @@ Repository = "https://github.com/jamesmoon2/education-pipeline"
 Issues = "https://github.com/jamesmoon2/education-pipeline/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pytest-timeout"]
 
 [project.scripts]
 education-pipeline = "education_pipeline.cli:main"
@@ -43,4 +43,4 @@ include = ["education_pipeline*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --timeout=60"
