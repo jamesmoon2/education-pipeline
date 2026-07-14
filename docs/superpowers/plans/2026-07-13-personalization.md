@@ -168,7 +168,7 @@ recommendation instead of another kickoff prompt.
 | Wave | Status | Commits | pytest | vitest | e2e | build | Notes for the next wave |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Baseline | **complete** | code HEAD `929cc8cd` | 600 | 127 | 42 | clean | Fresh gate run 2026-07-13. Planning/spec edits are docs-only; unrelated pre-existing untracked files are outside scope. |
-| 0 — Privacy + profile store | pending | — | — | — | — | — | — |
+| 0 — Privacy + profile store | **complete** | planning `eb44004`; code `dc75c54`, `9124a7b`, `e5b0f17` | 666 | 127 | 42 | clean | Privacy/codec, atomic store, and run integration are frozen. Task 0.3 expanded internally to NFC normalization and shared validation hashing with no public signature/schema change. Unrelated concurrent docs commit `7e67007` was preserved; see closeout notes. |
 | 1 — Profile product surface | pending | — | — | — | — | — | — |
 | 2 — Guide 1.1 + trace | pending | — | — | — | — | — | — |
 | 3 — Optional audit + report | pending | — | — | — | — | — | — |
@@ -385,18 +385,18 @@ normalization/fingerprinting, `profile_field_sensitivity`,
 `profile_private_values`, `profile_summary_warnings`, `profile_to_dict`,
 `canonical_profile_toml_bytes`, and canonical SHA helper.
 
-- [ ] Write RED tests for all dataclass leaf paths plus `metadata.*`, recursive
+- [x] Write RED tests for all dataclass leaf paths plus `metadata.*`, recursive
   metadata traversal, `target_learner`/goal protection, normalization and
   deduplication, low-risk generic exclusions, safe summary warnings, JSON/TOML
   metadata restrictions, and deterministic mapping→TOML→mapping round trip.
-- [ ] Run `python3 -m pytest tests/test_profiles.py -v` and record the intended
+- [x] Run `python3 -m pytest tests/test_profiles.py -v` and record the intended
   failures.
-- [ ] Implement the pure policy/codec. Warning payloads contain only `code`,
+- [x] Implement the pure policy/codec. Warning payloads contain only `code`,
   field path, and 12-character fingerprint. Preserve first-field order while
   deduplicating normalized protected values.
-- [ ] Run the focused suite green and add one independent canonical-byte test
+- [x] Run the focused suite green and add one independent canonical-byte test
   using differently ordered equivalent input mappings.
-- [ ] Fresh spec review, privacy/adversarial review, code-quality review; resolve
+- [x] Fresh spec review, privacy/adversarial review, code-quality review; resolve
   findings; manager lands `feat(profiles): add canonical privacy policy and codec`.
 
 ### Task 0.2: Atomic canonical ProfileStore
@@ -410,15 +410,15 @@ normalization/fingerprinting, `profile_field_sensitivity`,
 create/update/duplicate/import adapters, attachment counts, atomic canonical
 writes, and immutable raw-byte snapshot attachment.
 
-- [ ] Write RED tests for canonical create, compare-and-swap update, stale hash,
+- [x] Write RED tests for canonical create, compare-and-swap update, stale hash,
   duplicate id replacement/collision, write failure preserving old bytes,
   attachment counts, legacy GET without rewrite, and snapshot independence.
-- [ ] Run `python3 -m pytest tests/test_workspace.py -v` and capture RED.
-- [ ] Implement a per-profile lock and temp-file/`os.replace` writer. Keep hash
+- [x] Run `python3 -m pytest tests/test_workspace.py -v` and capture RED.
+- [x] Implement a per-profile lock and temp-file/`os.replace` writer. Keep hash
   comparison and replacement in one critical section. Convert existing import
   and save entry points into adapters over the canonical engine.
-- [ ] Run the focused suite green; include a small concurrent stale-writer test.
-- [ ] Fresh spec/code review; manager lands
+- [x] Run the focused suite green; include a small concurrent stale-writer test.
+- [x] Fresh spec/code review; manager lands
   `feat(profiles): add atomic canonical profile storage`.
 
 ### Task 0.3: Real-run privacy integration and regression record
@@ -440,23 +440,65 @@ This task freezes and creates
 Wave 2 extends use of the frozen shape with authoritative goal ids; it does not
 replace the interface.
 
-- [ ] Write RED tests proving planted `target_learner`, learning-goal, and nested
+- [x] Write RED tests proving planted `target_learner`, learning-goal, and nested
   metadata leaks block draft/final export; generic low-risk terms do not; and no
   private input appears in diagnostics, report bytes, or logs.
-- [ ] Run the new focused test plus the existing release-gate privacy acceptance
+- [x] Run the new focused test plus the existing release-gate privacy acceptance
   test and observe the new RED cases.
-- [ ] Rewire the shared engine with minimal `runs.py` churn. Do not change waiver
+- [x] Rewire the shared engine with minimal `runs.py` churn. Do not change waiver
   semantics or duplicate normalization in `validation.py`.
-- [ ] Run `python3 -m pytest tests/test_personalization_privacy.py
+- [x] Run `python3 -m pytest tests/test_personalization_privacy.py
   tests/test_release_gate_acceptance.py tests/test_guide_validation.py -v` green.
-- [ ] Fresh spec/privacy/code review; manager lands
+- [x] Fresh spec/privacy/code review; manager lands
   `refactor(privacy): centralize attached-profile leak policy`.
 
 ### Wave 0 close
 
-- [ ] Complete the Wave 0 row using the Wave Protocol and stop.
+- [x] Complete the Wave 0 row using the Wave Protocol and stop.
 - Suggested next manager: **GPT-5.6 Terra with High reasoning** for parallel
   API/CLI/cockpit delivery over the now-frozen profile engine.
+
+### Wave 0 closeout notes
+
+- **Planning bootstrap:** `eb44004` committed only this plan and
+  `docs/superpowers/specs/2026-07-12-personalization-design.md`. The review also
+  corrected two stale Wave 1–5 references to Wave 0–4. Per the bootstrap
+  instruction, no baseline suite was rerun for that documentation-only commit.
+- **Implementation:** `dc75c54` froze the privacy policy and canonical codec;
+  `9124a7b` added the atomic canonical `ProfileStore`; `e5b0f17` centralized
+  attached-profile leak policy and explicit run-aware profile presence.
+- **TDD/review evidence:** Task 0.1 closed at 47 focused profile tests; Task 0.2
+  closed at 21 focused workspace tests; Task 0.3 closed at 84 focused
+  profile/privacy/release/validation tests. Every task received fresh spec and
+  code-quality review; the plan-required privacy/adversarial reviews for Tasks
+  0.1 and 0.3 also approved. All reported findings were regression-tested and
+  resolved before commit.
+- **Four-suite gate:** `python3 -m pytest` → 666 passed; `cd web && npm run
+  test -- --run` → 127 passed; `npm run e2e` → 42 passed; `npm run build`
+  → clean. The first sandboxed pytest attempt hit the documented loopback
+  `EPERM`; the exact full command was rerun with loopback permission and passed.
+- **Deviations:** Task 0.3 was deliberately expanded to
+  `education_pipeline/privacy.py` and `tests/test_profiles.py` after adversarial
+  review found canonical-Unicode equivalence belonged in the shared policy.
+  Normalization is now NFC → whitespace collapse → casefold, and the internal
+  `validation_guide_sha256` helper keeps validation and run report-state hashes
+  identical for valid and invalid-scalar inputs. No public function signature,
+  persisted schema, waiver contract, or frozen
+  `PersonalizationValidationContext(profile_present,
+  authoritative_goal_ids=())` shape changed. No findings are deferred.
+- **Concurrent unrelated state:** docs-only commit `7e67007` landed between the
+  planning and Task 0.1 commits and was preserved without modification. The
+  pre-existing untracked `docs/design-demos/`, `docs/design-system.md`, and
+  `docs/superpowers/wave-runner-paper-draft.md` remain untouched.
+- **Wave 1 handoff:** use `profile_field_sensitivity`,
+  `profile_summary_warnings`, `profile_to_dict`, and canonical codec helpers
+  directly from `education_pipeline.privacy`. The frozen store surface is
+  `read_profile_record`, `create_profile`, `update_profile`,
+  `duplicate_profile`, and `profile_attachment_count`; stale/existing writes
+  raise value-free `ProfileWriteConflict(current_sha256)`. Legacy GET remains
+  non-mutating, new writes are canonical/atomic, attachments retain exact source
+  bytes, metadata is deeply immutable, and warnings use the safe `metadata.*`
+  path. Wave 1 has not started.
 
 ---
 
