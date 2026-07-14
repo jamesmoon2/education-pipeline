@@ -21,6 +21,7 @@ from education_pipeline.guides import (
     ContractError,
     Guide,
     MAX_GUIDE_SOURCE_BYTES,
+    REPORT_SCHEMA_VERSION,
     Waiver,
     WaiverSet,
     apply_waivers,
@@ -1246,6 +1247,14 @@ class RunStore:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return "stale"
         if not isinstance(report, dict) or report.get("phase") != phase:
+            return "stale"
+        schema_version = report.get("report_schema_version")
+        if not isinstance(schema_version, int) or schema_version < REPORT_SCHEMA_VERSION:
+            # A pre-v2 report predates stage attribution. Its findings are
+            # still displayed (under the stale banner), but it must not sit
+            # "current" forever against unchanged content: reading it stale
+            # routes the run through the re-run affordance that already
+            # exists, which re-derives the report at the current schema.
             return "stale"
         recorded = report.get("guide_sha256")
         if not isinstance(recorded, str):

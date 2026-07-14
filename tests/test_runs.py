@@ -1960,6 +1960,51 @@ def test_guide_v1_repair_edit_unfinalizes_without_deleting_artifacts(tmp_path: P
     assert final_json.is_file() and final_md.is_file()
 
 
+def test_pre_v2_report_is_stale_even_when_content_is_unchanged(tmp_path: Path) -> None:
+    """A v1 report predates stage attribution. Against unchanged content it
+    must NOT sit "current" forever -- it must read stale so the existing
+    re-run affordance re-derives it at v2."""
+
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_finalize_ready(runs, tid)
+    assert runs.report_state(tid, "final") == "current"
+
+    report_path = runs.final_report_path(tid)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["report_schema_version"] == 2
+    report["report_schema_version"] = 1
+    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+    assert runs.report_state(tid, "final") == "stale"
+
+
+def test_report_missing_schema_version_is_stale(tmp_path: Path) -> None:
+    """A report with no version key at all is older still -- also stale."""
+
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_finalize_ready(runs, tid)
+
+    report_path = runs.final_report_path(tid)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    del report["report_schema_version"]
+    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+    assert runs.report_state(tid, "final") == "stale"
+
+
+def test_current_v2_report_stays_current(tmp_path: Path) -> None:
+    """Regression guard: the version check must not make a healthy v2 report
+    stale (which would livelock every run at 'stale')."""
+
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_finalize_ready(runs, tid)
+    assert runs.report_state(tid, "final") == "current"
+    assert runs.report_state(tid, "final") == "current"
+
+
 def test_guide_v1_waivable_blocker_waiver_and_staleness(tmp_path: Path) -> None:
     tid = "systems-thinking"
     leak_json = _prompt_leak_guide_json()

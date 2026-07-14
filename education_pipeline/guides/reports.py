@@ -8,6 +8,7 @@ import json
 
 SEVERITY_RANK = {"blocker": 0, "error": 1, "warning": 2, "info": 3}
 STAGES = {"spec", "outline", "draft", "qa", "repair"}
+REPORT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -81,7 +82,7 @@ class ValidationReport:
     phase: str
     guide_sha256: str
     findings: tuple[Finding, ...]
-    report_schema_version: int = 2
+    report_schema_version: int = REPORT_SCHEMA_VERSION
     validator_version: str = "1"
 
     def __post_init__(self) -> None:
