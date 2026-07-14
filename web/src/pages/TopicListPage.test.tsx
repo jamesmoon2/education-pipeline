@@ -112,7 +112,10 @@ describe("TopicListPage", () => {
     vi.mocked(getTopics).mockResolvedValue({
       topics: [{ id: "t", title: "Topic", error: null, run: null }],
     });
-    vi.mocked(getProfiles).mockResolvedValue({ profiles: ["p1", "p2"] });
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [
+      { id: "p1", attached_topic_count: 1 },
+      { id: "p2", attached_topic_count: 0 },
+    ] });
     vi.mocked(attachProfile).mockResolvedValue({
       profile_id: "p1",
       topic_id: "t",

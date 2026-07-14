@@ -205,9 +205,9 @@ export default function NewRunPage() {
               Profile
               <select value={profileId} onChange={(e) => setProfileId(e.target.value)}>
                 <option value="">select a profile…</option>
-                {profiles.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.id} ({profile.attached_topic_count} {profile.attached_topic_count === 1 ? "topic" : "topics"})
                   </option>
                 ))}
               </select>

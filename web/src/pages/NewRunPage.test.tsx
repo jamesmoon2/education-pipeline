@@ -139,7 +139,7 @@ describe("NewRunPage", () => {
   });
 
   it("renders the profile step after topic creation and allows skipping", async () => {
-    vi.mocked(getProfiles).mockResolvedValue({ profiles: ["p1"] });
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [{ id: "p1", attached_topic_count: 2 }] });
     vi.mocked(createTopic).mockResolvedValue({ id: "t1", title: "T1" });
     vi.mocked(postAdvance).mockResolvedValue({ performed: "write_prompt", status: makeRunStatus("t1") });
     vi.mocked(getRunStatus).mockResolvedValue(makeRunStatus("t1"));

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { attachProfile } from "../api/client";
 import { useAction } from "../hooks/useAction";
+import type { ProfileSummary } from "../api/types";
 
 export default function AttachProfileControl({
   topicId,
@@ -8,7 +9,7 @@ export default function AttachProfileControl({
   onDone,
 }: {
   topicId: string;
-  profiles: string[];
+  profiles: ProfileSummary[];
   onDone: () => void;
 }) {
   const [profileId, setProfileId] = useState("");
@@ -22,9 +23,9 @@ export default function AttachProfileControl({
         onChange={(e) => setProfileId(e.target.value)}
       >
         <option value="">attach profile…</option>
-        {profiles.map((p) => (
-          <option key={p} value={p}>
-            {p}
+        {profiles.map((profile) => (
+          <option key={profile.id} value={profile.id}>
+            {profile.id} ({profile.attached_topic_count} {profile.attached_topic_count === 1 ? "topic" : "topics"})
           </option>
         ))}
       </select>

@@ -4,6 +4,8 @@ import RunBoardPage from "./pages/RunBoardPage";
 import SettingsPage from "./pages/SettingsPage";
 import StageViewerPage from "./pages/StageViewerPage";
 import TopicListPage from "./pages/TopicListPage";
+import ProfilesPage from "./pages/ProfilesPage";
+import ProfileEditorPage from "./pages/ProfileEditorPage";
 
 export default function App() {
   return (
@@ -13,6 +15,7 @@ export default function App() {
           <Link to="/">Education Pipeline Cockpit</Link>
         </h1>
         <nav>
+          <Link to="/profiles">Profiles</Link>
           <Link to="/settings">Settings</Link>
         </nav>
       </header>
@@ -23,6 +26,9 @@ export default function App() {
           <Route path="/topics/:topicId" element={<RunBoardPage />} />
           <Route path="/topics/:topicId/stages/:stage" element={<StageViewerPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/profiles" element={<ProfilesPage />} />
+          <Route path="/profiles/new" element={<ProfileEditorPage />} />
+          <Route path="/profiles/:profileId" element={<ProfileEditorPage />} />
         </Routes>
       </main>
     </div>

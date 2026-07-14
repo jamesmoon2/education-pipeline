@@ -26,13 +26,19 @@ import type {
   ValidationResult,
   WaiverResult,
   WaiversResult,
+  LearnerProfile,
+  ProfileDetail,
+  ProfilePreview,
+  ProfileSummary,
 } from "./types";
+import { isMetadataNumber, metadataNumber, metadataNumberValidationMessage } from "./types";
 
 export class ApiRequestError extends Error {
   constructor(
     public readonly status: number,
     public readonly code: string,
     message: string,
+    public readonly details: Record<string, unknown> | null = null,
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -70,6 +76,7 @@ export function resetSessionForTests(): void {
 async function request<T>(
   path: string,
   init: { method?: string; headers?: Record<string, string>; body?: string } = {},
+  parseResponse: (response: Response) => Promise<unknown> = (response) => response.json(),
 ): Promise<T> {
   const token = await getToken();
   const resp = await fetch(path, {
@@ -78,19 +85,104 @@ async function request<T>(
   });
   let body: unknown = {};
   try {
-    body = await resp.json();
+    body = await parseResponse(resp);
   } catch {
     // non-JSON body; fall through to the generic error below
   }
   if (!resp.ok) {
-    const err = (body as { error?: { code: string; message: string } }).error;
+    const err = (body as { error?: { code: string; message: string; details?: Record<string, unknown> } }).error;
     throw new ApiRequestError(
       resp.status,
       err?.code ?? "unknown",
       err?.message ?? `HTTP ${resp.status}`,
+      err?.details ?? null,
     );
   }
   return body as T;
+}
+
+const rawJsonNumberMarker = Symbol("rawJsonNumber");
+
+interface RawJsonNumber {
+  readonly source: string;
+  readonly [rawJsonNumberMarker]: true;
+}
+
+function parseProfileResponse(response: Response): Promise<unknown> {
+  return response.text().then((text) => {
+    const numberSources: string[] = [];
+    let inString = false;
+    let escaped = false;
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === "-" || /\d/.test(char)) {
+        const match = text.slice(index).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+        if (match) {
+          numberSources.push(match[0]);
+          index += match[0].length - 1;
+        }
+      }
+    }
+    let numberIndex = 0;
+    const parseWithSource = JSON.parse as (
+      source: string,
+      reviver: (key: string, value: unknown, context?: { source?: string }) => unknown,
+    ) => unknown;
+    const parsed = parseWithSource(text, (_key, value, context) => {
+      if (typeof value !== "number") return value;
+      const fallbackSource = numberSources[numberIndex];
+      numberIndex += 1;
+      return {
+        source: context?.source ?? fallbackSource ?? JSON.stringify(value),
+        [rawJsonNumberMarker]: true,
+      } satisfies RawJsonNumber;
+    });
+    const restore = (value: unknown, inMetadata = false): unknown => {
+      if (typeof value !== "object" || value === null) return value;
+      if (rawJsonNumberMarker in value) {
+        const source = (value as RawJsonNumber).source;
+        if (!inMetadata) return Number(source);
+        return metadataNumber(source, /[.eE]/.test(source) ? "float" : "integer");
+      }
+      if (Array.isArray(value)) return value.map((item) => restore(item, inMetadata));
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+        key,
+        restore(item, inMetadata || key === "metadata"),
+      ]));
+    };
+    return restore(parsed);
+  });
+}
+
+function stringifyProfileBody(value: unknown): string {
+  if (isMetadataNumber(value)) {
+    if (metadataNumberValidationMessage(value)) throw new Error(`Invalid ${value.kind} metadata value.`);
+    if (value.kind === "integer") return value.text;
+    return /[.eE]/.test(value.text) ? value.text : `${value.text}.0`;
+  }
+  if (Array.isArray(value)) return `[${value.map(stringifyProfileBody).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)}:${stringifyProfileBody(item)}`).join(",")}}`;
+  }
+  const serialized = JSON.stringify(value);
+  return serialized === undefined ? "null" : serialized;
+}
+
+function profileRequest<T>(
+  path: string,
+  init: { method?: string; headers?: Record<string, string>; body?: string } = {},
+): Promise<T> {
+  return request<T>(path, init, parseProfileResponse);
 }
 
 export async function api<T>(path: string): Promise<T> {
@@ -163,7 +255,28 @@ export const getJobs = (topicId?: string) =>
 export const getJobLog = (jobId: string, offset: number) =>
   api<LogChunk>(`/v1/jobs/${encodeURIComponent(jobId)}/log?offset=${offset}`);
 
-export const getProfiles = () => api<{ profiles: string[] }>("/v1/profiles");
+export const getProfiles = () => api<{ profiles: ProfileSummary[] }>("/v1/profiles");
+export const getProfile = (id: string) =>
+  profileRequest<ProfileDetail>(`/v1/profiles/${encodeURIComponent(id)}`);
+export const previewProfile = (profile: LearnerProfile) =>
+  profileRequest<ProfilePreview>("/v1/profiles/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: stringifyProfileBody({ profile }),
+  });
+export const putProfile = (
+  id: string,
+  profile: LearnerProfile,
+  baseSha256: string | null,
+) => profileRequest<ProfileDetail>(`/v1/profiles/${encodeURIComponent(id)}`, {
+  method: "PUT",
+  headers: { "Content-Type": "application/json" },
+  body: stringifyProfileBody({ profile, base_sha256: baseSha256 }),
+});
+export const duplicateProfile = (id: string, newId: string) =>
+  apiPost<ProfileDetail>(`/v1/profiles/${encodeURIComponent(id)}/duplicate`, {
+    new_id: newId,
+  });
 
 export const postAdvance = (topicId: string) =>
   apiPost<AdvanceResult>(`/v1/runs/${encodeURIComponent(topicId)}/advance`, {});

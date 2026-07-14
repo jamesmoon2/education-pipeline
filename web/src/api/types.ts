@@ -168,6 +168,131 @@ export interface AttachProfileResult {
   snapshot_path: string;
 }
 
+export interface ProfileSummary {
+  id: string;
+  attached_topic_count: number;
+}
+
+export type ProfileSensitivityTier = "high" | "medium" | "low";
+export type ProfileSensitivity = Record<string, ProfileSensitivityTier>;
+
+const profileMetadataNumberMarker = Symbol("profileMetadataNumber");
+
+export interface ProfileMetadataNumber {
+  readonly kind: "integer" | "float";
+  readonly text: string;
+  readonly [profileMetadataNumberMarker]: true;
+}
+
+export function metadataNumber(text: string, kind: ProfileMetadataNumber["kind"]): ProfileMetadataNumber {
+  return { kind, text, [profileMetadataNumberMarker]: true };
+}
+
+export function isMetadataNumber(value: unknown): value is ProfileMetadataNumber {
+  return typeof value === "object" && value !== null && profileMetadataNumberMarker in value;
+}
+
+export function metadataNumberValidationMessage(value: ProfileMetadataNumber): string | null {
+  if (value.kind === "integer") {
+    return /^-?(?:0|[1-9]\d*)$/.test(value.text) ? null : "Enter a valid integer.";
+  }
+  return /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value.text)
+    ? null
+    : "Enter a valid decimal.";
+}
+
+export function hasInvalidMetadataNumber(value: ProfileMetadataValue): boolean {
+  if (isMetadataNumber(value)) return metadataNumberValidationMessage(value) !== null;
+  if (Array.isArray(value)) return value.some(hasInvalidMetadataNumber);
+  if (typeof value === "object" && value !== null) return Object.values(value).some(hasInvalidMetadataNumber);
+  return false;
+}
+
+export type ProfileMetadataValue =
+  | string
+  | boolean
+  | number
+  | ProfileMetadataNumber
+  | ProfileMetadataValue[]
+  | { [key: string]: ProfileMetadataValue };
+
+export interface LearnerPreferences {
+  preferred_modalities: string[];
+  explanation_style?: string;
+  preferred_visual_aids: string[];
+  diagram_frequency?: string;
+  interaction_style?: string;
+  practice_style: string[];
+  feedback_style?: string;
+  worked_example_preference?: string;
+  common_sticking_points: string[];
+  attention_constraints: string[];
+  review_style: string[];
+}
+
+export interface LearnerLocalization {
+  jurisdiction?: string;
+  locale?: string;
+  units?: string;
+  language_register?: string;
+}
+
+export interface LearnerPrivacy {
+  private_by_default: boolean;
+  include_in_published_output: boolean;
+  publishable_summary?: string;
+}
+
+export interface LearnerProfile {
+  schema_version: number;
+  id: string;
+  target_learner: string;
+  prior_education?: string;
+  prior_experience?: string;
+  professional_experience?: string;
+  current_skill_level?: string;
+  adjacent_domains: string[];
+  learning_goals: string[];
+  preferred_examples: string[];
+  examples_to_avoid: string[];
+  math_comfort?: string;
+  reading_level?: string;
+  pace?: string;
+  desired_depth?: string;
+  time_budget?: string;
+  assessment_styles: string[];
+  accessibility_constraints: string[];
+  tone_preference?: string;
+  sensitive_areas: string[];
+  learning_preferences: LearnerPreferences;
+  localization: LearnerLocalization;
+  privacy: LearnerPrivacy;
+  metadata: { [key: string]: ProfileMetadataValue };
+}
+
+export interface ProfileWarning {
+  code: string;
+  field_path: string;
+  fingerprint: string;
+}
+
+export interface ProfileDetail {
+  id: string;
+  parsed: LearnerProfile;
+  sensitivity: ProfileSensitivity;
+  content_sha256: string;
+  warnings: ProfileWarning[];
+  attached_topic_count: number;
+}
+
+export interface ProfilePreview {
+  parsed: LearnerProfile;
+  prompt_context: string;
+  publishable_summary: string | null;
+  sensitivity: ProfileSensitivity;
+  warnings: ProfileWarning[];
+}
+
 export interface EditResponseResult {
   topic_id: string;
   stage: string;
