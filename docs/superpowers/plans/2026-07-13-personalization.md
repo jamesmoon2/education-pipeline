@@ -169,7 +169,7 @@ recommendation instead of another kickoff prompt.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Baseline | **complete** | code HEAD `929cc8cd` | 600 | 127 | 42 | clean | Fresh gate run 2026-07-13. Planning/spec edits are docs-only; unrelated pre-existing untracked files are outside scope. |
 | 0 — Privacy + profile store | **complete** | planning `eb44004`; code `dc75c54`, `9124a7b`, `e5b0f17` | 666 | 127 | 42 | clean | Privacy/codec, atomic store, and run integration are frozen. Task 0.3 expanded internally to NFC normalization and shared validation hashing with no public signature/schema change. Unrelated concurrent docs commits `7e67007` and `c12b4be` were preserved; see closeout notes. |
-| 1 — Profile product surface | pending | — | — | — | — | — | — |
+| 1 — Profile product surface | **complete** | code `98e3ca8`, `3f13ab2`, `8f2a2c5`, `2fbf2af`, `0fca471` | 716 | 163 | 44 | clean | Gate run 2026-07-14. Frozen HTTP payloads implemented verbatim. Authorized deviation: `ProfileStore.import_profile_toml()` added (locked canonical raw import; daemon raw-import adapter delegates to it, removing a TOCTOU 400-vs-409 defect). `daemon/server.py` `_last_resort` now returns a constant 500 message and logs exception class only (privacy hardening — do not reintroduce interpolated exception text). Cockpit preserves metadata numeric kind/precision via JSON reviver source-text parsing plus a custom request-body serializer in `web/src/api/client.ts`; do not replace with plain `JSON.parse`/`stringify`. `web/e2e/profiles.spec.ts` owns profiles acceptance (found+fixed axe scrollable-region-focusable in `ProfilePrivacyPreview`). Deferred Minor: GET/duplicate concurrent-deletion race can 400 instead of 404 (contract silent). Sandbox note: implementer/reviewer subagents cannot bind `127.0.0.1`; the manager reran every loopback suite personally. |
 | 2 — Guide 1.1 + trace | pending | — | — | — | — | — | — |
 | 3 — Optional audit + report | pending | — | — | — | — | — | — |
 | 4 — Fit panel + acceptance | pending | — | — | — | — | — | — |
@@ -526,17 +526,17 @@ starts after 1.3 and owns the wave's Playwright file.
 **Produces:** every route and payload under **Profile HTTP API**, including the
 non-mutating preview route and list-summary migration.
 
-- [ ] Write RED pure-adapter and HTTP tests for success/status shapes, path/body
+- [x] Write RED pure-adapter and HTTP tests for success/status shapes, path/body
   id mismatch, wrong nested types, unknown keys, create/update preconditions,
   stale hash redaction, duplicate collisions, preview non-mutation, canonical
   raw import, and attached counts.
-- [ ] Run focused daemon tests and observe RED.
-- [ ] Implement thin adapters over `ProfileStore`; do not add serializer or
+- [x] Run focused daemon tests and observe RED.
+- [x] Implement thin adapters over `ProfileStore`; do not add serializer or
   warning-policy copies. Route unexpected exceptions through existing safe
   envelopes.
-- [ ] Run `python3 -m pytest tests/test_write_api.py tests/test_server.py -v`
+- [x] Run `python3 -m pytest tests/test_write_api.py tests/test_server.py -v`
   green.
-- [ ] Fresh spec/API/security/code review; manager lands
+- [x] Fresh spec/API/security/code review; manager lands
   `feat(api): add structured profile management`.
 
 ### Task 1.2: Profile CLI parity
@@ -549,12 +549,12 @@ non-mutating preview route and list-summary migration.
 **Produces:** `profile show`, `profile edit --from-file`, and `profile
 duplicate`, retaining existing list/import/attach commands.
 
-- [ ] Write RED CLI tests for output, canonical edit, duplicate, stale/conflict
+- [x] Write RED CLI tests for output, canonical edit, duplicate, stale/conflict
   exit 2, missing source, and zero private values in errors.
-- [ ] Run `python3 -m pytest tests/test_cli.py -k profile -v` and observe RED.
-- [ ] Implement commands only over the canonical store API.
-- [ ] Run focused profile CLI tests green.
-- [ ] Fresh spec/code review; manager lands
+- [x] Run `python3 -m pytest tests/test_cli.py -k profile -v` and observe RED.
+- [x] Implement commands only over the canonical store API.
+- [x] Run focused profile CLI tests green.
+- [x] Fresh spec/code review; manager lands
   `feat(cli): add structured profile commands`.
 
 ### Task 1.3: Profiles pages and structured editor
@@ -575,15 +575,15 @@ leaf in six sections; recursive metadata editor; field-level tiers; actual serve
 prompt/export preview; canonical save/duplicate; stale-edit recovery that keeps
 unsaved input.
 
-- [ ] Write RED API-client, component, and page tests for all six sections,
+- [x] Write RED API-client, component, and page tests for all six sections,
   arrays/nested preferences/metadata, safe warnings, preview debounce/loading,
   create/edit/duplicate, dirty-form navigation, 409 reload choice, and migrated
   summary-object consumers.
-- [ ] Run `cd web && npm run test -- --run` and capture focused RED failures.
-- [ ] Implement against the frozen HTTP shapes. Type every field explicitly;
+- [x] Run `cd web && npm run test -- --run` and capture focused RED failures.
+- [x] Implement against the frozen HTTP shapes. Type every field explicitly;
   do not reproduce Python validation or prompt rendering in TypeScript.
-- [ ] Run vitest and `npm run build` green.
-- [ ] Fresh accessibility/spec/code review; manager lands
+- [x] Run vitest and `npm run build` green.
+- [x] Fresh accessibility/spec/code review; manager lands
   `feat(cockpit): add structured profiles workspace`.
 
 ### Task 1.4: Profiles cockpit acceptance
@@ -593,19 +593,19 @@ unsaved input.
 - Create: `web/e2e/profiles.spec.ts`
 - Modify: `web/e2e/helpers/daemon.ts` only for genuinely reusable setup
 
-- [ ] Write RED Playwright flows for create→edit→duplicate→attach, prompt/export
+- [x] Write RED Playwright flows for create→edit→duplicate→attach, prompt/export
   preview, warning rendering, snapshot immutability, stale conflict, and axe scans
   of list/new/edit/warning/conflict states.
-- [ ] Run `cd web && npx playwright test e2e/profiles.spec.ts` and observe RED.
-- [ ] Fix only product gaps within Wave 1 scope; do not start trace/audit work.
-- [ ] Run the focused e2e green and independently inspect saved profile/snapshot
+- [x] Run `cd web && npx playwright test e2e/profiles.spec.ts` and observe RED.
+- [x] Fix only product gaps within Wave 1 scope; do not start trace/audit work.
+- [x] Run the focused e2e green and independently inspect saved profile/snapshot
   bytes in the fixture workspace.
-- [ ] Fresh acceptance review; manager lands
+- [x] Fresh acceptance review; manager lands
   `test(cockpit): cover structured profile workflow`.
 
 ### Wave 1 close
 
-- [ ] Complete the Wave 1 row using the Wave Protocol and stop.
+- [x] Complete the Wave 1 row using the Wave Protocol and stop.
 - Suggested next manager: **GPT-5.6 Sol with High reasoning** for the
   guide-version, canonical-hash, private-trace, and public-projection boundary.
 
