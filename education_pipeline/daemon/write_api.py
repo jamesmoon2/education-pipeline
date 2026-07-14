@@ -135,14 +135,15 @@ def create_waiver(
     # other caller, the CLI's `waive` command, which has no
     # read_api.validation_payload precondition of its own.
     #
-    # Use the private `_record_waiver`, which also returns the WaiverSet
-    # that was written *inside* the locked critical section, instead of
-    # taking a second, unlocked `load_waiver_set` snapshot afterward: that
-    # extra read would be racy (a concurrent writer bound to a different
-    # guide_sha256 could land between the two calls and cause this
-    # response to silently drop the waiver just recorded) and would
-    # dereference `load_waiver_set`'s Optional return without a guard.
-    _, waiver_set = runs._record_waiver(topic_id, phase, finding_id, reason.strip())
+    # Use the public `record_waiver_with_set`, which also returns the
+    # WaiverSet that was written *inside* the locked critical section,
+    # instead of taking a second, unlocked `load_waiver_set` snapshot
+    # afterward: that extra read would be racy (a concurrent writer bound
+    # to a different guide_sha256 could land between the two calls and
+    # cause this response to silently drop the waiver just recorded) and
+    # would dereference `load_waiver_set`'s Optional return without a
+    # guard.
+    _, waiver_set = runs.record_waiver_with_set(topic_id, phase, finding_id, reason.strip())
     value = {
         "schema_version": waiver_set.schema_version,
         "guide_sha256": waiver_set.guide_sha256,

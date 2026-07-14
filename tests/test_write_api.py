@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+import test_runs
+
 from education_pipeline.config import ConfigError, parse_model_catalog, parse_model_plan
 from education_pipeline.daemon import StaticConfigSource, write_api
 from education_pipeline.daemon.jobs import JobStore
@@ -12,6 +14,27 @@ from education_pipeline.daemon.read_api import NotFoundError
 from education_pipeline.runs import ContentContract, RunStore, SUPPORTED_STAGES
 
 FIXTURE = Path(__file__).parent / "fixtures" / "guides" / "feedback-loops.guide.json"
+
+
+@pytest.fixture
+def waiver_env(tmp_path):
+    """A topic driven all the way to finalize-ready with a real, waivable
+    blocking finding on the ``final`` report -- the shape Task 5's DELETE
+    waiver route (and this task's create_waiver test) both need."""
+
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(tmp_path, topic_id)
+    leak_json = test_runs._prompt_leak_guide_json()
+    test_runs._drive_guide_to_finalize_ready(
+        runs, topic_id, draft_body=leak_json, repair_body=leak_json
+    )
+    finding_id = test_runs._first_waivable_blocking_finding_id(runs, topic_id, "final")
+    return runs, topic_id, finding_id
+
+
+def _report_sha(runs, topic_id):
+    report = json.loads(runs.final_report_path(topic_id).read_text(encoding="utf-8"))
+    return report["guide_sha256"]
 
 
 def _config_source():
@@ -494,6 +517,40 @@ def test_create_waiver_response_built_from_locked_write_not_unlocked_reread(tmp_
     assert result["waivers"]["waivers"][0]["finding_id"] == finding["id"]
     assert result["waivers"]["waivers"][0]["reason"] == "Accepted example"
     assert result["waivers"]["guide_sha256"] == report["guide_sha256"]
+
+
+def test_create_waiver_does_not_reach_into_private_store_methods(monkeypatch, waiver_env):
+    """write_api must consume the public tuple method, not runs._record_waiver.
+
+    The daemon genuinely needs the WaiverSet written *inside* the lock, but it
+    must get it through a public contract rather than a private attribute.
+
+    Note: `record_waiver_with_set` legitimately delegates to `_record_waiver`
+    internally (that's the point of the public wrapper), so a boom-on-call
+    monkeypatch of `_record_waiver` itself would fire even when write_api is
+    calling the public method correctly. Instead this spies on the public
+    `record_waiver_with_set` and asserts write_api's own code path goes
+    through it.
+    """
+    from education_pipeline import runs as runs_mod
+
+    runs, topic_id, finding_id = waiver_env
+
+    calls = []
+    original = runs_mod.RunStore.record_waiver_with_set
+
+    def spy(self, *args, **kwargs):
+        calls.append((args, kwargs))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(runs_mod.RunStore, "record_waiver_with_set", spy)
+
+    payload = write_api.create_waiver(
+        runs, topic_id, "final", finding_id, _report_sha(runs, topic_id), "reviewed"
+    )
+
+    assert calls, "write_api must call the public record_waiver_with_set"
+    assert [w["finding_id"] for w in payload["waivers"]["waivers"]] == [finding_id]
 
 
 def test_waiver_rejects_wrong_shape_persisted_waivers_file(tmp_path):

@@ -287,6 +287,14 @@ def _edit_course_description(guide_json: str, new_description: str) -> str:
     return json.dumps(data)
 
 
+def _first_waivable_blocking_finding_id(runs: RunStore, topic_id: str, phase: str) -> str:
+    report = json.loads(runs.final_report_path(topic_id).read_text(encoding="utf-8"))
+    for finding in report["findings"]:
+        if finding["blocking"] and finding["waivable"]:
+            return finding["id"]
+    raise AssertionError("fixture produced no waivable blocking finding")
+
+
 def test_run_store_creates_run_directories(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
 
@@ -735,6 +743,55 @@ def test_unwaive_of_the_last_waiver_deletes_the_waivers_file(tmp_path: Path) -> 
 
     assert not runs.waivers_path(topic_id).exists()
     assert runs.load_waiver_set(topic_id) is None
+
+
+def test_record_waiver_with_set_returns_the_written_set(tmp_path):
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    leak_json = _prompt_leak_guide_json()
+    _drive_guide_to_finalize_ready(runs, tid, draft_body=leak_json, repair_body=leak_json)
+    finding_id = _first_waivable_blocking_finding_id(runs, tid, "final")
+
+    result, waiver_set = runs.record_waiver_with_set(tid, "final", finding_id, "reviewed")
+
+    assert result.gate_open is True
+    assert [w.finding_id for w in waiver_set.waivers] == [finding_id]
+    report = json.loads(runs.final_report_path(tid).read_text(encoding="utf-8"))
+    assert waiver_set.guide_sha256 == report["guide_sha256"]
+
+
+def test_remove_waiver_with_set_returns_the_empty_set_and_leaves_no_file(tmp_path):
+    """Removing the last waiver must unlink the file, not write an empty one:
+    read_api skips its per-poll gate recompute only when the file is ABSENT,
+    so an empty file would permanently defeat that optimization for this topic."""
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    leak_json = _prompt_leak_guide_json()
+    _drive_guide_to_finalize_ready(runs, tid, draft_body=leak_json, repair_body=leak_json)
+    finding_id = _first_waivable_blocking_finding_id(runs, tid, "final")
+    runs.record_waiver(tid, "final", finding_id, "reviewed")
+    assert runs.waivers_path(tid).exists()
+
+    result, waiver_set = runs.remove_waiver_with_set(tid, "final", finding_id)
+
+    assert result.gate_open is False
+    assert waiver_set.waivers == ()
+    assert not runs.waivers_path(tid).exists()
+    assert runs.load_waiver_set(tid) is None
+
+
+def test_remove_waiver_with_set_no_op_writes_nothing(tmp_path):
+    """Removing an id that was never waived must not create the file."""
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    leak_json = _prompt_leak_guide_json()
+    _drive_guide_to_finalize_ready(runs, tid, draft_body=leak_json, repair_body=leak_json)
+
+    result, waiver_set = runs.remove_waiver_with_set(tid, "final", "never.waived:/root")
+
+    assert waiver_set.waivers == ()
+    assert not runs.waivers_path(tid).exists()
+    assert result.gate_open is False
 
 
 def test_manifest_write_lock_is_not_reentrant(tmp_path: Path) -> None:

@@ -1817,6 +1817,22 @@ class RunStore:
         result, _ = self._record_waiver(topic_id, phase, finding_id, reason)
         return result
 
+    def record_waiver_with_set(
+        self, topic_id: str, phase: str, finding_id: str, reason: str
+    ) -> tuple[WaiverResult, WaiverSet]:
+        """Waive one finding and return both the gate and the written set.
+
+        Public form of :meth:`_record_waiver`, for callers (the daemon) that
+        must render the persisted waiver set in their response. The set is the
+        one built *inside* the locked critical section: a second, unlocked
+        ``load_waiver_set`` afterward would be racy (a concurrent writer bound
+        to a different ``guide_sha256`` could land between the two calls and
+        silently drop the waiver just recorded) and would dereference an
+        unchecked Optional.
+        """
+
+        return self._record_waiver(topic_id, phase, finding_id, reason)
+
     def _record_waiver(
         self, topic_id: str, phase: str, finding_id: str, reason: str
     ) -> tuple[WaiverResult, WaiverSet]:
@@ -1897,6 +1913,26 @@ class RunStore:
         clobbered by an unrelated no-op removal instead of surviving on disk.
         """
 
+        result, _ = self._remove_waiver(topic_id, phase, finding_id)
+        return result
+
+    def remove_waiver_with_set(
+        self, topic_id: str, phase: str, finding_id: str
+    ) -> tuple[WaiverResult, WaiverSet]:
+        """Removal's counterpart to :meth:`record_waiver_with_set`.
+
+        The returned set is the state after the write. When the last waiver is
+        removed the file is unlinked and the set is empty for the current
+        ``guide_sha256`` -- an absent file and an empty set are the same state
+        to every reader, so the caller can build its response without a second
+        (racy) read.
+        """
+
+        return self._remove_waiver(topic_id, phase, finding_id)
+
+    def _remove_waiver(
+        self, topic_id: str, phase: str, finding_id: str
+    ) -> tuple[WaiverResult, WaiverSet]:
         safe_id, _, _, _, report = self._compute_phase_report(topic_id, phase)
         guide_sha256 = report.guide_sha256
         with self._manifest_write_lock(safe_id):
@@ -1909,7 +1945,7 @@ class RunStore:
             else:
                 self.waivers_path(safe_id).unlink(missing_ok=True)
                 new_set = self._build_waiver_set(guide_sha256, [])
-        return apply_waivers(report, new_set)
+        return apply_waivers(report, new_set), new_set
 
     def _current_waiver_items_locked(self, topic_id: str, guide_sha256: str) -> list[dict]:
         """Read the persisted waiver set as plain dicts, dropping it if stale.
