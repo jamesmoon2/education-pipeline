@@ -168,7 +168,7 @@ recommendation instead of another kickoff prompt.
 | Wave | Status | Commits | pytest | vitest | e2e | build | Notes for the next wave |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Baseline | **complete** | code HEAD `929cc8cd` | 600 | 127 | 42 | clean | Fresh gate run 2026-07-13. Planning/spec edits are docs-only; unrelated pre-existing untracked files are outside scope. |
-| 0 — Privacy + profile store | **complete** | planning `eb44004`; code `dc75c54`, `9124a7b`, `e5b0f17` | 666 | 127 | 42 | clean | Privacy/codec, atomic store, and run integration are frozen. Task 0.3 expanded internally to NFC normalization and shared validation hashing with no public signature/schema change. Unrelated concurrent docs commit `7e67007` was preserved; see closeout notes. |
+| 0 — Privacy + profile store | **complete** | planning `eb44004`; code `dc75c54`, `9124a7b`, `e5b0f17` | 666 | 127 | 42 | clean | Privacy/codec, atomic store, and run integration are frozen. Task 0.3 expanded internally to NFC normalization and shared validation hashing with no public signature/schema change. Unrelated concurrent docs commits `7e67007` and `c12b4be` were preserved; see closeout notes. |
 | 1 — Profile product surface | pending | — | — | — | — | — | — |
 | 2 — Guide 1.1 + trace | pending | — | — | — | — | — | — |
 | 3 — Optional audit + report | pending | — | — | — | — | — | — |
@@ -487,8 +487,10 @@ replace the interface.
   `PersonalizationValidationContext(profile_present,
   authoritative_goal_ids=())` shape changed. No findings are deferred.
 - **Concurrent unrelated state:** docs-only commit `7e67007` landed between the
-  planning and Task 0.1 commits and was preserved without modification. The
-  pre-existing untracked `docs/design-demos/`, `docs/design-system.md`, and
+  planning and Task 0.1 commits, and docs-only commit `c12b4be` landed between
+  Tasks 0.2 and 0.3. Both were preserved without modification and were present
+  for the successful closeout gate. The pre-existing untracked
+  `docs/design-demos/`, `docs/design-system.md`, and
   `docs/superpowers/wave-runner-paper-draft.md` remain untouched.
 - **Wave 1 handoff:** use `profile_field_sensitivity`,
   `profile_summary_warnings`, `profile_to_dict`, and canonical codec helpers
