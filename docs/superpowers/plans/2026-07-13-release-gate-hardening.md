@@ -61,7 +61,7 @@ This is a **single-wave** plan. The manager runs Tasks 1–6 in order, then exec
 
 | Wave | Status | Commits | pytest | vitest | e2e | build | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 0 — Release-gate hardening | pending | — | — | — | — | — | — |
+| 0 — Release-gate hardening | **closed 2026-07-13** | dd4b58e (T1), 64293c5 (T2), b6e53cd (T3), f9f19ba (T4), bf7f8b1 (T5), 1c86ffa (T6) | 684 | 130 | 43 | clean | Six tasks, all spec ✅ / quality Approved per-task; whole-branch review READY, no findings. Implementers/reviewers: Sonnet subagents (grok blocked by permission classifier; owner redirected). Deviations from plan text, all reviewer-adjudicated: **T1** `timeout = 60` ini key can't satisfy the plan's own `getoption` test on pytest-timeout 2.4.0 — landed as `addopts = "-q --timeout=60"`, identical per-test enforcement. **T3** plan's `Block(...)` constructor is a non-constructible TypeAlias — tests use `RichText`; known-ids arg follows module convention `{"known"}`. **T4** plan's `WaiverResult.report` attribute doesn't exist (guide_sha256 read from the report file instead); plan's boom-monkeypatch test was unimplementable (public method legitimately delegates to `_record_waiver`) — replaced with a spy on the public method; `waiver_env`/`_report_sha` did not pre-exist in test_write_api.py and were created under those names. **T6** existing e2e badge assertions migrated from `role="status"` queries to `.findings-badge` + aria-label (required fallout of the badge fix; one assertion strengthened). Deferred-and-accepted Minors: T4 spy test can't catch a future direct-`_record_waiver` reversion; T5 `do_DELETE` omits `do_PUT`'s inline taxonomy comment. Canonical fixture bytes/SHA verified unchanged (T3 premise held). |
 
 **Baseline: pytest 666, vitest 127, e2e 42, build clean** — the personalization Wave 0 close (`e5b0f17`), *not* the release-gates gate of 600. Wave 0 added `tests/test_personalization_privacy.py` (+66 tests) between this plan's authoring and its execution. If a task's suite run shows fewer than 666 passing before your change, stop: something else regressed and it is not yours.
 
@@ -78,7 +78,7 @@ Lands first: it is the safety net for every task after it. The manifest-lock con
 **Interfaces:**
 - Produces: a global per-test timeout, active for every pytest run including CI. Later tasks rely on nothing from this task at the code level; they rely on it operationally.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_packaging.py
@@ -97,12 +97,12 @@ def test_pytest_timeout_is_active_with_a_global_timeout(pytestconfig):
     assert pytestconfig.getoption("timeout") == 60
 ```
 
-- [ ] **Step 2: Run the test, verify it fails**
+- [x] **Step 2: Run the test, verify it fails**
 
 Run: `python3 -m pytest tests/test_packaging.py -v`
 Expected: FAIL — the `timeout` plugin is not installed, so `hasplugin("timeout")` is `False` (and `getoption("timeout")` raises `ValueError: no option named 'timeout'`).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `pyproject.toml`, extend the dev extra:
 
@@ -124,12 +124,12 @@ Then install it: `python3 -m pip install -e ".[dev]"`.
 
 Note for the implementer: 60 seconds is a deliberately generous per-test ceiling — the slowest existing tests boot a live daemon and finish in low single-digit seconds. The timeout exists to catch a *hang*, not to police slowness. Do not tune it downward to make tests "fast"; that converts a diagnostic into a flake source.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_packaging.py -v && python3 -m pytest`
 Expected: PASS — new test green, and the full suite still green (no existing test exceeds 60 s).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add pyproject.toml tests/test_packaging.py
@@ -154,7 +154,7 @@ Owner decision §7.1, adopted. `report_state` derives freshness purely from cont
 - Consumes: `RunStore.report_state(topic_id, phase) -> str` (`"missing" | "current" | "stale"`), unchanged signature.
 - Produces: `REPORT_SCHEMA_VERSION = 2` exported from `education_pipeline.guides` — the single constant behind both the emitted report and the freshness check. Task 3 does not depend on it.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_runs.py
@@ -205,12 +205,12 @@ def test_current_v2_report_stays_current(tmp_path):
 
 Reuse this module's existing helpers `_create_guide_run` and `_drive_guide_to_finalize_ready` (they are the same helpers `tests/test_release_gate_acceptance.py` imports); `json` is already imported in `tests/test_runs.py`.
 
-- [ ] **Step 2: Run the tests, verify they fail**
+- [x] **Step 2: Run the tests, verify they fail**
 
 Run: `python3 -m pytest tests/test_runs.py -k "pre_v2_report or missing_schema_version or stays_current" -v`
 Expected: FAIL on the first two — `report_state` returns `"current"` for the downgraded report because it never inspects `report_schema_version`. The third passes already (it is the regression guard, and it must keep passing after Step 3).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `education_pipeline/guides/reports.py`, hoist the version into a module constant and use it as the field default:
 
@@ -240,12 +240,12 @@ In `education_pipeline/runs.py`, add `REPORT_SCHEMA_VERSION` to the existing `fr
         recorded = report.get("guide_sha256")
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_runs.py tests/test_guide_validation.py tests/test_server.py tests/test_cli.py -v`
 Expected: PASS. If an existing test wrote a hand-rolled report fixture without `report_schema_version` and asserted `"current"`, that fixture encoded the old behavior — update it to emit the current schema version and say so in the commit message.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/guides/reports.py education_pipeline/guides/__init__.py education_pipeline/runs.py tests/test_runs.py
@@ -275,7 +275,7 @@ The fix is to change the offset to `+1`, so `##` renders as `h3` and slots direc
 - Consumes: `_analyze_document(document: str) -> _DocumentFacts` and `compute_static_checks(guide, assets=None) -> StaticCheckResult` (both unchanged signatures).
 - Produces: no new names. `heading_order_valid` becomes strictly more sensitive; `render_guide_markdown` emits `h3..h6` instead of `h3..h6` shifted one deeper.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_guide_static_checks.py
@@ -356,7 +356,7 @@ def test_markdown_headings_nest_one_level_under_the_section_heading():
 
 Match this module's existing call convention for `render_guide_markdown` (read a neighbouring test first — the second argument is the known-ids iterable) and its assertion style; if the renderer wraps output in a container, assert containment rather than equality.
 
-- [ ] **Step 2: Run the tests, verify they fail**
+- [x] **Step 2: Run the tests, verify they fail**
 
 Run: `python3 -m pytest tests/test_guide_static_checks.py tests/test_guide_document.py -k "previous_heading or shallower or first_heading or rich_text_section or markdown_headings_nest" -v`
 Expected: FAIL —
@@ -366,7 +366,7 @@ Expected: FAIL —
 - `test_markdown_headings_nest_one_level_under_the_section_heading`: `## Foo` renders `<h4>Foo</h4>`.
 - `test_returning_to_a_shallower_heading_is_never_a_skip` passes already — it is the regression guard.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `education_pipeline/guides/static_checks.py`, rename the tracked state and change the comparison. In `_Analyzer.__init__`:
 
@@ -406,12 +406,12 @@ In `education_pipeline/guides/document.py`, change the markdown heading offset f
             rendered.append(f"<h{level}>{_inline(match.group(2), ids)}</h{level}>")
 ```
 
-- [ ] **Step 4: Run the affected suites**
+- [x] **Step 4: Run the affected suites**
 
 Run: `python3 -m pytest tests/test_guide_static_checks.py tests/test_guide_document.py tests/test_guide_canonical.py tests/test_guide_validation.py tests/test_runs.py tests/test_release_gate_acceptance.py -v`
 Expected: PASS. The canonical fixture has no markdown headings, so `test_guide_canonical.py` (which pins the fixture's normalized SHA and assembled bytes) must be **unchanged** — if it fails, the offset change altered the canonical document and the plan's premise is wrong: **stop and report**, do not update the golden.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/guides/static_checks.py education_pipeline/guides/document.py tests/test_guide_static_checks.py tests/test_guide_document.py
@@ -446,7 +446,7 @@ def remove_waiver_with_set(
 
 Both return the `WaiverSet` as it stands **after** the write, built inside the critical section. On the removal path that unlinks the file (last waiver removed), the returned set is the empty set for the current `guide_sha256` — the file's absence and an empty set are the same state to every reader, and returning it lets the caller build a response without a second read.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_runs.py
@@ -535,12 +535,12 @@ def test_create_waiver_does_not_reach_into_private_store_methods(monkeypatch, wa
 
 `waiver_env` / `_report_sha` are this module's existing fixture and hash helper (see Task 5's note); read them first and use their real names. The assertion — that the private method is never called, and the endpoint still works — is the requirement.
 
-- [ ] **Step 2: Run the tests, verify they fail**
+- [x] **Step 2: Run the tests, verify they fail**
 
 Run: `python3 -m pytest tests/test_runs.py tests/test_write_api.py -k "with_set or private_store" -v`
 Expected: FAIL — `AttributeError: 'RunStore' object has no attribute 'record_waiver_with_set'` / `'remove_waiver_with_set'`, and the `write_api` test fails via the `boom` assertion (it calls `_record_waiver` today).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `education_pipeline/runs.py`, add the public wrapper next to `record_waiver`:
 
@@ -616,12 +616,12 @@ In `education_pipeline/daemon/write_api.py`, switch `create_waiver` to the publi
     _, waiver_set = runs.record_waiver_with_set(topic_id, phase, finding_id, reason.strip())
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_runs.py tests/test_write_api.py tests/test_server.py tests/test_guide_waivers.py tests/test_release_gate_acceptance.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/runs.py education_pipeline/daemon/write_api.py tests/test_runs.py tests/test_write_api.py
@@ -656,7 +656,7 @@ Identical response shape to `POST .../waivers`, so the cockpit can reuse its exi
 1. **`finding_id` is URL-encoded and must be `unquote`d.** Finding ids embed a JSON path — e.g. `a11y.heading_order:/sections/0` — so they contain `/`. The client sends `encodeURIComponent(findingId)` (`%2F`), the `([^/?]+)` segment matches the encoded form, and the handler decodes it. The decoded id is only ever string-compared against waiver entries — it is **never** used to build a filesystem path — so decoding introduces no traversal surface.
 2. **`DELETE` takes no body and no `guide_sha256` guard**, unlike `POST`. Removal is fail-safe by construction: `remove_waiver` recomputes the report and hash-binds internally, and a removal can only ever *close* a gate, never open one. An optimistic-concurrency guard would add a failure mode without preventing one.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_write_api.py
@@ -718,12 +718,12 @@ def test_delete_unknown_path_is_404(...):
 
 Read `tests/test_server.py` first and reuse its existing daemon boot helper and request helper (the module has one; if the helper hardcodes GET/POST/PUT, extend it to take a method rather than writing a second one).
 
-- [ ] **Step 2: Run the tests, verify they fail**
+- [x] **Step 2: Run the tests, verify they fail**
 
 Run: `python3 -m pytest tests/test_write_api.py tests/test_server.py -k "delete_waiver or delete_unknown" -v`
 Expected: FAIL — `AttributeError: module 'write_api' has no attribute 'delete_waiver'`, and the HTTP tests fail with **501 Unsupported method ('DELETE')** from `BaseHTTPRequestHandler`, since no `do_DELETE` exists.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `education_pipeline/daemon/write_api.py`, add next to `create_waiver`:
 
@@ -801,12 +801,12 @@ and add the verb handler after `do_PUT`/`_api_put_routes`, mirroring `do_PUT`'s 
             self._error(404, "not_found", "unknown path")
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_write_api.py tests/test_server.py tests/test_runs.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/daemon/write_api.py education_pipeline/daemon/server.py tests/test_write_api.py tests/test_server.py
@@ -832,7 +832,7 @@ Two cockpit changes. The unwaive control closes the parity gap Task 5 opened the
 - Consumes: `DELETE /v1/runs/{topic}/validation/{phase}/waivers/{finding_id}` returning `WaiverResult` (Task 5).
 - Produces: `deleteWaiver(topicId, phase, findingId) => Promise<WaiverResult>` in `client.ts`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```tsx
 // web/src/components/ValidationFindingsPanel.test.tsx
@@ -884,14 +884,14 @@ test("release gate: a waiver can be removed from the cockpit", async ({ page }) 
 
 Read each test file first and match its existing mocking, fixture, and query conventions; the assertions above are the required behavior, not the required plumbing. The e2e reuses the `bootDaemon` helper (`web/e2e/helpers/daemon.ts`) this spec already imports.
 
-- [ ] **Step 2: Run the tests, verify they fail**
+- [x] **Step 2: Run the tests, verify they fail**
 
 Run: `cd web && npm run test -- ValidationFindingsPanel RunBoardPage`
 Expected: FAIL — no `Unwaive` button exists; the badge still carries `role="status"`.
 Run: `cd web && npx playwright test e2e/release-gates.spec.ts`
 Expected: FAIL — no unwaive control to click.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `web/src/api/client.ts`, add beside `postWaiver`:
 
@@ -956,12 +956,12 @@ In `web/src/pages/RunBoardPage.tsx`, drop the live region from the badge (keep t
                     </span>
 ```
 
-- [ ] **Step 4: Run the web suites**
+- [x] **Step 4: Run the web suites**
 
 Run: `cd web && npm run test && npm run build && npx playwright test e2e/release-gates.spec.ts`
 Expected: PASS (vitest green, tsc clean, both e2e tests in the spec green).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/api/client.ts web/src/components/ValidationFindingsPanel.tsx web/src/pages/RunBoardPage.tsx web/src/components/ValidationFindingsPanel.test.tsx web/src/pages/RunBoardPage.test.tsx web/e2e/release-gates.spec.ts
@@ -972,4 +972,4 @@ git commit -m "feat(web): remove a waiver from the cockpit; stop announcing the 
 
 ## Wave close
 
-- [ ] Run the wave-close checklist in the Wave Protocol section above (four-suite gate → update this plan doc + Wave Log → correct the audit's §7.1 over-claim and record the three owner rulings → commit → print the personalization Wave 0 kickoff prompt → stop).
+- [x] Run the wave-close checklist in the Wave Protocol section above (four-suite gate → update this plan doc + Wave Log → correct the audit's §7.1 over-claim and record the three owner rulings → commit → print the personalization Wave 0 kickoff prompt → stop).

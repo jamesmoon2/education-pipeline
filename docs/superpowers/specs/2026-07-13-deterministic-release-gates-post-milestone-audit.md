@@ -255,18 +255,18 @@ code during this audit and every one still reproduces.
 
 | # | Item | Verified at | Disposition |
 | --- | --- | --- | --- |
-| 1 | No daemon DELETE/unwaive route (cockpit parity) | no `do_DELETE` in `daemon/server.py` | **next-milestone** |
-| 2 | `write_api` → private `runs._record_waiver` | `write_api.py:145` | **next-milestone** (with #1) |
-| 3 | `_validation_summary`'s flat `"draft"` default | `read_api.py:164`, `:212` | **backlog** (dead if #4 adopted) |
-| 4 | `report_state` ignores `report_schema_version` | `runs.py:1218–1252` | **OWNER DECISION** → §7.1 |
-| 5 | `role="status"` live region on the findings badge | `RunBoardPage.tsx:152` | **next-milestone** |
+| 1 | No daemon DELETE/unwaive route (cockpit parity) | no `do_DELETE` in `daemon/server.py` | **RESOLVED** — release-gate-hardening plan (2026-07-13), Task 5 |
+| 2 | `write_api` → private `runs._record_waiver` | `write_api.py:145` | **RESOLVED** — release-gate-hardening plan, Task 4 |
+| 3 | `_validation_summary`'s flat `"draft"` default | `read_api.py:164`, `:212` | **backlog** (NOT dead after #4 — see corrected §7.1: stale reports are still displayed, so the shims still fire) |
+| 4 | `report_state` ignores `report_schema_version` | `runs.py:1218–1252` | **RESOLVED** — owner adopted §7.1; release-gate-hardening plan, Task 2 |
+| 5 | `role="status"` live region on the findings badge | `RunBoardPage.tsx:152` | **RESOLVED** — release-gate-hardening plan, Task 6 |
 | 6 | `_finalize_guide_v1`'s duplicate parse | `runs.py` `_finalize_guide_v1` +25/+30 | **backlog** |
-| 7 | Heading-order tracks deepest-seen, not previous | `static_checks.py:52–54` | **OWNER DECISION** → §7.2 |
+| 7 | Heading-order tracks deepest-seen, not previous | `static_checks.py:52–54` | **RESOLVED** — owner adopted §7.2 with the markdown-offset fix; release-gate-hardening plan, Task 3 |
 | 8 | `load_runtime_assets()` OSError → 500 on status polling | `guide_runtime/__init__.py:19–25` | **backlog** |
 | 9 | Truncated-body handler hang (pre-existing) | `daemon/server.py` `_read_body` | **backlog** |
-| 10 | `_private_profile_values` field-selection spec paragraph | `runs.py:1282–1309` | **resolved here** → §8 |
+| 10 | `_private_profile_values` field-selection spec paragraph | `runs.py:1282–1309` | **RESOLVED by personalization Wave 0**, not this audit — see §8 (superseded) |
 | 11 | Migrating older e2e specs onto `bootDaemon` | 5 specs still inline | **backlog** (opportunistic) |
-| 12 | **pytest-timeout** | `pyproject.toml:33` | **OWNER DECISION** → §7.3 |
+| 12 | **pytest-timeout** | `pyproject.toml:33` | **RESOLVED** — owner adopted §7.3 option 1; release-gate-hardening plan, Task 1 |
 
 **Notes on the non-decision items.**
 
@@ -298,6 +298,12 @@ code during this audit and every one still reproduces.
 
 ### 7.1 Owner decision — should a v1 report be treated as stale?
 
+> **RULED 2026-07-13: adopted.** Implemented by the release-gate-hardening
+> plan, Task 2 (`REPORT_SCHEMA_VERSION` constant; `report_state` reads any
+> report whose `report_schema_version` is missing, non-integer, or `< 2` as
+> `"stale"`). The "shims become dead code" claim below was **corrected** — see
+> the amended paragraphs.
+
 **The situation.** `report_state` (`runs.py:1218`) derives freshness purely from
 content: it compares the report's recorded `guide_sha256` against the hash of the
 approved source. It never looks at `report_schema_version`. So a **v1 report**
@@ -310,8 +316,17 @@ each with its own fallback for the missing `stage`.
 **Recommendation on record: treat `report_schema_version < 2` as stale.** One
 extra comparison in `report_state`. Legacy workspaces then self-heal: the run
 shows the ordinary stale banner, the user clicks the re-run affordance that
-already exists, and the report comes back at v2 with stage attribution. The three
-fallbacks become dead code and can be deleted.
+already exists, and the report comes back at v2 with stage attribution.
+
+*Correction (2026-07-13, at adoption):* the original text here claimed the three
+stage-less-finding fallbacks "become dead code and can be deleted." **They do
+not.** A stale report is still *displayed* — the CLI prints the on-disk body with
+a stderr warning, and the cockpit renders it under the stale banner — so a v1
+report on disk is still read and rendered, and the shims still fire until the
+user actually revalidates. What the rule buys is a **sunset**: the report is
+re-derived at v2 on the next validation instead of sitting "current" forever.
+Deleting the shims remains a separate future cleanup, gated on being willing to
+assert that no v1 reports exist anywhere.
 
 **What the owner is actually deciding.** The cost is that any workspace holding a
 v1 report is told it is stale on first sight after upgrade, even though its
@@ -323,11 +338,26 @@ also make it mean *the schema moved*. The alternative is to keep the shims
 forever and accept that stage attribution is best-effort for legacy runs.
 
 **Blast radius if adopted:** `report_state` only; no schema change, no migration
-code. **Blast radius if declined:** the three `"draft"`-defaulting shims become
-permanent and must be preserved by anyone touching stage attribution — including
-the next milestone, which extends the report schema again.
+code. **Blast radius if declined:** without the sunset, a v1 report sits
+"current" forever, so the three `"draft"`-defaulting shims must be preserved
+indefinitely by anyone touching stage attribution — including the next
+milestone, which extends the report schema again. (Adopting does not delete the
+shims either — see the correction above — but it bounds their lifetime to
+"until the next revalidation" instead of "forever".)
 
 ### 7.2 Owner decision — heading-order: deepest-seen or previous?
+
+> **RULED 2026-07-13: adopted, coupled with the markdown-offset fix.** The
+> owner chose previous-heading tracking AND changed the learner-markdown
+> heading render offset from `+2` to `+1` in the same change (release-gate-
+> hardening plan, Task 3). The offset fix is what makes the tightening
+> shippable: without it, a section whose first block is a `rich_text` opening
+> with `##` rendered `h2 → h4` — a real skip whose only remediation (`#`) is
+> banned by `markdown.invalid_heading_level`, i.e. a blocking finding with no
+> legal fix. With `+1`, `##` renders `<h3>` directly under the section's
+> `<h2>`. The canonical fixture contains zero markdown headings and zero
+> skips under the tightened rule, so its bytes and export SHA were unchanged
+> (verified at landing).
 
 **The situation.** `static_checks.py:52–54` implements exactly what the plan
 specified: *no heading is more than one level deeper than the deepest heading seen
@@ -364,6 +394,16 @@ gate at all, the honest alternative is to **rename the rule** so it stops implyi
 an accessibility guarantee it does not make.
 
 ### 7.3 Owner decision — pytest-timeout (issue-first per repo rules)
+
+> **RULED 2026-07-13: option 1 adopted — add the dependency.** The owner ruled
+> that the dev-dependency line yields here: the codebase deliberately adopted
+> hang-on-error as a safety mechanism and needs a hang detector to make it
+> debuggable. Implemented by the release-gate-hardening plan, Task 1
+> (`pytest-timeout` in the dev extra; global 60 s per-test ceiling via
+> `addopts = "-q --timeout=60"` — the CLI form rather than the bare `timeout`
+> ini key, because pytest-timeout 2.4.0 does not surface the ini key through
+> `config.getoption`, which the guard test asserts). Runtime stays
+> stdlib-only.
 
 **The situation.** `CLAUDE.md` states plainly: `pytest` is the sole dev
 dependency, and runtime dependencies require prior discussion in an issue.
@@ -405,12 +445,35 @@ point at, it costs nothing, and for a deadlock it arguably gives *better*
 diagnostics than pytest-timeout does. If the owner wants to hold the dependency
 line, it is not a consolation prize.
 
-## 8. Draft spec paragraph — `RunStore._private_profile_values` field-selection policy
+## 8. ~~Draft spec paragraph~~ — SUPERSEDED (2026-07-13, by personalization Wave 0)
 
-Item #10 of the carried triage: the field selection is implementer-derived and has
-no backing spec. Below is the missing paragraph, written for insertion into
-[`2026-07-12-deterministic-release-gates-design.md`](2026-07-12-deterministic-release-gates-design.md).
-**It records what shipped; the owner ratifies it.**
+> **This section is SUPERSEDED. Do not insert the draft paragraph below into
+> any spec.** Personalization Wave 0 (`e5b0f17`) replaced the field-selection
+> policy this section documented. The **policy of record** is now
+> `education_pipeline/privacy.py`: `_PROFILE_FIELD_SENSITIVITY` (the per-field
+> tier map), `SensitivityTier`, and `profile_private_values`. Carried-triage
+> item #10 is therefore **resolved by personalization Wave 0**, not by the
+> release-gate-hardening batch or by ratifying this section.
+>
+> **Recorded divergence — owner policy question, deliberately NOT "fixed" by
+> the hardening batch.** The new policy screens **HIGH *and* MEDIUM** tier
+> fields, and MEDIUM includes `learning_goals`, `preferred_examples`,
+> `examples_to_avoid`, and `adjacent_domains`. The draft below had
+> deliberately **excluded** exactly those four, on the stated grounds that
+> they are pedagogical inputs the guide is *supposed to act on*: a course
+> built for a learner whose goal is "ship a Rust CLI" should contain that
+> phrase, and denylisting it makes the gate refuse personalization that is
+> working correctly. Verified against the shipped code at the time of this
+> note: a profile with `learning_goals=("ship a Rust CLI tool",)` yields a
+> denylist containing `'ship a rust cli tool'`, and `privacy.
+> exact_private_value` is a **blocking** finding. No test pairs a goal-bearing
+> profile with a guide that quotes it, so the refusal is latent — it fires on
+> real runs, not in the suite. Whether MEDIUM should include the goal-shaped
+> pedagogical fields is an owner call to make within the personalization
+> milestone; it is recorded here so it is decided rather than discovered.
+
+The historical draft paragraph is retained below **for the record only** (it is
+the text the divergence note above diffs against):
 
 > **Private-value selection for `privacy.exact_private_value`.** When a run has an
 > attached learner profile, `RunStore._private_profile_values` derives the denylist
