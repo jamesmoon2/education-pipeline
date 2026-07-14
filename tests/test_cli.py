@@ -1,12 +1,18 @@
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 import test_runs
 from education_pipeline import ContentContract, RunStore
 from education_pipeline.cli import main
+from education_pipeline.privacy import canonical_profile_toml_bytes, profile_to_dict
+from education_pipeline.profiles import load_learner_profile
+from education_pipeline.workspace import ProfileStore
 
 
 TOPIC_TOML = """\
@@ -29,6 +35,20 @@ learning_goals = ["understand systems thinking"]
 private_by_default = true
 include_in_published_output = false
 publishable_summary = "Early-career team learning systems thinking."
+"""
+
+
+EDITED_PROFILE_TOML = """\
+id = "visual-profile"
+schema_version = 1
+professional_experience = "principal planted actuary"
+target_learner = "private planted seminar"
+learning_goals = ["trace canonical edits"]
+
+[privacy]
+publishable_summary = "Synthetic public summary."
+include_in_published_output = false
+private_by_default = true
 """
 
 
@@ -127,6 +147,243 @@ def test_profile_attach_threads_into_spec_prompt(tmp_path: Path) -> None:
     prompt = (ws / "runs" / "systems-thinking" / "prompts" / "spec.prompt.md").read_text()
     assert "# Learner Profile Context" in prompt
     assert "- Professional experience: early-career analysts" in prompt
+
+
+def _seed_profile(ws: Path, source: Path) -> None:
+    profile = load_learner_profile(source)
+    ProfileStore(ws).create_profile(profile.id, profile)
+
+
+def test_profile_show_prints_only_canonical_toml(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    source = _write(tmp_path / "profile.toml", PROFILE_TOML)
+    _seed_profile(ws, source)
+    expected = ProfileStore(ws).read_profile_record("visual-profile").canonical_bytes.decode()
+
+    assert _run(ws, "profile", "show", "visual-profile") == 0
+    captured = capsys.readouterr()
+    assert captured.out == expected
+    assert captured.err == ""
+
+
+def test_profile_show_preserves_canonical_stdout_bytes_under_non_utf8_encoding(
+    tmp_path: Path,
+) -> None:
+    ws = tmp_path / "ws"
+    source = _write(tmp_path / "profile.toml", PROFILE_TOML)
+    _seed_profile(ws, source)
+    expected = ProfileStore(ws).read_profile_record("visual-profile").canonical_bytes
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-16"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "education_pipeline",
+            "--workspace",
+            str(ws),
+            "profile",
+            "show",
+            "visual-profile",
+        ],
+        cwd=Path(__file__).parent.parent,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == expected
+    assert result.stderr == b""
+
+
+def test_profile_show_config_error_redacts_planted_values(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ws = tmp_path / "ws"
+    _seed_profile(ws, _write(tmp_path / "profile.toml", PROFILE_TOML))
+    planted_values = ("771234567",)
+    ProfileStore(ws).profile_path("visual-profile").write_text(
+        PROFILE_TOML.replace("schema_version = 1", f"schema_version = {planted_values[0]}"),
+        encoding="utf-8",
+    )
+
+    assert _run(ws, "profile", "show", "visual-profile") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: profile command failed\n"
+    assert all(value not in captured.err for value in planted_values)
+
+
+def test_profile_edit_from_file_writes_canonical_bytes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    _seed_profile(ws, _write(tmp_path / "profile.toml", PROFILE_TOML))
+    edited_path = _write(tmp_path / "edited.toml", EDITED_PROFILE_TOML)
+    expected = canonical_profile_toml_bytes(load_learner_profile(edited_path))
+
+    assert _run(
+        ws, "profile", "edit", "visual-profile", "--from-file", str(edited_path)
+    ) == 0
+    assert capsys.readouterr().out == "updated profile visual-profile\n"
+    assert (ws / "profiles" / "visual-profile.toml").read_bytes() == expected
+
+
+def test_profile_edit_config_error_redacts_planted_values(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    planted_values = ("882345678",)
+    edited_path = _write(
+        tmp_path / "edited.toml",
+        EDITED_PROFILE_TOML.replace(
+            "schema_version = 1", f"schema_version = {planted_values[0]}"
+        ),
+    )
+
+    assert _run(
+        tmp_path / "ws",
+        "profile",
+        "edit",
+        "visual-profile",
+        "--from-file",
+        str(edited_path),
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: profile command failed\n"
+    assert all(value not in captured.err for value in planted_values)
+
+
+def test_profile_duplicate_replaces_embedded_id_and_writes_canonically(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    _seed_profile(ws, _write(tmp_path / "profile.toml", PROFILE_TOML))
+
+    assert _run(ws, "profile", "duplicate", "visual-profile", "visual-copy") == 0
+    assert capsys.readouterr().out == "duplicated profile visual-profile as visual-copy\n"
+
+    store = ProfileStore(ws)
+    source = profile_to_dict(store.read_profile_record("visual-profile").profile)
+    duplicate = store.read_profile_record("visual-copy")
+    assert duplicate.profile.id == "visual-copy"
+    source["id"] = "visual-copy"
+    assert profile_to_dict(duplicate.profile) == source
+    assert (ws / "profiles" / "visual-copy.toml").read_bytes() == duplicate.canonical_bytes
+
+
+def test_profile_duplicate_config_error_redacts_planted_values(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ws = tmp_path / "ws"
+    _seed_profile(ws, _write(tmp_path / "profile.toml", PROFILE_TOML))
+    planted_values = ("993456789",)
+    ProfileStore(ws).profile_path("visual-profile").write_text(
+        PROFILE_TOML.replace("schema_version = 1", f"schema_version = {planted_values[0]}"),
+        encoding="utf-8",
+    )
+
+    assert _run(
+        ws, "profile", "duplicate", "visual-profile", "visual-copy"
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: profile command failed\n"
+    assert all(value not in captured.err for value in planted_values)
+
+
+def test_profile_edit_stale_conflict_exits_2_with_only_fresh_hash(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = tmp_path / "ws"
+    _seed_profile(ws, _write(tmp_path / "profile.toml", PROFILE_TOML))
+    edited_path = _write(tmp_path / "edited.toml", EDITED_PROFILE_TOML)
+    concurrent_path = _write(
+        tmp_path / "concurrent.toml",
+        EDITED_PROFILE_TOML.replace(
+            "private planted seminar", "confidential planted cohort"
+        ).replace("principal planted actuary", "secret planted engineer"),
+    )
+    concurrent = load_learner_profile(concurrent_path)
+    real_update = ProfileStore.update_profile
+
+    def update_after_concurrent_write(
+        self: ProfileStore, profile_id: str, value, *, base_sha256: str
+    ):
+        real_update(self, profile_id, concurrent, base_sha256=base_sha256)
+        return real_update(self, profile_id, value, base_sha256=base_sha256)
+
+    monkeypatch.setattr(ProfileStore, "update_profile", update_after_concurrent_write)
+
+    assert _run(
+        ws, "profile", "edit", "visual-profile", "--from-file", str(edited_path)
+    ) == 2
+    captured = capsys.readouterr()
+    fresh_hash = ProfileStore(ws).read_profile_record("visual-profile").content_sha256
+    assert captured.out == ""
+    assert fresh_hash in captured.err
+    for private_value in (
+        "private planted seminar",
+        "principal planted actuary",
+        "confidential planted cohort",
+        "secret planted engineer",
+    ):
+        assert private_value not in captured.err
+
+
+def test_profile_duplicate_existing_target_exits_2_without_private_values(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    _seed_profile(ws, _write(tmp_path / "profile.toml", PROFILE_TOML))
+    store = ProfileStore(ws)
+    existing = store.duplicate_profile("visual-profile", "visual-copy")
+    capsys.readouterr()
+
+    assert _run(ws, "profile", "duplicate", "visual-profile", "visual-copy") == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert existing.content_sha256 in captured.err
+    assert "team cohort" not in captured.err
+    assert "early-career analysts" not in captured.err
+
+
+def test_profile_duplicate_missing_source_errors(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _run(tmp_path / "ws", "profile", "duplicate", "missing", "copy") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "error:" in captured.err
+
+
+def test_profile_edit_missing_from_file_errors(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    _seed_profile(ws, _write(tmp_path / "profile.toml", PROFILE_TOML))
+
+    assert _run(
+        ws,
+        "profile",
+        "edit",
+        "visual-profile",
+        "--from-file",
+        str(tmp_path / "missing.toml"),
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "error:" in captured.err
 
 
 def _seed_topic_to_draft(ws: Path):

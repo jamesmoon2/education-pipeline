@@ -27,7 +27,7 @@ from education_pipeline.export import EXPORT_FORMATS
 from education_pipeline.profiles import load_learner_profile
 from education_pipeline.runs import ContentContract, RunStore
 from education_pipeline.topics import load_topic
-from education_pipeline.workspace import ProfileStore, TopicStore
+from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -36,12 +36,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "profile":
+            return _run_profile_command(args)
         return args.func(args)
+    except ProfileWriteConflict as exc:
+        current = exc.current_sha256 or "missing"
+        print(f"error: profile write conflict; current sha256: {current}", file=sys.stderr)
+        return 2
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except DaemonError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run_profile_command(args: argparse.Namespace) -> int:
+    try:
+        return args.func(args)
+    except ProfileWriteConflict:
+        raise
+    except ConfigError:
+        print("error: profile command failed", file=sys.stderr)
         return 1
 
 
@@ -73,6 +89,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p = profile.add_parser("import", help="import a learner profile TOML file")
     p.add_argument("file")
     p.set_defaults(func=_cmd_profile_import)
+    p = profile.add_parser("show", help="print a stored profile's canonical TOML")
+    p.add_argument("profile_id")
+    p.set_defaults(func=_cmd_profile_show)
+    p = profile.add_parser("edit", help="replace a stored profile from a TOML file")
+    p.add_argument("profile_id")
+    p.add_argument("--from-file", required=True)
+    p.set_defaults(func=_cmd_profile_edit)
+    p = profile.add_parser("duplicate", help="duplicate a stored profile under a new id")
+    p.add_argument("profile_id")
+    p.add_argument("new_id")
+    p.set_defaults(func=_cmd_profile_duplicate)
     p = profile.add_parser("attach", help="attach a profile snapshot to a topic run")
     p.add_argument("profile_id")
     p.add_argument("topic_id")
@@ -204,6 +231,31 @@ def _cmd_profile_import(args: argparse.Namespace) -> int:
 def _cmd_profile_list(args: argparse.Namespace) -> int:
     ids = ProfileStore(_root(args)).list_profile_ids()
     print("\n".join(ids) if ids else "(no profiles)")
+    return 0
+
+
+def _cmd_profile_show(args: argparse.Namespace) -> int:
+    record = ProfileStore(_root(args)).read_profile_record(args.profile_id)
+    sys.stdout.buffer.write(record.canonical_bytes)
+    return 0
+
+
+def _cmd_profile_edit(args: argparse.Namespace) -> int:
+    profile = load_learner_profile(args.from_file)
+    store = ProfileStore(_root(args))
+    current = store.read_profile_record(args.profile_id)
+    store.update_profile(
+        args.profile_id,
+        profile,
+        base_sha256=current.content_sha256,
+    )
+    print(f"updated profile {args.profile_id}")
+    return 0
+
+
+def _cmd_profile_duplicate(args: argparse.Namespace) -> int:
+    ProfileStore(_root(args)).duplicate_profile(args.profile_id, args.new_id)
+    print(f"duplicated profile {args.profile_id} as {args.new_id}")
     return 0
 
 
