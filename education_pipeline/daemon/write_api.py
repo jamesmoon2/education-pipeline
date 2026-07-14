@@ -28,15 +28,21 @@ from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
 from education_pipeline.runs import RunStore, StaleContentError
 from education_pipeline.topics import Topic, emit_topic_toml
-from education_pipeline.workspace import ProfileStore, TopicStore
+from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
 
 
 class ConflictError(Exception):
     """The request is well-formed but current run/workspace state refuses it."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        details: dict | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details
 
 
 class UnprocessableError(Exception):
@@ -397,13 +403,85 @@ def create_topic(topics: TopicStore, body: dict, *, overwrite: bool = False) -> 
 
 def import_profile(profiles: ProfileStore, toml_text: str, *, overwrite: bool = False) -> dict:
     profile_id = _parse_toml_id(toml_text, "profile")
-    if profiles.profile_path(profile_id).is_file() and not overwrite:
-        raise ConflictError(
-            "already_exists",
-            f"profile {profile_id!r} already exists; retry with overwrite to replace it",
+    try:
+        record = profiles.import_profile_toml(
+            profile_id,
+            toml_text,
+            overwrite=overwrite,
         )
-    profile = profiles.save_profile_toml(profile_id, toml_text, overwrite=overwrite)
-    return {"id": profile.id}
+    except ProfileWriteConflict as exc:
+        raise _profile_conflict("already_exists", exc.current_sha256) from exc
+    return {"id": record.profile.id}
+
+
+def put_profile(
+    profiles: ProfileStore,
+    profile_id: str,
+    body: dict,
+) -> tuple[int, dict]:
+    """Create or compare-and-swap one structured profile."""
+
+    _reject_profile_request_keys(body, {"profile", "base_sha256"})
+    if "profile" not in body or not isinstance(body["profile"], dict):
+        raise ConfigError("body field 'profile' must be an object")
+    if "base_sha256" not in body:
+        raise ConfigError("body must define field 'base_sha256'")
+
+    base_sha256 = body["base_sha256"]
+    if base_sha256 is None:
+        status = 201
+        operation = profiles.create_profile
+        operation_kwargs = {}
+        conflict_code = "already_exists"
+    elif isinstance(base_sha256, str) and base_sha256:
+        status = 200
+        operation = profiles.update_profile
+        operation_kwargs = {"base_sha256": base_sha256}
+        conflict_code = "stale_content"
+    else:
+        raise ConfigError("body field 'base_sha256' must be null or a non-empty string")
+
+    try:
+        record = operation(profile_id, body["profile"], **operation_kwargs)
+    except ProfileWriteConflict as exc:
+        raise _profile_conflict(conflict_code, exc.current_sha256) from exc
+    return status, read_api.profile_payload(
+        profiles,
+        profile_id,
+        record=record,
+    )
+
+
+def duplicate_profile(profiles: ProfileStore, profile_id: str, body: dict) -> dict:
+    """Create a canonical copy with a new embedded and artifact id."""
+
+    _reject_profile_request_keys(body, {"new_id"})
+    new_id = body.get("new_id")
+    if not isinstance(new_id, str) or not new_id.strip():
+        raise ConfigError("body must define non-empty string 'new_id'")
+    if not profiles.profile_path(profile_id).is_file():
+        raise NotFoundError("no such profile")
+    try:
+        record = profiles.duplicate_profile(profile_id, new_id)
+    except ProfileWriteConflict as exc:
+        raise _profile_conflict("already_exists", exc.current_sha256) from exc
+    return read_api.profile_payload(profiles, new_id, record=record)
+
+
+def _reject_profile_request_keys(body: dict, allowed: set[str]) -> None:
+    unknown = sorted(set(body) - allowed)
+    if unknown:
+        raise ConfigError(
+            "unknown profile request field(s): " + ", ".join(unknown)
+        )
+
+
+def _profile_conflict(code: str, current_sha256: str | None) -> ConflictError:
+    return ConflictError(
+        code,
+        "profile write precondition failed; reload profiles before retrying",
+        {"current_sha256": current_sha256},
+    )
 
 
 def update_global_plan(config, body: dict) -> dict:
@@ -473,7 +551,7 @@ def attach_profile(
     profiles: ProfileStore, topic_id: str, profile_id: str, *, overwrite: bool = True
 ) -> dict:
     if not profiles.profile_path(profile_id).is_file():
-        raise NotFoundError(f"no such profile: {profile_id}")
+        raise NotFoundError("no such profile")
     attachment = profiles.attach_profile_to_topic(profile_id, topic_id, overwrite=overwrite)
     run_dir = profiles.runs_dir / attachment.topic_id
     return {

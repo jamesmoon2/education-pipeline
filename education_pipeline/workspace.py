@@ -134,6 +134,31 @@ class ProfileStore:
             base_sha256=current.content_sha256,
         ).profile
 
+    def import_profile_toml(
+        self,
+        profile_id: str,
+        toml_text: str,
+        *,
+        overwrite: bool = False,
+    ) -> ProfileRecord:
+        """Atomically import canonical TOML under one target lock."""
+
+        safe_id = _artifact_id(profile_id, "profile id")
+        profile = _parse_profile_toml(toml_text, f"profile {safe_id!r}")
+        _require_matching_profile_id(profile, safe_id)
+        candidate = _profile_record(profile)
+        path = self.profile_path(safe_id)
+
+        with _profile_lock(path):
+            if path.exists() and not overwrite:
+                try:
+                    current_sha256 = self.read_profile_record(safe_id).content_sha256
+                except ConfigError:
+                    current_sha256 = None
+                raise ProfileWriteConflict(current_sha256)
+            _atomic_replace_bytes(path, candidate.canonical_bytes)
+        return candidate
+
     def create_profile(
         self,
         profile_id: str,

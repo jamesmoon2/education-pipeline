@@ -332,10 +332,20 @@ def test_topic_get_unknown_is_404(server):
 def test_profiles_list_and_get(server):
     status, body = _req(server, "GET", "/v1/profiles")
     assert status == 200
-    assert body["profiles"] == ["p"]
+    assert body["profiles"] == [{"id": "p", "attached_topic_count": 0}]
     status, body = _req(server, "GET", "/v1/profiles/p")
     assert status == 200
-    assert 'target_learner = "team cohort"' in body["toml"]
+    assert set(body) == {
+        "id",
+        "parsed",
+        "sensitivity",
+        "content_sha256",
+        "warnings",
+        "attached_topic_count",
+    }
+    assert body["parsed"]["target_learner"] == "team cohort"
+    assert body["sensitivity"]["target_learner"] == "high"
+    assert body["attached_topic_count"] == 0
     status, body = _req(server, "GET", "/v1/profiles/nope")
     assert status == 404
 
@@ -1079,6 +1089,263 @@ def test_import_profile_endpoint(server):
     assert status == 409 and body["error"]["code"] == "already_exists"
 
 
+def _api_profile(profile_id, target_learner="Synthetic API cohort alpha"):
+    return {
+        "schema_version": 1,
+        "id": profile_id,
+        "target_learner": target_learner,
+        "learning_preferences": {"preferred_modalities": ["diagrams"]},
+        "privacy": {
+            "private_by_default": True,
+            "include_in_published_output": True,
+            "publishable_summary": f"For {target_learner}",
+        },
+        "metadata": {"synthetic": {"rank": 3, "enabled": True}},
+    }
+
+
+def test_profile_preview_endpoint_is_structured_and_non_mutating(server_with_context):
+    port, context = server_with_context
+    profile = _api_profile("preview-only")
+    before = {
+        path.relative_to(context.root).as_posix(): path.read_bytes()
+        for path in context.root.rglob("*")
+        if path.is_file()
+    }
+
+    status, body = _req(
+        port, "POST", "/v1/profiles/preview", body={"profile": profile}
+    )
+
+    assert status == 200
+    assert set(body) == {
+        "parsed",
+        "prompt_context",
+        "publishable_summary",
+        "sensitivity",
+        "warnings",
+    }
+    assert body["parsed"]["id"] == profile["id"]
+    assert body["parsed"]["target_learner"] == profile["target_learner"]
+    assert profile["target_learner"] in body["prompt_context"]
+    assert body["publishable_summary"] == profile["privacy"]["publishable_summary"]
+    assert body["sensitivity"]["metadata.*"] == "high"
+    assert profile["target_learner"] not in json.dumps(body["warnings"])
+    after = {
+        path.relative_to(context.root).as_posix(): path.read_bytes()
+        for path in context.root.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+    assert not context.profiles.profile_path("preview-only").exists()
+
+
+def test_profile_preview_rejects_wrong_nested_type_and_unknown_key(server):
+    wrong_nested = _api_profile("wrong-nested")
+    wrong_nested["privacy"] = []
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/profiles/preview",
+        body={"profile": wrong_nested},
+    )
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+
+    unknown = _api_profile("unknown-key")
+    unknown["learning_preferences"]["secret_copy"] = "forbidden"
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/profiles/preview",
+        body={"profile": unknown},
+    )
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
+def test_profile_put_create_update_and_get_status_shapes(server):
+    profile = _api_profile("structured-api")
+    status, created = _req(
+        server,
+        "PUT",
+        "/v1/profiles/structured-api",
+        body={"profile": profile, "base_sha256": None},
+    )
+    assert status == 201
+    assert set(created) == {
+        "id",
+        "parsed",
+        "sensitivity",
+        "content_sha256",
+        "warnings",
+        "attached_topic_count",
+    }
+    assert created["parsed"]["id"] == profile["id"]
+    assert created["parsed"]["target_learner"] == profile["target_learner"]
+
+    updated_profile = {**profile, "target_learner": "Synthetic API cohort beta"}
+    status, updated = _req(
+        server,
+        "PUT",
+        "/v1/profiles/structured-api",
+        body={
+            "profile": updated_profile,
+            "base_sha256": created["content_sha256"],
+        },
+    )
+    assert status == 200
+    assert updated["parsed"]["id"] == updated_profile["id"]
+    assert updated["parsed"]["target_learner"] == updated_profile["target_learner"]
+    assert updated["content_sha256"] != created["content_sha256"]
+
+    status, detail = _req(server, "GET", "/v1/profiles/structured-api")
+    assert status == 200
+    assert detail == updated
+
+
+def test_profile_put_rejects_path_mismatch_bad_shapes_unknown_keys_and_preconditions(server):
+    profile = _api_profile("body-id")
+    status, _ = _req(
+        server,
+        "PUT",
+        "/v1/profiles/path-id",
+        body={"profile": profile, "base_sha256": None},
+    )
+    assert status == 400
+
+    bad_nested = _api_profile("bad-nested")
+    bad_nested["metadata"] = ["not", "a", "mapping"]
+    status, _ = _req(
+        server,
+        "PUT",
+        "/v1/profiles/bad-nested",
+        body={"profile": bad_nested, "base_sha256": None},
+    )
+    assert status == 400
+
+    unknown = _api_profile("unknown-field")
+    unknown["secret_copy"] = "forbidden"
+    status, _ = _req(
+        server,
+        "PUT",
+        "/v1/profiles/unknown-field",
+        body={"profile": unknown, "base_sha256": None},
+    )
+    assert status == 400
+
+    status, _ = _req(
+        server,
+        "PUT",
+        "/v1/profiles/missing-base",
+        body={"profile": _api_profile("missing-base")},
+    )
+    assert status == 400
+    status, _ = _req(
+        server,
+        "PUT",
+        "/v1/profiles/update-missing",
+        body={"profile": _api_profile("update-missing"), "base_sha256": "0" * 64},
+    )
+    assert status == 409
+
+
+def test_profile_put_conflicts_expose_only_fresh_hash_and_no_values(server):
+    private_value = "PLANTED_HTTP_PRIVATE_ALPHA"
+    profile = _api_profile("conflict-profile", private_value)
+    status, created = _req(
+        server,
+        "PUT",
+        "/v1/profiles/conflict-profile",
+        body={"profile": profile, "base_sha256": None},
+    )
+    assert status == 201
+
+    status, existing = _req(
+        server,
+        "PUT",
+        "/v1/profiles/conflict-profile",
+        body={"profile": profile, "base_sha256": None},
+    )
+    assert status == 409
+    assert existing["error"]["code"] == "already_exists"
+    assert existing["error"]["details"] == {
+        "current_sha256": created["content_sha256"]
+    }
+
+    candidate = {**profile, "target_learner": "PLANTED_HTTP_PRIVATE_BETA"}
+    status, stale = _req(
+        server,
+        "PUT",
+        "/v1/profiles/conflict-profile",
+        body={"profile": candidate, "base_sha256": "0" * 64},
+    )
+    assert status == 409
+    assert stale["error"]["code"] == "stale_content"
+    assert stale["error"]["details"] == {
+        "current_sha256": created["content_sha256"]
+    }
+    rendered = json.dumps([existing, stale], sort_keys=True)
+    assert "PLANTED_HTTP_PRIVATE" not in rendered
+    assert set(stale["error"]["details"]) == {"current_sha256"}
+
+
+def test_profile_duplicate_endpoint_success_collision_and_missing_source(server):
+    source = _api_profile("duplicate-source")
+    status, _ = _req(
+        server,
+        "PUT",
+        "/v1/profiles/duplicate-source",
+        body={"profile": source, "base_sha256": None},
+    )
+    assert status == 201
+
+    status, duplicated = _req(
+        server,
+        "POST",
+        "/v1/profiles/duplicate-source/duplicate",
+        body={"new_id": "duplicate-target"},
+    )
+    assert status == 201
+    assert duplicated["id"] == "duplicate-target"
+    assert duplicated["parsed"]["id"] == "duplicate-target"
+    assert duplicated["parsed"]["target_learner"] == source["target_learner"]
+
+    status, collision = _req(
+        server,
+        "POST",
+        "/v1/profiles/duplicate-source/duplicate",
+        body={"new_id": "duplicate-target"},
+    )
+    assert status == 409
+    assert collision["error"]["code"] == "already_exists"
+    assert collision["error"]["details"] == {
+        "current_sha256": duplicated["content_sha256"]
+    }
+
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/profiles/missing-source/duplicate",
+        body={"new_id": "unused-target"},
+    )
+    assert status == 404
+
+
+def test_profile_attachment_updates_list_and_detail_counts(server):
+    status, _ = _req(
+        server, "POST", "/v1/topics/t/profile", body={"profile_id": "p"}
+    )
+    assert status == 200
+
+    status, listing = _req(server, "GET", "/v1/profiles")
+    assert status == 200
+    assert listing["profiles"] == [{"id": "p", "attached_topic_count": 1}]
+    status, detail = _req(server, "GET", "/v1/profiles/p")
+    assert status == 200
+    assert detail["attached_topic_count"] == 1
+
+
 def test_attach_profile_endpoint(server):
     status, body = _req(server, "POST", "/v1/topics/t/profile", body={"profile_id": "p"})
     assert status == 200
@@ -1605,6 +1872,60 @@ def test_unhandled_exception_returns_500_envelope_not_dropped_connection(server,
     status, body = _req(server, "POST", "/v1/runs/t/advance")
     assert status == 500
     assert body["error"]["code"] == "internal"
+
+
+@pytest.mark.parametrize(
+    ("operation", "method", "path"),
+    [
+        ("get_profile", "GET", "/v1/profiles/p"),
+        ("preview_profile", "POST", "/v1/profiles/preview"),
+        ("put_profile", "PUT", "/v1/profiles/private-put"),
+        (
+            "duplicate_profile",
+            "POST",
+            "/v1/profiles/p/duplicate",
+        ),
+    ],
+)
+def test_profile_unexpected_exceptions_redact_private_values_from_500_and_stderr(
+    server,
+    monkeypatch,
+    capsys,
+    operation,
+    method,
+    path,
+):
+    from education_pipeline.daemon import read_api, write_api
+
+    planted_value = "PLANTED_LAST_RESORT_PROFILE_PRIVATE_VALUE"
+
+    def fail_with_private_value(*args, **kwargs):
+        raise RuntimeError(planted_value)
+
+    module = read_api if operation in {"get_profile", "preview_profile"} else write_api
+    monkeypatch.setattr(module, operation, fail_with_private_value)
+    if operation == "preview_profile":
+        body = {"profile": _api_profile("private-preview", planted_value)}
+    elif operation == "put_profile":
+        body = {
+            "profile": _api_profile("private-put", planted_value),
+            "base_sha256": None,
+        }
+    elif operation == "duplicate_profile":
+        body = {"new_id": "private-duplicate"}
+    else:
+        body = None
+    capsys.readouterr()
+
+    status, response = _req(server, method, path, body=body)
+    stderr = capsys.readouterr().err
+
+    assert status == 500
+    assert response == {
+        "error": {"code": "internal", "message": "internal server error"}
+    }
+    assert planted_value not in json.dumps(response)
+    assert planted_value not in stderr
 
 
 def test_config_providers_reports_availability(config_server):

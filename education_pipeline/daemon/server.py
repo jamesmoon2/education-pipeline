@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
-import traceback
+import sys
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -168,9 +168,15 @@ def _make_handler(context: DaemonContext):
         def _last_resort(self, exc: Exception) -> None:
             # Any exception not mapped by a typed handler must never escape to
             # socketserver, which would silently drop the connection with no
-            # status line at all. Convert it to a diagnosable 500 and log the
-            # traceback to stderr; never let this handler itself raise.
-            traceback.print_exc()
+            # status line at all. Convert it to a value-free 500 and log only
+            # the exception type; never let this handler itself raise.
+            try:
+                print(
+                    f"daemon internal error: {type(exc).__name__}",
+                    file=sys.stderr,
+                )
+            except Exception:
+                pass
             if getattr(self, "_response_started", False):
                 # A status line (and possibly a partial body) already went
                 # out on this connection — appending a second status line
@@ -181,17 +187,19 @@ def _make_handler(context: DaemonContext):
                 # client disconnecting mid-response (e.g. BrokenPipeError from
                 # self.wfile.write on a plain /v1/health call), not something
                 # specific to /v1/shutdown. The best available response is to
-                # log the traceback (above) and give up on this connection.
+                # log the safe exception type (above) and give up on this
+                # connection.
                 return
             try:
-                # The message echoes str(exc), which can include filesystem
-                # paths. Deliberately acceptable here: this socket is
-                # loopback-only and token-gated (see module docstring), and
-                # existing ConfigError responses already surface raw
-                # exception text the same way.
-                self._error(500, "internal", f"internal server error: {exc}")
-            except Exception:
-                traceback.print_exc()
+                self._error(500, "internal", "internal server error")
+            except Exception as send_exc:
+                try:
+                    print(
+                        f"daemon internal error: {type(send_exc).__name__}",
+                        file=sys.stderr,
+                    )
+                except Exception:
+                    pass
 
         def _guard(self) -> bool:
             if not self._host_ok():
@@ -405,7 +413,7 @@ def _make_handler(context: DaemonContext):
             except read_api.NotFoundError as exc:
                 return self._error(404, "not_found", str(exc))
             except write_api.ConflictError as exc:
-                return self._error(409, exc.code, str(exc))
+                return self._error(409, exc.code, str(exc), exc.details)
             except write_api.UnprocessableError as exc:
                 return self._error(422, exc.code, str(exc), exc.details)
             except (GuideDocumentError, ContractError, GuideParseError) as exc:
@@ -422,6 +430,16 @@ def _make_handler(context: DaemonContext):
                 return self._last_resort(exc)
 
         def _api_post_routes(self):
+            if self.path == "/v1/profiles/preview":
+                body = self._read_body()
+                unknown = sorted(set(body) - {"profile"})
+                if unknown:
+                    raise ConfigError(
+                        "unknown profile preview field(s): " + ", ".join(unknown)
+                    )
+                if "profile" not in body:
+                    raise ConfigError("body must define field 'profile'")
+                return self._send(200, read_api.preview_profile(body["profile"]))
             if self.path == "/v1/preview":
                 body = self._read_body()
                 return self._send(
@@ -586,6 +604,16 @@ def _make_handler(context: DaemonContext):
                         overwrite=bool(body.get("overwrite")),
                     ),
                 )
+            m = re.match(r"^/v1/profiles/([^/?]+)/duplicate$", self.path)
+            if m:
+                return self._send(
+                    201,
+                    write_api.duplicate_profile(
+                        context.profiles,
+                        m.group(1),
+                        self._read_body(),
+                    ),
+                )
             m = re.match(r"^/v1/topics/([^/?]+)/profile$", self.path)
             if m:
                 body = self._read_body()
@@ -611,7 +639,7 @@ def _make_handler(context: DaemonContext):
             except read_api.NotFoundError as exc:
                 return self._error(404, "not_found", str(exc))
             except write_api.ConflictError as exc:
-                return self._error(409, exc.code, str(exc))
+                return self._error(409, exc.code, str(exc), exc.details)
             except write_api.UnprocessableError as exc:
                 return self._error(422, exc.code, str(exc), exc.details)
             except (GuideDocumentError, ContractError, GuideParseError) as exc:
@@ -625,6 +653,14 @@ def _make_handler(context: DaemonContext):
                 return self._last_resort(exc)
 
         def _api_put_routes(self):
+            m = re.match(r"^/v1/profiles/([^/?]+)$", self.path)
+            if m:
+                status, payload = write_api.put_profile(
+                    context.profiles,
+                    m.group(1),
+                    self._read_body(),
+                )
+                return self._send(status, payload)
             if self.path == "/v1/config/plan":
                 return self._send(
                     200,
@@ -665,7 +701,7 @@ def _make_handler(context: DaemonContext):
             except read_api.NotFoundError as exc:
                 return self._error(404, "not_found", str(exc))
             except write_api.ConflictError as exc:
-                return self._error(409, exc.code, str(exc))
+                return self._error(409, exc.code, str(exc), exc.details)
             except write_api.UnprocessableError as exc:
                 return self._error(422, exc.code, str(exc), exc.details)
             except (GuideDocumentError, ContractError, GuideParseError) as exc:

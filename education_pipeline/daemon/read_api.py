@@ -21,8 +21,18 @@ from education_pipeline.config import (
     weak_stage_warning,
 )
 from education_pipeline.providers import get_runner
+from education_pipeline.privacy import (
+    profile_field_sensitivity,
+    profile_summary_warnings,
+    profile_to_dict,
+)
+from education_pipeline.profiles import (
+    parse_learner_profile,
+    render_profile_prompt_context,
+    render_profile_public_summary,
+)
 from education_pipeline.runs import SUPPORTED_STAGES, RunStore
-from education_pipeline.workspace import ProfileStore, TopicStore
+from education_pipeline.workspace import ProfileRecord, ProfileStore, TopicStore
 
 
 class NotFoundError(Exception):
@@ -66,13 +76,74 @@ def get_topic(topics: TopicStore, topic_id: str) -> dict:
 
 
 def list_profiles(profiles: ProfileStore) -> dict:
-    return {"profiles": list(profiles.list_profile_ids())}
+    return {
+        "profiles": [
+            {
+                "id": profile_id,
+                "attached_topic_count": profiles.profile_attachment_count(profile_id),
+            }
+            for profile_id in profiles.list_profile_ids()
+        ]
+    }
 
 
 def get_profile(profiles: ProfileStore, profile_id: str) -> dict:
     if not profiles.profile_path(profile_id).is_file():
-        raise NotFoundError(f"no such profile: {profile_id}")
-    return {"id": profile_id, "toml": profiles.read_profile_toml(profile_id)}
+        raise NotFoundError("no such profile")
+    return profile_payload(
+        profiles,
+        profile_id,
+        record=profiles.read_profile_record(profile_id),
+    )
+
+
+def profile_payload(
+    profiles: ProfileStore,
+    profile_id: str,
+    *,
+    record: ProfileRecord,
+) -> dict:
+    """Project one canonical store record to the frozen structured API shape."""
+
+    return {
+        "id": profile_id,
+        "parsed": profile_to_dict(record.profile),
+        "sensitivity": _profile_sensitivity_payload(),
+        "content_sha256": record.content_sha256,
+        "warnings": _profile_warnings_payload(record.profile),
+        "attached_topic_count": profiles.profile_attachment_count(profile_id),
+    }
+
+
+def preview_profile(value: object) -> dict:
+    """Render a structured profile without consulting or mutating the store."""
+
+    profile = parse_learner_profile(value)
+    return {
+        "parsed": profile_to_dict(profile),
+        "prompt_context": render_profile_prompt_context(profile),
+        "publishable_summary": render_profile_public_summary(profile),
+        "sensitivity": _profile_sensitivity_payload(),
+        "warnings": _profile_warnings_payload(profile),
+    }
+
+
+def _profile_sensitivity_payload() -> dict:
+    return {
+        field_path: tier.value
+        for field_path, tier in profile_field_sensitivity().items()
+    }
+
+
+def _profile_warnings_payload(profile) -> list[dict]:
+    return [
+        {
+            "code": warning.code,
+            "field_path": warning.field_path,
+            "fingerprint": warning.fingerprint,
+        }
+        for warning in profile_summary_warnings(profile)
+    ]
 
 
 def run_status_payload(runs: RunStore, topic_id: str) -> dict:

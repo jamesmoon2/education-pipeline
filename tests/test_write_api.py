@@ -1,6 +1,7 @@
 """Unit tests for the write-action payload builders (no HTTP layer)."""
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -8,10 +9,13 @@ import pytest
 import test_runs
 
 from education_pipeline.config import ConfigError, parse_model_catalog, parse_model_plan
-from education_pipeline.daemon import StaticConfigSource, write_api
+from education_pipeline.daemon import StaticConfigSource, read_api, write_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
+from education_pipeline.privacy import canonical_profile_toml_bytes, profile_to_dict
+from education_pipeline.profiles import parse_learner_profile
 from education_pipeline.runs import ContentContract, RunStore, SUPPORTED_STAGES
+from education_pipeline.workspace import ProfileStore, _profile_lock
 
 FIXTURE = Path(__file__).parent / "fixtures" / "guides" / "feedback-loops.guide.json"
 
@@ -402,6 +406,72 @@ def test_import_profile(tmp_path):
     assert exc.value.code == "already_exists"
 
 
+def test_import_profile_malformed_existing_target_is_safe_conflict(tmp_path):
+    profiles = ProfileStore(tmp_path)
+    planted_value = "PLANTED_MALFORMED_IMPORT_PRIVATE_VALUE"
+    profiles.profiles_dir.mkdir(parents=True)
+    profiles.profile_path("p1").write_text(
+        f'id = "p1"\ntarget_learner = "{planted_value}',
+        encoding="utf-8",
+    )
+    candidate = 'schema_version = 1\nid = "p1"\ntarget_learner = "new cohort"\n'
+
+    with pytest.raises(write_api.ConflictError) as caught:
+        write_api.import_profile(profiles, candidate)
+
+    assert caught.value.code == "already_exists"
+    assert caught.value.details == {"current_sha256": None}
+    assert planted_value not in str(caught.value)
+    assert planted_value not in json.dumps(caught.value.details)
+
+
+def test_import_profile_target_created_before_locked_write_is_safe_conflict(
+    tmp_path,
+    monkeypatch,
+):
+    from education_pipeline import workspace
+
+    profiles = ProfileStore(tmp_path)
+    target = profiles.profile_path("p1")
+    lock = _profile_lock(target)
+    lock.acquire()
+    lock_attempted = threading.Event()
+    real_profile_lock = workspace._profile_lock
+
+    def observed_profile_lock(path):
+        lock_attempted.set()
+        return real_profile_lock(path)
+
+    monkeypatch.setattr(workspace, "_profile_lock", observed_profile_lock)
+    candidate = 'schema_version = 1\nid = "p1"\ntarget_learner = "new cohort"\n'
+    concurrent = 'schema_version = 1\nid = "p1"\ntarget_learner = "concurrent cohort"\n'
+    results = []
+
+    def import_candidate():
+        try:
+            results.append(write_api.import_profile(profiles, candidate))
+        except BaseException as exc:
+            results.append(exc)
+
+    importer = threading.Thread(target=import_candidate)
+    importer.start()
+    try:
+        assert lock_attempted.wait(timeout=5)
+        profiles.profiles_dir.mkdir(parents=True, exist_ok=True)
+        target.write_text(concurrent, encoding="utf-8")
+    finally:
+        lock.release()
+    importer.join(timeout=5)
+
+    assert not importer.is_alive()
+    assert len(results) == 1
+    assert isinstance(results[0], write_api.ConflictError)
+    assert results[0].code == "already_exists"
+    assert results[0].details == {
+        "current_sha256": profiles.read_profile_record("p1").content_sha256
+    }
+
+
 def test_attach_profile_defaults_to_overwrite(tmp_path):
     from education_pipeline.workspace import ProfileStore
 
@@ -416,10 +486,223 @@ def test_attach_profile_defaults_to_overwrite(tmp_path):
 
 
 def test_attach_unknown_profile_is_404(tmp_path):
-    from education_pipeline.workspace import ProfileStore
-
     with pytest.raises(NotFoundError):
         write_api.attach_profile(ProfileStore(tmp_path), "t", "ghost")
+
+
+def _structured_profile(profile_id="profile-one", target_learner="Synthetic cohort alpha"):
+    return {
+        "schema_version": 1,
+        "id": profile_id,
+        "target_learner": target_learner,
+        "learning_goals": ["Trace synthetic systems"],
+        "learning_preferences": {
+            "preferred_modalities": ["diagrams"],
+            "diagram_frequency": "frequent",
+        },
+        "privacy": {
+            "private_by_default": True,
+            "include_in_published_output": True,
+            "publishable_summary": f"Designed for {target_learner}",
+        },
+        "metadata": {"nested": {"rank": 7, "enabled": True, "ratio": 1.5}},
+    }
+
+
+def test_profile_read_adapters_return_structured_payloads_counts_and_safe_warnings(tmp_path):
+    profiles = ProfileStore(tmp_path)
+    profile = _structured_profile()
+    record = profiles.create_profile(profile["id"], profile)
+    profiles.attach_profile_to_topic(profile["id"], "topic-a")
+    profiles.attach_profile_to_topic(profile["id"], "topic-b")
+
+    assert read_api.list_profiles(profiles) == {
+        "profiles": [{"id": "profile-one", "attached_topic_count": 2}]
+    }
+    detail = read_api.get_profile(profiles, "profile-one")
+    assert set(detail) == {
+        "id",
+        "parsed",
+        "sensitivity",
+        "content_sha256",
+        "warnings",
+        "attached_topic_count",
+    }
+    assert detail["parsed"] == profile_to_dict(record.profile)
+    assert detail["content_sha256"] == record.content_sha256
+    assert detail["attached_topic_count"] == 2
+    assert detail["sensitivity"]["target_learner"] == "high"
+    assert detail["sensitivity"]["metadata.*"] == "high"
+    assert detail["warnings"]
+    assert set(detail["warnings"][0]) == {"code", "field_path", "fingerprint"}
+    assert detail["warnings"][0]["field_path"] == "target_learner"
+    assert profile["target_learner"] not in json.dumps(detail["warnings"])
+
+
+def test_profile_get_is_non_mutating_for_legacy_noncanonical_toml(tmp_path):
+    profiles = ProfileStore(tmp_path)
+    path = profiles.profile_path("legacy")
+    path.parent.mkdir(parents=True)
+    legacy_bytes = b'target_learner = "Synthetic legacy cohort"\nid = "legacy"\n'
+    path.write_bytes(legacy_bytes)
+
+    detail = read_api.get_profile(profiles, "legacy")
+
+    assert detail["parsed"]["schema_version"] == 1
+    assert path.read_bytes() == legacy_bytes
+
+
+def test_profile_preview_uses_canonical_renderers_and_performs_no_write(tmp_path):
+    profiles = ProfileStore(tmp_path)
+    profile = _structured_profile("preview-only")
+
+    result = read_api.preview_profile(profile)
+
+    assert set(result) == {
+        "parsed",
+        "prompt_context",
+        "publishable_summary",
+        "sensitivity",
+        "warnings",
+    }
+    assert result["parsed"] == profile_to_dict(parse_learner_profile(profile))
+    assert "# Learner Profile Context" in result["prompt_context"]
+    assert profile["target_learner"] in result["prompt_context"]
+    assert result["publishable_summary"] == profile["privacy"]["publishable_summary"]
+    assert result["warnings"][0]["field_path"] == "target_learner"
+    assert not profiles.profiles_dir.exists()
+
+
+def test_put_profile_create_then_update_returns_frozen_status_and_payload_shapes(tmp_path):
+    profiles = ProfileStore(tmp_path)
+    profile = _structured_profile()
+
+    status, created = write_api.put_profile(
+        profiles,
+        profile["id"],
+        {"profile": profile, "base_sha256": None},
+    )
+    assert status == 201
+    assert created == read_api.get_profile(profiles, profile["id"])
+    assert profiles.profile_path(profile["id"]).read_bytes() == canonical_profile_toml_bytes(profile)
+
+    updated_profile = {**profile, "target_learner": "Synthetic cohort beta"}
+    status, updated = write_api.put_profile(
+        profiles,
+        profile["id"],
+        {"profile": updated_profile, "base_sha256": created["content_sha256"]},
+    )
+    assert status == 200
+    assert updated["parsed"] == profile_to_dict(parse_learner_profile(updated_profile))
+    assert updated["content_sha256"] != created["content_sha256"]
+
+
+def test_put_profile_rejects_mismatch_wrong_nested_types_unknown_keys_and_bad_preconditions(
+    tmp_path,
+):
+    profiles = ProfileStore(tmp_path)
+    profile = _structured_profile()
+
+    mismatch = {**profile, "id": "different"}
+    with pytest.raises(ConfigError, match="profile id mismatch"):
+        write_api.put_profile(
+            profiles,
+            profile["id"],
+            {"profile": mismatch, "base_sha256": None},
+        )
+
+    wrong_nested = {**profile, "learning_preferences": ["diagrams"]}
+    with pytest.raises(ConfigError, match="learning_preferences.*table"):
+        write_api.put_profile(
+            profiles,
+            profile["id"],
+            {"profile": wrong_nested, "base_sha256": None},
+        )
+
+    unknown = {**profile, "privacy": {**profile["privacy"], "secret_copy": "forbidden"}}
+    with pytest.raises(ConfigError, match="unknown privacy field"):
+        write_api.put_profile(
+            profiles,
+            profile["id"],
+            {"profile": unknown, "base_sha256": None},
+        )
+
+    with pytest.raises(ConfigError, match="base_sha256"):
+        write_api.put_profile(profiles, profile["id"], {"profile": profile})
+    with pytest.raises(ConfigError, match="unknown profile request field"):
+        write_api.put_profile(
+            profiles,
+            profile["id"],
+            {"profile": profile, "base_sha256": None, "overwrite": True},
+        )
+
+
+def test_put_profile_conflicts_are_value_free_and_expose_only_current_hash(tmp_path):
+    profiles = ProfileStore(tmp_path)
+    profile = _structured_profile(target_learner="PLANTED_PRIVATE_VALUE_ALPHA")
+    _, created = write_api.put_profile(
+        profiles,
+        profile["id"],
+        {"profile": profile, "base_sha256": None},
+    )
+
+    with pytest.raises(write_api.ConflictError) as existing:
+        write_api.put_profile(
+            profiles,
+            profile["id"],
+            {"profile": profile, "base_sha256": None},
+        )
+    assert existing.value.code == "already_exists"
+    assert existing.value.details == {"current_sha256": created["content_sha256"]}
+
+    changed = {**profile, "target_learner": "PLANTED_PRIVATE_VALUE_BETA"}
+    with pytest.raises(write_api.ConflictError) as stale:
+        write_api.put_profile(
+            profiles,
+            profile["id"],
+            {"profile": changed, "base_sha256": "0" * 64},
+        )
+    assert stale.value.code == "stale_content"
+    assert stale.value.details == {"current_sha256": created["content_sha256"]}
+    rendered = json.dumps(
+        {"message": str(stale.value), "details": stale.value.details}, sort_keys=True
+    )
+    assert "PLANTED_PRIVATE_VALUE" not in rendered
+    assert set(stale.value.details) == {"current_sha256"}
+
+
+def test_duplicate_profile_replaces_id_returns_detail_and_refuses_collisions(tmp_path):
+    profiles = ProfileStore(tmp_path)
+    source = _structured_profile("source-profile")
+    profiles.create_profile(source["id"], source)
+
+    duplicated = write_api.duplicate_profile(
+        profiles, source["id"], {"new_id": "copied-profile"}
+    )
+    assert duplicated == read_api.get_profile(profiles, "copied-profile")
+    assert duplicated["parsed"]["id"] == "copied-profile"
+    assert duplicated["parsed"]["target_learner"] == source["target_learner"]
+
+    with pytest.raises(write_api.ConflictError) as collision:
+        write_api.duplicate_profile(
+            profiles, source["id"], {"new_id": "copied-profile"}
+        )
+    assert collision.value.code == "already_exists"
+    assert collision.value.details == {
+        "current_sha256": duplicated["content_sha256"]
+    }
+    with pytest.raises(NotFoundError):
+        write_api.duplicate_profile(profiles, "missing", {"new_id": "unused"})
+
+
+def test_raw_profile_import_writes_canonical_bytes(tmp_path):
+    profiles = ProfileStore(tmp_path)
+    raw = 'target_learner = "Synthetic import cohort"\nid = "raw-import"\n'
+
+    assert write_api.import_profile(profiles, raw) == {"id": "raw-import"}
+    record = profiles.read_profile_record("raw-import")
+    assert profiles.profile_path("raw-import").read_bytes() == record.canonical_bytes
+    assert profiles.profile_path("raw-import").read_bytes() != raw.encode("utf-8")
 
 
 def test_guide_status_stage_content_and_validate_payloads(tmp_path):
