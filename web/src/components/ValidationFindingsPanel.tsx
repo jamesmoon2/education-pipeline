@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ApiRequestError, getValidation, getWaivers, postValidate, postWaiver } from "../api/client";
+import { ApiRequestError, deleteWaiver, getValidation, getWaivers, postValidate, postWaiver } from "../api/client";
 import type {
   ValidationFinding,
   ValidationReport,
@@ -124,6 +124,23 @@ export default function ValidationFindingsPanel({
     }
   };
 
+  const removeWaiver = async (finding: ValidationFinding) => {
+    if (!report || waiving) return;
+    setWaiving(true);
+    setFeedback(null);
+    try {
+      const result = await deleteWaiver(topicId, phase, finding.id);
+      setReport(result.report);
+      setWaivers(result.waivers.waivers);
+      setWaiverState("current");
+      onChanged();
+    } catch (error) {
+      setFeedback(feedbackFor(error));
+    } finally {
+      setWaiving(false);
+    }
+  };
+
   const rerunValidation = async () => {
     if (rerunning) return;
     setRerunning(true);
@@ -220,6 +237,13 @@ export default function ValidationFindingsPanel({
                         setReason("");
                         setFeedback(null);
                       }}>Waive…</button>
+                    )}
+                    {waived && state === "current" && (
+                      <button
+                        type="button"
+                        disabled={waiving}
+                        onClick={() => void removeWaiver(finding)}
+                      >Unwaive</button>
                     )}
                   </li>
                 );

@@ -128,10 +128,14 @@ test("release gate: finding → repair → re-run → waive → export", async (
   await page.getByRole("button", { name: "Run draft validation" }).click();
 
   const draftRow = stagesTable(page).locator("tr", { hasText: "draft" });
-  await expect(draftRow.getByRole("status")).toHaveText("2");
+  // The badge is no longer a role="status" live region (that would
+  // re-announce on every 5s poll) -- it carries its accessible name via
+  // aria-label instead.
+  await expect(draftRow.locator(".findings-badge")).toHaveText("2");
+  await expect(draftRow.locator(".findings-badge")).toHaveAttribute("aria-label", "2 findings");
   // Badge is on the draft stage specifically, not any other stage.
   await expect(
-    stagesTable(page).locator("tr", { hasText: "outline" }).getByRole("status"),
+    stagesTable(page).locator("tr", { hasText: "outline" }).locator(".findings-badge"),
   ).toHaveCount(0);
 
   // The blocker is listed in the draft findings panel and its source link
@@ -166,7 +170,7 @@ test("release gate: finding → repair → re-run → waive → export", async (
   // waivable heading finding remains (badge drops 2 -> 1).
   await draftPanel(page).getByRole("button", { name: "Re-run validation" }).click();
   const draftRowAfter = stagesTable(page).locator("tr", { hasText: "draft" });
-  await expect(draftRowAfter.getByRole("status")).toHaveText("1");
+  await expect(draftRowAfter.locator(".findings-badge")).toHaveText("1");
   await expect(draftPanel(page).getByText(/content\.placeholder/)).toHaveCount(0);
   await expect(draftPanel(page).getByText(/markdown\.invalid_heading_level/)).toBeVisible();
 
@@ -205,4 +209,49 @@ test("release gate: finding → repair → re-run → waive → export", async (
   const sidecar = JSON.parse(readFileSync(reportPath, "utf-8"));
   expect(sidecar.gate.open).toBe(true);
   expect(sidecar.gate.effective_blocking).toBe(0);
+});
+
+test("release gate: a waiver can be removed from the cockpit", async ({ page }) => {
+  test.setTimeout(120_000);
+  page.on("dialog", (dialog) => dialog.accept());
+
+  // Same topic/spec/outline scaffolding as the primary test, but seeded
+  // directly with the repaired (placeholder-free) draft: this test only
+  // needs the waivable heading finding to reach an open final gate with one
+  // recorded waiver, so the placeholder-blocker/repair narrative is skipped.
+  const topic = "rg2";
+  await page.goto(`${baseURL}/`);
+  await page.getByRole("button", { name: "Import topic…" }).click();
+  await page
+    .getByLabel("topic TOML")
+    .fill(`schema_version = 1\nid = "${topic}"\ntitle = "Release Gates 2"\n`);
+  await page.getByRole("button", { name: "Import", exact: true }).click();
+  await page.getByRole("link", { name: topic, exact: true }).click();
+
+  await pasteAndApprove(page, "spec", SPEC);
+  await pasteAndApprove(page, "outline", OUTLINE);
+  await pasteAndApprove(page, "draft", DRAFT_V2);
+  // A current draft-phase report is required before the run advances to qa.
+  await page.getByRole("button", { name: "Run draft validation" }).click();
+  await expect(
+    draftPanel(page).getByText(/markdown\.invalid_heading_level/),
+  ).toBeVisible();
+  await pasteAndApprove(page, "qa", "# QA\n\nNo blocking issues.");
+  await pasteAndApprove(page, "repair", DRAFT_V2);
+  await page.getByRole("button", { name: "Run final validation" }).click();
+
+  // Waive the remaining finding to reach an open export gate.
+  await finalPanel(page).getByRole("button", { name: "Waive…" }).click();
+  const dialog = finalPanel(page).getByRole("dialog");
+  await dialog
+    .getByLabel("Reason")
+    .fill("Intentional level-1 heading in the intro callout; accepted for this release.");
+  await dialog.getByRole("button", { name: "Confirm waiver" }).click();
+  await expect(page.getByRole("button", { name: "Finalize" })).toBeVisible();
+
+  // Remove the waiver from the cockpit: the gate re-closes.
+  await finalPanel(page).getByRole("button", { name: /unwaive/i }).click();
+  await expect(finalPanel(page).getByRole("button", { name: /waive/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Finalize" })).toHaveCount(0);
+  await expect(finalPanel(page).getByText(/1 blocking .* 0 waived/)).toBeVisible();
 });

@@ -113,6 +113,12 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
   });
 }
 
+export async function apiDelete<T>(path: string): Promise<T> {
+  return request<T>(path, {
+    method: "DELETE",
+  });
+}
+
 export async function download(path: string, filename: string): Promise<void> {
   const token = await getToken();
   const resp = await fetch(path, { headers: { "X-EP-Token": token } });
@@ -199,6 +205,14 @@ export const postWaiver = (
   apiPost<WaiverResult>(
     `/v1/runs/${encodeURIComponent(topicId)}/validation/${phase}/waivers`,
     { finding_id: findingId, guide_sha256: guideSha256, reason },
+  );
+export const deleteWaiver = (
+  topicId: string,
+  phase: "draft" | "final",
+  findingId: string,
+) =>
+  apiDelete<WaiverResult>(
+    `/v1/runs/${encodeURIComponent(topicId)}/validation/${phase}/waivers/${encodeURIComponent(findingId)}`,
   );
 export const getWaivers = (topicId: string, phase: "draft" | "final") =>
   api<WaiversResult>(

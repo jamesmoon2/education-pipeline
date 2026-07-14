@@ -194,9 +194,9 @@ describe("RunBoardPage", () => {
 
     // outline: 2 (draft) + 1 (final) summed; repair: 3 from the final report only.
     const repairRow = await screen.findByRole("row", { name: /repair/ });
-    expect(within(repairRow).getByRole("status", { name: "3 findings" })).toBeInTheDocument();
+    expect(within(repairRow).getByLabelText("3 findings")).toBeInTheDocument();
     const outlineRow = screen.getByRole("row", { name: /outline/ });
-    expect(within(outlineRow).getByRole("status", { name: "3 findings" })).toBeInTheDocument();
+    expect(within(outlineRow).getByLabelText("3 findings")).toBeInTheDocument();
   });
 
   it("ignores findings_by_stage from a phase whose report is not current", async () => {
@@ -224,8 +224,8 @@ describe("RunBoardPage", () => {
     renderAt("/topics/t");
 
     const repairRow = await screen.findByRole("row", { name: /repair/ });
-    expect(within(repairRow).getByRole("status", { name: "1 finding" })).toBeInTheDocument();
-    expect(screen.queryByRole("status", { name: "5 findings" })).not.toBeInTheDocument();
+    expect(within(repairRow).getByLabelText("1 finding")).toBeInTheDocument();
+    expect(screen.queryByLabelText("5 findings")).not.toBeInTheDocument();
   });
 
   it("shows no badge for a phase whose every blocker is waived (server-netted findings_by_stage)", async () => {
@@ -265,9 +265,31 @@ describe("RunBoardPage", () => {
     renderAt("/topics/t");
 
     const repairRow = await screen.findByRole("row", { name: /repair/ });
-    expect(within(repairRow).getByRole("status", { name: "1 finding" })).toBeInTheDocument();
+    expect(within(repairRow).getByLabelText("1 finding")).toBeInTheDocument();
     const outlineRow = screen.getByRole("row", { name: /outline/ });
-    expect(within(outlineRow).queryByRole("status")).not.toBeInTheDocument();
+    expect(within(outlineRow).queryByLabelText(/finding/)).not.toBeInTheDocument();
+  });
+
+  it("does not announce the findings badge as a live region", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      ...status,
+      validations: {
+        draft: {
+          state: "current",
+          blocking: 2,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { outline: 2 },
+        },
+        final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+      },
+    });
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    const badge = await screen.findByLabelText(/2 findings/i);
+    expect(badge).not.toHaveAttribute("role", "status");
+    expect(badge).toHaveAttribute("aria-label", "2 findings");
   });
 
   it("shows a provenance line for a stage present in stage_provenance", async () => {

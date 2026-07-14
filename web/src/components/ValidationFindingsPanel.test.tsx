@@ -11,12 +11,14 @@ vi.mock("../api/client", async () => {
     getValidation: vi.fn(),
     getWaivers: vi.fn(),
     postWaiver: vi.fn(),
+    deleteWaiver: vi.fn(),
     postValidate: vi.fn(),
   };
 });
 
 import {
   ApiRequestError,
+  deleteWaiver,
   getValidation,
   getWaivers,
   postValidate,
@@ -291,6 +293,59 @@ describe("ValidationFindingsPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(message);
     expect(reason).toHaveValue("My carefully considered reason");
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("removes a waiver when Unwaive is clicked and re-blocks the gate", async () => {
+    vi.mocked(getWaivers).mockResolvedValue({
+      state: "current",
+      waivers: {
+        schema_version: 1,
+        guide_sha256: report.guide_sha256,
+        waivers: [{ finding_id: "quality:two", reason: "Accepted for this release" }],
+      },
+    });
+    const updatedReport: ValidationReport = {
+      ...report,
+      summary: { blocking: 1, errors: 1, warnings: 0, info: 0 },
+      findings: [report.findings[0]],
+    };
+    vi.mocked(deleteWaiver).mockResolvedValue({
+      state: "current",
+      report: updatedReport,
+      waivers: {
+        schema_version: 1,
+        guide_sha256: report.guide_sha256,
+        waivers: [],
+      },
+    });
+    const props = renderPanel();
+    expect(await screen.findByText("waived")).toBeInTheDocument();
+
+    const unwaive = await screen.findByRole("button", { name: /unwaive/i });
+    await userEvent.click(unwaive);
+
+    await waitFor(() => expect(deleteWaiver).toHaveBeenCalledWith(
+      "feedback loops", "draft", "quality:two",
+    ));
+    await waitFor(() => expect(screen.queryByText("waived")).not.toBeInTheDocument());
+    expect(props.onChanged).toHaveBeenCalled();
+    expect(screen.getByText(/1 blocking · 1 errors · 0 warnings · 0 waived/)).toBeInTheDocument();
+  });
+
+  it("offers no Unwaive control when the report is stale", async () => {
+    vi.mocked(getValidation).mockResolvedValue({ state: "stale", report });
+    vi.mocked(getWaivers).mockResolvedValue({
+      state: "current",
+      waivers: {
+        schema_version: 1,
+        guide_sha256: report.guide_sha256,
+        waivers: [{ finding_id: "quality:two", reason: "Accepted for this release" }],
+      },
+    });
+    renderPanel("stale");
+    await screen.findByText(/report is stale/);
+    expect(await screen.findByText("waived")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /unwaive/i })).not.toBeInTheDocument();
   });
 
   it("links each finding to its own responsible stage, not the panel's phase", async () => {
