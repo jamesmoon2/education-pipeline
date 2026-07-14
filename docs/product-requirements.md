@@ -508,11 +508,13 @@ underlying local configuration.
 **Status: Delivered 2026-07-13** (closeout evidence in
 [`docs/superpowers/plans/2026-07-12-deterministic-release-gates.md`](superpowers/plans/2026-07-12-deterministic-release-gates.md)
 Wave Log, acceptance tests `tests/test_release_gate_acceptance.py`, and e2e
-`web/e2e/release-gates.spec.ts`).
+`web/e2e/release-gates.spec.ts`). Accepted limitations, carried-forward triage,
+and three open owner decisions are recorded in the post-milestone audit.
 
-Milestone specification:
+Milestone specifications:
 
 - [`docs/superpowers/specs/2026-07-12-deterministic-release-gates-design.md`](superpowers/specs/2026-07-12-deterministic-release-gates-design.md)
+- [`docs/superpowers/specs/2026-07-13-deterministic-release-gates-post-milestone-audit.md`](superpowers/specs/2026-07-13-deterministic-release-gates-post-milestone-audit.md)
 
 - Implement structured validator results and severities.
 - Add schema, privacy, outcome coverage, link, interaction, accessibility, and
