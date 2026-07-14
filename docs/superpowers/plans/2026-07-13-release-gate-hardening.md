@@ -2,13 +2,22 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task (fresh implementer subagent per task, spec review + code review per task). Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close the three owner decisions and the one user-facing gap left open by the deterministic-release-gates milestone, on a clean tree, before the personalization milestone proceeds.
+**Goal:** Close the three owner decisions and the one user-facing gap left open by the deterministic-release-gates milestone.
 
 **Architecture:** Six independent hardening tasks over the shipped gate. Two of them change gate behavior and must land together (Task 3); one is pure test infrastructure and lands first because it is the safety net for everything after it (Task 1). Nothing here invents new subsystems — every task modifies a surface the release-gates milestone already shipped.
 
 **Tech Stack:** Python 3.11+ stdlib only at runtime (`pytest` + `pytest-timeout` as dev dependencies); React 18 + TypeScript, vitest, Playwright.
 
-**Spec of record:** [`docs/superpowers/specs/2026-07-13-deterministic-release-gates-post-milestone-audit.md`](../specs/2026-07-13-deterministic-release-gates-post-milestone-audit.md) §7 (owner decisions, carried triage) and §8 (the `_private_profile_values` policy paragraph). The owner ruled on all three §7 decisions on 2026-07-13; this plan implements those rulings.
+**Spec of record:** [`docs/superpowers/specs/2026-07-13-deterministic-release-gates-post-milestone-audit.md`](../specs/2026-07-13-deterministic-release-gates-post-milestone-audit.md) §7 (owner decisions, carried triage). The owner ruled on all three §7 decisions on 2026-07-13; this plan implements those rulings. **§8 is superseded — see "Scheduling" below.**
+
+## Scheduling (revised 2026-07-13, after personalization Wave 0 landed)
+
+This plan was written to run *before* the personalization milestone. Personalization **Wave 0 has since landed** (`dc75c54`, `9124a7b`, `e5b0f17`; gate pytest **666**, vitest 127, e2e 42, build clean). This batch now runs **between personalization Wave 0 and Wave 1**, and it still runs first, for the same two reasons:
+
+- Task 2 (report staleness) must land **before the report schema is extended again**. Personalization Waves 2–3 extend guide source to 1.1 and project the quality report; landing the staleness ruling after them means shipping a second generation of compatibility shims.
+- Task 3 tightens a **blocking** gate. It wants to be absorbed in isolation, not discovered mid-milestone.
+
+Nothing in Wave 0 collides with Tasks 1–6: it left `report_state`, `guides/reports.py`, `guides/static_checks.py`, `guides/document.py`, `daemon/`, and every waiver method untouched (verified). It **did** rewrite the field-selection policy that §8 of the audit documented — see the Wave-close checklist, step 4.
 
 ## Global Constraints
 
@@ -25,7 +34,7 @@
 
 ## Preconditions (the human does this before Task 1)
 
-The working tree must be clean. As of plan time it carries in-flight personalization Wave-0 work (`education_pipeline/privacy.py` untracked, `education_pipeline/profiles.py` and `tests/test_profiles.py` modified) plus unrelated untracked docs. **Commit or stash it before starting** — Task 3 changes rendered output and Task 2 changes report freshness, and both need an unambiguous baseline.
+The tracked tree is clean as of personalization Wave 0's close; the only untracked files are unrelated docs (`docs/design-demos/`, `docs/design-system.md`, `docs/superpowers/wave-runner-paper-draft.md`). **Leave them exactly as found** — the personalization plan's bootstrap made the same commitment. Do not start with modified tracked files: Task 2 changes report freshness and Task 3 changes rendered output, and both need an unambiguous baseline.
 
 ---
 
@@ -40,9 +49,12 @@ This is a **single-wave** plan. The manager runs Tasks 1–6 in order, then exec
 3. **Correct the audit document** (`docs/superpowers/specs/2026-07-13-deterministic-release-gates-post-milestone-audit.md`):
    - §7.1 over-claims that adopting the staleness rule makes the three stage-less-finding shims dead code. **It does not.** A stale report is still *displayed* (CLI prints it with a stderr warning; the cockpit shows it under a stale banner), so a v1 report on disk is still read and rendered and the shims still fire. What the rule actually buys is a **sunset**: the report is re-derived at v2 on the next validation instead of sitting "current" forever. Deleting the shims stays a separate future cleanup, gated on being willing to assert no v1 reports exist. Rewrite §7.1's "blast radius if declined" paragraph accordingly.
    - Record the owner's three rulings (§7.1 adopt; §7.2 adopt, with the markdown-offset fix; §7.3 add the dependency) and mark items #1, #2, #4, #5, #7, #12 of the §7 table as resolved by this plan.
-4. **Land the §8 policy paragraph in the design spec.** Carried triage item #10 is only half-done: the audit *drafts* the `RunStore._private_profile_values` field-selection paragraph but the spec it belongs in does not carry it. Copy §8's paragraph (the three-part block: the in/out field policy, the two named judgment calls, and the draft-phase consequence) into `docs/superpowers/specs/2026-07-12-deterministic-release-gates-design.md`, in the validation section alongside the other rule definitions. It documents shipped behavior; do not reword the policy itself.
-5. Commit the plan-document update, the audit correction, and the spec paragraph.
-6. **Print to the terminal, for the human:** the four-suite counts, and the verbatim kickoff prompt for personalization Wave 0 (`docs/superpowers/plans/2026-07-13-personalization.md`), whose execution this batch was gating.
+4. **Mark the audit's §8 paragraph SUPERSEDED — do not copy it anywhere.** This step was originally "land §8 in the design spec". Personalization Wave 0 (`e5b0f17`) has since **replaced** the field selection it documented, so copying it would enshrine a policy that no longer exists. Instead:
+   - Rewrite audit §8 to state that the policy of record is now `education_pipeline/privacy.py` (`_PROFILE_FIELD_SENSITIVITY`, `SensitivityTier`, `profile_private_values`), and that carried-triage item #10 is **resolved by personalization Wave 0**, not by this batch.
+   - **Record the divergence, prominently.** The new policy screens **HIGH *and* MEDIUM** tier fields, and MEDIUM includes `learning_goals`, `preferred_examples`, `examples_to_avoid`, and `adjacent_domains`. §8 had deliberately **excluded** exactly those, on the stated grounds that they are pedagogical inputs the guide is *supposed to act on* — a course built for a learner whose goal is "ship a Rust CLI" should contain that phrase, and denylisting it makes the gate refuse personalization that is working correctly. Verified against the shipped code: a profile with `learning_goals=("ship a Rust CLI tool",)` yields a denylist containing `'ship a rust cli tool'`, and `privacy.exact_private_value` is a **blocking** finding. No test pairs a goal-bearing profile with a guide that quotes it, so this is latent — it fires on real runs, not in the suite.
+   - This is an **owner policy question, not a defect to fix in this batch.** Record it; do not "correct" the tier map here. If the owner has already ruled, note the ruling and move on.
+5. Commit the plan-document update and the audit corrections (§7.1 and §8).
+6. **Print to the terminal, for the human:** the four-suite counts, and the verbatim kickoff prompt for personalization **Wave 1** ("Profile product surface") from `docs/superpowers/plans/2026-07-13-personalization.md` — its Wave 0 is already closed, and that plan's model table recommends **GPT-5.6 Terra, High** for Wave 1. Use that plan's own kickoff template with `N = 1`.
 7. Stop.
 
 ### Wave Log
@@ -51,7 +63,7 @@ This is a **single-wave** plan. The manager runs Tasks 1–6 in order, then exec
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 0 — Release-gate hardening | pending | — | — | — | — | — | — |
 
-Baseline at plan time: pytest 600, vitest 127, e2e 42, build clean (commit `762c684`).
+**Baseline: pytest 666, vitest 127, e2e 42, build clean** — the personalization Wave 0 close (`e5b0f17`), *not* the release-gates gate of 600. Wave 0 added `tests/test_personalization_privacy.py` (+66 tests) between this plan's authoring and its execution. If a task's suite run shows fewer than 666 passing before your change, stop: something else regressed and it is not yours.
 
 ---
 
@@ -135,7 +147,7 @@ Owner decision §7.1, adopted. `report_state` derives freshness purely from cont
 **Files:**
 - Modify: `education_pipeline/guides/reports.py` (add the module constant; `report_schema_version` field ~line 84)
 - Modify: `education_pipeline/guides/__init__.py` (export the constant)
-- Modify: `education_pipeline/runs.py` (`report_state` ~line 1218; the import block that already pulls from `.guides`)
+- Modify: `education_pipeline/runs.py` (`report_state` ~line 1223; the import block that already pulls from `.guides`)
 - Test: `tests/test_runs.py`
 
 **Interfaces:**
@@ -413,7 +425,7 @@ git commit -m "fix(guides): detect heading skips against the previous heading an
 Carried triage item #2. `write_api.create_waiver` calls the **private** `runs._record_waiver` because it needs the `WaiverSet` written *inside* the locked critical section (an unlocked re-read afterward is racy and dereferences an unchecked Optional). The need is legitimate; the layering is not. Promote it — and make removal symmetric, because Task 5's DELETE route needs exactly the same thing.
 
 **Files:**
-- Modify: `education_pipeline/runs.py` (`record_waiver` ~line 1795; `remove_waiver` ~line 1866)
+- Modify: `education_pipeline/runs.py` (`record_waiver` ~line 1797; `_record_waiver` ~line 1811; `remove_waiver` ~line 1869)
 - Modify: `education_pipeline/daemon/write_api.py` (`create_waiver` ~line 145)
 - Test: `tests/test_runs.py`, `tests/test_write_api.py`
 
