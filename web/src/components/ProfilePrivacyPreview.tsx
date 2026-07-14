@@ -48,7 +48,7 @@ export default function ProfilePrivacyPreview({
   }, [profile, debounceMs]);
 
   return (
-    <aside className="privacy-preview" aria-labelledby="privacy-preview-heading">
+    <aside className="privacy-preview" aria-labelledby="privacy-preview-heading" tabIndex={0}>
       <div className="privacy-preview-heading">
         <div>
           <p className="eyebrow">Server-rendered</p>
@@ -62,7 +62,14 @@ export default function ProfilePrivacyPreview({
         <>
           <section>
             <h3>Private prompt context</h3>
-            <pre className="content profile-prompt-preview">{preview.prompt_context}</pre>
+            <pre
+              className="content profile-prompt-preview"
+              role="region"
+              aria-label="Private prompt context"
+              tabIndex={0}
+            >
+              {preview.prompt_context}
+            </pre>
           </section>
           <section>
             <h3>Published output</h3>

@@ -42,6 +42,8 @@ describe("ProfilePrivacyPreview", () => {
     expect(screen.getByText(/privacy\.summary_contains_private_value/)).toBeInTheDocument();
     expect(screen.getByText(/target_learner/)).toBeInTheDocument();
     expect(screen.getByText(/abc123def456/)).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Privacy preview" })).toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("region", { name: "Private prompt context" })).toHaveAttribute("tabindex", "0");
   });
 
   it("clears a successful preview when the draft changes and the next preview fails", async () => {
