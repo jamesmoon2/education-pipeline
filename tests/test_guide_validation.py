@@ -373,5 +373,5 @@ def test_private_exclusion_reason_is_not_scanned_as_public_guide_text() -> None:
 def test_findings_carry_stage_and_report_schema_bumped():
     report = validate_guide('{"schema_version": "1.0"}', phase="draft")
     payload = report.to_dict()
-    assert payload["report_schema_version"] == 2
+    assert payload["report_schema_version"] == 3
     assert all("stage" in f for f in payload["findings"])

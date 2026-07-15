@@ -52,8 +52,8 @@ def test_quality_report_bytes_are_canonical_and_timestamp_free(sample_report_and
 def test_quality_report_payload_carries_gate_waivers_and_export(sample_report_and_waivers):
     payload = json.loads(quality_report_bytes(**sample_report_and_waivers))
     assert payload["gate"] == {"open": True, "effective_blocking": 0}
-    # The full validation report (schema v2, findings carry stage) is embedded.
-    assert payload["report"]["report_schema_version"] == 2
+    # The full validation report (schema v3, audit-safe finding shape) is embedded.
+    assert payload["report"]["report_schema_version"] == 3
     assert payload["report"]["findings"][0]["stage"] == "repair"
     assert payload["waivers"] == {
         "guide_sha256": "p" * 64,
