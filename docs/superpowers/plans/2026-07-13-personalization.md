@@ -171,7 +171,7 @@ recommendation instead of another kickoff prompt.
 | 0 — Privacy + profile store | **complete** | planning `eb44004`; code `dc75c54`, `9124a7b`, `e5b0f17` | 666 | 127 | 42 | clean | Privacy/codec, atomic store, and run integration are frozen. Task 0.3 expanded internally to NFC normalization and shared validation hashing with no public signature/schema change. Unrelated concurrent docs commits `7e67007` and `c12b4be` were preserved; see closeout notes. |
 | 1 — Profile product surface | **complete** | code `98e3ca8`, `3f13ab2`, `8f2a2c5`, `2fbf2af`, `0fca471` | 716 | 163 | 44 | clean | Gate run 2026-07-14. Frozen HTTP payloads implemented verbatim. Authorized deviation: `ProfileStore.import_profile_toml()` added (locked canonical raw import; daemon raw-import adapter delegates to it, removing a TOCTOU 400-vs-409 defect). `daemon/server.py` `_last_resort` now returns a constant 500 message and logs exception class only (privacy hardening — do not reintroduce interpolated exception text). Cockpit preserves metadata numeric kind/precision via JSON reviver source-text parsing plus a custom request-body serializer in `web/src/api/client.ts`; do not replace with plain `JSON.parse`/`stringify`. `web/e2e/profiles.spec.ts` owns profiles acceptance (found+fixed axe scrollable-region-focusable in `ProfilePrivacyPreview`). Deferred Minor: GET/duplicate concurrent-deletion race can 400 instead of 404 (contract silent). Sandbox note: implementer/reviewer subagents cannot bind `127.0.0.1`; the manager reran every loopback suite personally. |
 | 2 — Guide 1.1 + trace | **complete** | code `bd4d814`, `345196d`, `59dfc68`, `7a54273`, `1db88c8`, `bd1aa55` | 832 | 163 | 46 | clean | Gate run 2026-07-14. Source 1.1, private trace, public projection, versioned prompts/MIME, trace-integrity gating, and projection-bound public sidecar hashes are frozen. Wave 3 must preserve the Wave 2 public-hash boundary and safe `personalization.trace_integrity` id while adding optional audit state; see closeout notes. |
-| 3 — Optional audit + report | pending | — | — | — | — | — | — |
+| 3 — Optional audit + report | **complete** | code `7e540a3`, `64acd69`, `a159734`, `6f39d86`, `9482119` | 954 | 165 | 46 | clean | Gate run 2026-07-15. Optional audit lifecycle, strict hostile-response projection, public-safe report provenance/export state, and daemon/CLI controls are frozen. Audit provider stdout/stderr are never persisted to job logs; rebuild commands add `--force` only when a prior response exists. Wave 4 should consume `RunStore.combined_findings()` and `export_state()` without adding another audit state machine; see closeout notes. |
 | 4 — Fit panel + acceptance | pending | — | — | — | — | — | — |
 
 Baseline commands: `python3 -m pytest` → 600; `cd web && npm run test --
@@ -834,15 +834,15 @@ Tasks 3.4 and 3.5 then run sequentially because both consume lifecycle state.
 direct/model-plan/provider APIs but not `REASONING_STAGES` or required
 `next_action`; existing complete runs remain complete.
 
-- [ ] Write RED tests for config parsing/overrides, direct audit stage support,
+- [x] Write RED tests for config parsing/overrides, direct audit stage support,
   no-audit status, unchanged required next action, existing-run compatibility,
   and Settings rendering audit as model-powered.
-- [ ] Run focused Python/vitest tests and observe RED.
-- [ ] Implement the topology without prompt/lifecycle behavior yet.
-- [ ] Run focused suites green; verify every tuple/set consumer deliberately uses
+- [x] Run focused Python/vitest tests and observe RED.
+- [x] Implement the topology without prompt/lifecycle behavior yet.
+- [x] Run focused suites green; verify every tuple/set consumer deliberately uses
   required, optional, or supported stages. Audit uses JSON response content type,
   and stale state takes precedence over `approved`/`response_ingested`.
-- [ ] Fresh state-machine/spec/code review; manager lands
+- [x] Fresh state-machine/spec/code review; manager lands
   `feat(stages): register optional audit stage`.
 
 ### Task 3.2: Strict audit response and safe projection core
@@ -861,18 +861,18 @@ fixed-message finding projection, and safe audit projection/hash. Increment
 `ValidationReport.report_schema_version` for the extended finding shape while
 retaining a reader path for the existing version.
 
-- [ ] Write RED compatibility tests proving legacy findings round-trip unchanged
+- [x] Write RED compatibility tests proving legacy findings round-trip unchanged
   while audit findings accept `source_stage="repair"`, then valid/malformed/
   adversarial cases for every response field,
   unknown keys, invalid goal/facet/evidence ids, model-supplied fingerprint/value,
   private strings in every narrative slot, non-echoing diagnostics, deterministic
   safe findings, and safe projection excluding narratives/private hashes.
-- [ ] Run the new test file and observe RED.
-- [ ] Implement pure parse/project functions. Free-form rationale/summary remains
+- [x] Run the new test file and observe RED.
+- [x] Implement pure parse/project functions. Free-form rationale/summary remains
   local and never becomes a standard finding message.
-- [ ] Run focused tests green and independently scan serialized safe projection
+- [x] Run focused tests green and independently scan serialized safe projection
   for every planted secret.
-- [ ] Fresh adversarial privacy/spec/code review; manager lands
+- [x] Fresh adversarial privacy/spec/code review; manager lands
   `feat(audit): add safe personalization audit projection`.
 
 ### Task 3.3: Audit prompt, approval, and hash-derived lifecycle
@@ -886,22 +886,22 @@ retaining a reader path for the existing version.
 shape-validation on ingest/approval, approved safe projection, state/freshness,
 and before-or-after-finalize operation over the canonical final candidate.
 
-- [ ] Write RED tests for eligibility only with current final validation,
+- [x] Write RED tests for eligibility only with current final validation,
   attached profile, and current trace; safe no-profile unavailability;
   prompt input hashes; manual ingest/approval; provider-ready paths; no-audit
   finalize/export; before/after-finalize equivalence; repair/profile/trace
   invalidation; stale rebuild; explicit enqueue refusal for missing/stale audit
   prompt; failure between approved-response and projection writes; and existing
   complete run staying `done`.
-- [ ] Run focused prompt/run tests and observe RED.
-- [ ] Implement `prepare_personalization_audit`. Bind state to canonical candidate
+- [x] Run focused prompt/run tests and observe RED.
+- [x] Implement `prepare_personalization_audit`. Bind state to canonical candidate
   guide SHA + exact snapshot SHA + private trace SHA in one approval event, plus
   hashes of the exact approved-response and safe-projection bytes. Current state
   requires every binding to match; rebuilding a prompt cannot make an old
   approval appear current. Never put private artifact hashes into the public
   projection.
-- [ ] Run focused tests green, including `StaleContentError` cases.
-- [ ] Fresh state-machine/privacy/spec/code review; manager lands
+- [x] Run focused tests green, including `StaleContentError` cases.
+- [x] Fresh state-machine/privacy/spec/code review; manager lands
   `feat(runs): add optional personalization audit lifecycle`.
 
 ### Task 3.4: Sidecar schema, safe findings, and export staleness
@@ -922,7 +922,7 @@ fields without reintroducing source hashes derived from private exclusion
 reasons; one shared
 combined-findings accessor for sidecar/API/CLI consumers.
 
-- [ ] Write RED canonical-byte tests for not-run/current/stale audit; safe
+- [x] Write RED canonical-byte tests for not-run/current/stale audit; safe
   projection inclusion; raw narrative/private-hash absence; unchanged gate and
   waiver result; old sidecar staleness without changing `next_action`; later
   approval leaving old files byte-unchanged; re-export restoring current state;
@@ -933,13 +933,13 @@ combined-findings accessor for sidecar/API/CLI consumers.
   identical inputs does not stale a current export. Changing canonical final
   report bytes, validator/report schema versions, or
   `QUALITY_REPORT_SCHEMA_VERSION` stales export state.
-- [ ] Run focused report/run tests and observe RED.
-- [ ] Implement sidecar augmentation at export time from the current safe audit
+- [x] Run focused report/run tests and observe RED.
+- [x] Implement sidecar augmentation at export time from the current safe audit
   projection. UI/API validation presentation may combine lists, but persisted
   deterministic gate findings remain separate.
-- [ ] Run focused suites green and prove independent-run byte equality in all
+- [x] Run focused suites green and prove independent-run byte equality in all
   three audit states.
-- [ ] Fresh reproducibility/privacy/spec/code review; manager lands
+- [x] Fresh reproducibility/privacy/spec/code review; manager lands
   `feat(report): add safe audit provenance`.
 
 ### Task 3.5: Audit daemon and CLI controls
@@ -955,23 +955,62 @@ API/CLI use of Task 3.4's combined-findings accessor, additive audit finding
 count, safe audit status/presentation, `audit TOPIC` CLI, and no impact on
 `advance`.
 
-- [ ] Write RED route/CLI tests for eligibility, prepare/rebuild, manual/provider
+- [x] Write RED route/CLI tests for eligibility, prepare/rebuild, manual/provider
   next step, response/approval reuse, not-run/current/stale status, private-safe
   errors, `source_stage="repair"` evidence navigation, additive audit counts,
   deterministic-gate counts unchanged, and attempts to waive audit findings
   receiving the existing non-waivable refusal through both HTTP and CLI.
-- [ ] Run focused daemon/CLI tests and observe RED.
-- [ ] Implement thin adapters over `RunStore`; do not add a second audit state
+- [x] Run focused daemon/CLI tests and observe RED.
+- [x] Implement thin adapters over `RunStore`; do not add a second audit state
   machine in API code.
-- [ ] Run focused suites green and one daemon-level fake-provider audit flow.
-- [ ] Fresh API/privacy/code review; manager lands
+- [x] Run focused suites green and one daemon-level fake-provider audit flow.
+- [x] Fresh API/privacy/code review; manager lands
   `feat(api): expose optional personalization audit`.
 
 ### Wave 3 close
 
-- [ ] Complete the Wave 3 row using the Wave Protocol and stop.
+- [x] Complete the Wave 3 row using the Wave Protocol and stop.
 - Suggested next manager: **GPT-5.6 Sol with High reasoning** for cross-frame
   cockpit behavior, multi-state acceptance, and final milestone review.
+
+### Wave 3 closeout notes
+
+- **Implementation:** `7e540a3` registered required/optional/supported stage
+  topology and JSON audit editing; `64acd69` added strict hostile-response
+  parsing and deterministic safe projection; `a159734` added prompt,
+  approval, hash binding, stale-state, and provider-preflight lifecycle;
+  `6f39d86` added public-safe quality-report provenance, combined findings,
+  immutable export snapshots, and `export_state()`; `9482119` added daemon and
+  CLI controls, rebuild guidance, and private-safe audit job logging.
+- **TDD and review evidence:** every numbered task recorded focused RED before
+  GREEN and received fresh required spec/privacy/state-machine and code-quality
+  reviews. Findings drove regressions for duplicate JSON members and legacy
+  report readers; audit finding invariants; stale queued-provider execution;
+  identical prompt rebuilds; private-source-derived public digests; split
+  audit/trace/runtime snapshots; report self-round-trip; contradictory live
+  CLI overlays; rebuild no-clobber guidance; and raw provider stdout/stderr in
+  logs. All findings were resolved and re-reviewed; none are deferred.
+- **Four-suite gate:** final manager run on `9482119`: `python3 -m pytest` →
+  954 passed; `cd web && npm run test -- --run` → 165 passed; `npm run e2e` →
+  46 passed; `npm run build` → clean. The first sandboxed pytest and Playwright
+  attempts hit the documented loopback `EPERM`; each exact command was rerun
+  with loopback permission and passed.
+- **Reviewed scope expansions:** Task 3.1 updated the generic response editor
+  for validated non-preview JSON. Task 3.3 extended provider enqueue/worker
+  preflight. Task 3.4 fixed the canonical report reader and added one-runtime-
+  snapshot support to static checks. Task 3.5 extended `daemon/jobs.py` so raw
+  audit stdout and stderr are drained but never persisted or exposed as logs;
+  bounded stdout remains private response input only. These were required by
+  the frozen contracts and review findings.
+- **Wave 4 handoff:** use `RunStore.combined_findings()` for additive
+  presentation and `RunStore.export_state()` for re-export affordances; do not
+  merge audit findings into the deterministic report or create another audit
+  state machine. A current audit is approval-bound to one immutable projection
+  snapshot, and export uses one locked audit/trace/runtime snapshot. Public
+  report hashes remain bound to the public guide projection, not private source
+  annotations or source-bound report hashes. Audit job logs intentionally carry
+  no raw provider streams, so cockpit controls must not treat log text as audit
+  evidence. Wave 4 has not started.
 
 ---
 
