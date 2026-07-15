@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
 
@@ -281,15 +282,25 @@ def test_each_validation_computation_loads_one_profile_snapshot_and_cannot_mix_s
     if phase == "draft":
         test_runs._drive_guide_to_draft_approved(runs, topic_id, leaked_guide)
     profile = ProfileStore(tmp_path).load_topic_profile_snapshot(topic_id)
+    snapshot_path = ProfileStore(tmp_path).topic_profile_snapshot_path(topic_id)
+    snapshot = (
+        profile,
+        snapshot_path,
+        hashlib.sha256(snapshot_path.read_bytes()).hexdigest(),
+    )
     loads: list[str] = []
 
     def alternating_snapshot(_runs, topic: str):
         loads.append(topic)
-        return profile if len(loads) == 1 else None
+        return snapshot if len(loads) == 1 else None
 
-    monkeypatch.setattr(type(runs), "_load_attached_profile", alternating_snapshot)
+    monkeypatch.setattr(
+        type(runs),
+        "_read_attached_profile_snapshot",
+        alternating_snapshot,
+    )
     if phase == "draft":
-        *_, report = runs._compute_phase_report(topic_id, "draft")
+        report = runs._compute_phase_report(topic_id, "draft").report
     else:
         report, _, _ = runs._validated_final(topic_id, leaked_guide)
 
