@@ -9,6 +9,10 @@ import pytest
 from education_pipeline.guides import GuideParseError, normalize_guide, parse_guide
 
 FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.guide.json"
+PERSONALIZED_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures/guides/feedback-loops.personalized.guide.json"
+)
 
 
 def fixture_data() -> dict:
@@ -40,6 +44,9 @@ def test_complete_fixture_parses_and_normalizes() -> None:
     assert guide.course.title == "Thinking in Feedback Loops"
     assert len(guide.outcomes) == 3
     assert len(guide.modules) == 2
+    assert guide.course.goal_exclusions == ()
+    assert all(outcome.serves_goals == () for outcome in guide.outcomes)
+    assert all(module.serves_goals == () for module in guide.modules)
     assert {
         block.type
         for module in guide.modules
@@ -241,3 +248,169 @@ def test_utf8_bytes_are_required() -> None:
     result = parse_guide(b"\xff")
 
     assert codes(result) == {"json.invalid_utf8"}
+
+
+def test_schema_1_0_rejects_authored_personalization_annotations() -> None:
+    data = fixture_data()
+    data["outcomes"][0]["serves_goals"] = ["goal-001"]
+    data["modules"][0]["serves_goals"] = ["goal-001"]
+    data["course"]["goal_exclusions"] = [
+        {"goal_id": "goal-002", "reason": "Synthetic scope boundary."}
+    ]
+
+    result = parse_data(data)
+
+    assert [d.code for d in result.diagnostics].count("schema.unknown_field") == 3
+
+
+def test_schema_1_1_fixture_round_trips_with_annotations() -> None:
+    result = parse_guide(PERSONALIZED_FIXTURE.read_bytes())
+    guide = normalize_guide(result)
+
+    assert result.ok
+    assert guide.schema_version == "1.1"
+    assert guide.outcomes[0].serves_goals == ("goal-001",)
+    assert guide.modules[0].serves_goals == ("goal-001", "goal-002")
+    assert guide.course.goal_exclusions[0].goal_id == "goal-003"
+    assert guide.course.goal_exclusions[0].reason == "Synthetic deferred objective."
+
+
+@pytest.mark.parametrize("version", ["0.9", "1.2", "2.0", 1.1, None, [], {}])
+def test_unknown_or_non_string_schema_versions_fail(version) -> None:
+    data = fixture_data()
+    data["schema_version"] = version
+
+    assert "schema.unsupported_version" in codes(parse_data(data))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (
+            lambda data: data["outcomes"][0].update(serves_goals="goal-001"),
+            "schema.invalid_type",
+        ),
+        (
+            lambda data: data["outcomes"][0].update(serves_goals=["Goal-001"]),
+            "schema.invalid_goal_id",
+        ),
+        (
+            lambda data: data["course"].update(goal_exclusions=["goal-001"]),
+            "schema.invalid_type",
+        ),
+        (
+            lambda data: data["course"].update(
+                goal_exclusions=[{"goal_id": "goal-001"}]
+            ),
+            "schema.missing_field",
+        ),
+        (
+            lambda data: data["course"].update(
+                goal_exclusions=[
+                    {"goal_id": "not-a-goal", "reason": "Synthetic reason."}
+                ]
+            ),
+            "schema.invalid_goal_id",
+        ),
+        (
+            lambda data: data["course"].update(
+                goal_exclusions=[
+                    {
+                        "goal_id": "goal-001",
+                        "reason": "Synthetic reason.",
+                        "goal_text": "Must remain private and unsupported.",
+                    }
+                ]
+            ),
+            "schema.unknown_field",
+        ),
+        (
+            lambda data: data["course"].update(
+                goal_exclusions=[{"goal_id": "goal-001", "reason": "  "}]
+            ),
+            "content.empty",
+        ),
+        (
+            lambda data: data["course"].update(
+                goal_exclusions=[
+                    {"goal_id": "goal-001", "reason": "Synthetic <b>private</b>."}
+                ]
+            ),
+            "content.raw_html",
+        ),
+    ],
+)
+def test_schema_1_1_rejects_invalid_goal_annotation_shapes(mutate, expected) -> None:
+    data = fixture_data()
+    data["schema_version"] = "1.1"
+    mutate(data)
+
+    assert expected in codes(parse_data(data))
+
+
+def test_schema_1_1_leaves_duplicate_and_dangling_goal_ids_for_later_rules() -> None:
+    data = fixture_data()
+    data["schema_version"] = "1.1"
+    data["outcomes"][0]["serves_goals"] = ["goal-999", "goal-999"]
+    data["modules"][0]["serves_goals"] = ["goal-999"]
+    data["course"]["goal_exclusions"] = [
+        {"goal_id": "goal-999", "reason": "Synthetic downstream validation case."},
+        {"goal_id": "goal-999", "reason": "Synthetic duplicate exclusion case."},
+    ]
+
+    result = parse_data(data)
+
+    assert result.ok
+    assert normalize_guide(result).outcomes[0].serves_goals == (
+        "goal-999",
+        "goal-999",
+    )
+
+
+@pytest.mark.parametrize("goal_id", [" goal-001", "goal-001 ", "goal-001\n"])
+def test_schema_1_1_rejects_goal_ids_with_authored_whitespace(goal_id: str) -> None:
+    serves_data = fixture_data()
+    serves_data["schema_version"] = "1.1"
+    serves_data["outcomes"][0]["serves_goals"] = [goal_id]
+    exclusion_data = fixture_data()
+    exclusion_data["schema_version"] = "1.1"
+    exclusion_data["course"]["goal_exclusions"] = [
+        {"goal_id": goal_id, "reason": "Synthetic reason."}
+    ]
+
+    assert "schema.invalid_goal_id" in codes(parse_data(serves_data))
+    assert "schema.invalid_goal_id" in codes(parse_data(exclusion_data))
+
+
+@pytest.mark.parametrize("goal_id", ["goal-999", "goal-1000"])
+def test_schema_1_1_accepts_unbounded_positive_positional_goal_ids(
+    goal_id: str,
+) -> None:
+    data = fixture_data()
+    data["schema_version"] = "1.1"
+    data["outcomes"][0]["serves_goals"] = [goal_id]
+    data["course"]["goal_exclusions"] = [
+        {"goal_id": goal_id, "reason": "Synthetic reason."}
+    ]
+
+    result = parse_data(data)
+
+    assert result.ok
+
+
+@pytest.mark.parametrize("goal_id", ["goal-0001", "goal-0999"])
+def test_schema_1_1_rejects_over_padded_goal_id_aliases(goal_id: str) -> None:
+    serves_data = fixture_data()
+    serves_data["schema_version"] = "1.1"
+    serves_data["outcomes"][0]["serves_goals"] = [goal_id]
+    exclusion_data = fixture_data()
+    exclusion_data["schema_version"] = "1.1"
+    exclusion_data["course"]["goal_exclusions"] = [
+        {"goal_id": goal_id, "reason": "Synthetic reason."}
+    ]
+
+    serves_codes = codes(parse_data(serves_data))
+    exclusion_codes = codes(parse_data(exclusion_data))
+
+    assert "schema.invalid_goal_id" in serves_codes
+    assert "schema.invalid_goal_id" in exclusion_codes

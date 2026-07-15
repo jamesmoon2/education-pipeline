@@ -7,6 +7,12 @@ from typing import TypeAlias
 
 
 @dataclass(frozen=True)
+class GoalExclusion:
+    goal_id: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class Course:
     id: str
     title: str
@@ -17,12 +23,14 @@ class Course:
     difficulty: str
     subtitle: str | None = None
     learner_summary: str | None = None
+    goal_exclusions: tuple[GoalExclusion, ...] = ()
 
 
 @dataclass(frozen=True)
 class Outcome:
     id: str
     text: str
+    serves_goals: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -133,6 +141,7 @@ class Module:
     outcome_ids: tuple[str, ...]
     estimated_minutes: int
     sections: tuple[Section, ...]
+    serves_goals: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

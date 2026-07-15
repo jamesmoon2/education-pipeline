@@ -12,6 +12,7 @@ from .model import (
     Callout,
     Choice,
     Course,
+    GoalExclusion,
     GlossaryEntry,
     Guide,
     KnowledgeCheck,
@@ -28,6 +29,7 @@ from .model import (
 )
 
 ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+GOAL_ID_RE = re.compile(r"^goal-(?:00[1-9]|0[1-9][0-9]|[1-9][0-9]{2,})\Z")
 LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")
 LINK_RE = re.compile(r"(?<!!)\[[^\]\n]+\]\(([^)\s]+)(?:\s+[\"'][^\"']*[\"'])?\)")
 RAW_HTML_RE = re.compile(r"</?[A-Za-z][^>]*>")
@@ -200,15 +202,17 @@ def parse_guide(text: str | bytes) -> ParseResult:
     )
     if root is None:
         return ParseResult(None, tuple(checker.errors))
-    if root.get("schema_version") != "1.0":
+    schema_version = root.get("schema_version")
+    if not isinstance(schema_version, str) or schema_version not in {"1.0", "1.1"}:
         checker.error(
             "schema.unsupported_version",
             "/schema_version",
-            "supported schema version is exactly '1.0'",
+            "supported schema versions are exactly '1.0' and '1.1'",
         )
-    _check_course(checker, root.get("course"), "/course")
-    _check_outcomes(checker, root.get("outcomes"), "/outcomes")
-    _check_modules(checker, root.get("modules"), "/modules")
+    annotations_allowed = schema_version == "1.1"
+    _check_course(checker, root.get("course"), "/course", annotations_allowed)
+    _check_outcomes(checker, root.get("outcomes"), "/outcomes", annotations_allowed)
+    _check_modules(checker, root.get("modules"), "/modules", annotations_allowed)
     _check_glossary(checker, root.get("glossary"), "/glossary")
     _check_sources(checker, root.get("sources"), "/sources")
     _check_references_and_coverage(checker, root)
@@ -228,7 +232,7 @@ def normalize_guide(parsed: ParseResult | Mapping[str, Any]) -> Guide:
         data = reparsed.parsed
     course = data["course"]
     return Guide(
-        schema_version="1.0",
+        schema_version=data["schema_version"],
         course=Course(
             **{
                 key: course.get(key)
@@ -243,9 +247,19 @@ def normalize_guide(parsed: ParseResult | Mapping[str, Any]) -> Guide:
                     "subtitle",
                     "learner_summary",
                 )
-            }
+            },
+            goal_exclusions=tuple(
+                GoalExclusion(**item) for item in course.get("goal_exclusions", ())
+            ),
         ),
-        outcomes=tuple(Outcome(**item) for item in data["outcomes"]),
+        outcomes=tuple(
+            Outcome(
+                id=item["id"],
+                text=item["text"],
+                serves_goals=tuple(item.get("serves_goals", ())),
+            )
+            for item in data["outcomes"]
+        ),
         modules=tuple(_normalize_module(item) for item in data["modules"]),
         glossary=tuple(GlossaryEntry(**item) for item in data["glossary"]),
         sources=tuple(
@@ -262,7 +276,9 @@ def normalize_guide(parsed: ParseResult | Mapping[str, Any]) -> Guide:
     )
 
 
-def _check_course(c: _Checker, value: Any, path: str) -> None:
+def _check_course(
+    c: _Checker, value: Any, path: str, annotations_allowed: bool
+) -> None:
     required = {
         "id",
         "title",
@@ -272,7 +288,10 @@ def _check_course(c: _Checker, value: Any, path: str) -> None:
         "estimated_minutes",
         "difficulty",
     }
-    obj = c.obj(value, path, required, {"subtitle", "learner_summary"})
+    optional = {"subtitle", "learner_summary"}
+    if annotations_allowed:
+        optional.add("goal_exclusions")
+    obj = c.obj(value, path, required, optional)
     if obj is None:
         return
     c.identifier(obj.get("id"), f"{path}/id")
@@ -298,29 +317,40 @@ def _check_course(c: _Checker, value: Any, path: str) -> None:
             f"{path}/difficulty",
             "must be introductory, intermediate, advanced, or mixed",
         )
+    if "goal_exclusions" in obj and annotations_allowed:
+        _check_goal_exclusions(c, obj["goal_exclusions"], f"{path}/goal_exclusions")
 
 
-def _check_outcomes(c: _Checker, value: Any, path: str) -> None:
+def _check_outcomes(
+    c: _Checker, value: Any, path: str, annotations_allowed: bool
+) -> None:
     items = c.array(value, path, 1, 20)
     if items is None:
         return
     for i, value in enumerate(items):
-        item = c.obj(value, f"{path}/{i}", {"id", "text"})
+        optional = {"serves_goals"} if annotations_allowed else set()
+        item = c.obj(value, f"{path}/{i}", {"id", "text"}, optional)
         if item:
             c.identifier(item.get("id"), f"{path}/{i}/id")
             c.text(item.get("text"), f"{path}/{i}/text")
+            if "serves_goals" in item and annotations_allowed:
+                _goal_refs(c, item["serves_goals"], f"{path}/{i}/serves_goals")
 
 
-def _check_modules(c: _Checker, value: Any, path: str) -> None:
+def _check_modules(
+    c: _Checker, value: Any, path: str, annotations_allowed: bool
+) -> None:
     modules = c.array(value, path, 1)
     if modules is None:
         return
     for i, value in enumerate(modules):
         p = f"{path}/{i}"
+        optional = {"serves_goals"} if annotations_allowed else set()
         module = c.obj(
             value,
             p,
             {"id", "title", "summary", "outcome_ids", "estimated_minutes", "sections"},
+            optional,
         )
         if not module:
             continue
@@ -328,6 +358,8 @@ def _check_modules(c: _Checker, value: Any, path: str) -> None:
         c.text(module.get("title"), f"{p}/title")
         c.text(module.get("summary"), f"{p}/summary", markdown=True)
         _refs(c, module.get("outcome_ids"), f"{p}/outcome_ids", "outcome", 1)
+        if "serves_goals" in module and annotations_allowed:
+            _goal_refs(c, module["serves_goals"], f"{p}/serves_goals")
         _integer(c, module.get("estimated_minutes"), f"{p}/estimated_minutes", 1, 1_000)
         sections = c.array(module.get("sections"), f"{p}/sections", 1)
         if sections is None:
@@ -573,6 +605,37 @@ def _refs(c: _Checker, value: Any, path: str, kind: str, minimum: int = 0) -> No
         )
 
 
+def _goal_refs(c: _Checker, value: Any, path: str) -> None:
+    values = c.array(value, path)
+    if values is None:
+        return
+    for i, value in enumerate(values):
+        _check_goal_id(c, value, f"{path}/{i}")
+
+
+def _check_goal_id(c: _Checker, value: Any, path: str) -> None:
+    goal_id = c.text(value, path)
+    if goal_id is not None and not GOAL_ID_RE.fullmatch(value):
+        c.error(
+            "schema.invalid_goal_id",
+            path,
+            "must be an exact positive positional ID like 'goal-001'",
+        )
+
+
+def _check_goal_exclusions(c: _Checker, value: Any, path: str) -> None:
+    exclusions = c.array(value, path)
+    if exclusions is None:
+        return
+    for i, value in enumerate(exclusions):
+        item_path = f"{path}/{i}"
+        item = c.obj(value, item_path, {"goal_id", "reason"})
+        if item is None:
+            continue
+        _check_goal_id(c, item.get("goal_id"), f"{item_path}/goal_id")
+        c.text(item.get("reason"), f"{item_path}/reason")
+
+
 def _integer(c: _Checker, value: Any, path: str, minimum: int, maximum: int) -> None:
     if isinstance(value, bool) or not isinstance(value, int):
         c.error("schema.invalid_type", path, "must be an integer")
@@ -679,6 +742,7 @@ def _normalize_module(item: Mapping[str, Any]) -> Module:
         summary=item["summary"],
         outcome_ids=tuple(item["outcome_ids"]),
         estimated_minutes=item["estimated_minutes"],
+        serves_goals=tuple(item.get("serves_goals", ())),
         sections=tuple(
             Section(
                 id=s["id"],
