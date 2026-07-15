@@ -5,8 +5,14 @@ import json
 from pathlib import Path
 
 from education_pipeline.guides import normalize_guide, parse_guide
+from education_pipeline.guides.model import GoalExclusion
 from education_pipeline.guides.reports import canonical_report_bytes
-from education_pipeline.guides.validation import RULES, ValidationContext, validate_guide
+from education_pipeline.guides.validation import (
+    RULES,
+    PersonalizationValidationContext,
+    ValidationContext,
+    validate_guide,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.guide.json"
 
@@ -150,6 +156,218 @@ def test_every_rule_declares_a_responsible_stage():
     assert RULES["outcome.untaught"].stage == "outline"
     assert RULES["a11y.heading_order"].stage == "repair"
     assert RULES["privacy.exact_private_value"].stage == "draft"
+
+
+def test_personalization_rule_catalog_has_frozen_severities() -> None:
+    expected = {
+        "personalization.goal_uncovered": ("warning", False, True),
+        "personalization.no_annotations": ("warning", False, True),
+        "personalization.dangling_goal_ref": ("error", True, False),
+        "personalization.duplicate_goal_ref": ("error", True, False),
+        "personalization.unexpected_annotations": ("warning", False, True),
+        "personalization.no_profile": ("info", False, False),
+    }
+    assert {
+        rule_id: (RULES[rule_id].severity, RULES[rule_id].blocking, RULES[rule_id].waivable)
+        for rule_id in expected
+    } == expected
+    assert all(RULES[rule_id].stage == "draft" for rule_id in expected)
+
+
+def test_profile_goals_without_annotations_are_uncovered_and_warn_once() -> None:
+    report = validate_guide(
+        guide(),
+        personalization_context=PersonalizationValidationContext(
+            profile_present=True,
+            authoritative_goal_ids=("goal-001", "goal-002"),
+        ),
+    )
+    rule_ids = [finding.rule_id for finding in report.findings]
+    assert rule_ids.count("personalization.no_annotations") == 1
+    assert rule_ids.count("personalization.goal_uncovered") == 2
+
+
+def test_goal_service_and_nonempty_exclusion_clear_uncovered() -> None:
+    original = guide()
+    changed = replace(
+        original,
+        schema_version="1.1",
+        outcomes=(replace(original.outcomes[0], serves_goals=("goal-001",)),)
+        + original.outcomes[1:],
+        course=replace(
+            original.course,
+            goal_exclusions=(GoalExclusion("goal-002", "Synthetic deferral."),),
+        ),
+    )
+    report = validate_guide(
+        changed,
+        personalization_context=PersonalizationValidationContext(
+            profile_present=True,
+            authoritative_goal_ids=("goal-001", "goal-002"),
+        ),
+    )
+    assert not {
+        "personalization.goal_uncovered",
+        "personalization.no_annotations",
+        "personalization.duplicate_goal_ref",
+    } & {finding.rule_id for finding in report.findings}
+
+    empty_exclusion = replace(
+        original,
+        schema_version="1.1",
+        course=replace(
+            original.course,
+            goal_exclusions=(GoalExclusion("goal-001", ""),),
+        ),
+    )
+    empty_report = validate_guide(
+        empty_exclusion,
+        personalization_context=PersonalizationValidationContext(
+            profile_present=True,
+            authoritative_goal_ids=("goal-001",),
+        ),
+    )
+    assert "personalization.goal_uncovered" in {
+        finding.rule_id for finding in empty_report.findings
+    }
+
+
+def test_exact_duplicate_semantics_allow_cross_element_service_only() -> None:
+    original = guide()
+    legal = replace(
+        original,
+        schema_version="1.1",
+        outcomes=(replace(original.outcomes[0], serves_goals=("goal-001",)),)
+        + original.outcomes[1:],
+        modules=(replace(original.modules[0], serves_goals=("goal-001",)),)
+        + original.modules[1:],
+    )
+    context = PersonalizationValidationContext(
+        profile_present=True,
+        authoritative_goal_ids=("goal-001",),
+    )
+    assert "personalization.duplicate_goal_ref" not in {
+        finding.rule_id for finding in validate_guide(legal, personalization_context=context).findings
+    }
+
+    duplicate_field = replace(
+        legal,
+        modules=(replace(legal.modules[0], serves_goals=("goal-001", "goal-001")),)
+        + legal.modules[1:],
+    )
+    duplicate_exclusion = replace(
+        legal,
+        course=replace(
+            legal.course,
+            goal_exclusions=(
+                GoalExclusion("goal-001", "First synthetic reason."),
+                GoalExclusion("goal-001", "Second synthetic reason."),
+            ),
+        ),
+    )
+    for candidate in (duplicate_field, duplicate_exclusion):
+        finding = next(
+            finding
+            for finding in validate_guide(candidate, personalization_context=context).findings
+            if finding.rule_id == "personalization.duplicate_goal_ref"
+        )
+        assert (finding.severity, finding.blocking, finding.waivable) == (
+            "error",
+            True,
+            False,
+        )
+
+
+def test_dangling_and_unprofiled_annotations_use_safe_findings() -> None:
+    original = guide()
+    changed = replace(
+        original,
+        schema_version="1.1",
+        modules=(replace(original.modules[0], serves_goals=("goal-999",)),)
+        + original.modules[1:],
+    )
+    profiled = validate_guide(
+        changed,
+        personalization_context=PersonalizationValidationContext(
+            profile_present=True,
+            authoritative_goal_ids=("goal-001",),
+        ),
+    )
+    assert "personalization.dangling_goal_ref" in {
+        finding.rule_id for finding in profiled.findings
+    }
+    unprofiled = validate_guide(
+        changed,
+        personalization_context=PersonalizationValidationContext(profile_present=False),
+    )
+    assert {
+        "personalization.no_profile",
+        "personalization.unexpected_annotations",
+    } <= {finding.rule_id for finding in unprofiled.findings}
+
+
+def test_annotation_finding_paths_are_exact_json_pointers() -> None:
+    original = guide()
+    changed = replace(
+        original,
+        schema_version="1.1",
+        outcomes=(replace(original.outcomes[0], serves_goals=("goal-999",)),)
+        + original.outcomes[1:],
+        modules=(
+            replace(
+                original.modules[0],
+                serves_goals=("goal-001", "goal-001"),
+            ),
+        )
+        + original.modules[1:],
+    )
+    report = validate_guide(
+        changed,
+        personalization_context=PersonalizationValidationContext(
+            profile_present=True,
+            authoritative_goal_ids=("goal-001",),
+        ),
+    )
+    paths = {
+        (finding.rule_id, finding.path)
+        for finding in report.findings
+        if finding.rule_id in {
+            "personalization.dangling_goal_ref",
+            "personalization.duplicate_goal_ref",
+        }
+    }
+    assert (
+        "personalization.dangling_goal_ref",
+        "/outcomes/0/serves_goals",
+    ) in paths
+    assert (
+        "personalization.duplicate_goal_ref",
+        "/modules/0/serves_goals",
+    ) in paths
+
+
+def test_private_exclusion_reason_is_not_scanned_as_public_guide_text() -> None:
+    original = guide()
+    private_reason = "Synthetic Private Exclusion Reason"
+    changed = replace(
+        original,
+        schema_version="1.1",
+        course=replace(
+            original.course,
+            goal_exclusions=(GoalExclusion("goal-001", private_reason),),
+        ),
+    )
+    report = validate_guide(
+        changed,
+        private_values=(private_reason,),
+        personalization_context=PersonalizationValidationContext(
+            profile_present=True,
+            authoritative_goal_ids=("goal-001",),
+        ),
+    )
+    assert "privacy.exact_private_value" not in {
+        finding.rule_id for finding in report.findings
+    }
 
 
 def test_findings_carry_stage_and_report_schema_bumped():

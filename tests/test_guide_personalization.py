@@ -385,6 +385,20 @@ def test_safe_canonical_bytes_and_hash_bind_exact_safe_finding_ids() -> None:
     ) == hashlib.sha256(second_bytes).hexdigest()
 
 
+def test_trace_integrity_rule_id_is_safe_projectable() -> None:
+    trace = build_personalization_trace(
+        guide(),
+        profile(learning_goals=("Private synthetic goal",)),
+        guide_sha256="a" * 64,
+        profile_snapshot_sha256="b" * 64,
+    )
+    projected = safe_personalization_trace_projection(
+        trace,
+        safe_finding_ids=("personalization.trace_integrity",),
+    )
+    assert projected["safe_finding_ids"] == ["personalization.trace_integrity"]
+
+
 def test_trace_freshness_requires_exact_rebuilt_canonical_content() -> None:
     trace = build_personalization_trace(
         guide(),

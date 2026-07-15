@@ -13,6 +13,8 @@ from education_pipeline.privacy import normalize_private_value, private_value_fi
 from .canonical import guide_sha256
 from .model import Callout, Guide, KnowledgeCheck, RichText, Scenario, WorkedReveal
 from .parse import ParseDiagnostic, normalize_guide, parse_guide
+from .personalization import AuthoritativeGoal, index_personalization_annotations
+from .projection import public_guide_projection
 from .reports import Finding, ValidationReport
 
 #: Raw-source validation size cap, applied before any parsing. Shared with
@@ -86,6 +88,12 @@ RULES = {
     "scenario.invalid_quality_set": Rule("blocker", True, False, "Configure exactly one best choice.", "draft"),
     "worked_reveal.too_few_steps": Rule("error", True, True, "Provide at least two reveal steps.", "draft"),
     "personalization.no_visible_connection": Rule("warning", False, True, "Add an appropriate learner-facing connection.", "draft"),
+    "personalization.goal_uncovered": Rule("warning", False, True, "Serve the goal from a module or outcome, or add a valid exclusion.", "draft"),
+    "personalization.no_annotations": Rule("warning", False, True, "Add opaque goal references or valid exclusions for the attached profile goals.", "draft"),
+    "personalization.dangling_goal_ref": Rule("error", True, False, "Use only authoritative goal ids from the attached profile snapshot.", "draft"),
+    "personalization.duplicate_goal_ref": Rule("error", True, False, "Remove the repeated goal id from this annotation.", "draft"),
+    "personalization.unexpected_annotations": Rule("warning", False, True, "Remove personalization annotations or attach the intended profile snapshot.", "draft"),
+    "personalization.trace_integrity": Rule("error", True, False, "Correct the source annotations and rebuild the personalization trace.", "draft"),
     "personalization.no_profile": Rule("info", False, False, "Attach a learner profile to enable personalization checks.", "draft"),
     "time.module_total_mismatch": Rule("warning", False, True, "Align course and module time estimates.", "outline"),
     "content.empty": Rule("blocker", True, False, "Provide non-empty learner content.", "draft"),
@@ -291,6 +299,99 @@ def _text_fields(value: object, path: str = "") -> Iterable[tuple[str, str]]:
         yield path, value
 
 
+def _guide_has_personalization_annotations(guide: Guide) -> bool:
+    return bool(
+        guide.course.goal_exclusions
+        or any(outcome.serves_goals for outcome in guide.outcomes)
+        or any(module.serves_goals for module in guide.modules)
+    )
+
+
+def _personalization_findings(
+    guide: Guide,
+    context: PersonalizationValidationContext,
+) -> tuple[Finding, ...]:
+    annotations_present = _guide_has_personalization_annotations(guide)
+    if not context.profile_present:
+        findings = [
+            _finding(
+                "personalization.no_profile",
+                "",
+                "No learner profile snapshot is attached; personalization checks were skipped.",
+            )
+        ]
+        if annotations_present:
+            findings.append(
+                _finding(
+                    "personalization.unexpected_annotations",
+                    "",
+                    "Guide source contains personalization annotations without an attached profile snapshot.",
+                    "unprofiled-annotations",
+                )
+            )
+        return tuple(findings)
+
+    goals = tuple(
+        AuthoritativeGoal(goal_id=goal_id, goal_text="")
+        for goal_id in context.authoritative_goal_ids
+    )
+    indexed = index_personalization_annotations(guide, goals)
+    findings: list[Finding] = []
+    if goals and not annotations_present:
+        findings.append(
+            _finding(
+                "personalization.no_annotations",
+                "",
+                "The attached profile declares goals but the guide source has no goal annotations.",
+                "profile-goals",
+            )
+        )
+    for violation in indexed.violations:
+        rule_id = f"personalization.{violation.code}"
+        if violation.element_kind == "exclusion":
+            path = "/course/goal_exclusions"
+        elif violation.element_kind == "outcome":
+            index = next(
+                index
+                for index, outcome in enumerate(guide.outcomes)
+                if outcome.id == violation.element_id
+            )
+            path = f"/outcomes/{index}/serves_goals"
+        else:
+            index = next(
+                index
+                for index, module in enumerate(guide.modules)
+                if module.id == violation.element_id
+            )
+            path = f"/modules/{index}/serves_goals"
+        findings.append(
+            _finding(
+                rule_id,
+                path,
+                "A personalization annotation contains an invalid goal reference.",
+                f"{violation.element_kind}-{violation.element_id}-{violation.goal_id}",
+                (violation.element_id, violation.goal_id),
+            )
+        )
+    for goal in indexed.goals:
+        covered = bool(
+            goal.serving_module_ids
+            or goal.serving_outcome_ids
+            or any(exclusion.reason.strip() for exclusion in goal.exclusions)
+        )
+        if not covered:
+            findings.append(
+                _finding(
+                    "personalization.goal_uncovered",
+                    "",
+                    "An authoritative learner goal is not served or validly excluded.",
+                    goal.goal_id,
+                    (goal.goal_id,),
+                )
+            )
+    return tuple(findings)
+
+
 def validation_guide_sha256(value: Guide | str | bytes) -> str:
     """Hash the exact fail-closed guide projection used by validation."""
 
@@ -330,7 +431,7 @@ def validate_guide(
         for item in normalized_private
         if len(item) >= 5 and item not in _GENERIC_PRIVATE
     )
-    personalization_findings = ()
+    personalization_findings: tuple[Finding, ...] = ()
     if personalization_context is not None and not personalization_context.profile_present:
         personalization_findings = (
             _finding(
@@ -394,10 +495,16 @@ def validate_guide(
         guide = _sanitize_guide_value(normalized_guide)
         assert isinstance(guide, Guide)
 
+    if personalization_context is not None:
+        personalization_findings = _personalization_findings(
+            guide,
+            personalization_context,
+        )
     findings: list[Finding] = list(personalization_findings)
     if invalid_scalar_replaced:
         findings.append(_invalid_scalar_finding())
-    texts = tuple(_text_fields(guide))
+    checked_guide = public_guide_projection(guide)
+    texts = tuple(_text_fields(checked_guide))
     denylist = []
     for supplied in supplied_private:
         denylist.append((supplied, private_value_fingerprint(supplied)))
@@ -422,11 +529,11 @@ def validate_guide(
             if re.search(r"\b(?:red|green|blue|yellow)\s+(?:button|choice|text|area)\b", text, re.I):
                 findings.append(_finding("a11y.color_only_instruction", path, "Instruction may rely on color alone."))
 
-    if sum(module.estimated_minutes for module in guide.modules) != guide.course.estimated_minutes:
-        findings.append(_finding("time.module_total_mismatch", "/course/estimated_minutes", "Course duration does not equal the sum of module durations.", guide.course.id, (guide.course.id,)))
-    if not guide.course.learner_summary:
-        findings.append(_finding("personalization.no_visible_connection", "/course", "Guide has no explicit learner-facing personalization summary.", guide.course.id, (guide.course.id,)))
-    for mi, module in enumerate(guide.modules):
+    if sum(module.estimated_minutes for module in checked_guide.modules) != checked_guide.course.estimated_minutes:
+        findings.append(_finding("time.module_total_mismatch", "/course/estimated_minutes", "Course duration does not equal the sum of module durations.", checked_guide.course.id, (checked_guide.course.id,)))
+    if not checked_guide.course.learner_summary:
+        findings.append(_finding("personalization.no_visible_connection", "/course", "Guide has no explicit learner-facing personalization summary.", checked_guide.course.id, (checked_guide.course.id,)))
+    for mi, module in enumerate(checked_guide.modules):
         for si, section in enumerate(module.sections):
             for bi, block in enumerate(section.blocks):
                 path = f"/modules/{mi}/sections/{si}/blocks/{bi}"

@@ -37,6 +37,7 @@ SAFE_PERSONALIZATION_FINDING_IDS = (
     "personalization.duplicate_goal_ref",
     "personalization.unexpected_annotations",
     "personalization.no_profile",
+    "personalization.trace_integrity",
 )
 _SAFE_PERSONALIZATION_FINDING_ID_SET = frozenset(SAFE_PERSONALIZATION_FINDING_IDS)
 _TRACE_KEYS = {

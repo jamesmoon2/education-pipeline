@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar
@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 import threading
+import tomllib
 
 from education_pipeline.config import ConfigError
 from education_pipeline.export import (
@@ -19,6 +20,7 @@ from education_pipeline.export import (
 )
 from education_pipeline.guides import (
     ContractError,
+    Finding,
     Guide,
     MAX_GUIDE_SOURCE_BYTES,
     REPORT_SCHEMA_VERSION,
@@ -46,7 +48,17 @@ from education_pipeline.guides.validation import (
     PersonalizationValidationContext,
     validation_guide_sha256,
 )
+from education_pipeline.guides.personalization import (
+    PersonalizationTraceError,
+    PersonalizationTrace,
+    authoritative_goals,
+    build_personalization_trace,
+    canonical_personalization_trace_bytes,
+    personalization_trace_is_fresh,
+)
+from education_pipeline.guides.projection import public_guide_projection
 from education_pipeline.privacy import profile_private_values
+from education_pipeline.profiles import LearnerProfile, parse_learner_profile
 from education_pipeline.prompts import (
     PromptArtifact,
     SpecPromptInput,
@@ -110,6 +122,10 @@ class ContentContract:
     def interactive_guide_v1(cls) -> ContentContract:
         return cls(kind="interactive_guide", schema_version="1.0")
 
+    @classmethod
+    def interactive_guide_v1_1(cls) -> ContentContract:
+        return cls(kind="interactive_guide", schema_version="1.1")
+
     def to_manifest(self) -> dict[str, str]:
         value = {"kind": self.kind}
         if self.schema_version is not None:
@@ -140,6 +156,20 @@ class PromptFile:
     response_path: Path
     stub_path: Path
     artifact: PromptArtifact
+
+
+@dataclass(frozen=True)
+class _ValidationArtifacts:
+    safe_id: str
+    source_stage: str
+    source_path: Path
+    report_path: Path
+    report: ValidationReport
+    trace: PersonalizationTrace | None
+    trace_bytes: bytes | None
+    profile_snapshot_path: Path | None
+    profile_snapshot_sha256: str | None
+    source_sha256: str
 
 
 @dataclass(frozen=True)
@@ -282,7 +312,11 @@ class RunStore:
             response_path=run / "responses" / f"{safe_stage}{response_suffix}",
             stub_path=run / "responses" / f"{safe_stage}{stub_suffix}",
             approved_path=run / "approved" / f"{safe_stage}{suffix}",
-            content_type=GUIDE_V1_CONTENT_TYPE if is_guide_json else MARKDOWN_CONTENT_TYPE,
+            content_type=(
+                _guide_content_type(contract.schema_version)
+                if is_guide_json
+                else MARKDOWN_CONTENT_TYPE
+            ),
         )
 
     def content_contract(self, topic_id: str) -> ContentContract:
@@ -336,8 +370,9 @@ class RunStore:
     ) -> Path:
         """Create the run directory tree and initialize a manifest if needed.
 
-        Newly created manifests default to interactive_guide schema ``1.0`` when
-        ``content_contract`` is omitted. Pass
+        Newly created manifests default to interactive-guide schema ``1.1``
+        when an attached profile snapshot already exists, otherwise ``1.0``,
+        when ``content_contract`` is omitted. Pass
         :meth:`ContentContract.legacy_markdown` for an explicit legacy Markdown
         run. When a manifest already exists and ``content_contract`` is omitted,
         the existing run is left unchanged (including pre-existing manifests
@@ -356,7 +391,11 @@ class RunStore:
                 requested = (
                     content_contract
                     if content_contract is not None
-                    else ContentContract.interactive_guide_v1()
+                    else (
+                        ContentContract.interactive_guide_v1_1()
+                        if ProfileStore(self.root).topic_profile_snapshot_path(run.name).is_file()
+                        else ContentContract.interactive_guide_v1()
+                    )
                 )
                 _validate_content_contract(requested)
                 manifest = {
@@ -542,6 +581,26 @@ class RunStore:
                 ),
             )
 
+        draft_report = json.loads(
+            self.draft_report_path(topic_id).read_text(encoding="utf-8")
+        )
+        trace_integrity_blocking = any(
+            isinstance(finding, dict)
+            and finding.get("rule_id") == "personalization.trace_integrity"
+            and finding.get("blocking") is True
+            for finding in draft_report.get("findings", [])
+        )
+        if trace_integrity_blocking:
+            return NextAction(
+                topic_id=topic_id,
+                stage="draft",
+                action="resolve_findings",
+                detail=(
+                    f"The personalization trace for {topic_id!r} could not be rebuilt; "
+                    "correct and revalidate the draft before QA."
+                ),
+            )
+
         for stage_name in ("qa", "repair"):
             status = by_stage[stage_name]
             if status.approved and status.stale:
@@ -556,6 +615,22 @@ class RunStore:
                 stage="repair",
                 action="validate",
                 detail=f"Run final validation for {topic_id!r}.",
+            )
+
+        profile = self._load_attached_profile(topic_id)
+        if (
+            profile is not None
+            and profile.learning_goals
+            and self.personalization_trace_state(topic_id, phase="final") != "current"
+        ):
+            return NextAction(
+                topic_id=topic_id,
+                stage="repair",
+                action="resolve_findings",
+                detail=(
+                    f"The personalization trace for {topic_id!r} is missing or stale; "
+                    "run final validation again."
+                ),
             )
 
         if finalized:
@@ -916,6 +991,9 @@ class RunStore:
     def final_report_path(self, topic_id: str) -> Path:
         return self.run_dir(topic_id) / "reports" / "final-validation.json"
 
+    def personalization_trace_path(self, topic_id: str) -> Path:
+        return self.run_dir(topic_id) / "reports" / "personalization-trace.json"
+
     def waivers_path(self, topic_id: str) -> Path:
         return self.run_dir(topic_id) / "reports" / "validation-waivers.json"
 
@@ -983,6 +1061,7 @@ class RunStore:
             raise ConfigError(f"run {topic_id!r} is not currently finalized")
         if self.report_state(topic_id, "final") != "current":
             raise ConfigError("final validation is missing or stale; revalidate before export")
+        self._require_current_personalization_trace(topic_id)
 
         source_text = final_json.read_text(encoding="utf-8")
         waiver_set = self._load_waiver_set(topic_id)
@@ -1020,6 +1099,7 @@ class RunStore:
             runtime_css_sha256=runtime_css_sha256,
             runtime_js_sha256=runtime_js_sha256,
             runtime_version=assets.version,
+            public_guide_sha256=guide_sha256(public_guide_projection(guide)),
         )
         report_path = self.export_report_path(topic_id)
         _write_bytes_atomic(report_path, sidecar_bytes)
@@ -1166,6 +1246,7 @@ class RunStore:
                 f"final validation is missing or stale for {topic_id!r}; "
                 "run final validation before finalizing"
             )
+        self._require_current_personalization_trace(topic_id)
 
         report, _, _ = self._validated_final(topic_id, source_text)
         waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
@@ -1260,12 +1341,77 @@ class RunStore:
         if not isinstance(recorded, str):
             return "stale"
         source_text = source_path.read_text(encoding="utf-8")
-        if recorded == _guide_source_sha(source_text):
-            return "current"
-        return "stale"
+        if recorded != _guide_source_sha(source_text):
+            return "stale"
+
+        report_sha256 = hashlib.sha256(report_path.read_bytes()).hexdigest()
+        validation_event = next(
+            (
+                event
+                for event in reversed(self.read_manifest(safe_id).get("events", []))
+                if event.get("action") == "validated"
+                and event.get("phase") == phase
+                and event.get("report_file_sha256") == report_sha256
+            ),
+            None,
+        )
+        if validation_event is None:
+            return "stale"
+        snapshot_path = ProfileStore(self.root).topic_profile_snapshot_path(safe_id)
+        current_profile_sha256 = (
+            hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+            if snapshot_path.is_file()
+            else None
+        )
+        if validation_event.get("profile_snapshot_file_sha256") != current_profile_sha256:
+            return "stale"
+        return "current"
+
+    def personalization_trace_state(self, topic_id: str, *, phase: str = "final") -> str:
+        """Return ``missing`` | ``current`` | ``stale`` for the shared local trace."""
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        if phase not in {"draft", "final"}:
+            raise ConfigError(f"phase must be 'draft' or 'final'; got {phase!r}")
+        trace_path = self.personalization_trace_path(safe_id)
+        if not trace_path.is_file():
+            return "missing"
+        try:
+            artifacts = self._compute_phase_report(safe_id, phase)
+        except (ConfigError, OSError, UnicodeError):
+            return "stale"
+        if artifacts.trace is None:
+            return "stale"
+        try:
+            current = trace_path.read_bytes()
+        except OSError:
+            return "stale"
+        return (
+            "current"
+            if personalization_trace_is_fresh(
+                current,
+                expected_trace=artifacts.trace,
+            )
+            else "stale"
+        )
+
+    def _require_current_personalization_trace(self, topic_id: str) -> None:
+        profile = self._load_attached_profile(topic_id)
+        if profile is None or not profile.learning_goals:
+            return
+        state = self.personalization_trace_state(topic_id, phase="final")
+        if state != "current":
+            raise ConfigError(
+                f"personalization trace is {state} for {topic_id!r}; "
+                "run final validation before release"
+            )
 
     def _validated_final(
-        self, topic_id: str, source_text: str
+        self,
+        topic_id: str,
+        source_text: str,
+        *,
+        validation_inputs: tuple[tuple[str, ...], PersonalizationValidationContext] | None = None,
     ) -> tuple[ValidationReport, str | None, Guide | None]:
         """Validate final-phase content with computed static checks.
 
@@ -1277,7 +1423,11 @@ class RunStore:
         reuse the single parse instead of re-parsing the source.
         """
 
-        private_values, personalization_context = self._profile_validation_inputs(topic_id)
+        private_values, personalization_context = (
+            validation_inputs
+            if validation_inputs is not None
+            else self._profile_validation_inputs(topic_id)
+        )
         if len(source_text.encode("utf-8")) > MAX_GUIDE_SOURCE_BYTES:
             # The raw str path applies the size cap before parsing and records
             # the raw-source sha as the report digest, matching
@@ -1324,22 +1474,29 @@ class RunStore:
     ) -> tuple[tuple[str, ...], PersonalizationValidationContext]:
         """Load one snapshot for both profile presence and protected values."""
 
-        profile = self._load_attached_profile(topic_id)
+        snapshot = self._read_attached_profile_snapshot(topic_id)
+        profile = snapshot[0] if snapshot is not None else None
         return (
             profile_private_values(profile) if profile is not None else (),
-            PersonalizationValidationContext(profile_present=profile is not None),
+            PersonalizationValidationContext(
+                profile_present=profile is not None,
+                authoritative_goal_ids=tuple(
+                    goal.goal_id for goal in authoritative_goals(profile)
+                ) if profile is not None else (),
+            ),
         )
 
     def _compute_phase_report(
         self, topic_id: str, phase: str
-    ) -> tuple[str, str, Path, Path, ValidationReport]:
+    ) -> _ValidationArtifacts:
         """Shared validation core for ``validate_run``, ``gate_result``, and
         ``validate_and_gate``: read the approved phase source and compute its
         report, without writing anything.
 
-        Returns ``(safe_id, source_stage, source_path, report_path, report)``.
-        Raises ``ConfigError`` when there is no approved source for the phase
-        yet (nothing to validate).
+        Returns the report and, when construction succeeds, the exact private
+        trace derived from the same guide/profile snapshot. Raises
+        ``ConfigError`` when there is no approved source for the phase yet
+        (nothing to validate).
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
@@ -1354,21 +1511,81 @@ class RunStore:
             raise ConfigError(
                 f"approved {source_stage} response not found: {source_path}"
             )
-        source_text = source_path.read_text(encoding="utf-8")
+        source_bytes = source_path.read_bytes()
+        source_text = source_bytes.decode("utf-8")
+        snapshot = self._read_attached_profile_snapshot(safe_id)
+        profile = snapshot[0] if snapshot is not None else None
+        profile_snapshot_path = snapshot[1] if snapshot is not None else None
+        profile_snapshot_sha256 = snapshot[2] if snapshot is not None else None
+        private_values = profile_private_values(profile) if profile is not None else ()
+        personalization_context = PersonalizationValidationContext(
+            profile_present=profile is not None,
+            authoritative_goal_ids=tuple(
+                goal.goal_id for goal in authoritative_goals(profile)
+            ) if profile is not None else (),
+        )
+        guide: Guide | None = None
         if phase == "final":
-            report, _, _ = self._validated_final(safe_id, source_text)
+            report, _, guide = self._validated_final(
+                safe_id,
+                source_text,
+                validation_inputs=(private_values, personalization_context),
+            )
         else:
-            private_values, personalization_context = self._profile_validation_inputs(safe_id)
             report = validate_guide(
                 source_text,
                 phase=phase,
                 private_values=private_values,
                 personalization_context=personalization_context,
             )
+            if len(source_text.encode("utf-8")) <= MAX_GUIDE_SOURCE_BYTES:
+                parsed = parse_guide(source_text)
+                if parsed.ok:
+                    guide = normalize_guide(parsed)
         report_path = (
             self.draft_report_path(safe_id) if phase == "draft" else self.final_report_path(safe_id)
         )
-        return safe_id, source_stage, source_path, report_path, report
+        trace = None
+        trace_bytes = None
+        if profile is not None and guide is not None and profile_snapshot_sha256 is not None:
+            try:
+                trace = build_personalization_trace(
+                    guide,
+                    profile,
+                    guide_sha256=validation_guide_sha256(guide),
+                    profile_snapshot_sha256=profile_snapshot_sha256,
+                )
+                trace_bytes = canonical_personalization_trace_bytes(trace)
+            except (PersonalizationTraceError, UnicodeError, ValueError):
+                trace = None
+                trace_bytes = None
+                trace_finding = Finding(
+                    id="personalization.trace_integrity:trace",
+                    rule_id="personalization.trace_integrity",
+                    severity="error",
+                    blocking=True,
+                    waivable=False,
+                    path="",
+                    message="The personalization trace could not be constructed safely.",
+                    remediation="Correct the source annotations and rebuild the personalization trace.",
+                    stage="draft",
+                )
+                report = replace(
+                    report,
+                    findings=report.findings + (trace_finding,),
+                )
+        return _ValidationArtifacts(
+            safe_id=safe_id,
+            source_stage=source_stage,
+            source_path=source_path,
+            report_path=report_path,
+            report=report,
+            trace=trace,
+            trace_bytes=trace_bytes,
+            profile_snapshot_path=profile_snapshot_path,
+            profile_snapshot_sha256=profile_snapshot_sha256,
+            source_sha256=hashlib.sha256(source_bytes).hexdigest(),
+        )
 
     def validate_run(self, topic_id: str, phase: str) -> Path:
         """Run deterministic validation and write the phase report atomically.
@@ -1403,8 +1620,11 @@ class RunStore:
         a traceback.
         """
 
-        safe_id, _, _, _, report = self._compute_phase_report(topic_id, phase)
-        return apply_waivers(report, self._load_waiver_set(safe_id))
+        artifacts = self._compute_phase_report(topic_id, phase)
+        return apply_waivers(
+            artifacts.report,
+            self._load_waiver_set(artifacts.safe_id),
+        )
 
     def validate_and_gate(self, topic_id: str, phase: str) -> WaiverResult:
         """Validate a phase, persist the report, and return the resulting gate.
@@ -1416,19 +1636,47 @@ class RunStore:
         effect and the gate outcome from a single invocation.
         """
 
-        safe_id, source_stage, source_path, report_path, report = self._compute_phase_report(
-            topic_id, phase
+        artifacts = self._compute_phase_report(topic_id, phase)
+        self.create_run(artifacts.safe_id)
+        with self._manifest_write_lock(artifacts.safe_id):
+            _write_bytes_atomic(
+                artifacts.report_path,
+                canonical_report_bytes(artifacts.report),
+            )
+            if artifacts.trace_bytes is not None:
+                _write_bytes_atomic(
+                    self.personalization_trace_path(artifacts.safe_id),
+                    artifacts.trace_bytes,
+                )
+            event_files = {
+                "report_file": artifacts.report_path,
+                "source_file": artifacts.source_path,
+            }
+            if artifacts.profile_snapshot_path is not None:
+                event_files["profile_snapshot_file"] = artifacts.profile_snapshot_path
+            if artifacts.trace_bytes is not None:
+                event_files["personalization_trace_file"] = self.personalization_trace_path(
+                    artifacts.safe_id
+                )
+            event_extra: dict[str, object] = {
+                "phase": phase,
+                "source_file_sha256": artifacts.source_sha256,
+            }
+            if artifacts.profile_snapshot_sha256 is not None:
+                event_extra["profile_snapshot_file_sha256"] = (
+                    artifacts.profile_snapshot_sha256
+                )
+            self._append_event_locked(
+                artifacts.safe_id,
+                stage=artifacts.source_stage,
+                action="validated",
+                files=event_files,
+                extra=event_extra,
+            )
+        return apply_waivers(
+            artifacts.report,
+            self._load_waiver_set(artifacts.safe_id),
         )
-        self.create_run(safe_id)
-        _write_bytes_atomic(report_path, canonical_report_bytes(report))
-        self._append_event(
-            safe_id,
-            stage=source_stage,
-            action="validated",
-            files={"report_file": report_path, "source_file": source_path},
-            extra={"phase": phase},
-        )
-        return apply_waivers(report, self._load_waiver_set(safe_id))
 
     def write_spec_prompt(
         self,
@@ -1457,7 +1705,10 @@ class RunStore:
             profile=profile,
         )
         if self._is_guide_v1(safe_id):
-            artifact = compile_guide_v1_spec_prompt(spec_input)
+            artifact = compile_guide_v1_spec_prompt(
+                spec_input,
+                guide_schema_version=self.content_contract(safe_id).schema_version or "1.0",
+            )
         else:
             artifact = compile_spec_prompt(spec_input)
         return self._write_prompt(artifact, overwrite=overwrite)
@@ -1488,7 +1739,8 @@ class RunStore:
                     title=topic.title,
                     topic_brief=topic.brief,
                     profile=profile,
-                )
+                ),
+                guide_schema_version=self.content_contract(safe_id).schema_version or "1.0",
             )
         else:
             artifact = compile_topic_spec_prompt(topic, profile)
@@ -1513,7 +1765,12 @@ class RunStore:
         approved_spec = self.read_approved(safe_id, "spec")
         profile = self._load_attached_profile(safe_id)
         if self._is_guide_v1(safe_id):
-            artifact = compile_guide_v1_outline_prompt(topic, approved_spec, profile)
+            artifact = compile_guide_v1_outline_prompt(
+                topic,
+                approved_spec,
+                profile,
+                guide_schema_version=self.content_contract(safe_id).schema_version or "1.0",
+            )
             extra_files = {
                 "source_spec_file": self.stage_paths(safe_id, "spec").approved_path,
             }
@@ -1733,7 +1990,13 @@ class RunStore:
 
         try:
             if stage == "spec":
-                extract_spec_contract(response_text)
+                spec_contract = extract_spec_contract(response_text)
+                expected_version = self.content_contract(topic_id).schema_version
+                if spec_contract["guide_schema_version"] != expected_version:
+                    raise ContractError(
+                        "spec guide schema version conflicts with the immutable run "
+                        f"content contract: expected {expected_version!r}"
+                    )
             elif stage == "outline":
                 outline_contract = extract_outline_contract(response_text)
                 spec_contract = extract_spec_contract(self.read_approved(topic_id, "spec"))
@@ -1786,11 +2049,32 @@ class RunStore:
         _write_bytes_atomic(path, contract_bytes)
         return contract_bytes
 
-    def _load_attached_profile(self, topic_id: str):
+    def _read_attached_profile_snapshot(
+        self,
+        topic_id: str,
+    ) -> tuple[LearnerProfile, Path, str] | None:
+        """Parse and hash one exact atomic snapshot read."""
+
         snapshot_path = ProfileStore(self.root).topic_profile_snapshot_path(topic_id)
         if not snapshot_path.exists():
             return None
-        return ProfileStore(self.root).load_topic_profile_snapshot(topic_id)
+        try:
+            source_bytes = snapshot_path.read_bytes()
+            source_text = source_bytes.decode("utf-8")
+            profile = parse_learner_profile(tomllib.loads(source_text))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            raise ConfigError(
+                f"invalid attached learner profile snapshot: {snapshot_path}"
+            ) from exc
+        return (
+            profile,
+            snapshot_path,
+            hashlib.sha256(source_bytes).hexdigest(),
+        )
+
+    def _load_attached_profile(self, topic_id: str):
+        snapshot = self._read_attached_profile_snapshot(topic_id)
+        return snapshot[0] if snapshot is not None else None
 
     def load_waiver_set(self, topic_id: str) -> WaiverSet | None:
         """Load and validate this topic's on-disk waivers file, if any.
@@ -1873,7 +2157,9 @@ class RunStore:
         waiver this call just recorded.
         """
 
-        safe_id, _, _, _, report = self._compute_phase_report(topic_id, phase)
+        artifacts = self._compute_phase_report(topic_id, phase)
+        safe_id = artifacts.safe_id
+        report = artifacts.report
         if not isinstance(reason, str) or not reason.strip():
             raise ConfigError("waiver reason must not be empty")
         reason = reason.strip()
@@ -1933,7 +2219,9 @@ class RunStore:
     def _remove_waiver(
         self, topic_id: str, phase: str, finding_id: str
     ) -> tuple[WaiverResult, WaiverSet]:
-        safe_id, _, _, _, report = self._compute_phase_report(topic_id, phase)
+        artifacts = self._compute_phase_report(topic_id, phase)
+        safe_id = artifacts.safe_id
+        report = artifacts.report
         guide_sha256 = report.guide_sha256
         with self._manifest_write_lock(safe_id):
             items = self._current_waiver_items_locked(safe_id, guide_sha256)
@@ -2218,11 +2506,21 @@ def _validate_content_contract(contract: ContentContract) -> None:
         return
     if contract == ContentContract.interactive_guide_v1():
         return
+    if contract == ContentContract.interactive_guide_v1_1():
+        return
     raise ConfigError(
         "unsupported content contract "
         f"{contract.kind!r} schema {contract.schema_version!r}; supported contracts are "
-        "legacy_markdown and interactive_guide schema '1.0'"
+        "legacy_markdown and interactive_guide schemas '1.0' and '1.1'"
     )
+
+
+def _guide_content_type(schema_version: str | None) -> str:
+    if schema_version == "1.0":
+        return GUIDE_V1_CONTENT_TYPE
+    if schema_version == "1.1":
+        return "application/vnd.education-pipeline.guide+json;version=1.1"
+    raise ConfigError(f"unsupported interactive guide schema {schema_version!r}")
 
 
 def _artifact_id(value: str, context: str) -> str:

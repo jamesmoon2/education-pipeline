@@ -1,8 +1,11 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from education_pipeline.guides import quality_report_bytes
+from education_pipeline.guides import guide_sha256, normalize_guide, parse_guide
+from education_pipeline.guides.projection import public_guide_projection
 from education_pipeline.guides.reports import Finding, ValidationReport
 from education_pipeline.guides.waivers import Waiver, WaiverSet, apply_waivers
 
@@ -31,6 +34,7 @@ def sample_report_and_waivers():
         "runtime_css_sha256": "c" * 64,
         "runtime_js_sha256": "d" * 64,
         "runtime_version": "1",
+        "public_guide_sha256": "p" * 64,
     }
 
 
@@ -52,7 +56,7 @@ def test_quality_report_payload_carries_gate_waivers_and_export(sample_report_an
     assert payload["report"]["report_schema_version"] == 2
     assert payload["report"]["findings"][0]["stage"] == "repair"
     assert payload["waivers"] == {
-        "guide_sha256": "abc123",
+        "guide_sha256": "p" * 64,
         "applied": ["waivable:one"],
         "rejected": [],
         "orphaned": [],
@@ -89,7 +93,49 @@ def test_quality_report_without_waiver_set_uses_report_guide_hash():
             runtime_css_sha256="c" * 64,
             runtime_js_sha256="d" * 64,
             runtime_version="1",
+            public_guide_sha256="p" * 64,
         )
     )
     assert payload["gate"]["open"] is False
-    assert payload["waivers"]["guide_sha256"] == "reporthash"
+    assert payload["waivers"]["guide_sha256"] == "p" * 64
+
+
+def test_public_sidecar_hash_is_stable_when_only_private_exclusion_reason_changes():
+    source = json.loads(
+        Path(
+            "tests/fixtures/guides/feedback-loops.personalized.guide.json"
+        ).read_text(encoding="utf-8")
+    )
+    changed = json.loads(json.dumps(source))
+    changed["course"]["goal_exclusions"][0]["reason"] = (
+        "A different synthetic private exclusion reason."
+    )
+    first_guide = normalize_guide(parse_guide(json.dumps(source)))
+    second_guide = normalize_guide(parse_guide(json.dumps(changed)))
+    assert guide_sha256(first_guide) != guide_sha256(second_guide)
+    public_hash = guide_sha256(public_guide_projection(first_guide))
+    assert public_hash == guide_sha256(public_guide_projection(second_guide))
+    common = {
+        "waiver_set": None,
+        "export_sha256": "e" * 64,
+        "runtime_css_sha256": "c" * 64,
+        "runtime_js_sha256": "d" * 64,
+        "runtime_version": "1",
+        "public_guide_sha256": public_hash,
+    }
+    first_report = ValidationReport("1.1", "final", guide_sha256(first_guide), ())
+    second_report = ValidationReport("1.1", "final", guide_sha256(second_guide), ())
+    first = quality_report_bytes(
+        report=first_report,
+        waiver_result=apply_waivers(first_report, None),
+        **common,
+    )
+    second = quality_report_bytes(
+        report=second_report,
+        waiver_result=apply_waivers(second_report, None),
+        **common,
+    )
+    assert first == second
+    payload = json.loads(first)
+    assert payload["report"]["guide_sha256"] == public_hash
+    assert payload["waivers"]["guide_sha256"] == public_hash

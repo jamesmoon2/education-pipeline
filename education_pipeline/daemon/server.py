@@ -350,7 +350,7 @@ def _make_handler(context: DaemonContext):
                 guide_v1 = context.runs.content_contract(topic_id).kind == "interactive_guide"
                 return self._send_file(
                     path,
-                    "application/vnd.education-pipeline.guide+json;version=1.0"
+                    context.runs.stage_paths(topic_id, "repair").content_type
                     if guide_v1 else "text/markdown; charset=utf-8",
                     f"{topic_id}-guide.json" if guide_v1 else f"{topic_id}-guide.md",
                 )

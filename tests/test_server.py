@@ -1389,6 +1389,30 @@ def test_final_download(server):
     assert data.decode("utf-8") == "FINAL BODY"
 
 
+def test_final_download_uses_immutable_guide_1_1_content_type(server_with_context):
+    port, context = server_with_context
+    context.runs.create_run(
+        "personalized-download",
+        content_contract=ContentContract.interactive_guide_v1_1(),
+    )
+    final = context.runs.final_guide_json_path("personalized-download")
+    final.parent.mkdir(parents=True, exist_ok=True)
+    final.write_bytes(test_runs.PERSONALIZED_GUIDE_FIXTURE.encode("utf-8"))
+
+    status, headers, data = _raw_download(
+        port,
+        "/v1/runs/personalized-download/final/download",
+    )
+    assert status == 200
+    assert headers["content-type"] == (
+        "application/vnd.education-pipeline.guide+json;version=1.1"
+    )
+    assert headers["content-disposition"] == (
+        'attachment; filename="personalized-download-guide.json"'
+    )
+    assert data == final.read_bytes()
+
+
 def test_export_download(server):
     _finalize_t_over_http(server)
     _req(server, "POST", "/v1/runs/t/export", body={"format": "html"})

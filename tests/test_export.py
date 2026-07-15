@@ -1,3 +1,7 @@
+import json
+
+import test_runs
+
 from education_pipeline import (
     build_markdown_bundle,
     render_html_body,
@@ -120,3 +124,40 @@ def test_safe_links_still_render() -> None:
     assert '<a href="https://example.com/a">docs</a>' in html
     assert '<a href="./page.md">rel</a>' in html
     assert '<a href="mailto:a@b.c">mail</a>' in html
+
+
+def test_personalized_source_stays_local_while_export_and_sidecar_are_stripped(
+    tmp_path,
+) -> None:
+    topic_id = "systems-thinking"
+    store = test_runs._create_profiled_guide_run(tmp_path)
+    test_runs._drive_profiled_guide_to_finalize_ready(store, topic_id)
+    final_source = store.finalize_run(topic_id)
+    exported = store.export_run(topic_id)
+    sidecar = store.export_report_path(topic_id)
+
+    source_text = final_source.read_text(encoding="utf-8")
+    assert '"serves_goals"' in source_text
+    assert '"goal_exclusions"' in source_text
+    assert "Synthetic deferred objective." in source_text
+
+    public_text = exported.read_text(encoding="utf-8")
+    report_text = sidecar.read_text(encoding="utf-8")
+    for private_or_local in (
+        '"serves_goals"',
+        '"goal_exclusions"',
+        "Synthetic deferred objective.",
+        "Synthetic private goal alpha",
+        "Synthetic private goal beta",
+        "Synthetic private goal gamma",
+        "Synthetic learner cohort",
+        "personalization-trace.json",
+    ):
+        assert private_or_local not in public_text
+        assert private_or_local not in report_text
+
+    embedded = public_text.split(
+        '<script id="guide-data" type="application/json">', 1
+    )[1].split("</script>", 1)[0]
+    payload = json.loads(embedded)
+    assert payload["schema_version"] == "1.1"

@@ -9,6 +9,7 @@ produces an identical sidecar.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
 from .reports import ValidationReport
@@ -26,26 +27,26 @@ def quality_report_bytes(
     runtime_css_sha256: str,
     runtime_js_sha256: str,
     runtime_version: str,
+    public_guide_sha256: str,
 ) -> bytes:
     """Serialize the sidecar quality report to canonical UTF-8 bytes.
 
-    The ``guide_sha256`` recorded under ``waivers`` is the hash the waiver
-    set was bound to when a set is present, falling back to the validation
-    report's own guide hash when there are no waivers.
+    The local validation report and waiver set remain bound to canonical source
+    bytes. The public sidecar consistently substitutes the public-guide
+    projection hash so private source-only annotations cannot influence a
+    published hash field.
     """
 
-    guide_sha256 = (
-        waiver_set.guide_sha256 if waiver_set is not None else report.guide_sha256
-    )
+    public_report = replace(report, guide_sha256=public_guide_sha256)
     payload = {
         "quality_report_schema_version": QUALITY_REPORT_SCHEMA_VERSION,
         "gate": {
             "open": waiver_result.gate_open,
             "effective_blocking": waiver_result.effective_blocking,
         },
-        "report": report.to_dict(),
+        "report": public_report.to_dict(),
         "waivers": {
-            "guide_sha256": guide_sha256,
+            "guide_sha256": public_guide_sha256,
             "applied": list(waiver_result.waived_finding_ids),
             "rejected": list(waiver_result.rejected_finding_ids),
             "orphaned": list(waiver_result.orphaned_finding_ids),

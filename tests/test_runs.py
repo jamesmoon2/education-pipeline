@@ -195,6 +195,90 @@ def _drive_guide_outline_to_approved(runs: RunStore, topic_id: str) -> None:
 GUIDE_FIXTURE = Path("tests/fixtures/guides/feedback-loops.guide.json").read_text(
     encoding="utf-8"
 )
+PERSONALIZED_GUIDE_FIXTURE = Path(
+    "tests/fixtures/guides/feedback-loops.personalized.guide.json"
+).read_text(encoding="utf-8")
+
+PERSONALIZED_PROFILE_TOML = """\
+schema_version = 1
+id = "personalized-profile"
+target_learner = "Synthetic learner cohort"
+learning_goals = [
+  "Synthetic private goal alpha",
+  "Synthetic private goal beta",
+  "Synthetic private goal gamma",
+]
+
+[learning_preferences]
+preferred_visual_aids = ["flowcharts"]
+
+[privacy]
+private_by_default = true
+include_in_published_output = false
+"""
+
+NO_GOAL_PROFILE_TOML = """\
+schema_version = 1
+id = "no-goal-profile"
+target_learner = "Synthetic no-goal cohort"
+
+[learning_preferences]
+preferred_visual_aids = ["flowcharts"]
+
+[privacy]
+private_by_default = true
+include_in_published_output = false
+"""
+
+
+def _create_profiled_guide_run(
+    tmp_path: Path,
+    *,
+    profile_toml: str = PERSONALIZED_PROFILE_TOML,
+    profile_id: str = "personalized-profile",
+    topic_id: str = "systems-thinking",
+) -> RunStore:
+    TopicStore(tmp_path).save_topic_toml(topic_id, TOPIC_TOML)
+    profiles = ProfileStore(tmp_path)
+    profiles.save_profile_toml(profile_id, profile_toml)
+    profiles.attach_profile_to_topic(profile_id, topic_id)
+    runs = RunStore(tmp_path)
+    runs.create_run(topic_id)
+    return runs
+
+
+def _drive_profiled_guide_to_draft_approved(
+    runs: RunStore,
+    topic_id: str,
+    body: str = PERSONALIZED_GUIDE_FIXTURE,
+) -> None:
+    spec = runs.write_topic_spec_prompt(topic_id)
+    spec_contract = dict(VALID_SPEC_CONTRACT, guide_schema_version="1.1")
+    spec.response_path.write_text(_guide_spec_response(spec_contract), encoding="utf-8")
+    runs.approve_stage(topic_id, "spec")
+    outline = runs.write_outline_prompt(topic_id)
+    outline.response_path.write_text(_guide_outline_response(), encoding="utf-8")
+    runs.approve_stage(topic_id, "outline")
+    draft = runs.write_draft_prompt(topic_id)
+    draft.response_path.write_text(body, encoding="utf-8")
+    runs.approve_stage(topic_id, "draft")
+
+
+def _drive_profiled_guide_to_finalize_ready(
+    runs: RunStore,
+    topic_id: str,
+    *,
+    body: str = PERSONALIZED_GUIDE_FIXTURE,
+) -> None:
+    _drive_profiled_guide_to_draft_approved(runs, topic_id, body)
+    runs.validate_run(topic_id, "draft")
+    qa = runs.write_qa_prompt(topic_id)
+    qa.response_path.write_text("# QA findings\n\nNo major issues.\n", encoding="utf-8")
+    runs.approve_stage(topic_id, "qa")
+    repair = runs.write_repair_prompt(topic_id)
+    repair.response_path.write_text(body, encoding="utf-8")
+    runs.approve_stage(topic_id, "repair")
+    runs.validate_run(topic_id, "final")
 
 
 def _drive_guide_to_draft_approved(
@@ -2443,6 +2527,397 @@ def test_read_plan_overrides_returns_empty_dict_for_fresh_run(tmp_path: Path) ->
     runs = _create_legacy_run(tmp_path)
 
     assert runs.read_plan_overrides("systems-thinking") == {}
+
+
+# --- Personalization Wave 2: source 1.1 trace lifecycle ---------------------
+
+
+def test_profiled_new_run_selects_1_1_but_existing_1_0_is_immutable(
+    tmp_path: Path,
+) -> None:
+    profiled = _create_profiled_guide_run(tmp_path / "new")
+    assert profiled.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_1()
+    assert profiled.read_manifest("systems-thinking")["content_contract"] == {
+        "kind": "interactive_guide",
+        "schema_version": "1.1",
+    }
+    draft = profiled.stage_paths("systems-thinking", "draft")
+    repair = profiled.stage_paths("systems-thinking", "repair")
+    assert draft.content_type.endswith("version=1.1")
+    assert repair.content_type.endswith("version=1.1")
+    assert GUIDE_V1_CONTENT_TYPE.endswith("version=1.0")
+
+    old_root = tmp_path / "old"
+    old = _create_guide_run(old_root)
+    profiles = ProfileStore(old_root)
+    profiles.save_profile_toml("personalized-profile", PERSONALIZED_PROFILE_TOML)
+    profiles.attach_profile_to_topic("personalized-profile", "systems-thinking")
+    old.create_run("systems-thinking")
+    assert old.content_contract("systems-thinking") == ContentContract.interactive_guide_v1()
+    assert old.stage_paths("systems-thinking", "draft").content_type == GUIDE_V1_CONTENT_TYPE
+
+
+def test_profiled_prompt_and_response_contract_propagate_schema_1_1(tmp_path: Path) -> None:
+    runs = _create_profiled_guide_run(tmp_path)
+    spec = runs.write_topic_spec_prompt("systems-thinking")
+    spec_text = spec.prompt_path.read_text(encoding="utf-8")
+    assert '"guide_schema_version": "1.1"' in spec_text
+    assert "goal-001" in spec_text
+
+    spec.response_path.write_text(
+        _guide_spec_response(dict(VALID_SPEC_CONTRACT, guide_schema_version="1.1")),
+        encoding="utf-8",
+    )
+    runs.approve_stage("systems-thinking", "spec")
+    outline = runs.write_outline_prompt("systems-thinking")
+    assert "goal-001" in outline.prompt_path.read_text(encoding="utf-8")
+    assert runs.stage_paths("systems-thinking", "draft").content_type.endswith("version=1.1")
+
+
+def test_draft_and_final_validation_write_canonical_trace_without_draft_regression(
+    tmp_path: Path,
+) -> None:
+    tid = "systems-thinking"
+    runs = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_draft_approved(runs, tid)
+    runs.validate_run(tid, "draft")
+    trace_path = runs.personalization_trace_path(tid)
+    draft_trace = trace_path.read_bytes()
+    assert json.loads(draft_trace)["guide_sha256"] == guide_sha256(
+        normalize_guide(parse_guide(PERSONALIZED_GUIDE_FIXTURE))
+    )
+    assert runs.personalization_trace_state(tid, phase="draft") == "current"
+    assert runs.report_state(tid, "draft") == "current"
+
+    qa = runs.write_qa_prompt(tid)
+    qa.response_path.write_text("# QA\n", encoding="utf-8")
+    runs.approve_stage(tid, "qa")
+    repair = runs.write_repair_prompt(tid)
+    final_source = json.loads(PERSONALIZED_GUIDE_FIXTURE)
+    final_source["course"]["description"] += " Final candidate."
+    repair.response_path.write_text(json.dumps(final_source), encoding="utf-8")
+    runs.approve_stage(tid, "repair")
+    runs.validate_run(tid, "final")
+
+    assert trace_path.read_bytes() != draft_trace
+    assert runs.personalization_trace_state(tid, phase="final") == "current"
+    assert runs.report_state(tid, "draft") == "current"
+    assert runs.report_state(tid, "final") == "current"
+    assert runs.run_status(tid).next_action.action == "finalize"
+
+
+@pytest.mark.parametrize("with_goals", [True, False])
+def test_current_draft_report_does_not_depend_on_mutable_shared_trace_before_qa(
+    tmp_path: Path,
+    with_goals: bool,
+) -> None:
+    tid = "systems-thinking"
+    if with_goals:
+        runs = _create_profiled_guide_run(tmp_path)
+        body = PERSONALIZED_GUIDE_FIXTURE
+    else:
+        runs = _create_profiled_guide_run(
+            tmp_path,
+            profile_toml=NO_GOAL_PROFILE_TOML,
+            profile_id="no-goal-profile",
+        )
+        source = json.loads(GUIDE_FIXTURE)
+        source["schema_version"] = "1.1"
+        body = json.dumps(source)
+    _drive_profiled_guide_to_draft_approved(runs, tid, body)
+    runs.validate_run(tid, "draft")
+    assert runs.report_state(tid, "draft") == "current"
+    runs.personalization_trace_path(tid).unlink()
+
+    next_action = runs.run_status(tid).next_action
+    assert (next_action.stage, next_action.action) == ("qa", "write_prompt")
+
+
+def test_profile_snapshot_replacement_stales_reports_and_trace(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    runs = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_finalize_ready(runs, tid)
+    assert runs.report_state(tid, "draft") == "current"
+    assert runs.report_state(tid, "final") == "current"
+    assert runs.personalization_trace_state(tid, phase="final") == "current"
+
+    changed = PERSONALIZED_PROFILE_TOML.replace(
+        "Synthetic private goal alpha", "Synthetic replacement goal alpha"
+    )
+    profiles = ProfileStore(tmp_path)
+    profiles.save_profile_toml("personalized-profile", changed, overwrite=True)
+    profiles.attach_profile_to_topic("personalized-profile", tid, overwrite=True)
+
+    assert runs.report_state(tid, "draft") == "stale"
+    assert runs.report_state(tid, "final") == "stale"
+    assert runs.personalization_trace_state(tid, phase="final") == "stale"
+
+
+@pytest.mark.parametrize("trace_body", [None, b"not-json", b'{}\n'])
+def test_missing_or_malformed_goal_trace_refuses_finalize_and_export(
+    tmp_path: Path,
+    trace_body: bytes | None,
+) -> None:
+    tid = "systems-thinking"
+    runs = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_finalize_ready(runs, tid)
+    trace = runs.personalization_trace_path(tid)
+    if trace_body is None:
+        trace.unlink()
+    else:
+        trace.write_bytes(trace_body)
+
+    assert runs.report_state(tid, "final") == "current"
+    assert runs.personalization_trace_state(tid, phase="final") in {"missing", "stale"}
+    assert runs.run_status(tid).next_action.action == "resolve_findings"
+    with pytest.raises(ConfigError, match="personalization trace"):
+        runs.finalize_run(tid)
+
+    runs.validate_run(tid, "final")
+    runs.finalize_run(tid)
+    trace.write_bytes(b"not-json")
+    with pytest.raises(ConfigError, match="personalization trace"):
+        runs.export_run(tid)
+
+
+def test_well_formed_but_stale_goal_trace_refuses_release(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    runs = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_finalize_ready(runs, tid)
+    trace_path = runs.personalization_trace_path(tid)
+    stale = json.loads(trace_path.read_text(encoding="utf-8"))
+    stale["guide_sha256"] = "0" * 64
+    trace_path.write_text(
+        json.dumps(stale, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    assert runs.report_state(tid, "final") == "current"
+    assert runs.personalization_trace_state(tid, phase="final") == "stale"
+    with pytest.raises(ConfigError, match="personalization trace is stale"):
+        runs.finalize_run(tid)
+
+
+def test_no_goal_profile_trace_is_observable_but_does_not_gate_release(
+    tmp_path: Path,
+) -> None:
+    tid = "systems-thinking"
+    runs = _create_profiled_guide_run(
+        tmp_path,
+        profile_toml=NO_GOAL_PROFILE_TOML,
+        profile_id="no-goal-profile",
+    )
+    unannotated_1_1 = json.loads(GUIDE_FIXTURE)
+    unannotated_1_1["schema_version"] = "1.1"
+    body = json.dumps(unannotated_1_1)
+    _drive_profiled_guide_to_finalize_ready(runs, tid, body=body)
+    trace = runs.personalization_trace_path(tid)
+    payload = json.loads(trace.read_text(encoding="utf-8"))
+    assert payload["goals"] == []
+    assert payload["active_facets"]
+    trace.unlink()
+
+    assert runs.report_state(tid, "final") == "current"
+    assert runs.run_status(tid).next_action.action == "finalize"
+    runs.finalize_run(tid)
+    assert runs.export_run(tid).is_file()
+
+
+def test_malformed_annotations_leave_current_report_and_stale_prior_trace(
+    tmp_path: Path,
+) -> None:
+    tid = "systems-thinking"
+    runs = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_draft_approved(runs, tid)
+    runs.validate_run(tid, "draft")
+    trace = runs.personalization_trace_path(tid)
+    prior_trace = trace.read_bytes()
+
+    malformed = json.loads(PERSONALIZED_GUIDE_FIXTURE)
+    malformed["modules"][0]["serves_goals"] = ["not-a-goal-id"]
+    draft_paths = runs.stage_paths(tid, "draft")
+    draft_paths.response_path.write_text(json.dumps(malformed), encoding="utf-8")
+    runs.approve_stage(tid, "draft", overwrite=True)
+    runs.validate_run(tid, "draft")
+
+    assert runs.report_state(tid, "draft") == "current"
+    assert trace.read_bytes() == prior_trace
+    assert runs.personalization_trace_state(tid, phase="draft") == "stale"
+    assert runs.run_status(tid).next_action.action == "resolve_findings"
+
+
+@pytest.mark.parametrize(
+    ("run_contract", "response_version"),
+    [
+        (ContentContract.interactive_guide_v1(), "1.1"),
+        (ContentContract.interactive_guide_v1_1(), "1.0"),
+    ],
+)
+def test_spec_approval_rejects_run_contract_version_mismatch(
+    tmp_path: Path,
+    run_contract: ContentContract,
+    response_version: str,
+) -> None:
+    tid = "systems-thinking"
+    TopicStore(tmp_path).save_topic_toml(tid, TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    runs.create_run(tid, content_contract=run_contract)
+    spec = runs.write_topic_spec_prompt(tid)
+    spec.response_path.write_text(
+        _guide_spec_response(
+            dict(VALID_SPEC_CONTRACT, guide_schema_version=response_version)
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="content contract|schema version"):
+        runs.approve_stage(tid, "spec")
+    assert not runs.approved_path(tid, "spec").exists()
+
+
+def test_invalid_scalar_annotation_persists_current_blocking_report_and_stale_trace(
+    tmp_path: Path,
+) -> None:
+    tid = "systems-thinking"
+    runs = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_draft_approved(runs, tid)
+    runs.validate_run(tid, "draft")
+    trace_path = runs.personalization_trace_path(tid)
+    prior_trace = trace_path.read_bytes()
+
+    invalid = json.loads(PERSONALIZED_GUIDE_FIXTURE)
+    invalid["course"]["goal_exclusions"][0]["reason"] = "invalid-\ud800-reason"
+    draft = runs.stage_paths(tid, "draft")
+    draft.response_path.write_text(json.dumps(invalid), encoding="utf-8")
+    runs.approve_stage(tid, "draft", overwrite=True)
+
+    report_path = runs.validate_run(tid, "draft")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert any(
+        finding["rule_id"] == "schema.invalid_value" and finding["blocking"]
+        for finding in report["findings"]
+    )
+    assert runs.report_state(tid, "draft") == "current"
+    assert trace_path.read_bytes() == prior_trace
+    assert runs.personalization_trace_state(tid, phase="draft") == "stale"
+    assert runs.run_status(tid).next_action.action == "resolve_findings"
+
+
+def test_profile_snapshot_parse_and_hash_come_from_one_byte_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tid = "systems-thinking"
+    runs = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_draft_approved(runs, tid)
+    snapshot_path = ProfileStore(tmp_path).topic_profile_snapshot_path(tid)
+    replacement = PERSONALIZED_PROFILE_TOML.replace(
+        "Synthetic private goal alpha", "Synthetic replacement goal alpha"
+    ).encode("utf-8")
+    real_read = RunStore._read_attached_profile_snapshot
+    swapped = False
+
+    def racing_read(store: RunStore, topic_id: str):
+        nonlocal swapped
+        snapshot = real_read(store, topic_id)
+        if store.root == runs.root and not swapped:
+            swapped = True
+            snapshot_path.write_bytes(replacement)
+        return snapshot
+
+    monkeypatch.setattr(RunStore, "_read_attached_profile_snapshot", racing_read)
+    runs.validate_run(tid, "draft")
+    trace = json.loads(
+        runs.personalization_trace_path(tid).read_text(encoding="utf-8")
+    )
+    snapshot_text = snapshot_path.read_text(encoding="utf-8")
+    assert trace["goals"][0]["goal_text"] not in snapshot_text
+    assert runs.report_state(tid, "draft") == "stale"
+
+
+def test_concurrent_validation_serializes_report_trace_and_event_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from education_pipeline import runs as runs_module
+
+    tid = "systems-thinking"
+    runs = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_draft_approved(runs, tid)
+    source_path = runs.stage_paths(tid, "draft").approved_path
+    source_a = source_path.read_bytes()
+    changed = json.loads(PERSONALIZED_GUIDE_FIXTURE)
+    changed["course"]["description"] += " Concurrent candidate B."
+    source_b = (json.dumps(changed, sort_keys=True) + "\n").encode("utf-8")
+
+    real_write = runs_module._write_bytes_atomic
+    a_trace_written = threading.Event()
+    release_a = threading.Event()
+    b_write_attempt = threading.Event()
+    captures: dict[str, dict[str, str]] = {"validator-a": {}, "validator-b": {}}
+
+    def controlled_write(path: Path, data: bytes) -> None:
+        name = threading.current_thread().name
+        if name in captures and path.name in {
+            "draft-validation.json",
+            "personalization-trace.json",
+        }:
+            captures[name][path.name] = hashlib.sha256(data).hexdigest()
+            if name == "validator-b":
+                b_write_attempt.set()
+        real_write(path, data)
+        if name == "validator-a" and path.name == "personalization-trace.json":
+            a_trace_written.set()
+            assert release_a.wait(5)
+
+    monkeypatch.setattr(runs_module, "_write_bytes_atomic", controlled_write)
+    errors: list[BaseException] = []
+
+    def validate() -> None:
+        try:
+            runs.validate_run(tid, "draft")
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread_a = threading.Thread(target=validate, name="validator-a")
+    thread_a.start()
+    assert a_trace_written.wait(5)
+    source_path.write_bytes(source_b)
+    thread_b = threading.Thread(target=validate, name="validator-b")
+    thread_b.start()
+    b_was_blocked = not b_write_attempt.wait(0.5)
+    release_a.set()
+    thread_a.join(5)
+    thread_b.join(5)
+    assert not errors
+    assert not thread_a.is_alive() and not thread_b.is_alive()
+    assert b_was_blocked
+
+    expected = {
+        (
+            hashlib.sha256(source_a).hexdigest(),
+            captures["validator-a"]["draft-validation.json"],
+            captures["validator-a"]["personalization-trace.json"],
+        ),
+        (
+            hashlib.sha256(source_b).hexdigest(),
+            captures["validator-b"]["draft-validation.json"],
+            captures["validator-b"]["personalization-trace.json"],
+        ),
+    }
+    events = [
+        event
+        for event in runs.read_manifest(tid)["events"]
+        if event.get("action") == "validated" and event.get("phase") == "draft"
+    ][-2:]
+    actual = {
+        (
+            event["source_file_sha256"],
+            event["report_file_sha256"],
+            event["personalization_trace_file_sha256"],
+        )
+        for event in events
+    }
+    assert actual == expected
 
 
 def test_plan_overrides_path_is_under_run_dir(tmp_path: Path) -> None:
