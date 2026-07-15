@@ -77,6 +77,49 @@ def advance_run(runs: RunStore, jobs: JobStore, topic_id: str) -> dict:
     }
 
 
+def prepare_audit(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    *,
+    overwrite: bool = False,
+) -> dict:
+    """Prepare the optional audit prompt without affecting primary advance."""
+
+    read_api.require_run(runs, topic_id)
+    _require_no_active_job(jobs, topic_id)
+    # The frozen action is "prepare or rebuild": repeating the explicit POST
+    # rebuilds the fixed prompt path instead of making callers first discover
+    # whether it exists. RunStore still owns freshness and approval-preservation
+    # semantics for identical inputs.
+    prompt_exists = runs.stage_paths(topic_id, "audit").prompt_path.exists()
+    prepared = runs.prepare_personalization_audit(
+        topic_id, overwrite=overwrite or prompt_exists
+    )
+    response_path = _run_relative(runs, topic_id, prepared.response_path)
+    provider_step = {"action": "enqueue", "stage": "audit"}
+    if prepared.response_path.exists():
+        # Provider ingestion preserves the general no-clobber contract. A
+        # rebuilt prompt often retains the prior response, so the exact next
+        # provider action must opt into replacing it.
+        provider_step["force"] = True
+    return {
+        "topic_id": prepared.topic_id,
+        "stage": prepared.stage,
+        "prompt_path": _run_relative(runs, topic_id, prepared.prompt_path),
+        "response_path": response_path,
+        "audit": read_api.audit_summary(runs, topic_id),
+        "next_steps": {
+            "manual": {
+                "action": "save_response",
+                "stage": "audit",
+                "response_path": response_path,
+            },
+            "provider": provider_step,
+        },
+    }
+
+
 def validate_run(runs: RunStore, jobs: JobStore, topic_id: str, phase: str) -> dict:
     read_api.require_run(runs, topic_id)
     if phase not in {"draft", "final"}:

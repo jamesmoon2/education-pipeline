@@ -184,6 +184,56 @@ def test_execute_ready_audit_preflights_then_runs_and_ingests_json(
     assert paths.response_path.read_text(encoding="utf-8") == '{"schema_version":1}\n'
 
 
+def test_audit_stdout_is_ingested_but_never_mirrored_to_job_log(
+    tmp_path, monkeypatch
+):
+    planted = "PLANTED PRIVATE AUDIT NARRATIVE"
+    planted_stderr = "PLANTED PRIVATE AUDIT STDERR"
+    monkeypatch.setenv(
+        "FAKE_STDOUT",
+        '{"schema_version":1,"overall_summary":"' + planted + '"}\n',
+    )
+    monkeypatch.setenv("FAKE_STDERR", planted_stderr + "\n")
+    register_runner(FakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    paths = runs.stage_paths("t", "audit")
+    paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.prompt_path.write_text("BOUND AUDIT PROMPT", encoding="utf-8")
+
+    monkeypatch.setattr(
+        RunStore,
+        "require_provider_ready_prompt",
+        lambda self, topic_id, stage: paths.prompt_path,
+    )
+
+    def ingest(self, topic_id, stage, text, *, force=False):
+        paths.response_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.response_path.write_text(text, encoding="utf-8")
+        return paths.response_path
+
+    monkeypatch.setattr(RunStore, "ingest_response", ingest)
+    catalog = parse_model_catalog(
+        {"providers": [{"id": "fake", "models": [{"id": "m"}]}]}
+    )
+    plan = parse_model_plan(
+        {"provider": "fake", "stages": {"audit": {"model": "m"}}}, catalog
+    )
+    store = JobStore(tmp_path)
+    job = store.create("t", "audit", "fake", "m", None)
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(
+        job, threading.Event()
+    )
+
+    assert done.status == "succeeded"
+    assert planted in paths.response_path.read_text(encoding="utf-8")
+    log_text = store.log_path("t", job.id).read_text(encoding="utf-8")
+    assert planted not in log_text
+    assert planted_stderr not in log_text
+    assert log_text == ""
+
+
 def test_execute_nonzero_exit_fails_without_response(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_EXIT", "3")
     runs, catalog, plan, store = _setup(tmp_path)

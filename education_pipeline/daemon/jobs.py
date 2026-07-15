@@ -375,7 +375,11 @@ class JobRunner:
         # Providers (e.g. Codex) write progress to stderr and the final answer
         # to stdout; others (e.g. Claude) write JSON straight to stdout. Either
         # way the RESPONSE must be parsed from stdout only — mixing stderr in
-        # would corrupt it. The LOG stays a combined, human-facing artifact.
+        # would corrupt it. For ordinary stages the LOG stays a combined,
+        # human-facing artifact. Audit output is different: neither stdout nor
+        # stderr can be proven free of narratives or profile values before it
+        # is emitted. Suppress both raw streams from the job log / log API;
+        # stdout is still captured separately and bounded for ingestion.
         #
         # Both pipes are drained on their own background threads and pushed to
         # a shared queue tagged with their stream name. This is required, not
@@ -443,19 +447,20 @@ class JobRunner:
                 if chunk is None:
                     eof_seen[stream_name] = True
                     continue
-                if len(head) < head_limit:
-                    room = head_limit - len(head)
-                    log_handle.write(chunk[:room])
-                    head.extend(chunk[:room])
-                    overflow = chunk[room:]
-                else:
-                    overflow = chunk
-                if overflow:
-                    truncated = True
-                    dropped += len(overflow)
-                    tail.extend(overflow)
-                    if len(tail) > tail_limit:
-                        del tail[: len(tail) - tail_limit]
+                if job.stage != "audit":
+                    if len(head) < head_limit:
+                        room = head_limit - len(head)
+                        log_handle.write(chunk[:room])
+                        head.extend(chunk[:room])
+                        overflow = chunk[room:]
+                    else:
+                        overflow = chunk
+                    if overflow:
+                        truncated = True
+                        dropped += len(overflow)
+                        tail.extend(overflow)
+                        if len(tail) > tail_limit:
+                            del tail[: len(tail) - tail_limit]
                 if stream_name == "stdout":
                     if len(stdout_capture) < MAX_LOG_BYTES:
                         room = MAX_LOG_BYTES - len(stdout_capture)

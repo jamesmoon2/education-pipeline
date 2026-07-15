@@ -95,6 +95,32 @@ def test_advance_writes_prompt(tmp_path: Path, capsys: pytest.CaptureFixture[str
     assert (ws / "runs" / "systems-thinking" / "prompts" / "spec.prompt.md").exists()
 
 
+def test_audit_command_prepares_prompt_and_prints_manual_and_provider_steps(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_profiled_guide_run(ws, topic_id=topic_id)
+    test_runs._drive_profiled_guide_to_finalize_ready(runs, topic_id)
+
+    assert _run(ws, "audit", topic_id) == 0
+    out = capsys.readouterr().out
+    assert "prepared audit:" in out
+    assert "responses/audit.response.json" in out
+    assert f"run {topic_id} --stage audit" in out
+    assert "--force" not in out
+
+    runs.ingest_response(
+        topic_id,
+        "audit",
+        test_runs._valid_personalization_audit_response(runs, topic_id),
+    )
+    runs.approve_stage(topic_id, "audit")
+    assert _run(ws, "audit", topic_id) == 0
+    rebuilt = capsys.readouterr().out
+    assert f"run {topic_id} --stage audit --force" in rebuilt
+
+
 def test_full_flow_drives_run_to_export(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     _run(ws, "topic", "import", str(_write(tmp_path / "topic.toml", TOPIC_TOML)))
@@ -771,10 +797,104 @@ def test_findings_command_no_report_exits_2(tmp_path: Path, capsys) -> None:
     assert "error:" in err
 
 
+def _approve_warning_audit(root: Path, topic_id: str) -> tuple[RunStore, dict]:
+    runs = RunStore(root)
+    runs.prepare_personalization_audit(topic_id)
+    response = json.loads(test_runs._valid_personalization_audit_response(runs, topic_id))
+    response["goals"][0]["verdict"] = "weak"
+    runs.ingest_response(topic_id, "audit", json.dumps(response))
+    runs.approve_stage(topic_id, "audit")
+    finding = next(f for f in runs.combined_findings(topic_id) if f.stage == "audit")
+    return runs, finding.to_dict()
+
+
+def test_cli_findings_report_and_waive_use_safe_combined_audit_findings(
+    tmp_path: Path, capsys
+):
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_profiled_guide_run(root, topic_id=topic_id)
+    test_runs._drive_profiled_guide_to_finalize_ready(runs, topic_id)
+    runs, audit_finding = _approve_warning_audit(root, topic_id)
+
+    assert main(["--workspace", str(root), "findings", topic_id]) == 0
+    findings_out = capsys.readouterr().out
+    assert "\taudit\t" in findings_out
+    assert audit_finding["rule_id"] in findings_out
+
+    assert main(["--workspace", str(root), "report", topic_id]) == 0
+    report = json.loads(capsys.readouterr().out)
+    projected = next(
+        finding for finding in report["findings"] if finding["stage"] == "audit"
+    )
+    assert projected["source_stage"] == "repair"
+
+    assert main(
+        [
+            "--workspace",
+            str(root),
+            "waive",
+            topic_id,
+            audit_finding["id"],
+            "--reason",
+            "Attempted audit waiver.",
+        ]
+    ) == 2
+    assert "not waivable" in capsys.readouterr().err
+    assert runs.load_waiver_set(topic_id) is None
+
+
 def test_report_command_prints_sidecar_after_export(exported_guide_workspace, capsys):
     root, topic_id = exported_guide_workspace
     assert main(["--workspace", str(root), "report", topic_id]) == 0
     assert '"quality_report_schema_version"' in capsys.readouterr().out
+
+
+def test_report_prints_persisted_not_run_sidecar_unchanged_when_live_audit_is_current(
+    tmp_path: Path, capsys
+):
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_profiled_guide_run(root, topic_id=topic_id)
+    test_runs._drive_profiled_guide_to_finalize_ready(runs, topic_id)
+    runs.finalize_run(topic_id)
+    runs.export_run(topic_id, format="html")
+    persisted = runs.export_report_path(topic_id).read_text(encoding="utf-8")
+    assert json.loads(persisted)["audit"]["state"] == "not_run"
+
+    _approve_warning_audit(root, topic_id)
+    assert runs.export_state(topic_id) == "stale"
+
+    assert main(["--workspace", str(root), "report", topic_id]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == persisted
+    assert "export" in captured.err.lower()
+    assert "stale" in captured.err.lower()
+
+
+def test_report_prints_persisted_current_sidecar_unchanged_when_live_audit_is_stale(
+    tmp_path: Path, capsys
+):
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_profiled_guide_run(root, topic_id=topic_id)
+    test_runs._drive_profiled_guide_to_finalize_ready(runs, topic_id)
+    _approve_warning_audit(root, topic_id)
+    runs.finalize_run(topic_id)
+    runs.export_run(topic_id, format="html")
+    persisted = runs.export_report_path(topic_id).read_text(encoding="utf-8")
+    assert json.loads(persisted)["audit"]["state"] == "current"
+
+    projection = runs.audit_projection_path(topic_id)
+    projection.write_bytes(projection.read_bytes() + b"\n")
+    assert runs.audit_state(topic_id) == "stale"
+    assert runs.export_state(topic_id) == "stale"
+
+    assert main(["--workspace", str(root), "report", topic_id]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == persisted
+    assert "export" in captured.err.lower()
+    assert "stale" in captured.err.lower()
 
 
 def test_report_command_prints_final_report_when_not_exported(guide_v1_workspace, capsys):

@@ -209,7 +209,7 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
 
 def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
     if runs.content_contract(topic_id).kind != "interactive_guide":
-        return {
+        result = {
             "state": "missing",
             "blocking": 0,
             "errors": 0,
@@ -217,6 +217,9 @@ def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
             "findings_by_stage": {},
             "effective_blocking": 0,
         }
+        if phase == "final":
+            result["audit"] = {"state": "not_run", "finding_count": 0}
+        return result
     state = runs.report_state(topic_id, phase)
     counts = {"blocking": 0, "errors": 0, "warnings": 0}
     by_stage: dict[str, int] = {}
@@ -286,12 +289,27 @@ def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
                 if by_stage[stage] <= 0:
                     del by_stage[stage]
 
-    return {
+    result = {
         "state": state,
         **counts,
         "findings_by_stage": by_stage,
         "effective_blocking": effective_blocking,
     }
+    if phase == "final":
+        result["audit"] = audit_summary(runs, topic_id)
+    return result
+
+
+def audit_summary(runs: RunStore, topic_id: str) -> dict:
+    """Return only public-safe audit state and its additive finding count."""
+
+    state = runs.audit_state(topic_id)
+    finding_count = 0
+    if state == "current":
+        finding_count = sum(
+            finding.stage == "audit" for finding in runs.combined_findings(topic_id)
+        )
+    return {"state": state, "finding_count": finding_count}
 
 
 def validation_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
@@ -309,6 +327,14 @@ def validation_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
         raise ConfigError(f"invalid validation report: {path}") from exc
     if not isinstance(report, dict):
         raise ConfigError(f"invalid validation report: {path}")
+    if phase == "final":
+        # Presentation surfaces consume the shared combined accessor. The
+        # deterministic report on disk remains audit-free and continues to
+        # own all blocker, waiver, and gate semantics.
+        report = dict(report)
+        report["findings"] = [
+            finding.to_dict() for finding in runs.combined_findings(topic_id)
+        ]
     return {"state": runs.report_state(topic_id, phase), "report": report}
 
 

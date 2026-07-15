@@ -504,6 +504,25 @@ def _make_handler(context: DaemonContext):
                 return self._send(
                     200, write_api.advance_run(context.runs, context.store, m.group(1))
                 )
+            m = re.match(r"^/v1/runs/([^/?]+)/audit$", self.path)
+            if m:
+                body = self._read_body()
+                unknown = sorted(set(body) - {"rebuild"})
+                if unknown:
+                    raise ConfigError(
+                        "unknown audit preparation field(s): " + ", ".join(unknown)
+                    )
+                if "rebuild" in body and not isinstance(body["rebuild"], bool):
+                    raise ConfigError("body field 'rebuild' must be a boolean")
+                return self._send(
+                    200,
+                    write_api.prepare_audit(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        overwrite=body.get("rebuild", False),
+                    ),
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/validate$", self.path)
             if m:
                 body = self._read_body()

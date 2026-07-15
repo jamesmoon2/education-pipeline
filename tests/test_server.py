@@ -929,9 +929,222 @@ def test_advance_writes_spec_prompt_and_returns_status(server):
     assert body["performed"] == "write_prompt"
     assert body["status"]["next_action"]["action"] == "save_response"
     assert body["status"]["next_action"]["stage"] == "spec"
-    # single-step: calling again at a human step is a no-op
-    status, body = _req(server, "POST", "/v1/runs/t/advance")
-    assert status == 200 and body["performed"] is None
+
+
+def _ready_audit_http_run(context, topic_id="audit-topic"):
+    topic_toml = test_runs.TOPIC_TOML.replace(
+        'id = "systems-thinking"', f'id = "{topic_id}"'
+    )
+    TopicStore(context.root).save_topic_toml(topic_id, topic_toml)
+    profiles = ProfileStore(context.root)
+    profile_id = f"{topic_id}-profile"
+    profile_toml = test_runs.PERSONALIZED_PROFILE_TOML.replace(
+        'id = "personalized-profile"', f'id = "{profile_id}"'
+    )
+    profiles.save_profile_toml(profile_id, profile_toml)
+    profiles.attach_profile_to_topic(profile_id, topic_id)
+    context.runs.create_run(topic_id)
+    runs = context.runs
+    test_runs._drive_profiled_guide_to_finalize_ready(runs, topic_id)
+    return runs, topic_id
+
+
+def _audit_response_with_warning(runs, topic_id):
+    response = json.loads(test_runs._valid_personalization_audit_response(runs, topic_id))
+    response["goals"][0]["verdict"] = "weak"
+    return json.dumps(response)
+
+
+def test_audit_http_prepare_generic_ingest_approve_status_and_nonwaivable_refusal(
+    server_with_context,
+):
+    port, context = server_with_context
+    runs, topic_id = _ready_audit_http_run(context)
+
+    status, prepared = _req(port, "POST", f"/v1/runs/{topic_id}/audit")
+    assert status == 200
+    assert prepared["next_steps"]["manual"]["action"] == "save_response"
+    assert prepared["next_steps"]["provider"] == {"action": "enqueue", "stage": "audit"}
+
+    status, _ = _req(
+        port,
+        "POST",
+        f"/v1/runs/{topic_id}/stages/audit/response",
+        body={"text": _audit_response_with_warning(runs, topic_id)},
+    )
+    assert status == 200
+    status, _ = _req(port, "POST", f"/v1/runs/{topic_id}/stages/audit/approve")
+    assert status == 200
+
+    status, payload = _req(port, "GET", f"/v1/runs/{topic_id}")
+    assert status == 200
+    final = payload["validations"]["final"]
+    # The personalized fixture already has one missing goal; marking another
+    # goal weak yields two projected audit findings. Derive the additive count
+    # from the shared accessor so this assertion checks the API projection
+    # rather than duplicating the audit engine's finding rules.
+    audit_findings = [
+        finding for finding in runs.combined_findings(topic_id) if finding.stage == "audit"
+    ]
+    assert len(audit_findings) == 2
+    assert final["audit"] == {
+        "state": "current",
+        "finding_count": len(audit_findings),
+    }
+    assert "audit" not in final["findings_by_stage"]
+
+    status, validation = _req(
+        port, "GET", f"/v1/runs/{topic_id}/validation/final"
+    )
+    audit_finding = next(
+        finding
+        for finding in validation["report"]["findings"]
+        if finding["stage"] == "audit"
+    )
+    assert audit_finding["source_stage"] == "repair"
+
+    status, refused = _req(
+        port,
+        "POST",
+        f"/v1/runs/{topic_id}/validation/final/waivers",
+        body={
+            "finding_id": audit_finding["id"],
+            "guide_sha256": validation["report"]["guide_sha256"],
+            "reason": "Attempted audit waiver.",
+        },
+    )
+    assert status == 422
+    assert refused["error"]["code"] == "finding_not_waivable"
+
+    status, rebuilt = _req(
+        port, "POST", f"/v1/runs/{topic_id}/audit", body={"rebuild": True}
+    )
+    assert status == 200
+    assert rebuilt["audit"]["state"] == "current"
+    assert rebuilt["next_steps"]["provider"]["force"] is True
+
+
+def test_audit_http_errors_are_private_safe(server_with_context):
+    port, context = server_with_context
+    runs, topic_id = _ready_audit_http_run(context, "audit-private")
+    _req(port, "POST", f"/v1/runs/{topic_id}/audit")
+
+    planted = "PLANTED PRIVATE HTTP AUDIT VALUE"
+    status, payload = _req(
+        port,
+        "POST",
+        f"/v1/runs/{topic_id}/stages/audit/response",
+        body={"text": json.dumps({"secret": planted})},
+    )
+    assert status == 400
+    assert planted not in json.dumps(payload)
+
+    status, unavailable = _req(port, "POST", "/v1/runs/g/audit")
+    assert status == 400
+    assert unavailable["error"]["message"] == (
+        "personalization audit unavailable: no attached profile snapshot"
+    )
+
+
+def test_daemon_fake_provider_audit_flow(server_with_context, monkeypatch):
+    port, context = server_with_context
+    runs, topic_id = _ready_audit_http_run(context, "audit-provider")
+    runs.finalize_run(topic_id)
+    assert runs.run_status(topic_id).next_action.action == "done"
+    status, _ = _req(port, "POST", f"/v1/runs/{topic_id}/audit")
+    assert status == 200
+
+    monkeypatch.setenv("FAKE_STDOUT", _audit_response_with_warning(runs, topic_id))
+    status, job = _req(
+        port,
+        "POST",
+        "/v1/jobs",
+        body={"topic_id": topic_id, "stage": "audit"},
+    )
+    assert status == 200
+
+    import time
+
+    for _ in range(200):
+        status, job = _req(port, "GET", f"/v1/jobs/{job['id']}")
+        if job["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
+            break
+        time.sleep(0.02)
+    assert job["status"] == "succeeded"
+    assert runs.audit_state(topic_id) == "not_run"
+
+    status, _ = _req(port, "POST", f"/v1/runs/{topic_id}/stages/audit/approve")
+    assert status == 200
+    assert runs.audit_state(topic_id) == "current"
+
+    # The optional audit never reopens the primary lifecycle: this finalized
+    # run remains done, and advance is still a no-op without changing audit.
+    status, body = _req(port, "POST", f"/v1/runs/{topic_id}/advance")
+    assert status == 200
+    assert body["performed"] is None
+    assert body["status"]["next_action"]["action"] == "done"
+    assert body["status"]["validations"]["final"]["audit"]["state"] == "current"
+    assert runs.audit_state(topic_id) == "current"
+
+
+def test_audit_provider_private_stderr_is_absent_from_file_http_and_cli_logs(
+    server_with_context, monkeypatch, capsys
+):
+    port, context = server_with_context
+    runs, topic_id = _ready_audit_http_run(context, "audit-private-stdout")
+    status, _ = _req(port, "POST", f"/v1/runs/{topic_id}/audit")
+    assert status == 200
+
+    planted = "Synthetic private goal alpha"
+    monkeypatch.setenv("FAKE_STDOUT", _audit_response_with_warning(runs, topic_id))
+    monkeypatch.setenv("FAKE_STDERR", planted + "\n")
+    status, job = _req(
+        port,
+        "POST",
+        "/v1/jobs",
+        body={"topic_id": topic_id, "stage": "audit"},
+    )
+    assert status == 200
+
+    import time
+
+    for _ in range(200):
+        status, job = _req(port, "GET", f"/v1/jobs/{job['id']}")
+        if job["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
+            break
+        time.sleep(0.02)
+    assert job["status"] == "succeeded"
+    response_path = runs.stage_paths(topic_id, "audit").response_path
+    assert response_path.is_file()
+    assert json.loads(response_path.read_text(encoding="utf-8"))["schema_version"] == 1
+
+    log_path = context.store.log_path(topic_id, job["id"])
+    file_log = log_path.read_text(encoding="utf-8")
+    assert planted not in file_log
+    assert file_log == ""
+
+    status, log_payload = _req(port, "GET", f"/v1/jobs/{job['id']}/log")
+    assert status == 200
+    assert planted not in log_payload["data"]
+    assert log_payload["data"] == ""
+
+    class StoreBackedClient:
+        def get_log(self, job_id, offset):
+            stored = context.store.find(job_id)
+            assert stored is not None
+            data, next_offset = context.store.read_log(stored, offset)
+            return data.decode("utf-8", "replace"), next_offset
+
+    monkeypatch.setattr(
+        "education_pipeline.cli.ensure_daemon",
+        lambda root, autostart=False: StoreBackedClient(),
+    )
+    from education_pipeline.cli import main as cli_main
+
+    assert cli_main(["--workspace", str(context.root), "logs", job["id"]]) == 0
+    cli_log = capsys.readouterr().out
+    assert planted not in cli_log
+    assert cli_log == ""
 
 
 def test_response_ingest_conflict_and_force(server):

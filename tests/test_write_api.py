@@ -234,6 +234,105 @@ def test_advance_is_a_noop_at_human_steps(tmp_path):
     assert again["status"]["next_action"]["action"] == "save_response"
 
 
+def test_prepare_audit_returns_manual_and_provider_next_steps_and_rebuilds(tmp_path):
+    runs = test_runs._create_profiled_guide_run(tmp_path)
+    topic_id = "systems-thinking"
+    test_runs._drive_profiled_guide_to_finalize_ready(runs, topic_id)
+    jobs = JobStore(tmp_path)
+
+    prepared = write_api.prepare_audit(runs, jobs, topic_id)
+
+    assert prepared["topic_id"] == topic_id
+    assert prepared["stage"] == "audit"
+    assert prepared["prompt_path"] == "prompts/audit.prompt.md"
+    assert prepared["response_path"] == "responses/audit.response.json"
+    assert prepared["audit"] == {"state": "not_run", "finding_count": 0}
+    assert prepared["next_steps"] == {
+        "manual": {
+            "action": "save_response",
+            "stage": "audit",
+            "response_path": "responses/audit.response.json",
+        },
+        "provider": {"action": "enqueue", "stage": "audit"},
+    }
+
+    runs.ingest_response(
+        topic_id,
+        "audit",
+        test_runs._valid_personalization_audit_response(runs, topic_id),
+    )
+    runs.approve_stage(topic_id, "audit")
+    rebuilt = write_api.prepare_audit(runs, jobs, topic_id)
+    assert rebuilt["prompt_path"] == "prompts/audit.prompt.md"
+    assert rebuilt["next_steps"]["provider"] == {
+        "action": "enqueue",
+        "stage": "audit",
+        "force": True,
+    }
+
+
+def test_audit_status_combines_safe_findings_without_changing_gate_stage_counts(tmp_path):
+    runs = test_runs._create_profiled_guide_run(tmp_path)
+    topic_id = "systems-thinking"
+    test_runs._drive_profiled_guide_to_finalize_ready(runs, topic_id)
+
+    before = read_api.run_status_payload(runs, topic_id)["validations"]["final"]
+    assert before["audit"] == {"state": "not_run", "finding_count": 0}
+    deterministic_counts = before["findings_by_stage"]
+
+    runs.prepare_personalization_audit(topic_id)
+    runs.ingest_response(
+        topic_id,
+        "audit",
+        test_runs._valid_personalization_audit_response(runs, topic_id),
+    )
+    runs.approve_stage(topic_id, "audit")
+
+    after = read_api.run_status_payload(runs, topic_id)["validations"]["final"]
+    assert after["audit"]["state"] == "current"
+    assert after["audit"]["finding_count"] == len(
+        [finding for finding in runs.combined_findings(topic_id) if finding.stage == "audit"]
+    )
+    assert after["findings_by_stage"] == deterministic_counts
+
+    payload = read_api.validation_payload(runs, topic_id, "final")
+    audit_finding = next(
+        finding for finding in payload["report"]["findings"] if finding["stage"] == "audit"
+    )
+    assert audit_finding["source_stage"] == "repair"
+
+    runs.audit_projection_path(topic_id).write_bytes(
+        runs.audit_projection_path(topic_id).read_bytes() + b"\n"
+    )
+    stale = read_api.run_status_payload(runs, topic_id)["validations"]["final"]
+    assert stale["audit"] == {"state": "stale", "finding_count": 0}
+    assert stale["findings_by_stage"] == deterministic_counts
+
+
+def test_prepare_audit_eligibility_and_ingest_errors_are_private_safe(tmp_path):
+    runs = test_runs._create_guide_run(tmp_path)
+    topic_id = "systems-thinking"
+    test_runs._drive_guide_to_finalize_ready(runs, topic_id)
+    jobs = JobStore(tmp_path)
+
+    with pytest.raises(ConfigError) as unavailable:
+        write_api.prepare_audit(runs, jobs, topic_id)
+    assert str(unavailable.value) == (
+        "personalization audit unavailable: no attached profile snapshot"
+    )
+
+    ready = test_runs._create_profiled_guide_run(tmp_path / "ready")
+    test_runs._drive_profiled_guide_to_finalize_ready(ready, topic_id)
+    ready_jobs = JobStore(tmp_path / "ready")
+    write_api.prepare_audit(ready, ready_jobs, topic_id)
+    planted = "PLANTED PRIVATE WRITE API VALUE"
+    with pytest.raises(ConfigError) as rejected:
+        write_api.ingest_response(
+            ready, ready_jobs, topic_id, "audit", json.dumps({"secret": planted})
+        )
+    assert planted not in str(rejected.value)
+
+
 def test_ingest_conflict_and_force(tmp_path):
     runs, jobs = _workspace(tmp_path)
     write_api.advance_run(runs, jobs, "t")
