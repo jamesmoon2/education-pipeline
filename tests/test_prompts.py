@@ -23,6 +23,7 @@ from education_pipeline.prompts import (
     compile_guide_v1_qa_prompt,
     compile_guide_v1_repair_prompt,
     compile_guide_v1_spec_prompt,
+    compile_personalization_audit_prompt,
 )
 
 
@@ -944,3 +945,50 @@ def test_guide_v1_prompts_do_not_affect_legacy_prompt_hashes() -> None:
         hashlib.sha256(repair_artifact.text.encode("utf-8")).hexdigest()
         == _LEGACY_PROMPT_TEXT_SHA256["repair"]
     )
+
+
+def test_compile_personalization_audit_prompt_delimits_private_inputs_and_requires_json(
+    tmp_path: Path,
+) -> None:
+    profile = ProfileStore(tmp_path).save_profile_toml("visual-profile", PROFILE_TOML)
+    guide_json = '{"schema_version":"1.1","course":{"id":"synthetic"}}\n'
+    trace_json = (
+        '{"schema_version":1,"guide_sha256":"' + "a" * 64
+        + '","profile_snapshot_sha256":"' + "b" * 64
+        + '","goals":[],"active_facets":[]}\n'
+    )
+
+    artifact = compile_personalization_audit_prompt(
+        topic_id="systems-thinking",
+        final_guide_json=guide_json,
+        personalization_trace_json=trace_json,
+        profile=profile,
+    )
+
+    assert artifact.stage == "audit"
+    assert artifact.topic_id == "systems-thinking"
+    assert artifact.text.startswith("# Personalization Audit Stage Prompt\n")
+    assert guide_json.rstrip() in artifact.text
+    assert trace_json.rstrip() in artifact.text
+    assert "BEGIN UNTRUSTED DATA: learner profile context" in artifact.text
+    assert "BEGIN UNTRUSTED DATA: canonical final candidate" in artifact.text
+    assert "BEGIN UNTRUSTED DATA: personalization trace" in artifact.text
+    assert "Return exactly one JSON object" in artifact.text
+    assert '"schema_version": 1' in artifact.text
+    assert "Never include a private value or fingerprint" in artifact.text
+
+
+@pytest.mark.parametrize(
+    ("guide_json", "trace_json"),
+    [("", "{}"), ("{}", "   ")],
+)
+def test_compile_personalization_audit_prompt_rejects_missing_inputs(
+    guide_json: str, trace_json: str
+) -> None:
+    with pytest.raises(ConfigError, match="must be a non-empty string"):
+        compile_personalization_audit_prompt(
+            topic_id="systems-thinking",
+            final_guide_json=guide_json,
+            personalization_trace_json=trace_json,
+            profile=None,
+        )

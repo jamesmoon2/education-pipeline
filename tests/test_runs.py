@@ -283,6 +283,51 @@ def _drive_profiled_guide_to_finalize_ready(
     runs.validate_run(topic_id, "final")
 
 
+def _valid_personalization_audit_response(runs: RunStore, topic_id: str) -> str:
+    trace = json.loads(
+        runs.personalization_trace_path(topic_id).read_text(encoding="utf-8")
+    )
+    guide = normalize_guide(
+        parse_guide(runs.approved_path(topic_id, "repair").read_bytes())
+    )
+    fallback_module = guide.modules[0].id
+    goals = []
+    for item in trace["goals"]:
+        evidence = []
+        if item["serving_module_ids"]:
+            evidence = [{"kind": "module", "id": item["serving_module_ids"][0]}]
+        elif item["serving_outcome_ids"]:
+            evidence = [{"kind": "outcome", "id": item["serving_outcome_ids"][0]}]
+        goals.append(
+            {
+                "goal_id": item["goal_id"],
+                "verdict": "served" if evidence else "missing",
+                "evidence": evidence,
+                "rationale": "Synthetic local audit rationale.",
+            }
+        )
+    facets = [
+        {
+            "facet_id": facet_id,
+            "verdict": "served",
+            "evidence": [{"kind": "module", "id": fallback_module}],
+            "rationale": "Synthetic local facet rationale.",
+        }
+        for facet_id in trace["active_facets"]
+    ]
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "goals": goals,
+            "facets": facets,
+            "generic_sections": [],
+            "suspected_private_details": [],
+            "overall_summary": "Synthetic local tailoring summary.",
+        },
+        sort_keys=True,
+    )
+
+
 def _drive_guide_to_draft_approved(
     runs: RunStore, topic_id: str, draft_body: str | None = None
 ) -> None:
@@ -1340,18 +1385,297 @@ def test_audit_stage_uses_json_artifacts_and_stale_state_wins(tmp_path: Path) ->
     ).state == "stale"
 
 
-def test_audit_stage_supports_direct_response_ingest_and_approval(tmp_path: Path) -> None:
+def test_audit_stage_refuses_an_unbound_handwritten_prompt(tmp_path: Path) -> None:
     runs = _create_legacy_run(tmp_path)
     paths = runs.stage_paths("systems-thinking", "audit")
     paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
     paths.prompt_path.write_text("AUDIT PROMPT", encoding="utf-8")
 
-    assert (
+    with pytest.raises(StaleContentError, match="audit prompt is stale"):
         runs.ingest_response("systems-thinking", "audit", '{"findings": []}')
-        == paths.response_path
+    assert runs.stage_status("systems-thinking", "audit").state == "stale"
+
+
+def test_personalization_audit_requires_current_final_validation_profile_and_trace(
+    tmp_path: Path,
+) -> None:
+    runs = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_draft_approved(runs, "systems-thinking")
+
+    with pytest.raises(ConfigError, match="final validation is not current"):
+        runs.prepare_personalization_audit("systems-thinking")
+
+    _drive_profiled_guide_to_finalize_ready(
+        _create_profiled_guide_run(tmp_path / "ready"), "systems-thinking"
     )
-    assert runs.approve_stage("systems-thinking", "audit") == paths.approved_path
-    assert runs.stage_status("systems-thinking", "audit").state == "approved"
+    ready = RunStore(tmp_path / "ready")
+    ready.personalization_trace_path("systems-thinking").unlink()
+    with pytest.raises(ConfigError, match="personalization trace is not current"):
+        ready.prepare_personalization_audit("systems-thinking")
+
+    unprofiled = _create_guide_run(tmp_path / "unprofiled")
+    _drive_guide_to_finalize_ready(unprofiled, "systems-thinking")
+    with pytest.raises(ConfigError) as caught:
+        unprofiled.prepare_personalization_audit("systems-thinking")
+    assert str(caught.value) == (
+        "personalization audit unavailable: no attached profile snapshot"
+    )
+
+
+def test_prepare_ingest_and_approve_audit_binds_exact_inputs_and_safe_projection(
+    tmp_path: Path,
+) -> None:
+    runs = _create_profiled_guide_run(tmp_path)
+    tid = "systems-thinking"
+    _drive_profiled_guide_to_finalize_ready(runs, tid)
+
+    prepared = runs.prepare_personalization_audit(tid)
+    assert prepared.prompt_path == runs.run_dir(tid) / "prompts" / "audit.prompt.md"
+    assert prepared.response_path == runs.run_dir(tid) / "responses" / "audit.response.json"
+    assert prepared.artifact.stage == "audit"
+    assert runs.audit_state(tid) == "not_run"
+    assert runs.audit_prompt_is_current(tid) is True
+    prompt_event = runs._latest_stage_event(tid, "audit", "prompt_written")
+    assert prompt_event is not None
+    assert prompt_event["guide_sha256"] == json.loads(
+        runs.personalization_trace_path(tid).read_text(encoding="utf-8")
+    )["guide_sha256"]
+    assert prompt_event["profile_snapshot_file_sha256"] == hashlib.sha256(
+        ProfileStore(tmp_path).topic_profile_snapshot_path(tid).read_bytes()
+    ).hexdigest()
+    assert prompt_event["personalization_trace_file_sha256"] == hashlib.sha256(
+        runs.personalization_trace_path(tid).read_bytes()
+    ).hexdigest()
+
+    response = _valid_personalization_audit_response(runs, tid)
+    assert runs.ingest_response(tid, "audit", response).name == "audit.response.json"
+    assert runs.audit_state(tid) == "not_run"
+    assert runs.approve_stage(tid, "audit").name == "audit.json"
+    projection = runs.audit_projection_path(tid)
+    assert projection.name == "personalization-audit-projection.json"
+    assert projection.is_file()
+    assert runs.audit_state(tid) == "current"
+    assert runs.stage_status(tid, "audit").state == "approved"
+
+    public_bytes = projection.read_bytes()
+    private_hashes = (
+        prompt_event["profile_snapshot_file_sha256"],
+        prompt_event["personalization_trace_file_sha256"],
+        hashlib.sha256(runs.approved_path(tid, "audit").read_bytes()).hexdigest(),
+    )
+    for private_hash in private_hashes:
+        assert private_hash.encode("ascii") not in public_bytes
+    approval = runs._latest_stage_event(tid, "audit", "response_approved")
+    assert approval is not None
+    assert approval["approved_file_sha256"] == hashlib.sha256(
+        runs.approved_path(tid, "audit").read_bytes()
+    ).hexdigest()
+    assert approval["audit_projection_file_sha256"] == hashlib.sha256(
+        projection.read_bytes()
+    ).hexdigest()
+
+
+def test_identical_audit_prompt_rebuild_preserves_current_approval(tmp_path: Path) -> None:
+    runs = _create_profiled_guide_run(tmp_path)
+    tid = "systems-thinking"
+    _drive_profiled_guide_to_finalize_ready(runs, tid)
+    runs.prepare_personalization_audit(tid)
+    runs.ingest_response(tid, "audit", _valid_personalization_audit_response(runs, tid))
+    runs.approve_stage(tid, "audit")
+    original_prompt = runs.stage_paths(tid, "audit").prompt_path.read_bytes()
+    original_projection = runs.audit_projection_path(tid).read_bytes()
+    assert runs.audit_state(tid) == "current"
+
+    runs.prepare_personalization_audit(tid, overwrite=True)
+
+    assert runs.stage_paths(tid, "audit").prompt_path.read_bytes() == original_prompt
+    assert runs.audit_projection_path(tid).read_bytes() == original_projection
+    assert runs.audit_state(tid) == "current"
+    assert runs.stage_status(tid, "audit").state == "approved"
+
+
+def test_audit_before_or_after_finalize_is_equivalent_and_never_required(
+    tmp_path: Path,
+) -> None:
+    before = _create_profiled_guide_run(tmp_path / "before")
+    after = _create_profiled_guide_run(tmp_path / "after")
+    tid = "systems-thinking"
+    for runs in (before, after):
+        _drive_profiled_guide_to_finalize_ready(runs, tid)
+
+    before.prepare_personalization_audit(tid)
+    before_prompt = before.stage_paths(tid, "audit").prompt_path.read_bytes()
+    response = _valid_personalization_audit_response(before, tid)
+    before.ingest_response(tid, "audit", response)
+    before.approve_stage(tid, "audit")
+    before.finalize_run(tid)
+
+    after.finalize_run(tid)
+    assert after.run_status(tid).next_action.action == "done"
+    assert after.export_run(tid, format="html").is_file()
+    after.prepare_personalization_audit(tid)
+    assert after.stage_paths(tid, "audit").prompt_path.read_bytes() == before_prompt
+    after.ingest_response(tid, "audit", _valid_personalization_audit_response(after, tid))
+    after.approve_stage(tid, "audit")
+    assert after.audit_projection_path(tid).read_bytes() == before.audit_projection_path(
+        tid
+    ).read_bytes()
+    assert after.run_status(tid).next_action.action == "done"
+
+
+def test_trace_tamper_stales_audit_and_exact_regeneration_restores_it(
+    tmp_path: Path,
+) -> None:
+    runs = _create_profiled_guide_run(tmp_path)
+    tid = "systems-thinking"
+    _drive_profiled_guide_to_finalize_ready(runs, tid)
+    runs.prepare_personalization_audit(tid)
+    runs.ingest_response(tid, "audit", _valid_personalization_audit_response(runs, tid))
+    runs.approve_stage(tid, "audit")
+    assert runs.audit_state(tid) == "current"
+
+    trace_path = runs.personalization_trace_path(tid)
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    trace["active_facets"] = []
+    trace_path.write_text(json.dumps(trace), encoding="utf-8")
+    assert runs.audit_state(tid) == "stale"
+    assert runs.audit_prompt_is_current(tid) is False
+    assert runs.stage_status(tid, "audit").state == "stale"
+    with pytest.raises(StaleContentError, match="audit prompt is stale"):
+        runs.ingest_response(tid, "audit", "{}", force=True)
+
+    runs.validate_run(tid, "final")
+    runs.prepare_personalization_audit(tid, overwrite=True)
+    assert runs.audit_state(tid) == "current"
+    assert runs.audit_prompt_is_current(tid) is True
+    assert runs.require_provider_ready_prompt(tid, "audit") == runs.stage_paths(
+        tid, "audit"
+    ).prompt_path
+
+
+def test_rebuild_for_different_current_inputs_does_not_revive_old_approval(
+    tmp_path: Path,
+) -> None:
+    runs = _create_profiled_guide_run(tmp_path)
+    tid = "systems-thinking"
+    _drive_profiled_guide_to_finalize_ready(runs, tid)
+    runs.prepare_personalization_audit(tid)
+    runs.ingest_response(tid, "audit", _valid_personalization_audit_response(runs, tid))
+    runs.approve_stage(tid, "audit")
+    assert runs.audit_state(tid) == "current"
+
+    profiles = ProfileStore(tmp_path)
+    replacement = PERSONALIZED_PROFILE_TOML.replace(
+        "Synthetic private goal alpha", "Synthetic replacement goal alpha"
+    )
+    profiles.save_profile_toml("personalized-profile", replacement, overwrite=True)
+    profiles.attach_profile_to_topic("personalized-profile", tid, overwrite=True)
+    runs.validate_run(tid, "final")
+    assert runs.audit_state(tid) == "stale"
+
+    runs.prepare_personalization_audit(tid, overwrite=True)
+
+    assert runs.audit_prompt_is_current(tid) is True
+    assert runs.audit_state(tid) == "stale"
+    assert runs.stage_status(tid, "audit").state == "stale"
+
+
+def test_provider_ready_audit_prompt_refuses_missing_and_stale_inputs(tmp_path: Path) -> None:
+    runs = _create_profiled_guide_run(tmp_path)
+    tid = "systems-thinking"
+    _drive_profiled_guide_to_finalize_ready(runs, tid)
+
+    with pytest.raises(ConfigError, match="audit prompt is missing"):
+        runs.require_provider_ready_prompt(tid, "audit")
+    runs.prepare_personalization_audit(tid)
+    runs.approved_path(tid, "repair").write_text("{}", encoding="utf-8")
+    with pytest.raises(StaleContentError, match="audit prompt is stale"):
+        runs.require_provider_ready_prompt(tid, "audit")
+
+
+@pytest.mark.parametrize("mutation", ["repair", "profile"])
+def test_repair_or_profile_replacement_invalidates_an_approved_audit(
+    tmp_path: Path, mutation: str
+) -> None:
+    runs = _create_profiled_guide_run(tmp_path)
+    tid = "systems-thinking"
+    _drive_profiled_guide_to_finalize_ready(runs, tid)
+    runs.prepare_personalization_audit(tid)
+    runs.ingest_response(tid, "audit", _valid_personalization_audit_response(runs, tid))
+    runs.approve_stage(tid, "audit")
+
+    if mutation == "repair":
+        runs.approved_path(tid, "repair").write_text("{}", encoding="utf-8")
+    else:
+        profiles = ProfileStore(tmp_path)
+        replacement = PERSONALIZED_PROFILE_TOML.replace(
+            "Synthetic private goal alpha", "Synthetic replacement goal alpha"
+        )
+        profiles.save_profile_toml(
+            "personalized-profile", replacement, overwrite=True
+        )
+        profiles.attach_profile_to_topic(
+            "personalized-profile", tid, overwrite=True
+        )
+
+    assert runs.audit_state(tid) == "stale"
+    assert runs.audit_prompt_is_current(tid) is False
+
+
+def test_audit_ingest_and_approval_shape_errors_are_safe(tmp_path: Path) -> None:
+    runs = _create_profiled_guide_run(tmp_path)
+    tid = "systems-thinking"
+    _drive_profiled_guide_to_finalize_ready(runs, tid)
+    runs.prepare_personalization_audit(tid)
+
+    with pytest.raises(ConfigError) as ingest_error:
+        runs.ingest_response(tid, "audit", '{"secret":"PLANTED PRIVATE VALUE"}')
+    assert "PLANTED PRIVATE VALUE" not in str(ingest_error.value)
+
+    valid = _valid_personalization_audit_response(runs, tid)
+    runs.ingest_response(tid, "audit", valid)
+    runs.response_path(tid, "audit").write_text(
+        '{"secret":"SECOND PLANTED PRIVATE VALUE"}', encoding="utf-8"
+    )
+    with pytest.raises(ConfigError) as approval_error:
+        runs.approve_stage(tid, "audit")
+    assert "SECOND PLANTED PRIVATE VALUE" not in str(approval_error.value)
+
+
+def test_failed_audit_projection_write_cannot_leave_approval_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = _create_profiled_guide_run(tmp_path)
+    tid = "systems-thinking"
+    _drive_profiled_guide_to_finalize_ready(runs, tid)
+    runs.prepare_personalization_audit(tid)
+    runs.ingest_response(tid, "audit", _valid_personalization_audit_response(runs, tid))
+    runs.approve_stage(tid, "audit")
+    assert runs.audit_state(tid) == "current"
+    runs.ingest_response(
+        tid,
+        "audit",
+        _valid_personalization_audit_response(runs, tid).replace(
+            "Synthetic local tailoring summary.",
+            "Synthetic replacement tailoring summary.",
+        ),
+        force=True,
+    )
+
+    import education_pipeline.runs as runs_module
+
+    real_write = runs_module._write_bytes_atomic
+
+    def fail_projection(path: Path, data: bytes) -> None:
+        if path == runs.audit_projection_path(tid):
+            raise OSError("synthetic projection write failure")
+        real_write(path, data)
+
+    monkeypatch.setattr(runs_module, "_write_bytes_atomic", fail_projection)
+    with pytest.raises(OSError, match="synthetic projection write failure"):
+        runs.approve_stage(tid, "audit", overwrite=True)
+    assert runs.audit_state(tid) == "stale"
+    assert runs.stage_status(tid, "audit").state == "stale"
 
 
 def test_run_status_advances_through_spec_substates(tmp_path: Path) -> None:

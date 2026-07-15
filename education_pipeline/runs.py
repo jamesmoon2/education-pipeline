@@ -61,6 +61,11 @@ from education_pipeline.guides.personalization import (
     canonical_personalization_trace_bytes,
     personalization_trace_is_fresh,
 )
+from education_pipeline.guides.audit import (
+    AuditResponseError,
+    canonical_safe_audit_projection_bytes,
+    parse_audit_response,
+)
 from education_pipeline.guides.projection import public_guide_projection
 from education_pipeline.privacy import profile_private_values
 from education_pipeline.profiles import LearnerProfile, parse_learner_profile
@@ -74,6 +79,7 @@ from education_pipeline.prompts import (
     compile_guide_v1_repair_prompt,
     compile_guide_v1_spec_prompt,
     compile_outline_prompt,
+    compile_personalization_audit_prompt,
     compile_qa_prompt,
     compile_repair_prompt,
     compile_spec_prompt,
@@ -172,6 +178,19 @@ class _ValidationArtifacts:
     profile_snapshot_path: Path | None
     profile_snapshot_sha256: str | None
     source_sha256: str
+
+
+@dataclass(frozen=True)
+class _AuditInputs:
+    guide: Guide
+    guide_bytes: bytes
+    guide_sha256: str
+    profile: LearnerProfile
+    profile_snapshot_path: Path
+    profile_snapshot_sha256: str
+    trace_path: Path
+    trace_bytes: bytes
+    trace_sha256: str
 
 
 @dataclass(frozen=True)
@@ -444,6 +463,12 @@ class RunStore:
         stale = False
         if approved and self._is_guide_v1(paths.topic_id) and paths.stage in {"qa", "repair"}:
             stale = self._stage_upstream_stale(paths.topic_id, paths.stage)
+        elif paths.stage == "audit":
+            stale = (
+                (paths.prompt_path.exists() and not self.audit_prompt_is_current(paths.topic_id))
+                or self.audit_state(paths.topic_id) == "stale"
+                or self._audit_approval_incomplete(paths.topic_id)
+            )
         return StageStatus(
             stage=paths.stage,
             prompt_written=paths.prompt_path.exists(),
@@ -795,6 +820,9 @@ class RunStore:
                 f"no ingested response to approve for stage {paths.stage!r}: {paths.response_path}"
             )
 
+        if paths.stage == "audit":
+            return self._approve_personalization_audit(paths.topic_id, overwrite=overwrite)
+
         text = paths.response_path.read_text(encoding="utf-8")
         if self._is_guide_v1(paths.topic_id) and paths.stage in {"spec", "outline"}:
             self._validate_guide_approval(paths.topic_id, paths.stage, text)
@@ -829,6 +857,18 @@ class RunStore:
         paths = self.stage_paths(topic_id, stage)
         if not text.strip():
             raise ConfigError(f"refusing to ingest empty response for stage {paths.stage!r}")
+        if paths.stage == "audit":
+            self.require_provider_ready_prompt(paths.topic_id, paths.stage)
+            inputs = self._current_audit_inputs(paths.topic_id)
+            try:
+                parse_audit_response(
+                    text,
+                    guide=inputs.guide,
+                    trace=inputs.trace_bytes,
+                    private_values=profile_private_values(inputs.profile),
+                )
+            except AuditResponseError as exc:
+                raise ConfigError(str(exc)) from exc
         if paths.response_path.exists() and not force:
             raise ConfigError(
                 f"response already ingested for stage {paths.stage!r}: {paths.response_path}"
@@ -1003,6 +1043,184 @@ class RunStore:
 
     def personalization_trace_path(self, topic_id: str) -> Path:
         return self.run_dir(topic_id) / "reports" / "personalization-trace.json"
+
+    def audit_projection_path(self, topic_id: str) -> Path:
+        """Fixed public-safe projection path for the optional local audit."""
+
+        return self.run_dir(topic_id) / "reports" / "personalization-audit-projection.json"
+
+    def prepare_personalization_audit(
+        self, topic_id: str, *, overwrite: bool = False
+    ) -> PromptFile:
+        """Explicitly compile and persist a current personalization-audit prompt."""
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        self.create_run(safe_id)
+        inputs = self._current_audit_inputs(safe_id)
+        artifact = compile_personalization_audit_prompt(
+            topic_id=safe_id,
+            final_guide_json=inputs.guide_bytes.decode("utf-8"),
+            personalization_trace_json=inputs.trace_bytes.decode("utf-8"),
+            profile=inputs.profile,
+        )
+        paths = self.stage_paths(safe_id, "audit")
+        prompt_bytes = artifact.text.encode("utf-8")
+
+        with self._manifest_write_lock(safe_id):
+            current = self._current_audit_inputs(safe_id)
+            if self._audit_input_hashes(current) != self._audit_input_hashes(inputs):
+                raise StaleContentError(
+                    "personalization audit inputs changed while the prompt was prepared; retry"
+                )
+            if paths.prompt_path.exists() and not overwrite:
+                raise ConfigError(f"refusing to overwrite existing file: {paths.prompt_path}")
+            preserved_approval = None
+            if self.audit_state(safe_id) == "current":
+                candidate = self._latest_stage_event(
+                    safe_id, "audit", "response_approved"
+                )
+                if (
+                    candidate is not None
+                    and candidate.get("prompt_file_sha256")
+                    == hashlib.sha256(prompt_bytes).hexdigest()
+                ):
+                    preserved_approval = candidate
+            _write_bytes_atomic(paths.prompt_path, prompt_bytes)
+            if not paths.response_path.exists():
+                _write_bytes_atomic(paths.stub_path, _stub_text(paths).encode("utf-8"))
+            self._append_event_locked(
+                safe_id,
+                stage="audit",
+                action="prompt_written",
+                files={
+                    "prompt_file": paths.prompt_path,
+                    "profile_snapshot_file": current.profile_snapshot_path,
+                    "personalization_trace_file": current.trace_path,
+                },
+                extra={
+                    "guide_sha256": current.guide_sha256,
+                    **(
+                        {
+                            "preserved_approval_event_sha256": (
+                                self._manifest_event_sha256(preserved_approval)
+                            )
+                        }
+                        if preserved_approval is not None
+                        else {}
+                    ),
+                },
+            )
+        return PromptFile(
+            stage="audit",
+            topic_id=safe_id,
+            prompt_path=paths.prompt_path,
+            response_path=paths.response_path,
+            stub_path=paths.stub_path,
+            artifact=artifact,
+        )
+
+    def audit_prompt_is_current(self, topic_id: str) -> bool:
+        """Whether the latest audit prompt event and bytes bind current inputs."""
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        paths = self.stage_paths(safe_id, "audit")
+        if not paths.prompt_path.is_file():
+            return False
+        event = self._latest_stage_event(safe_id, "audit", "prompt_written")
+        if event is None:
+            return False
+        try:
+            inputs = self._current_audit_inputs(safe_id)
+            prompt_sha = hashlib.sha256(paths.prompt_path.read_bytes()).hexdigest()
+        except (ConfigError, OSError, UnicodeError):
+            return False
+        return (
+            event.get("prompt_file_sha256") == prompt_sha
+            and event.get("prompt_file")
+            == _relative_to(paths.prompt_path, self.run_dir(safe_id))
+            and event.get("guide_sha256") == inputs.guide_sha256
+            and event.get("profile_snapshot_file")
+            == _relative_to(inputs.profile_snapshot_path, self.run_dir(safe_id))
+            and event.get("profile_snapshot_file_sha256")
+            == inputs.profile_snapshot_sha256
+            and event.get("personalization_trace_file")
+            == _relative_to(inputs.trace_path, self.run_dir(safe_id))
+            and event.get("personalization_trace_file_sha256") == inputs.trace_sha256
+        )
+
+    def require_provider_ready_prompt(self, topic_id: str, stage: str) -> Path:
+        """Return a runnable prompt path, refusing missing/stale audit prompts."""
+
+        paths = self.stage_paths(topic_id, stage)
+        if not paths.prompt_path.is_file():
+            raise ConfigError(f"{paths.stage} prompt is missing; prepare it before enqueue")
+        if paths.stage == "audit" and not self.audit_prompt_is_current(paths.topic_id):
+            raise StaleContentError(
+                "audit prompt is stale; rebuild it before enqueue or response ingest"
+            )
+        return paths.prompt_path
+
+    def audit_state(self, topic_id: str) -> str:
+        """Return public audit state: ``not_run`` | ``current`` | ``stale``."""
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        events = self._manifest_events(safe_id)
+        approval_index = next(
+            (
+                index
+                for index in range(len(events) - 1, -1, -1)
+                if events[index].get("stage") == "audit"
+                and events[index].get("action") == "response_approved"
+            ),
+            None,
+        )
+        if approval_index is None:
+            return "not_run"
+        approval = events[approval_index]
+        for event in events[approval_index + 1 :]:
+            if event.get("stage") != "audit":
+                continue
+            if event.get("action") == "audit_approval_started":
+                return "stale"
+            if event.get("action") == "prompt_written" and not self._prompt_preserves_approval(
+                event, approval
+            ):
+                return "stale"
+        try:
+            inputs = self._current_audit_inputs(safe_id)
+            paths = self.stage_paths(safe_id, "audit")
+            projection_path = self.audit_projection_path(safe_id)
+            file_hashes = {
+                "prompt_file_sha256": hashlib.sha256(paths.prompt_path.read_bytes()).hexdigest(),
+                "approved_file_sha256": hashlib.sha256(paths.approved_path.read_bytes()).hexdigest(),
+                "audit_projection_file_sha256": hashlib.sha256(
+                    projection_path.read_bytes()
+                ).hexdigest(),
+            }
+        except (ConfigError, OSError, UnicodeError):
+            return "stale"
+        expected = {
+            **file_hashes,
+            "guide_sha256": inputs.guide_sha256,
+            "profile_snapshot_file_sha256": inputs.profile_snapshot_sha256,
+            "personalization_trace_file_sha256": inputs.trace_sha256,
+            "prompt_file": _relative_to(paths.prompt_path, self.run_dir(safe_id)),
+            "approved_file": _relative_to(paths.approved_path, self.run_dir(safe_id)),
+            "profile_snapshot_file": _relative_to(
+                inputs.profile_snapshot_path, self.run_dir(safe_id)
+            ),
+            "personalization_trace_file": _relative_to(
+                inputs.trace_path, self.run_dir(safe_id)
+            ),
+            "audit_projection_file": _relative_to(
+                projection_path, self.run_dir(safe_id)
+            ),
+        }
+        return (
+            "current"
+            if all(approval.get(key) == value for key, value in expected.items())
+            else "stale"
+        )
 
     def waivers_path(self, topic_id: str) -> Path:
         return self.run_dir(topic_id) / "reports" / "validation-waivers.json"
@@ -2081,6 +2299,183 @@ class RunStore:
             snapshot_path,
             hashlib.sha256(source_bytes).hexdigest(),
         )
+
+    def _current_audit_inputs(self, topic_id: str) -> _AuditInputs:
+        """Load one exact, eligible set of private audit inputs."""
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        if not self._is_guide_v1(safe_id):
+            raise ConfigError(
+                "personalization audit unavailable: run is not an interactive guide"
+            )
+        snapshot = self._read_attached_profile_snapshot(safe_id)
+        if snapshot is None:
+            raise ConfigError(
+                "personalization audit unavailable: no attached profile snapshot"
+            )
+        profile, snapshot_path, snapshot_sha = snapshot
+        if self.report_state(safe_id, "final") != "current":
+            raise ConfigError(
+                "personalization audit unavailable: final validation is not current"
+            )
+        if self.personalization_trace_state(safe_id, phase="final") != "current":
+            raise ConfigError(
+                "personalization audit unavailable: personalization trace is not current"
+            )
+
+        source_path = self.stage_paths(safe_id, _FINAL_SOURCE_STAGE).approved_path
+        try:
+            source = source_path.read_bytes()
+            trace_path = self.personalization_trace_path(safe_id)
+            trace_bytes = trace_path.read_bytes()
+        except OSError as exc:
+            raise ConfigError("personalization audit inputs are unavailable") from exc
+        parsed = parse_guide(source)
+        if not parsed.ok:
+            raise ConfigError(
+                "personalization audit unavailable: final candidate is invalid"
+            )
+        guide = normalize_guide(parsed)
+        guide_bytes = canonical_guide_bytes(guide)
+        return _AuditInputs(
+            guide=guide,
+            guide_bytes=guide_bytes,
+            guide_sha256=guide_sha256(guide),
+            profile=profile,
+            profile_snapshot_path=snapshot_path,
+            profile_snapshot_sha256=snapshot_sha,
+            trace_path=trace_path,
+            trace_bytes=trace_bytes,
+            trace_sha256=hashlib.sha256(trace_bytes).hexdigest(),
+        )
+
+    @staticmethod
+    def _audit_input_hashes(inputs: _AuditInputs) -> tuple[str, str, str]:
+        return (
+            inputs.guide_sha256,
+            inputs.profile_snapshot_sha256,
+            inputs.trace_sha256,
+        )
+
+    def _approve_personalization_audit(
+        self, topic_id: str, *, overwrite: bool
+    ) -> Path:
+        """Validate, project, and hash-bind one audit approval transaction."""
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        paths = self.stage_paths(safe_id, "audit")
+        self.require_provider_ready_prompt(safe_id, "audit")
+        response_bytes = paths.response_path.read_bytes()
+        inputs = self._current_audit_inputs(safe_id)
+        try:
+            audit = parse_audit_response(
+                response_bytes,
+                guide=inputs.guide,
+                trace=inputs.trace_bytes,
+                private_values=profile_private_values(inputs.profile),
+            )
+        except AuditResponseError as exc:
+            raise ConfigError(str(exc)) from exc
+        projection_bytes = canonical_safe_audit_projection_bytes(
+            audit, guide=inputs.guide
+        )
+        projection_path = self.audit_projection_path(safe_id)
+
+        with self._manifest_write_lock(safe_id):
+            current = self._current_audit_inputs(safe_id)
+            if self._audit_input_hashes(current) != self._audit_input_hashes(inputs):
+                raise StaleContentError(
+                    "personalization audit inputs changed during approval; retry"
+                )
+            if paths.response_path.read_bytes() != response_bytes:
+                raise StaleContentError(
+                    "the audit response changed on disk during approval; reload and retry"
+                )
+            if not self.audit_prompt_is_current(safe_id):
+                raise StaleContentError(
+                    "audit prompt is stale; rebuild it before approval"
+                )
+            if paths.approved_path.exists() and not overwrite:
+                raise ConfigError(f"refusing to overwrite existing file: {paths.approved_path}")
+
+            bindings = {"guide_sha256": current.guide_sha256}
+            self._append_event_locked(
+                safe_id,
+                stage="audit",
+                action="audit_approval_started",
+                files={
+                    "prompt_file": paths.prompt_path,
+                    "response_file": paths.response_path,
+                    "profile_snapshot_file": current.profile_snapshot_path,
+                    "personalization_trace_file": current.trace_path,
+                },
+                extra=bindings,
+            )
+            _write_bytes_atomic(paths.approved_path, response_bytes)
+            _write_bytes_atomic(projection_path, projection_bytes)
+            self._append_event_locked(
+                safe_id,
+                stage="audit",
+                action="response_approved",
+                files={
+                    "prompt_file": paths.prompt_path,
+                    "approved_file": paths.approved_path,
+                    "profile_snapshot_file": current.profile_snapshot_path,
+                    "personalization_trace_file": current.trace_path,
+                    "audit_projection_file": projection_path,
+                },
+                extra=bindings,
+            )
+        return paths.approved_path
+
+    def _manifest_events(self, topic_id: str) -> list[dict]:
+        try:
+            events = self.read_manifest(topic_id).get("events", [])
+        except ConfigError:
+            return []
+        return [event for event in events if isinstance(event, dict)]
+
+    @staticmethod
+    def _manifest_event_sha256(event: dict) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                event,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def _prompt_preserves_approval(self, prompt_event: dict, approval: dict) -> bool:
+        if prompt_event.get("preserved_approval_event_sha256") != (
+            self._manifest_event_sha256(approval)
+        ):
+            return False
+        binding_fields = (
+            "prompt_file",
+            "prompt_file_sha256",
+            "guide_sha256",
+            "profile_snapshot_file",
+            "profile_snapshot_file_sha256",
+            "personalization_trace_file",
+            "personalization_trace_file_sha256",
+        )
+        return all(
+            prompt_event.get(field) == approval.get(field)
+            for field in binding_fields
+        )
+
+    def _audit_approval_incomplete(self, topic_id: str) -> bool:
+        latest_start = -1
+        latest_approval = -1
+        for index, event in enumerate(self._manifest_events(topic_id)):
+            if event.get("stage") != "audit":
+                continue
+            if event.get("action") == "audit_approval_started":
+                latest_start = index
+            elif event.get("action") == "response_approved":
+                latest_approval = index
+        return latest_start > latest_approval
 
     def _load_attached_profile(self, topic_id: str):
         snapshot = self._read_attached_profile_snapshot(topic_id)

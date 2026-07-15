@@ -175,6 +175,24 @@ def test_enqueue_stage_marks_plan_source_default_when_no_override(tmp_path):
     assert job.metadata["plan_source"] == "default"
 
 
+def test_explicit_audit_enqueue_refuses_a_missing_prepared_prompt(tmp_path):
+    catalog = parse_model_catalog(
+        {"providers": [{"id": "default-provider", "models": [{"id": "default-model"}]}]}
+    )
+    plan = parse_model_plan(
+        {
+            "provider": "default-provider",
+            "stages": {"audit": {"model": "default-model"}},
+        },
+        catalog,
+    )
+    context = _make_daemon_context(tmp_path, catalog, plan)
+
+    with pytest.raises(ConfigError, match="audit prompt is missing"):
+        context.enqueue_stage("t", "audit", False)
+    assert context.store.list() == []
+
+
 def test_enqueue_stage_refuses_only_the_stage_with_an_invalid_override(tmp_path):
     # Reproduces the Wave-3 MUST-FIX: a run's stored override for one stage
     # became invalid (e.g. the global catalog dropped the pinned model), but

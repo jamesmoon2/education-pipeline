@@ -86,16 +86,84 @@ def test_execute_success_ingests_response(tmp_path, monkeypatch):
     assert "recorded_at" in entry
 
 
-def test_execute_audit_stage_uses_model_plan_and_json_response_path(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("prompt_state", ["missing", "stale"])
+def test_execute_audit_stage_refuses_unready_prompt_before_provider_build(
+    tmp_path, monkeypatch, prompt_state
 ):
     monkeypatch.setenv("FAKE_STDOUT", '{"findings": []}\n')
-    register_runner(FakeRunner())
+    provider = FakeRunner()
+    build_calls = []
+    original_build = provider.build_invocation
+
+    def tracking_build(model, plan, prompt_path):
+        build_calls.append(prompt_path)
+        return original_build(model, plan, prompt_path)
+
+    monkeypatch.setattr(provider, "build_invocation", tracking_build)
+    register_runner(provider)
     runs = RunStore(tmp_path)
     runs.create_run("t", content_contract=ContentContract.legacy_markdown())
     prompt = runs.stage_paths("t", "audit").prompt_path
-    prompt.parent.mkdir(parents=True, exist_ok=True)
-    prompt.write_text("AUDIT PROMPT", encoding="utf-8")
+    if prompt_state == "stale":
+        prompt.parent.mkdir(parents=True, exist_ok=True)
+        prompt.write_text("AUDIT PROMPT", encoding="utf-8")
+    catalog = parse_model_catalog(
+        {"providers": [{"id": "fake", "models": [{"id": "m", "argv_model": "x"}]}]}
+    )
+    plan = parse_model_plan(
+        {"provider": "fake", "stages": {"audit": {"model": "m"}}},
+        catalog,
+    )
+    store = JobStore(tmp_path)
+    job = store.create("t", "audit", "fake", "m", None)
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(
+        job, threading.Event()
+    )
+
+    assert done.status == "failed"
+    expected = (
+        "audit prompt is missing; prepare it before enqueue"
+        if prompt_state == "missing"
+        else "audit prompt is stale; rebuild it before enqueue or response ingest"
+    )
+    assert done.error == expected
+    assert build_calls == []
+    assert runs.stage_paths("t", "audit").response_path.exists() is False
+
+
+def test_execute_ready_audit_preflights_then_runs_and_ingests_json(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FAKE_STDOUT", '{"schema_version":1}\n')
+    call_order = []
+
+    class TrackingRunner(FakeRunner):
+        def build_invocation(self, model, plan, prompt_path):
+            call_order.append("build")
+            return super().build_invocation(model, plan, prompt_path)
+
+    register_runner(TrackingRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    paths = runs.stage_paths("t", "audit")
+    paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.prompt_path.write_text("BOUND AUDIT PROMPT", encoding="utf-8")
+
+    def ready_prompt(self, topic_id, stage):
+        call_order.append("preflight")
+        assert (topic_id, stage) == ("t", "audit")
+        return paths.prompt_path
+
+    def ingest(self, topic_id, stage, text, *, force=False):
+        call_order.append("ingest")
+        assert (topic_id, stage, force) == ("t", "audit", False)
+        paths.response_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.response_path.write_text(text, encoding="utf-8")
+        return paths.response_path
+
+    monkeypatch.setattr(RunStore, "require_provider_ready_prompt", ready_prompt)
+    monkeypatch.setattr(RunStore, "ingest_response", ingest)
     catalog = parse_model_catalog(
         {"providers": [{"id": "fake", "models": [{"id": "m", "argv_model": "x"}]}]}
     )
@@ -111,10 +179,9 @@ def test_execute_audit_stage_uses_model_plan_and_json_response_path(
     )
 
     assert done.status == "succeeded"
-    assert done.response_path is not None and done.response_path.endswith("audit.response.json")
-    assert runs.stage_paths("t", "audit").response_path.read_text(
-        encoding="utf-8"
-    ) == '{"findings": []}\n'
+    assert done.response_path == str(paths.response_path)
+    assert call_order == ["preflight", "build", "ingest"]
+    assert paths.response_path.read_text(encoding="utf-8") == '{"schema_version":1}\n'
 
 
 def test_execute_nonzero_exit_fails_without_response(tmp_path, monkeypatch):

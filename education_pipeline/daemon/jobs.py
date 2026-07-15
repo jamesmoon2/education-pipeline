@@ -24,7 +24,7 @@ from typing import Callable
 
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
 from education_pipeline.providers import get_runner
-from education_pipeline.runs import RunStore
+from education_pipeline.runs import RunStore, StaleContentError
 
 JOB_STATUSES = (
     "queued",
@@ -278,7 +278,11 @@ class JobRunner:
 
             model = self._resolve_model(job)
             prompt_path = self.runs.stage_paths(job.topic_id, job.stage).prompt_path
-            if not prompt_path.exists():
+            if job.stage == "audit":
+                prompt_path = self.runs.require_provider_ready_prompt(
+                    job.topic_id, job.stage
+                )
+            elif not prompt_path.exists():
                 return self._fail(job, f"prompt not written for stage {job.stage!r}")
             invocation = runner.build_invocation(model, stage_plan, prompt_path)
             stdout, stdout_truncated, exit_code, timed_out, canceled = self._spawn(
@@ -327,7 +331,7 @@ class JobRunner:
                 # failure must not downgrade an already-committed success.
                 job.metadata["manifest_event_error"] = str(exc)
             return self._terminal(job, "succeeded")
-        except ConfigError as exc:
+        except (ConfigError, StaleContentError) as exc:
             return self._fail(job, str(exc))
         except Exception as exc:
             # A non-ConfigError exception (Popen raising FileNotFoundError/

@@ -36,7 +36,7 @@ from education_pipeline.guides import (
     parse_guide,
     validate_guide,
 )
-from education_pipeline.runs import RunStore, SUPPORTED_STAGES
+from education_pipeline.runs import RunStore, StaleContentError, SUPPORTED_STAGES
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
@@ -91,6 +91,11 @@ class DaemonContext:
                 f"override for stage {target_stage!r} is invalid: "
                 f"{override_errors[target_stage]}"
             )
+        if target_stage == "audit":
+            try:
+                self.runs.require_provider_ready_prompt(topic_id, target_stage)
+            except StaleContentError as exc:
+                raise ConfigError(str(exc)) from exc
         # Structural approval gate: only enqueue when the next action is to run a prompt.
         action = status.next_action
         if stage is None and action.action != "save_response":
