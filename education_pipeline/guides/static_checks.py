@@ -101,8 +101,13 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def compute_static_checks(guide: Guide, assets: RuntimeAssets | None = None) -> StaticCheckResult:
-    packaged = load_runtime_assets()
+def compute_static_checks(
+    guide: Guide,
+    assets: RuntimeAssets | None = None,
+    *,
+    packaged_assets: RuntimeAssets | None = None,
+) -> StaticCheckResult:
+    packaged = packaged_assets if packaged_assets is not None else load_runtime_assets()
     if assets is None:
         assets = packaged
     assets_match = (

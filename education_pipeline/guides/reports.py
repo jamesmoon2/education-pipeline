@@ -110,7 +110,7 @@ class Finding:
         ) is not bool:
             raise ValueError("finding blocking and waivable must be booleans")
 
-        raw_related = value.get("related_ids", ())
+        raw_related = value.get("related_ids", [])
         if not isinstance(raw_related, list) or any(
             not isinstance(item, str) for item in raw_related
         ):

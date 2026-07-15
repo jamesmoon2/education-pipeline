@@ -2791,6 +2791,243 @@ def test_reexport_produces_byte_identical_quality_report(guide_v1_run):
     assert store.export_report_path(topic_id).read_bytes() == first
 
 
+def test_export_state_tracks_optional_audit_without_mutating_old_artifacts(
+    tmp_path: Path,
+) -> None:
+    tid = "systems-thinking"
+    store = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_finalize_ready(store, tid)
+    store.finalize_run(tid)
+    export_path = store.export_run(tid)
+    sidecar_path = store.export_report_path(tid)
+    original_export = export_path.read_bytes()
+    original_sidecar = sidecar_path.read_bytes()
+    deterministic_report = store.final_report_path(tid).read_bytes()
+
+    assert store.export_state(tid) == "current"
+    assert json.loads(original_sidecar)["audit"]["state"] == "not_run"
+
+    store.prepare_personalization_audit(tid)
+    response = _valid_personalization_audit_response(store, tid)
+    store.ingest_response(tid, "audit", response)
+    assert store.audit_state(tid) == "not_run"
+    assert store.export_state(tid) == "current"
+
+    store.approve_stage(tid, "audit")
+    assert store.audit_state(tid) == "current"
+    assert store.export_state(tid) == "stale"
+    assert store.run_status(tid).next_action.action == "done"
+    assert export_path.read_bytes() == original_export
+    assert sidecar_path.read_bytes() == original_sidecar
+    assert store.final_report_path(tid).read_bytes() == deterministic_report
+    combined = store.combined_findings(tid)
+    assert any(finding.stage == "audit" for finding in combined)
+    assert store.gate_result(tid, "final").gate_open is True
+
+    store.export_run(tid, overwrite=True)
+    assert store.export_state(tid) == "current"
+    sidecar = sidecar_path.read_bytes()
+    payload = json.loads(sidecar)
+    assert payload["audit"]["state"] == "current"
+    assert payload["audit"]["safe_audit_projection_sha256"] == hashlib.sha256(
+        store.audit_projection_path(tid).read_bytes()
+    ).hexdigest()
+    assert payload["audit"]["safe_trace_projection_sha256"]
+    assert any(finding["stage"] == "audit" for finding in payload["report"]["findings"])
+    for private in (
+        "Synthetic private goal alpha",
+        "Synthetic local audit rationale.",
+        "Synthetic local tailoring summary.",
+        hashlib.sha256(store.approved_path(tid, "audit").read_bytes()).hexdigest(),
+        hashlib.sha256(store.personalization_trace_path(tid).read_bytes()).hexdigest(),
+    ):
+        assert private.encode("utf-8") not in sidecar
+
+    store.prepare_personalization_audit(tid, overwrite=True)
+    store.ingest_response(tid, "audit", response, force=True)
+    assert store.audit_state(tid) == "current"
+    assert store.export_state(tid) == "current"
+
+    store.audit_projection_path(tid).write_bytes(
+        store.audit_projection_path(tid).read_bytes() + b"\n"
+    )
+    assert store.audit_state(tid) == "stale"
+    assert store.export_state(tid) == "stale"
+    assert store.run_status(tid).next_action.action == "done"
+
+
+def test_schema_v1_sidecar_is_stale_for_reexport_but_run_stays_done(
+    guide_v1_run,
+) -> None:
+    store, tid = guide_v1_run
+    store.finalize_run(tid)
+    store.export_run(tid)
+    sidecar_path = store.export_report_path(tid)
+    payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    payload["quality_report_schema_version"] = 1
+    sidecar_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert store.export_state(tid) == "stale"
+    assert store.run_status(tid).next_action.action == "done"
+
+
+def test_export_state_binds_final_report_and_quality_report_schema(
+    guide_v1_run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, tid = guide_v1_run
+    store.finalize_run(tid)
+    store.export_run(tid)
+    assert store.export_state(tid) == "current"
+
+    import education_pipeline.runs as runs_module
+
+    monkeypatch.setattr(runs_module, "QUALITY_REPORT_SCHEMA_VERSION", 999)
+    assert store.export_state(tid) == "stale"
+    monkeypatch.undo()
+
+    report_path = store.final_report_path(tid)
+    original_report = report_path.read_bytes()
+    report = json.loads(original_report)
+    report["validator_version"] = "next-validator"
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    assert store.export_state(tid) == "stale"
+
+    report_path.write_bytes(original_report)
+    assert store.export_state(tid) == "current"
+    report = json.loads(original_report)
+    report["report_schema_version"] = REPORT_SCHEMA_VERSION - 1
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    assert store.export_state(tid) == "stale"
+
+
+def test_private_exclusion_reason_does_not_change_any_public_export_hash(
+    tmp_path: Path,
+) -> None:
+    tid = "systems-thinking"
+    changed_payload = json.loads(PERSONALIZED_GUIDE_FIXTURE)
+    changed_payload["course"]["goal_exclusions"][0]["reason"] = (
+        "A distinct private exclusion rationale for the same opaque goal."
+    )
+    changed_body = json.dumps(changed_payload)
+    sidecars = []
+    exports = []
+    local_reports = []
+    for root, body in (
+        (tmp_path / "first", PERSONALIZED_GUIDE_FIXTURE),
+        (tmp_path / "second", changed_body),
+    ):
+        store = _create_profiled_guide_run(root)
+        _drive_profiled_guide_to_finalize_ready(store, tid, body=body)
+        store.finalize_run(tid)
+        exports.append(store.export_run(tid).read_bytes())
+        sidecars.append(store.export_report_path(tid).read_bytes())
+        local_reports.append(store.final_report_path(tid).read_bytes())
+
+    assert local_reports[0] != local_reports[1]
+    assert exports[0] == exports[1]
+    assert sidecars[0] == sidecars[1]
+
+
+def test_export_uses_one_runtime_asset_snapshot(
+    guide_v1_run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, tid = guide_v1_run
+    store.finalize_run(tid)
+    import education_pipeline.runs as runs_module
+    from education_pipeline.guide_runtime import RuntimeAssets, load_runtime_assets
+
+    first = load_runtime_assets()
+    second = RuntimeAssets(first.css + "/* second load */", first.javascript)
+    values = iter((first, second))
+    calls = []
+
+    def distinguishable_load():
+        calls.append(1)
+        return next(values)
+
+    monkeypatch.setattr(runs_module, "load_runtime_assets", distinguishable_load)
+    export = store.export_run(tid)
+    sidecar = json.loads(store.export_report_path(tid).read_text(encoding="utf-8"))
+    assert len(calls) == 1
+    assert hashlib.sha256(first.css.encode()).hexdigest() == sidecar["export"][
+        "runtime_css_sha256"
+    ]
+    assert "second load" not in export.read_text(encoding="utf-8")
+
+
+def test_trace_replacement_between_freshness_check_and_projection_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tid = "systems-thinking"
+    store = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_finalize_ready(store, tid)
+    store.finalize_run(tid)
+    trace_path = store.personalization_trace_path(tid)
+    original = trace_path.read_bytes()
+    import education_pipeline.runs as runs_module
+
+    real_fresh = runs_module.personalization_trace_is_fresh
+
+    def replace_after_check(current, *, expected_trace):
+        result = real_fresh(current, expected_trace=expected_trace)
+        trace_path.write_bytes(original + b"\n")
+        return result
+
+    monkeypatch.setattr(
+        runs_module, "personalization_trace_is_fresh", replace_after_check
+    )
+    with pytest.raises(ConfigError, match="changed during export"):
+        store.export_run(tid)
+
+
+def test_audit_projection_replacement_waits_for_immutable_export_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tid = "systems-thinking"
+    store = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_finalize_ready(store, tid)
+    store.prepare_personalization_audit(tid)
+    store.ingest_response(tid, "audit", _valid_personalization_audit_response(store, tid))
+    store.approve_stage(tid, "audit")
+    store.finalize_run(tid)
+    projection = store.audit_projection_path(tid)
+    original = projection.read_bytes()
+    started = threading.Event()
+    finished = threading.Event()
+    real_parse = RunStore._parse_safe_audit_projection
+    worker = None
+
+    def parse_then_schedule_replacement(self, projection_bytes):
+        nonlocal worker
+
+        def replace_under_topic_lock():
+            started.set()
+            with self._manifest_write_lock(tid):
+                projection.write_bytes(original + b"\n")
+            finished.set()
+
+        worker = threading.Thread(target=replace_under_topic_lock)
+        worker.start()
+        assert started.wait(timeout=1)
+        assert not finished.wait(timeout=0.05)
+        return real_parse(self, projection_bytes)
+
+    monkeypatch.setattr(
+        RunStore, "_parse_safe_audit_projection", parse_then_schedule_replacement
+    )
+    assert store.export_run(tid).is_file()
+    assert worker is not None
+    worker.join(timeout=2)
+    assert finished.is_set()
+    assert store.export_state(tid) == "stale"
+
+
 def _relative_to_run(path: Path, store, topic_id: str) -> str:
     return path.relative_to(store.run_dir(topic_id)).as_posix()
 

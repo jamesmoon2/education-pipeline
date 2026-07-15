@@ -29,6 +29,48 @@ def test_legacy_finding_round_trips_without_new_optional_field() -> None:
     assert Finding.from_dict(payload).to_dict() == payload
 
 
+def test_finding_round_trips_when_empty_related_ids_are_omitted() -> None:
+    finding = Finding(
+        "content.safe:/course",
+        "content.safe",
+        "info",
+        False,
+        False,
+        "/course",
+        "Safe message.",
+        "No action required.",
+        stage="repair",
+    )
+    payload = finding.to_dict()
+    assert "related_ids" not in payload
+    assert Finding.from_dict(payload) == finding
+
+
+@pytest.mark.parametrize("report_schema_version", [2, REPORT_SCHEMA_VERSION])
+def test_report_round_trips_findings_with_omitted_empty_related_ids(
+    report_schema_version: int,
+) -> None:
+    finding = Finding(
+        "content.safe:/course",
+        "content.safe",
+        "info",
+        False,
+        False,
+        "/course",
+        "Safe message.",
+        "No action required.",
+        stage="repair",
+    )
+    report = ValidationReport(
+        "1.1",
+        "final",
+        "a" * 64,
+        (finding,),
+        report_schema_version=report_schema_version,
+    )
+    assert ValidationReport.from_dict(report.to_dict()) == report
+
+
 def test_audit_finding_requires_repair_source_stage() -> None:
     finding = Finding(
         "audit.goal_missing:goal-001",
