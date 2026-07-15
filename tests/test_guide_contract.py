@@ -69,6 +69,24 @@ def test_extract_spec_contract_returns_validated_dict() -> None:
     assert data == VALID_SPEC_CONTRACT
 
 
+@pytest.mark.parametrize("guide_schema_version", ["1.0", "1.1"])
+def test_spec_and_combined_contract_preserve_supported_guide_schema_versions(
+    guide_schema_version: str,
+) -> None:
+    spec_contract = {
+        **VALID_SPEC_CONTRACT,
+        "guide_schema_version": guide_schema_version,
+    }
+
+    extracted = extract_spec_contract(_spec_markdown(spec_contract))
+    combined = json.loads(
+        build_guide_contract(extracted, VALID_OUTLINE_CONTRACT).decode("utf-8")
+    )
+
+    assert extracted["guide_schema_version"] == guide_schema_version
+    assert combined["guide_schema_version"] == guide_schema_version
+
+
 def test_extract_spec_contract_rejects_zero_blocks() -> None:
     markdown = "# Course Specification: X\n\nNo fenced block here.\n"
     with pytest.raises(ContractError, match="found none"):
