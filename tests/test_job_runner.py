@@ -86,6 +86,37 @@ def test_execute_success_ingests_response(tmp_path, monkeypatch):
     assert "recorded_at" in entry
 
 
+def test_execute_audit_stage_uses_model_plan_and_json_response_path(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FAKE_STDOUT", '{"findings": []}\n')
+    register_runner(FakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    prompt = runs.stage_paths("t", "audit").prompt_path
+    prompt.parent.mkdir(parents=True, exist_ok=True)
+    prompt.write_text("AUDIT PROMPT", encoding="utf-8")
+    catalog = parse_model_catalog(
+        {"providers": [{"id": "fake", "models": [{"id": "m", "argv_model": "x"}]}]}
+    )
+    plan = parse_model_plan(
+        {"provider": "fake", "stages": {"audit": {"model": "m"}}},
+        catalog,
+    )
+    store = JobStore(tmp_path)
+    job = store.create("t", "audit", "fake", "m", None)
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(
+        job, threading.Event()
+    )
+
+    assert done.status == "succeeded"
+    assert done.response_path is not None and done.response_path.endswith("audit.response.json")
+    assert runs.stage_paths("t", "audit").response_path.read_text(
+        encoding="utf-8"
+    ) == '{"findings": []}\n'
+
+
 def test_execute_nonzero_exit_fails_without_response(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_EXIT", "3")
     runs, catalog, plan, store = _setup(tmp_path)

@@ -14,7 +14,7 @@ from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
 from education_pipeline.privacy import canonical_profile_toml_bytes, profile_to_dict
 from education_pipeline.profiles import parse_learner_profile
-from education_pipeline.runs import ContentContract, RunStore, SUPPORTED_STAGES
+from education_pipeline.runs import ContentContract, REQUIRED_STAGES, RunStore
 from education_pipeline.workspace import ProfileStore, _profile_lock
 
 FIXTURE = Path(__file__).parent / "fixtures" / "guides" / "feedback-loops.guide.json"
@@ -71,6 +71,25 @@ def test_update_global_plan_with_correct_sha_updates_plan_and_returns_new_sha():
     stages = {s["stage"]: s for s in result["stages"]}
     assert stages["draft"]["model"] == "m"
     assert config.plan.provider == "fake"
+
+
+def test_daemon_plan_payload_includes_configurable_audit_stage():
+    config = _config_source()
+    catalog, _ = config.load()
+    plan = parse_model_plan(
+        {
+            "provider": "fake",
+            "stages": {"audit": {"model": "m", "effort": "high"}},
+        },
+        catalog,
+    )
+
+    payload = read_api.plan_payload(catalog, plan, config.plan_sha256())
+    audit = next(stage for stage in payload["stages"] if stage["stage"] == "audit")
+
+    assert audit["provider"] == "fake"
+    assert audit["model"] == "m"
+    assert audit["effort"] == "high"
 
 
 def test_update_global_plan_with_unknown_model_raises_config_error_and_leaves_plan_untouched():
@@ -189,7 +208,7 @@ def _workspace(tmp_path, *, create_legacy_run: bool = True):
 
 def test_advance_starts_run_and_full_loop_reaches_export(tmp_path):
     runs, jobs = _workspace(tmp_path)
-    for stage in SUPPORTED_STAGES:
+    for stage in REQUIRED_STAGES:
         result = write_api.advance_run(runs, jobs, "t")
         assert result["performed"] == "write_prompt"
         assert result["status"]["next_action"]["action"] == "save_response"
@@ -295,7 +314,7 @@ def test_export_not_ready_bad_format_and_conflict(tmp_path):
 def test_job_active_blocks_run_mutations_but_not_export(tmp_path):
     runs, jobs = _workspace(tmp_path)
     # Drive the run to finalized so export is possible.
-    for stage in SUPPORTED_STAGES:
+    for stage in REQUIRED_STAGES:
         write_api.advance_run(runs, jobs, "t")
         write_api.ingest_response(runs, jobs, "t", stage, f"{stage} body")
         write_api.approve_stage(runs, jobs, "t", stage)

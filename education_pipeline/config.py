@@ -10,16 +10,13 @@ import json
 import tomllib
 
 
-STAGE_ORDER = (
-    "profile",
-    "spec",
-    "outline",
-    "draft",
-    "qa",
-    "repair",
-    "finalize",
-    "export",
-)
+REQUIRED_STAGES = ("spec", "outline", "draft", "qa", "repair")
+OPTIONAL_STAGES = ("audit",)
+SUPPORTED_STAGES = REQUIRED_STAGES + OPTIONAL_STAGES
+
+# Complete model-plan topology. Profile remains model-configurable even though
+# it is not part of a run's required stage state; finalize/export remain local.
+STAGE_ORDER = ("profile",) + SUPPORTED_STAGES + ("finalize", "export")
 
 DEFAULT_STAGE_RECOMMENDATIONS = MappingProxyType(
     {
@@ -29,6 +26,7 @@ DEFAULT_STAGE_RECOMMENDATIONS = MappingProxyType(
         "draft": "strong_longform_generation",
         "qa": "fast_cheap_check",
         "repair": "strong_or_premium_repair",
+        "audit": "strong_personalization_audit",
         "finalize": "local_only",
         "export": "local_only",
     }

@@ -50,7 +50,7 @@ const catalog: CatalogProvider[] = [
   },
 ];
 
-const STAGES = ["profile", "spec", "outline", "draft", "qa", "repair", "finalize", "export"];
+const STAGES = ["profile", "spec", "outline", "draft", "qa", "repair", "audit", "finalize", "export"];
 
 function makePlan(overrides: Partial<Record<string, unknown>> = {}): PlanPayload {
   return {
@@ -85,6 +85,7 @@ describe("SettingsPage", () => {
     setup();
     expect(await screen.findByLabelText("Provider for outline")).toBeInTheDocument();
     expect(screen.getByLabelText("Provider for spec")).toBeInTheDocument();
+    expect(screen.getByLabelText("Provider for audit")).toBeInTheDocument();
     expect(screen.getByText("finalize")).toBeInTheDocument();
     expect(screen.getByText("export")).toBeInTheDocument();
     expect(screen.queryByLabelText("Provider for finalize")).toBeNull();
@@ -117,6 +118,7 @@ describe("SettingsPage", () => {
     expect(baseSha).toBe("sha-1");
     expect(provider).toBe("claude-code");
     expect(Object.keys(stages).sort()).toEqual([
+      "audit",
       "draft",
       "outline",
       "profile",

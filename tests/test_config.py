@@ -14,11 +14,63 @@ from education_pipeline import (
     parse_model_plan,
 )
 from education_pipeline.config import (
+    OPTIONAL_STAGES,
+    REASONING_STAGES,
+    REQUIRED_STAGES,
+    SUPPORTED_STAGES,
     apply_overrides,
     apply_overrides_lenient,
     emit_model_plan_toml,
     weak_stage_warning,
 )
+
+
+def test_audit_stage_topology_is_optional_model_powered_and_not_reasoning() -> None:
+    assert REQUIRED_STAGES == ("spec", "outline", "draft", "qa", "repair")
+    assert OPTIONAL_STAGES == ("audit",)
+    assert SUPPORTED_STAGES == REQUIRED_STAGES + OPTIONAL_STAGES
+    assert "audit" in STAGE_ORDER
+    assert "audit" not in REASONING_STAGES
+
+
+def test_model_plan_parses_and_overrides_audit_stage() -> None:
+    catalog = parse_model_catalog(
+        {
+            "providers": [
+                {"id": "manual"},
+                {"id": "codex", "models": [{"id": "audit-model"}]},
+            ]
+        }
+    )
+    plan = parse_model_plan(
+        {
+            "provider": "manual",
+            "stages": {
+                "audit": {
+                    "provider": "codex",
+                    "model": "audit-model",
+                    "effort": "high",
+                }
+            },
+        },
+        catalog=catalog,
+    )
+
+    assert plan.stage("audit") == StageModelPlan(
+        stage="audit",
+        recommendation="strong_personalization_audit",
+        provider="codex",
+        model="audit-model",
+        effort="high",
+    )
+
+    reset = apply_overrides(
+        plan,
+        {"stages": {"audit": {"provider": "manual", "model": None}}},
+        catalog=catalog,
+    )
+    assert reset.stage("audit").provider == "manual"
+    assert reset.stage("audit").model is None
 
 
 def test_loads_example_catalog_and_plan() -> None:

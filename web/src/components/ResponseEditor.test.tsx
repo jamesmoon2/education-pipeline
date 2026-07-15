@@ -144,6 +144,22 @@ describe("ResponseEditor", () => {
     expect(postGuidePreview).not.toHaveBeenCalled();
   });
 
+  it("validates audit JSON without offering a rendered preview", async () => {
+    renderEditor({
+      stage: "audit",
+      content: '{"findings":[]}',
+      contentType: "application/json",
+    });
+
+    const textarea = screen.getByLabelText("Edit response for audit");
+    fireEvent.change(textarea, { target: { value: "{" } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("JSON syntax error");
+    expect(textarea).toHaveValue("{");
+    expect(screen.queryByRole("button", { name: "Preview" })).not.toBeInTheDocument();
+    expect(postPreview).not.toHaveBeenCalled();
+  });
+
   it("renders executable guide previews only in an opaque sandboxed iframe", async () => {
     const { postGuidePreview } = await import("../api/client");
     vi.mocked(postGuidePreview).mockResolvedValue({

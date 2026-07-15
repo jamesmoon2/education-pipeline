@@ -22,6 +22,7 @@ from education_pipeline import (
     TopicStore,
 )
 from education_pipeline.guides import (
+    REPORT_SCHEMA_VERSION,
     WaiverResult,
     build_guide_contract,
     canonical_guide_bytes,
@@ -32,6 +33,7 @@ from education_pipeline.guides import (
     parse_guide,
     project_guide_markdown,
 )
+from education_pipeline.runs import OPTIONAL_STAGES, REQUIRED_STAGES, SUPPORTED_STAGES
 
 
 def _create_legacy_run(tmp_path: Path, topic_id: str = "systems-thinking") -> RunStore:
@@ -1268,7 +1270,8 @@ def test_run_status_next_action_is_finalize_then_done(tmp_path: Path) -> None:
     _drive_all_stages_to_approved(runs, "systems-thinking")
 
     status = runs.run_status("systems-thinking")
-    assert all(s.approved for s in status.stages)
+    assert all(s.approved for s in status.stages if s.stage in REQUIRED_STAGES)
+    assert next(s for s in status.stages if s.stage == "audit").state == "not_run"
     assert status.finalized is False
     assert status.next_action.action == "finalize"
     assert status.next_action.stage is None
@@ -1285,7 +1288,7 @@ def test_run_status_reports_pending_before_any_work(tmp_path: Path) -> None:
 
     assert isinstance(status, RunStatus)
     assert status.topic_id == "systems-thinking"
-    assert [s.stage for s in status.stages] == ["spec", "outline", "draft", "qa", "repair"]
+    assert tuple(s.stage for s in status.stages) == SUPPORTED_STAGES
     assert all(
         not s.prompt_written and not s.response_ingested and not s.approved
         for s in status.stages
@@ -1297,6 +1300,58 @@ def test_run_status_reports_pending_before_any_work(tmp_path: Path) -> None:
         action="write_prompt",
         detail=status.next_action.detail,
     )
+
+
+def test_run_status_exposes_unrun_audit_without_changing_next_action(tmp_path: Path) -> None:
+    status = RunStore(tmp_path).run_status("systems-thinking")
+
+    assert tuple(s.stage for s in status.stages) == SUPPORTED_STAGES
+    assert tuple(s.stage for s in status.stages[:-1]) == REQUIRED_STAGES
+    assert tuple(s.stage for s in status.stages[-1:]) == OPTIONAL_STAGES
+    audit = status.stages[-1]
+    assert audit.state == "not_run"
+    assert (status.next_action.stage, status.next_action.action) == ("spec", "write_prompt")
+
+
+def test_existing_complete_run_remains_done_when_audit_has_not_run(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = _create_legacy_run(tmp_path)
+    _drive_all_stages_to_approved(runs, "systems-thinking")
+    runs.finalize_run("systems-thinking")
+
+    status = runs.run_status("systems-thinking")
+    assert status.next_action.action == "done"
+    assert next(s for s in status.stages if s.stage == "audit").state == "not_run"
+
+
+def test_audit_stage_uses_json_artifacts_and_stale_state_wins(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+    paths = runs.stage_paths("systems-thinking", "audit")
+
+    assert paths.content_type == "application/json"
+    assert paths.response_path.name == "audit.response.json"
+    assert paths.approved_path.name == "audit.json"
+    assert StageStatus(
+        stage="audit",
+        prompt_written=True,
+        response_ingested=True,
+        approved=True,
+        stale=True,
+    ).state == "stale"
+
+
+def test_audit_stage_supports_direct_response_ingest_and_approval(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+    paths = runs.stage_paths("systems-thinking", "audit")
+    paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.prompt_path.write_text("AUDIT PROMPT", encoding="utf-8")
+
+    assert (
+        runs.ingest_response("systems-thinking", "audit", '{"findings": []}')
+        == paths.response_path
+    )
+    assert runs.approve_stage("systems-thinking", "audit") == paths.approved_path
+    assert runs.stage_status("systems-thinking", "audit").state == "approved"
 
 
 def test_run_status_advances_through_spec_substates(tmp_path: Path) -> None:
@@ -2101,10 +2156,10 @@ def test_guide_v1_repair_edit_unfinalizes_without_deleting_artifacts(tmp_path: P
     assert final_json.is_file() and final_md.is_file()
 
 
-def test_pre_v2_report_is_stale_even_when_content_is_unchanged(tmp_path: Path) -> None:
-    """A v1 report predates stage attribution. Against unchanged content it
+def test_pre_current_report_is_stale_even_when_content_is_unchanged(tmp_path: Path) -> None:
+    """An older report predates the current contract. Against unchanged content it
     must NOT sit "current" forever -- it must read stale so the existing
-    re-run affordance re-derives it at v2."""
+    re-run affordance re-derives it at the current schema."""
 
     tid = "systems-thinking"
     runs = _create_guide_run(tmp_path, tid)
@@ -2113,8 +2168,8 @@ def test_pre_v2_report_is_stale_even_when_content_is_unchanged(tmp_path: Path) -
 
     report_path = runs.final_report_path(tid)
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["report_schema_version"] == 2
-    report["report_schema_version"] = 1
+    assert report["report_schema_version"] == REPORT_SCHEMA_VERSION
+    report["report_schema_version"] = REPORT_SCHEMA_VERSION - 1
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
     assert runs.report_state(tid, "final") == "stale"

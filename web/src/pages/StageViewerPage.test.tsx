@@ -156,6 +156,25 @@ describe("StageViewerPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("opens audit JSON in the JSON editor without a markdown preview", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "audit",
+      prompt: "audit prompt",
+      response: '{"findings":[]}',
+      approved: null,
+      response_sha256: "sha-audit",
+      content_type: "application/json",
+    });
+    renderAt("/topics/t/stages/audit");
+    await userEvent.click(await screen.findByRole("tab", { name: /^response/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    const textarea = screen.getByLabelText("Edit response for audit");
+    expect(textarea).toHaveValue('{"findings":[]}');
+    expect(screen.queryByRole("button", { name: "Preview" })).not.toBeInTheDocument();
+  });
+
   it("groups stage actions in a toolbar above the content", async () => {
     vi.mocked(getStageContent).mockResolvedValue({
       topic_id: "t",

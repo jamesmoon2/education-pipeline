@@ -6,6 +6,7 @@ import {
   postPreview,
   putResponse,
 } from "../api/client";
+import type { StageContent } from "../api/types";
 import { useAction } from "../hooks/useAction";
 import GuidePreviewFrame from "./GuidePreviewFrame";
 
@@ -25,7 +26,7 @@ export default function ResponseEditor({
   stage: string;
   content: string;
   contentSha256: string;
-  contentType: "text/markdown" | typeof GUIDE_CONTENT_TYPE;
+  contentType: StageContent["content_type"];
   onSaved: () => void;
   onClose: () => void;
 }) {
@@ -39,8 +40,10 @@ export default function ResponseEditor({
   const [previewHtml, setPreviewHtml] = useState("");
   const save = useAction(onSaved);
   const isGuide = contentType === GUIDE_CONTENT_TYPE;
+  const isJson = isGuide || contentType === "application/json";
+  const canPreview = contentType !== "application/json";
   let jsonError: string | null = null;
-  if (isGuide) {
+  if (isJson) {
     try {
       JSON.parse(buffer);
     } catch (error) {
@@ -104,9 +107,11 @@ export default function ResponseEditor({
         <button disabled={save.busy || !buffer.trim()} onClick={doSave}>
           Save
         </button>
-        <button onClick={togglePreview}>
-          {previewOpen ? "Hide preview" : "Preview"}
-        </button>
+        {canPreview && (
+          <button onClick={togglePreview}>
+            {previewOpen ? "Hide preview" : "Preview"}
+          </button>
+        )}
         <button onClick={cancel}>Cancel</button>
         {stale && (
           <button onClick={() => void reload()}>Reload current content</button>

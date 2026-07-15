@@ -12,7 +12,12 @@ import re
 import threading
 import tomllib
 
-from education_pipeline.config import ConfigError
+from education_pipeline.config import (
+    OPTIONAL_STAGES,
+    REQUIRED_STAGES,
+    SUPPORTED_STAGES,
+    ConfigError,
+)
 from education_pipeline.export import (
     EXPORT_FORMATS,
     build_markdown_bundle,
@@ -87,15 +92,12 @@ MANIFEST_SCHEMA_VERSION = 1
 
 RUN_SUBDIRS = ("inputs", "prompts", "responses", "approved", "reports", "final")
 
-#: Stages this writer can currently compile prompts for. Finalize and export are
-#: intentionally omitted until their prompt compilers exist.
-SUPPORTED_STAGES = ("spec", "outline", "draft", "qa", "repair")
-
 _PROMPT_SUFFIX = ".prompt.md"
 _RESPONSE_SUFFIX = ".response.md"
 _STUB_SUFFIX = ".SAVE_RESPONSE_HERE.md"
 
 MARKDOWN_CONTENT_TYPE = "text/markdown"
+JSON_CONTENT_TYPE = "application/json"
 GUIDE_V1_CONTENT_TYPE = (
     "application/vnd.education-pipeline.guide+json;version=1.0"
 )
@@ -186,12 +188,16 @@ class StageStatus:
     def state(self) -> str:
         """The furthest milestone this stage has durably reached."""
 
+        if self.stale:
+            return "stale"
         if self.approved:
             return "approved"
         if self.response_ingested:
             return "response_ingested"
         if self.prompt_written:
             return "prompt_written"
+        if self.stage in OPTIONAL_STAGES:
+            return "not_run"
         return "pending"
 
 
@@ -301,10 +307,16 @@ class RunStore:
             "draft",
             "repair",
         }
-        suffix = ".json" if is_guide_json else ".md"
+        is_json = is_guide_json or safe_stage == "audit"
+        suffix = ".json" if is_json else ".md"
         response_suffix = f".response{suffix}"
         stub_suffix = f".SAVE_RESPONSE_HERE{suffix}"
         run = self.runs_dir / safe_id
+        content_type = MARKDOWN_CONTENT_TYPE
+        if is_guide_json:
+            content_type = _guide_content_type(contract.schema_version)
+        elif safe_stage == "audit":
+            content_type = JSON_CONTENT_TYPE
         return StagePaths(
             stage=safe_stage,
             topic_id=safe_id,
@@ -312,11 +324,7 @@ class RunStore:
             response_path=run / "responses" / f"{safe_stage}{response_suffix}",
             stub_path=run / "responses" / f"{safe_stage}{stub_suffix}",
             approved_path=run / "approved" / f"{safe_stage}{suffix}",
-            content_type=(
-                _guide_content_type(contract.schema_version)
-                if is_guide_json
-                else MARKDOWN_CONTENT_TYPE
-            ),
+            content_type=content_type,
         )
 
     def content_contract(self, topic_id: str) -> ContentContract:
@@ -527,7 +535,9 @@ class RunStore:
         stages: tuple[StageStatus, ...],
         finalized: bool,
     ) -> NextAction:
-        for status in stages:
+        by_stage = {status.stage: status for status in stages}
+        for stage_name in REQUIRED_STAGES:
+            status = by_stage[stage_name]
             pending = self._pending_stage_action(topic_id, status)
             if pending is not None:
                 return pending

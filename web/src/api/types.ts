@@ -18,6 +18,7 @@ export interface NextAction {
 }
 
 export type StageState =
+  | "not_run"
   | "pending"
   | "prompt_written"
   | "response_ingested"
@@ -97,6 +98,7 @@ export interface StageContent {
   response_sha256: string | null;
   content_type:
     | "text/markdown"
+    | "application/json"
     | "application/vnd.education-pipeline.guide+json;version=1.0";
 }
 
