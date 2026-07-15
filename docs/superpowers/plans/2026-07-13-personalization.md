@@ -170,7 +170,7 @@ recommendation instead of another kickoff prompt.
 | Baseline | **complete** | code HEAD `929cc8cd` | 600 | 127 | 42 | clean | Fresh gate run 2026-07-13. Planning/spec edits are docs-only; unrelated pre-existing untracked files are outside scope. |
 | 0 — Privacy + profile store | **complete** | planning `eb44004`; code `dc75c54`, `9124a7b`, `e5b0f17` | 666 | 127 | 42 | clean | Privacy/codec, atomic store, and run integration are frozen. Task 0.3 expanded internally to NFC normalization and shared validation hashing with no public signature/schema change. Unrelated concurrent docs commits `7e67007` and `c12b4be` were preserved; see closeout notes. |
 | 1 — Profile product surface | **complete** | code `98e3ca8`, `3f13ab2`, `8f2a2c5`, `2fbf2af`, `0fca471` | 716 | 163 | 44 | clean | Gate run 2026-07-14. Frozen HTTP payloads implemented verbatim. Authorized deviation: `ProfileStore.import_profile_toml()` added (locked canonical raw import; daemon raw-import adapter delegates to it, removing a TOCTOU 400-vs-409 defect). `daemon/server.py` `_last_resort` now returns a constant 500 message and logs exception class only (privacy hardening — do not reintroduce interpolated exception text). Cockpit preserves metadata numeric kind/precision via JSON reviver source-text parsing plus a custom request-body serializer in `web/src/api/client.ts`; do not replace with plain `JSON.parse`/`stringify`. `web/e2e/profiles.spec.ts` owns profiles acceptance (found+fixed axe scrollable-region-focusable in `ProfilePrivacyPreview`). Deferred Minor: GET/duplicate concurrent-deletion race can 400 instead of 404 (contract silent). Sandbox note: implementer/reviewer subagents cannot bind `127.0.0.1`; the manager reran every loopback suite personally. |
-| 2 — Guide 1.1 + trace | pending | — | — | — | — | — | — |
+| 2 — Guide 1.1 + trace | **complete** | code `bd4d814`, `345196d`, `59dfc68`, `7a54273`, `1db88c8`, `bd1aa55` | 832 | 163 | 46 | clean | Gate run 2026-07-14. Source 1.1, private trace, public projection, versioned prompts/MIME, trace-integrity gating, and projection-bound public sidecar hashes are frozen. Wave 3 must preserve the Wave 2 public-hash boundary and safe `personalization.trace_integrity` id while adding optional audit state; see closeout notes. |
 | 3 — Optional audit + report | pending | — | — | — | — | — | — |
 | 4 — Fit panel + acceptance | pending | — | — | — | — | — | — |
 
@@ -635,14 +635,14 @@ API, Task 2.3 joins while 2.4 continues. Task 2.5 is the sole
 `goal_exclusions`, strict 1.0/1.1 readers, authored-version preservation, and
 version-aware omission of empty annotations.
 
-- [ ] Write RED tests: frozen 1.0 canonical hash unchanged; 1.0 rejects authored
+- [x] Write RED tests: frozen 1.0 canonical hash unchanged; 1.0 rejects authored
   annotation keys; 1.1 round trip; unknown versions fail; invalid goal-id/reason
   shapes fail; duplicate/dangling ids survive parsing for personalization rules.
-- [ ] Run focused parse/canonical tests and observe RED.
-- [ ] Implement without changing existing fixture bytes.
-- [ ] Run focused suites green and print the unchanged 1.0 fixture SHA in the
+- [x] Run focused parse/canonical tests and observe RED.
+- [x] Implement without changing existing fixture bytes.
+- [x] Run focused suites green and print the unchanged 1.0 fixture SHA in the
   task report.
-- [ ] Fresh compatibility/spec/code review; manager lands
+- [x] Fresh compatibility/spec/code review; manager lands
   `feat(guides): add source schema 1.1 annotations`.
 
 ### Task 2.2: Deterministic personalization trace core
@@ -656,14 +656,14 @@ version-aware omission of empty annotations.
 indexing, private trace model/parser/canonical bytes, safe trace projection/hash,
 and freshness comparison helpers.
 
-- [ ] Write RED tests for duplicate goal text retaining separate positional ids,
+- [x] Write RED tests for duplicate goal text retaining separate positional ids,
   exact facet activation, legal multi-module service, duplicate-within-field,
   exclusions, deterministic bytes across mapping/order variations, trace parser
   rejection, and absence of goal text/reasons/private hashes from safe projection.
-- [ ] Run the new test file and observe RED.
-- [ ] Implement pure functions only; no filesystem or `RunStore` calls.
-- [ ] Run focused tests green, including independent-workspace byte equality.
-- [ ] Fresh privacy/spec/code review; manager lands
+- [x] Run the new test file and observe RED.
+- [x] Implement pure functions only; no filesystem or `RunStore` calls.
+- [x] Run focused tests green, including independent-workspace byte equality.
+- [x] Fresh privacy/spec/code review; manager lands
   `feat(personalization): add deterministic local trace model`.
 
 ### Task 2.3: Versioned prompt and guide-contract propagation
@@ -677,15 +677,15 @@ and freshness comparison helpers.
 **Produces:** private prompt mapping `goal-001 → text`, active facet instructions,
 opaque-id-only draft/repair output contracts, and 1.0/1.1 contract preservation.
 
-- [ ] Write RED tests that personalized spec/outline/draft/repair prompts carry
+- [x] Write RED tests that personalized spec/outline/draft/repair prompts carry
   the authoritative mapping but demand only ids in guide JSON; unprofiled/default
   paths remain 1.0; contracts accept/preserve both versions.
-- [ ] Run focused prompt/contract tests and observe RED.
-- [ ] Implement `guide_schema_version` propagation with a 1.0-compatible default.
+- [x] Run focused prompt/contract tests and observe RED.
+- [x] Implement `guide_schema_version` propagation with a 1.0-compatible default.
   Do not change the QA contract.
-- [ ] Run focused tests green and inspect prompt snapshots for private/public
+- [x] Run focused tests green and inspect prompt snapshots for private/public
   instruction separation.
-- [ ] Fresh prompt/spec/code review; manager lands
+- [x] Fresh prompt/spec/code review; manager lands
   `feat(prompts): carry opaque personalization goals`.
 
 ### Task 2.4: Public guide projection and runtime compatibility
@@ -704,24 +704,26 @@ opaque-id-only draft/repair output contracts, and 1.0/1.1 contract preservation.
 assembly, `guide_to_dict` payload serialization, and strict runtime acceptance of
 1.0/1.1 only.
 
-- [ ] Write RED tests proving source retains annotations while projected and
+- [x] Write RED tests proving source retains annotations while projected and
   embedded JSON omit annotation keys/reasons; static checks inspect the exact
   projected document; both versions load; unknown versions fail.
-- [ ] Run focused Python/runtime tests and observe RED.
-- [ ] Implement using `dataclasses.replace`; never add `allow-same-origin` or
+- [x] Run focused Python/runtime tests and observe RED.
+- [x] Implement using `dataclasses.replace`; never add `allow-same-origin` or
   weaken runtime version checks.
-- [ ] Run focused Python tests plus relevant `guide-runtime.spec.ts` cases green.
-- [ ] Fresh privacy/runtime/code review; manager lands
+- [x] Run focused Python tests plus relevant `guide-runtime.spec.ts` cases green.
+- [x] Fresh privacy/runtime/code review; manager lands
   `feat(export): strip local personalization metadata`.
 
 ### Task 2.5: Validation, trace persistence, and RunStore integration
 
 **Files:**
 
-- Modify: `education_pipeline/guides/validation.py`, `reports.py`
-- Modify: `education_pipeline/runs.py`
+- Modify: `education_pipeline/guides/validation.py`, `quality_report.py`
+- Modify: `education_pipeline/guides/personalization.py` (safe finding allowlist)
+- Modify: `education_pipeline/runs.py`, `education_pipeline/daemon/server.py`
 - Test: `tests/test_guide_validation.py`, `tests/test_runs.py`,
-  `tests/test_export.py`, `tests/test_quality_report.py`
+  `tests/test_export.py`, `tests/test_quality_report.py`, `tests/test_server.py`,
+  `tests/test_guide_personalization.py`, `tests/test_personalization_privacy.py`
 
 **Produces:** use of Wave 0's `PersonalizationValidationContext` with
 authoritative goal ids, named trace rules/severities, complete content-contract
@@ -729,7 +731,7 @@ authoritative goal ids, named trace rules/severities, complete content-contract
 report freshness, conditional missing/stale-trace refusal, and validation over
 the same public projection export writes.
 
-- [ ] Write RED tests for every named rule and exact duplicate semantics; new
+- [x] Write RED tests for every named rule and exact duplicate semantics; new
   profiled versus existing 1.0 run selection; trace writes on draft/final
   validation; profile snapshot replacement staling report/trace; malformed or
   stale trace refusing finalize/export when learning goals are nonempty; no-goal
@@ -738,13 +740,13 @@ the same public projection export writes.
   `next_action`; malformed annotations producing a retrievable current report
   and `next_action=resolve_findings` rather than a validation loop; canonical
   final source retaining opaque annotations while public outputs omit them.
-- [ ] Run focused validation/run/export tests and observe RED.
-- [ ] Add `ContentContract.interactive_guide_v1_1`, update
+- [x] Run focused validation/run/export tests and observe RED.
+- [x] Add `ContentContract.interactive_guide_v1_1`, update
   `_validate_content_contract`, derive draft/repair MIME types from the manifest
   contract in `stage_paths`, and preserve `GUIDE_V1_CONTENT_TYPE` as the 1.0
   compatibility constant. Test existing 1.0 manifests, new profiled 1.1
   manifests, and response content types end to end.
-- [ ] Implement one shared validation-artifact computation. Write a trace for
+- [x] Implement one shared validation-artifact computation. Write a trace for
   every attached profile so facets stay inspectable. Draft may write the shared
   path, but final validation replaces it; only final release freshness depends
   on that current trace, never draft report status. A final report requires a
@@ -755,16 +757,56 @@ the same public projection export writes.
   report's blocking finding rather than making the report itself perpetually
   stale. Keep prior malformed-source trace artifacts stale rather than silently
   deleting evidence.
-- [ ] Run focused suites green and re-run the existing checked-document/export
+- [x] Run focused suites green and re-run the existing checked-document/export
   identity test and release-gate acceptance.
-- [ ] Fresh adversarial/spec/code review of all Wave 2 diffs; manager lands
+- [x] Fresh adversarial/spec/code review of all Wave 2 diffs; manager lands
   `feat(runs): persist and enforce personalization traces`.
 
 ### Wave 2 close
 
-- [ ] Complete the Wave 2 row using the Wave Protocol and stop.
+- [x] Complete the Wave 2 row using the Wave Protocol and stop.
 - Suggested next manager: **GPT-5.6 Sol with High reasoning** for optional-stage
   state, hostile model output, and safe public report projection.
+
+### Wave 2 closeout notes
+
+- **Implementation:** `bd4d814` added strict source-schema 1.1 annotations
+  without changing the frozen 1.0 SHA; `345196d` added the stripped public
+  projection and 1.1 runtime compatibility; `59dfc68` added the pure private
+  trace/safe-projection core; `7a54273` propagated opaque goals through
+  versioned prompts and contracts; `1db88c8` integrated content-contract 1.1,
+  validation, atomic trace persistence, release gating, public sidecar hashes,
+  and final-download MIME; `bd1aa55` updated the existing single-snapshot
+  privacy regression for the reviewed immutable-byte-read API.
+- **TDD and review evidence:** every numbered task recorded focused RED before
+  GREEN and received fresh required reviews. The final expanded Task 2.5 set
+  closed at 349 tests. Whole-wave adversarial/spec/code review found and drove
+  regressions for source-hash leakage, contract/MIME splits, invalid-scalar
+  report loops, invalid JSON Pointers, validation/event concurrency, profile
+  snapshot TOCTOU, and incorrect draft-trace gating. All findings were resolved
+  and re-reviewed; none are deferred.
+- **Four-suite gate:** final manager run on `bd1aa55`:
+  `python3 -m pytest` → 832 passed; `cd web && npm run test -- --run` →
+  163 passed; `npm run e2e` → 46 passed; `npm run build` → clean. The first
+  close-gate pytest run exposed two stale white-box test assumptions after the
+  one-read snapshot refactor; the reviewed test-only fix landed in `bd1aa55`,
+  and the complete four-suite gate was restarted from pytest and passed.
+- **Reviewed scope expansions:** Task 2.1 accepts canonical positional ids past
+  `goal-999` without over-padded aliases. Task 2.3 encodes authoritative goal
+  mappings as single-line untrusted JSON data and forbids reproducing the
+  mapping in authored contracts while permitting semantic tailoring. Task 2.5
+  necessarily included `guides/quality_report.py`, `daemon/server.py`, and their
+  tests to satisfy the frozen public-hash and end-to-end MIME contracts.
+- **Wave 3 handoff:** preserve `quality_report_bytes(...,
+  public_guide_sha256=...)`; local validation/waiver artifacts remain bound to
+  the private source SHA while public sidecar hash fields are bound to
+  `public_guide_projection`. The safe finding allowlist now includes the fixed,
+  value-free `personalization.trace_integrity` id. Validation parses and hashes
+  one immutable profile-snapshot byte read, and report/trace/event persistence
+  uses one non-reentrant manifest-lock acquisition with `_locked` primitives.
+  Draft trace files are inspectable but never freshness-gate `next_action`; only
+  final goal-bearing release requires the exact current trace. Wave 3 has not
+  started.
 
 ---
 
@@ -875,16 +917,18 @@ and before-or-after-finalize operation over the canonical final candidate.
 safe-trace/safe-audit projection hashes and findings; no merge into the on-disk
 deterministic gate report; canonical export-input digest/state; schema-v1
 sidecars stale-for-re-export; export state invalidated by later audit changes;
-public-guide-projection hashes replace or omit validation/waiver source hashes
-that could be derived from private exclusion reasons; one shared
+Wave 2's public-guide-projection hashes remain in validation/waiver sidecar
+fields without reintroducing source hashes derived from private exclusion
+reasons; one shared
 combined-findings accessor for sidecar/API/CLI consumers.
 
 - [ ] Write RED canonical-byte tests for not-run/current/stale audit; safe
   projection inclusion; raw narrative/private-hash absence; unchanged gate and
   waiver result; old sidecar staleness without changing `next_action`; later
   approval leaving old files byte-unchanged; re-export restoring current state;
-  and changing only a private exclusion reason never changing a public
-  source-hash field. Pin the public mapping: prompt/response without any approval
+  and preserving Wave 2's regression that changing only a private exclusion
+  reason never changes a public guide-hash field. Pin the public mapping:
+  prompt/response without any approval
   is `not_run`; a mismatched prior approval is `stale`; preparing or ingesting
   identical inputs does not stale a current export. Changing canonical final
   report bytes, validator/report schema versions, or
