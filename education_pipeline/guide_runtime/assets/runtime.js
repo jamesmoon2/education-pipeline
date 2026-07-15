@@ -770,7 +770,12 @@
     try {
       const rawText = dataEl.textContent;
       const guide = JSON.parse(rawText);
-      if (guide.schema_version !== "1.0" || expectedSchema !== "1.0" || expectedRuntime !== "1.0") {
+      const supportedSchemas = new Set(["1.0", "1.1"]);
+      if (
+        !supportedSchemas.has(guide.schema_version) ||
+        guide.schema_version !== expectedSchema ||
+        expectedRuntime !== "1.0"
+      ) {
         throw new Error("unsupported guide schema/runtime version");
       }
       shell.hidden = false;

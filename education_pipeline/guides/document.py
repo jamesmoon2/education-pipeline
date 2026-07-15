@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 import base64
 import hashlib
 import html
@@ -13,12 +12,14 @@ from urllib.parse import urlsplit
 
 from education_pipeline.guide_runtime import (
     RUNTIME_VERSION,
-    SUPPORTED_SCHEMA_VERSION,
+    SUPPORTED_SCHEMA_VERSIONS,
     RuntimeAssets,
     load_runtime_assets,
 )
 
+from .canonical import guide_to_dict
 from .model import Guide
+from .projection import public_guide_projection
 
 DocumentMode = Literal["export", "preview"]
 
@@ -250,11 +251,12 @@ def _block(block: object, ids: frozenset[str]) -> str:
 
 def assemble_guide_document(guide: Guide, assets: RuntimeAssets | None = None, mode: DocumentMode = "export") -> str:
     """Return a full deterministic document from a normalized guide and assets."""
-    if guide.schema_version != SUPPORTED_SCHEMA_VERSION:
+    if guide.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
         raise GuideDocumentError(f"unsupported guide schema version: {guide.schema_version!r}")
     if mode not in {"export", "preview"}: raise GuideDocumentError(f"unsupported document mode: {mode!r}")
     assets = assets or load_runtime_assets()
     if assets.version != RUNTIME_VERSION: raise GuideDocumentError(f"unsupported runtime version: {assets.version!r}")
+    guide = public_guide_projection(guide)
     ids = _all_ids(guide)
     nav = "".join(
         f'<li><a href="#{html.escape(s.id)}" data-role="nav-link" data-section-id="{html.escape(s.id, quote=True)}">'
@@ -281,7 +283,7 @@ def assemble_guide_document(guide: Guide, assets: RuntimeAssets | None = None, m
     glossary = "".join(f'<dt id="{html.escape(x.id)}">{html.escape(x.term)}</dt><dd>{render_guide_markdown(x.definition, ids)}</dd>' for x in guide.glossary)
     sources = "".join(f'<li id="{html.escape(x.id)}"><strong>{html.escape(x.title)}</strong>{": " + html.escape(", ".join(x.authors)) if x.authors else ""}{" (" + html.escape(x.published) + ")" if x.published else ""}{" — " + render_guide_markdown(x.note, ids) if x.note else ""}{" " + _inline("[Source](" + x.url + ")", ids) if x.url else ""}</li>' for x in guide.sources)
     csp = "; ".join(["default-src 'none'", "img-src 'none'", f"style-src '{_hash(assets.css)}'", f"script-src '{_hash(assets.javascript)}'", "connect-src 'none'", "font-src 'none'", "media-src 'none'", "object-src 'none'", "frame-src 'none'", "base-uri 'none'", "form-action 'none'"])
-    payload = _escape_json(asdict(guide))
+    payload = _escape_json(guide_to_dict(guide))
     course_controls = (
         f'<div class="course-controls" aria-label="Course controls">'
         f'<h2 class="sr-only">Course controls</h2>'

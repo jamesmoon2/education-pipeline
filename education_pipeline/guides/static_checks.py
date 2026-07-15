@@ -14,6 +14,7 @@ from html.parser import HTMLParser
 from ..guide_runtime import RUNTIME_VERSION, RuntimeAssets, load_runtime_assets
 from .document import GuideDocumentError, assemble_guide_document
 from .model import Guide
+from .projection import public_guide_projection
 from .validation import ValidationContext
 
 _STRUCTURAL_MARKERS = ("data-guide-shell", 'id="guide-data"', "skip-link")
@@ -109,8 +110,9 @@ def compute_static_checks(guide: Guide, assets: RuntimeAssets | None = None) -> 
         and _sha(assets.css) == _sha(packaged.css)
         and _sha(assets.javascript) == _sha(packaged.javascript)
     )
+    projected = public_guide_projection(guide)
     try:
-        document = assemble_guide_document(guide, assets=assets, mode="export")
+        document = assemble_guide_document(projected, assets=assets, mode="export")
     except GuideDocumentError:
         # assets_match is input-derived, so it stays computed even when
         # assembly fails; the document-derived checks (controls, headings)

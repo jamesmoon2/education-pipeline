@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .model import (
     Callout,
     Guide,
@@ -11,6 +13,20 @@ from .model import (
     Scenario,
     WorkedReveal,
 )
+
+
+def public_guide_projection(guide: Guide) -> Guide:
+    """Return the runtime-safe guide with local personalization data removed."""
+    return replace(
+        guide,
+        course=replace(guide.course, goal_exclusions=()),
+        outcomes=tuple(
+            replace(outcome, serves_goals=()) for outcome in guide.outcomes
+        ),
+        modules=tuple(
+            replace(module, serves_goals=()) for module in guide.modules
+        ),
+    )
 
 
 def project_guide_markdown(guide: Guide) -> str:

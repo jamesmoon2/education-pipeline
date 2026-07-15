@@ -18,6 +18,10 @@ from education_pipeline.guides.document import (
 )
 
 FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.guide.json"
+PERSONALIZED_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures/guides/feedback-loops.personalized.guide.json"
+)
 
 
 def guide():
@@ -142,3 +146,21 @@ def test_unknown_schema_runtime_and_mode_fail_closed() -> None:
         assemble_guide_document(value, RuntimeAssets("x", "y", "2.0"))
     with pytest.raises(GuideDocumentError, match="mode"):
         assemble_guide_document(value, mode="other")
+
+
+def test_document_accepts_1_1_but_embeds_only_the_public_projection() -> None:
+    source = normalize_guide(parse_guide(PERSONALIZED_FIXTURE.read_bytes()))
+
+    document = assemble_guide_document(source)
+    payload_text = re.search(
+        r'<script id="guide-data" type="application/json">(.*?)</script>', document
+    ).group(1)
+    payload = json.loads(payload_text)
+
+    assert source.course.goal_exclusions[0].reason == "Synthetic deferred objective."
+    assert source.outcomes[0].serves_goals == ("goal-001",)
+    assert 'data-guide-schema="1.1"' in document
+    assert payload["schema_version"] == "1.1"
+    assert "serves_goals" not in payload_text
+    assert "goal_exclusions" not in payload_text
+    assert "Synthetic deferred objective." not in document

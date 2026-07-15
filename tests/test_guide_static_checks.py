@@ -6,8 +6,13 @@ import pytest
 from education_pipeline.guide_runtime import RuntimeAssets, load_runtime_assets
 from education_pipeline.guides import compute_static_checks
 from education_pipeline.guides.parse import normalize_guide, parse_guide
+from education_pipeline.guides.projection import public_guide_projection
 
 FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.guide.json"
+PERSONALIZED_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures/guides/feedback-loops.personalized.guide.json"
+)
 
 
 @pytest.fixture()
@@ -164,3 +169,27 @@ def test_rich_text_section_opening_with_a_markdown_heading_passes(guide):
     assert result.document is not None
     assert "<h3>Why loops compound</h3>" in result.document
     assert result.context.heading_order_valid is True
+
+
+def test_static_checks_assemble_the_exact_public_projection(monkeypatch):
+    from education_pipeline.guides import static_checks as mod
+
+    source = normalize_guide(parse_guide(PERSONALIZED_FIXTURE.read_bytes()))
+    expected = public_guide_projection(source)
+    assembled = []
+
+    def capture(candidate, *, assets, mode):
+        assembled.append(candidate)
+        return (
+            '<h1>Course</h1><div data-guide-shell></div>'
+            '<script id="guide-data"></script><a class="skip-link"></a>'
+        )
+
+    monkeypatch.setattr(mod, "assemble_guide_document", capture)
+
+    result = compute_static_checks(source)
+
+    assert assembled == [expected]
+    assert result.document is not None
+    assert source.course.goal_exclusions
+    assert not assembled[0].course.goal_exclusions
