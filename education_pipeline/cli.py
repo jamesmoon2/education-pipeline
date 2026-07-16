@@ -193,6 +193,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("job_id")
     p.set_defaults(func=_cmd_cancel)
 
+    workspace = sub.add_parser("workspace", help="manage the workspace itself").add_subparsers(
+        dest="workspace_command", required=True
+    )
+    p = workspace.add_parser("check", help="validate workspace layout and setup")
+    p.add_argument("--fix", action="store_true", help="apply the auto-fixable findings first")
+    p.set_defaults(func=_cmd_workspace_check)
+
     daemon = sub.add_parser("daemon", help="manage the run daemon").add_subparsers(
         dest="daemon_command", required=True
     )
@@ -638,6 +645,24 @@ def _cmd_cancel(args: argparse.Namespace) -> int:
     job = client.cancel(args.job_id)
     print(f"job {job['id']} {job['status']}")
     return 0
+
+
+def _cmd_workspace_check(args: argparse.Namespace) -> int:
+    """Validate the workspace and report findings; exit 1 while blockers remain."""
+
+    from education_pipeline.workspace import fix_workspace, validate_workspace
+
+    root = _root(args)
+    findings = fix_workspace(root) if args.fix else validate_workspace(root)
+    if not findings:
+        print(f"workspace ok: {root}")
+        return 0
+    for finding in findings:
+        print(
+            f"{finding.severity}\t{finding.code}\t{finding.message}\t"
+            f"fix: {finding.remediation}"
+        )
+    return 1 if any(f.severity == "blocking" for f in findings) else 0
 
 
 def _cmd_daemon_start(args: argparse.Namespace) -> int:

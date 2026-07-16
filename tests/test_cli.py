@@ -1074,3 +1074,63 @@ def test_daemon_status_prints_cockpit_url(tmp_path, capsys, monkeypatch):
     assert _run(tmp_path, "daemon", "status") == 0
     out = capsys.readouterr().out
     assert "http://127.0.0.1:4242/" in out
+
+
+# ---------------------------------------------------------------------------
+# workspace check (first-run milestone, spec §3.3)
+
+
+def test_workspace_check_reports_findings_and_exits_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = _run(tmp_path, "workspace", "check")
+    out = capsys.readouterr().out
+    assert code == 1
+    assert out.count("missing_subdir") == 3
+    assert "blocking" in out
+
+
+def test_workspace_check_ok_exits_0(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for subdir in ("runs", "topics", "profiles"):
+        (tmp_path / subdir).mkdir()
+    code = _run(tmp_path, "workspace", "check")
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "ok" in out.lower()
+
+
+def test_workspace_check_fix_scaffolds_and_exits_0(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = _run(tmp_path, "workspace", "check", "--fix")
+    capsys.readouterr()
+    assert code == 0
+    for subdir in ("runs", "topics", "profiles"):
+        assert (tmp_path / subdir).is_dir()
+
+
+def test_workspace_check_fix_refuses_unrecognized_layout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "photos").mkdir()
+    code = _run(tmp_path, "workspace", "check", "--fix")
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "unrecognized_layout" in out
+    assert not (tmp_path / "runs").exists()
+
+
+def test_workspace_check_warning_only_exits_0(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from education_pipeline.daemon import lifecycle
+
+    for subdir in ("runs", "topics", "profiles"):
+        (tmp_path / subdir).mkdir()
+    lifecycle.write_discovery(tmp_path, pid=999_999_999, port=1, token="t", version="0")
+    code = _run(tmp_path, "workspace", "check")
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "stale_daemon_record" in out

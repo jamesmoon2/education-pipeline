@@ -22,6 +22,142 @@ _ARTIFACT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _PROFILE_LOCKS: dict[Path, threading.Lock] = {}
 _PROFILE_LOCKS_GUARD = threading.Lock()
 
+#: Subdirectories every workspace must contain.
+WORKSPACE_SUBDIRS = ("runs", "topics", "profiles")
+
+#: Any of these marks a directory as an (possibly incomplete) workspace.
+_WORKSPACE_MARKERS = WORKSPACE_SUBDIRS + (".education-pipeline",)
+
+
+@dataclass(frozen=True)
+class WorkspaceFinding:
+    """One structured setup-validation finding (spec §3.3).
+
+    Mirrors the release-gates finding shape: severity, code, message, and
+    remediation, plus whether ``fix_workspace`` can resolve it automatically.
+    """
+
+    code: str
+    severity: str  # "blocking" | "warning"
+    message: str
+    remediation: str
+    auto_fixable: bool = False
+
+
+def validate_workspace(root: str | Path) -> list[WorkspaceFinding]:
+    """Validate a directory as an education-pipeline workspace.
+
+    Returns structured findings; an empty list means the workspace is ready.
+    A nonexistent or empty directory is scaffoldable (``missing_subdir``
+    findings only); a non-empty directory with no workspace marker is
+    ``unrecognized_layout`` and is never scaffolded automatically.
+    """
+
+    from education_pipeline.daemon import lifecycle
+
+    root = Path(root)
+    if root.exists() and not root.is_dir():
+        return [
+            WorkspaceFinding(
+                code="path_is_file",
+                severity="blocking",
+                message=f"{root} exists but is not a directory",
+                remediation="choose a directory path for the workspace",
+            )
+        ]
+
+    findings: list[WorkspaceFinding] = []
+    if root.is_dir():
+        if not os.access(root, os.W_OK):
+            return [
+                WorkspaceFinding(
+                    code="not_writable",
+                    severity="blocking",
+                    message=f"workspace directory is not writable: {root}",
+                    remediation="fix the directory permissions or choose another directory",
+                )
+            ]
+        has_marker = any((root / marker).exists() for marker in _WORKSPACE_MARKERS)
+        has_entries = any(root.iterdir())
+        if has_entries and not has_marker:
+            return [
+                WorkspaceFinding(
+                    code="unrecognized_layout",
+                    severity="blocking",
+                    message=(
+                        f"{root} is not empty and does not look like a workspace"
+                    ),
+                    remediation=(
+                        "confirm this directory explicitly before scaffolding "
+                        "into it, or choose an empty directory"
+                    ),
+                )
+            ]
+    else:
+        ancestor = root.parent
+        while not ancestor.exists() and ancestor != ancestor.parent:
+            ancestor = ancestor.parent
+        if ancestor.is_dir() and not os.access(ancestor, os.W_OK):
+            return [
+                WorkspaceFinding(
+                    code="not_writable",
+                    severity="blocking",
+                    message=f"cannot create workspace under read-only {ancestor}",
+                    remediation="fix the directory permissions or choose another directory",
+                )
+            ]
+
+    for subdir in WORKSPACE_SUBDIRS:
+        if not (root / subdir).is_dir():
+            findings.append(
+                WorkspaceFinding(
+                    code="missing_subdir",
+                    severity="blocking",
+                    message=f"missing workspace subdirectory: {subdir}/",
+                    remediation=f"create {root / subdir} (auto-fixable)",
+                    auto_fixable=True,
+                )
+            )
+
+    if lifecycle.discovery_path(root).is_file():
+        record = lifecycle.read_discovery(root)
+        if record is None or lifecycle.is_stale(record):
+            findings.append(
+                WorkspaceFinding(
+                    code="stale_daemon_record",
+                    severity="warning",
+                    message=(
+                        "a stale daemon discovery record was left behind at "
+                        f"{lifecycle.discovery_path(root)}"
+                    ),
+                    remediation="remove the stale daemon.json (auto-fixable)",
+                    auto_fixable=True,
+                )
+            )
+    return findings
+
+
+def fix_workspace(root: str | Path) -> list[WorkspaceFinding]:
+    """Apply the auto-fixable findings and return whatever remains.
+
+    Scaffolds missing subdirectories and removes a stale daemon discovery
+    record. Never scaffolds into an unrecognized non-empty directory --
+    that requires explicit user confirmation (spec §3.3).
+    """
+
+    from education_pipeline.daemon import lifecycle
+
+    root = Path(root)
+    for finding in validate_workspace(root):
+        if not finding.auto_fixable:
+            continue
+        if finding.code == "missing_subdir":
+            for subdir in WORKSPACE_SUBDIRS:
+                (root / subdir).mkdir(parents=True, exist_ok=True)
+        elif finding.code == "stale_daemon_record":
+            lifecycle.remove_discovery(root)
+    return validate_workspace(root)
+
 
 @dataclass(frozen=True)
 class ProfileRecord:
