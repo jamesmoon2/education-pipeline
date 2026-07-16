@@ -333,6 +333,12 @@ def _make_handler(context: DaemonContext):
                 return self._send(
                     200, read_api.manifest_payload(context.runs, m.group(1))
                 )
+            m = re.match(r"^/v1/runs/([^/?]+)/personalization$", self.path)
+            if m:
+                return self._send(
+                    200,
+                    read_api.personalization_payload(context.runs, m.group(1)),
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)$", self.path)
             if m:
                 return self._send(

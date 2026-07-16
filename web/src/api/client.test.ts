@@ -22,6 +22,11 @@ import {
   previewProfile,
   putProfile,
   duplicateProfile,
+  getPersonalization,
+  prepareAudit,
+  postAuditResponse,
+  approveAudit,
+  enqueueAuditJob,
 } from "./client";
 import { metadataNumber } from "./types";
 import type { LearnerProfile } from "./types";
@@ -143,6 +148,87 @@ describe("apiPost", () => {
     expect(err).toBeInstanceOf(ApiRequestError);
     expect(err.status).toBe(409);
     expect(err.code).toBe("already_exists");
+  });
+});
+
+describe("personalization audit adapters", () => {
+  afterEach(() => {
+    resetSessionForTests();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("fetches the typed personalization aggregate", async () => {
+    const payload = {
+      topic_id: "topic/a",
+      profile: { state: "not_attached", id: null },
+      trace: { state: "missing", goals: [], facets: [] },
+      audit: {
+        state: "not_run",
+        stage_state: "not_run",
+        available: false,
+        unavailable_reason: "No learner profile is attached.",
+        findings: [],
+      },
+      findings: [
+        {
+          id: "personalization.goal_uncovered:goal-001",
+          rule_id: "personalization.goal_uncovered",
+          severity: "warning",
+          blocking: false,
+          waivable: true,
+          path: "",
+          message: "An authoritative learner goal is not served or validly excluded.",
+          remediation: "Serve the goal or add a valid exclusion.",
+          stage: "draft",
+        },
+      ],
+      export: { state: "missing" },
+    };
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/topic%2Fa/personalization": { status: 200, body: payload },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getPersonalization("topic/a");
+
+    expect(result).toEqual(payload);
+    expect(result.findings[0]?.rule_id).toBe("personalization.goal_uncovered");
+  });
+
+  it("uses exact audit action routes and bodies", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/topic%2Fa/audit": { status: 200, body: { topic_id: "topic/a", stage: "audit" } },
+      "/v1/runs/topic%2Fa/stages/audit/response": {
+        status: 200,
+        body: { topic_id: "topic/a", stage: "audit", response_path: "responses/audit.response.json" },
+      },
+      "/v1/runs/topic%2Fa/stages/audit/approve": {
+        status: 200,
+        body: { topic_id: "topic/a", stage: "audit", approved_path: "approved/audit.json" },
+      },
+      "/v1/jobs": { status: 200, body: { id: "job-1", topic_id: "topic/a", stage: "audit" } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await prepareAudit("topic/a", true);
+    await postAuditResponse("topic/a", "{}", true);
+    await approveAudit("topic/a", true);
+    await enqueueAuditJob("topic/a", true);
+
+    const bodies = Object.fromEntries(
+      fetchMock.mock.calls
+        .filter(([, init]) => init?.body)
+        .map(([url, init]) => [String(url), JSON.parse(init!.body as string)]),
+    );
+    expect(bodies).toEqual({
+      "/v1/runs/topic%2Fa/audit": { rebuild: true },
+      "/v1/runs/topic%2Fa/stages/audit/response": { text: "{}", force: true },
+      "/v1/runs/topic%2Fa/stages/audit/approve": { overwrite: true },
+      "/v1/jobs": { topic_id: "topic/a", stage: "audit", force: true },
+    });
   });
 });
 

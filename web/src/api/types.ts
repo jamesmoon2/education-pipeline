@@ -155,6 +155,57 @@ export interface ExportResult {
   export_path: string;
 }
 
+export type PersonalizationTraceState = "missing" | "current" | "stale" | "invalid";
+export type PersonalizationAuditState = "not_run" | "current" | "stale";
+export type PersonalizationExportState = "missing" | "current" | "stale";
+
+export interface PersonalizationEvidence {
+  kind: "module" | "outcome";
+  id: string;
+}
+
+export interface PersonalizationGoal {
+  goal_id: string;
+  goal_text: string;
+  status: "served" | "excluded" | "missing";
+  evidence: PersonalizationEvidence[];
+  exclusions: { reason: string }[];
+}
+
+export interface PersonalizationPayload {
+  topic_id: string;
+  profile: {
+    state: "not_attached" | "attached";
+    id: string | null;
+  };
+  trace: {
+    state: PersonalizationTraceState;
+    goals: PersonalizationGoal[];
+    facets: string[];
+  };
+  audit: {
+    state: PersonalizationAuditState;
+    stage_state: StageState;
+    available: boolean;
+    unavailable_reason: string | null;
+    findings: ValidationFinding[];
+  };
+  findings: ValidationFinding[];
+  export: { state: PersonalizationExportState };
+}
+
+export interface AuditPreparationResult {
+  topic_id: string;
+  stage: "audit";
+  prompt_path: string;
+  response_path: string;
+  audit: { state: PersonalizationAuditState; finding_count: number };
+  next_steps: {
+    manual: { action: "save_response"; stage: "audit"; response_path: string };
+    provider: { action: "enqueue"; stage: "audit"; force?: boolean };
+  };
+}
+
 export interface ImportTopicResult {
   id: string;
   title: string;
@@ -317,6 +368,7 @@ export interface ValidationFinding {
   remediation: string;
   related_ids?: string[];
   stage?: string;
+  source_stage?: string;
 }
 
 export interface ValidationReport {

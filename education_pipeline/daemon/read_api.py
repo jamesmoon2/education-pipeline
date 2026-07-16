@@ -184,6 +184,97 @@ def list_runs(runs: RunStore) -> dict:
     return {"runs": list(runs.list_run_ids())}
 
 
+def personalization_payload(runs: RunStore, topic_id: str) -> dict:
+    """Return the one authenticated local cockpit personalization aggregate.
+
+    Private profile goals and exclusions are intentionally available to the
+    local cockpit. Model-authored audit narratives and artifact locations are
+    not: audit presentation is sourced only from the strict safe projection
+    captured by :meth:`RunStore.personalization_snapshot`.
+    """
+
+    require_run(runs, topic_id)
+    try:
+        snapshot = runs.personalization_snapshot(topic_id)
+    except ConfigError:
+        raise ConfigError("personalization state is unavailable") from None
+    profile = snapshot.profile
+    trace = snapshot.trace
+    trace_state = snapshot.trace_state
+    goals: list[dict] = []
+    facets: list[str] = []
+    if trace is not None and trace_state == "current":
+        facets = list(trace.active_facets)
+        for goal in trace.goals:
+            evidence = [
+                {"kind": "module", "id": element_id}
+                for element_id in goal.serving_module_ids
+            ] + [
+                {"kind": "outcome", "id": element_id}
+                for element_id in goal.serving_outcome_ids
+            ]
+            goals.append(
+                {
+                    "goal_id": goal.goal_id,
+                    "goal_text": goal.goal_text,
+                    "status": (
+                        "served"
+                        if evidence
+                        else "excluded"
+                        if goal.exclusions
+                        else "missing"
+                    ),
+                    "evidence": evidence,
+                    "exclusions": [
+                        {"reason": exclusion.reason}
+                        for exclusion in goal.exclusions
+                    ],
+                }
+            )
+
+    audit_findings = [
+        finding.to_dict()
+        for finding in snapshot.audit_findings
+        if finding.stage == "audit"
+    ]
+    findings = [
+        finding.to_dict()
+        for finding in snapshot.findings
+        if finding.rule_id.startswith("personalization.")
+        or finding.stage == "audit"
+    ]
+
+    available = False
+    unavailable_reason: str | None
+    if profile is None:
+        unavailable_reason = "No learner profile is attached."
+    elif snapshot.final_report_state != "current":
+        unavailable_reason = "Final validation is not current."
+    elif trace_state != "current":
+        unavailable_reason = "The personalization trace is not current."
+    else:
+        available = True
+        unavailable_reason = None
+
+    return {
+        "topic_id": topic_id,
+        "profile": {
+            "state": "attached" if profile is not None else "not_attached",
+            "id": profile.id if profile is not None else None,
+        },
+        "trace": {"state": trace_state, "goals": goals, "facets": facets},
+        "audit": {
+            "state": snapshot.audit_state,
+            "stage_state": snapshot.audit_stage_state,
+            "available": available,
+            "unavailable_reason": unavailable_reason,
+            "findings": audit_findings,
+        },
+        "findings": findings,
+        "export": {"state": snapshot.export_state},
+    }
+
+
 def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
     require_run(runs, topic_id)
     paths = runs.stage_paths(topic_id, stage)  # ConfigError on bad stage -> 400

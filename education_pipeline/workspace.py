@@ -76,6 +76,17 @@ class ProfileStore:
         safe_id = _artifact_id(topic_id, "topic id")
         return self.runs_dir / safe_id / "inputs" / "profile.toml"
 
+    def topic_profile_snapshot_lock(self, topic_id: str) -> threading.Lock:
+        """Return the lock coordinating one topic's attached profile snapshot.
+
+        Readers that must derive several values from one attachment generation
+        may hold this lock across those reads.  The lock is plain and
+        non-reentrant; callers must not invoke ``attach_profile_to_topic``
+        while holding it.
+        """
+
+        return _profile_lock(self.topic_profile_snapshot_path(topic_id))
+
     def list_profile_ids(self) -> tuple[str, ...]:
         if not self.profiles_dir.exists():
             return ()
@@ -266,7 +277,7 @@ class ProfileStore:
         _require_matching_profile_id(profile, safe_profile_id)
 
         snapshot_path = self.topic_profile_snapshot_path(safe_topic_id)
-        with _profile_lock(snapshot_path):
+        with self.topic_profile_snapshot_lock(safe_topic_id):
             if snapshot_path.exists() and not overwrite:
                 raise ConfigError(f"refusing to overwrite existing file: {snapshot_path}")
             _atomic_replace_bytes(snapshot_path, source_bytes)

@@ -255,6 +255,21 @@ class RunStatus:
 
 
 @dataclass(frozen=True)
+class PersonalizationSnapshot:
+    """One lock-protected generation for the cockpit personalization view."""
+
+    profile: LearnerProfile | None
+    trace: PersonalizationTrace | None
+    trace_state: str
+    final_report_state: str
+    audit_state: str
+    audit_stage_state: str
+    audit_findings: tuple[Finding, ...]
+    findings: tuple[Finding, ...]
+    export_state: str
+
+
+@dataclass(frozen=True)
 class AdvanceResult:
     """The outcome of advancing a run by one machine step."""
 
@@ -1259,6 +1274,80 @@ class RunStore:
             findings=findings,
         )
 
+    def personalization_snapshot(self, topic_id: str) -> PersonalizationSnapshot:
+        """Capture every personalization-cockpit state from one generation.
+
+        The profile-snapshot lock is acquired before the topic lock and both
+        are held across all reads. Attachment takes only the former; audit and
+        validation writes take only the latter, so there is no opposing lock
+        order while neither generation can interleave this aggregate.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        profiles = ProfileStore(self.root)
+        with profiles.topic_profile_snapshot_lock(safe_id):
+            with self._manifest_write_lock(safe_id):
+                profile_snapshot = self._read_attached_profile_snapshot(safe_id)
+                profile = profile_snapshot[0] if profile_snapshot is not None else None
+
+                trace_path = self.personalization_trace_path(safe_id)
+                trace: PersonalizationTrace | None = None
+                if not trace_path.is_file():
+                    trace_state = "missing"
+                else:
+                    try:
+                        trace_bytes = trace_path.read_bytes()
+                        trace = parse_personalization_trace(trace_bytes)
+                    except (OSError, PersonalizationTraceError):
+                        trace_state = "invalid"
+                    else:
+                        trace_state = self._personalization_trace_state_for_bytes(
+                            safe_id, "final", trace_bytes
+                        )
+
+                final_report_state = self.report_state(safe_id, "final")
+                audit = self._public_audit_snapshot_locked(safe_id)
+                findings = (
+                    ()
+                    if final_report_state == "missing"
+                    else self._combined_findings_locked(
+                        safe_id,
+                        audit_snapshot=audit,
+                    )
+                )
+                audit_paths = self.stage_paths(safe_id, "audit")
+                audit_stale = (
+                    (
+                        audit_paths.prompt_path.exists()
+                        and not self.audit_prompt_is_current(safe_id)
+                    )
+                    or audit.state == "stale"
+                    or self._audit_approval_incomplete(safe_id)
+                )
+                audit_stage_state = StageStatus(
+                    stage="audit",
+                    prompt_written=audit_paths.prompt_path.exists(),
+                    response_ingested=audit_paths.response_path.exists(),
+                    approved=audit_paths.approved_path.exists(),
+                    stale=audit_stale,
+                ).state
+                export_state = self._export_state_locked(
+                    safe_id,
+                    audit_snapshot=audit,
+                )
+
+                return PersonalizationSnapshot(
+                    profile=profile,
+                    trace=trace,
+                    trace_state=trace_state,
+                    final_report_state=final_report_state,
+                    audit_state=audit.state,
+                    audit_stage_state=audit_stage_state,
+                    audit_findings=audit.findings,
+                    findings=findings,
+                    export_state=export_state,
+                )
+
     def combined_findings(
         self, topic_id: str, *, phase: str = "final"
     ) -> tuple[Finding, ...]:
@@ -1271,15 +1360,27 @@ class RunStore:
 
         safe_id = _artifact_id(topic_id, "topic id")
         with self._manifest_write_lock(safe_id):
-            report = self._read_validation_report(safe_id, phase)
-            if phase != "final":
-                return report.findings
-            audit_findings = self._public_audit_snapshot_locked(safe_id).findings
+            return self._combined_findings_locked(safe_id, phase=phase)
+
+    def _combined_findings_locked(
+        self,
+        topic_id: str,
+        *,
+        phase: str = "final",
+        audit_snapshot: _PublicAuditSnapshot | None = None,
+    ) -> tuple[Finding, ...]:
+        """Unlocked combined-findings projection for an existing topic lock."""
+
+        report = self._read_validation_report(topic_id, phase)
+        if phase != "final":
+            return report.findings
+        if audit_snapshot is None:
+            audit_snapshot = self._public_audit_snapshot_locked(topic_id)
         return ValidationReport(
             guide_schema_version=report.guide_schema_version,
             phase=report.phase,
             guide_sha256=report.guide_sha256,
-            findings=report.findings + audit_findings,
+            findings=report.findings + audit_snapshot.findings,
             report_schema_version=report.report_schema_version,
             validator_version=report.validator_version,
         ).findings
@@ -1291,6 +1392,18 @@ class RunStore:
         existence of an old HTML/report pair.  Schema-v1 sidecars are readable
         historical artifacts but always require re-export.
         """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        with self._manifest_write_lock(safe_id):
+            return self._export_state_locked(safe_id)
+
+    def _export_state_locked(
+        self,
+        topic_id: str,
+        *,
+        audit_snapshot: _PublicAuditSnapshot | None = None,
+    ) -> str:
+        """Unlocked export-state derivation for an existing topic lock."""
 
         safe_id = _artifact_id(topic_id, "topic id")
         export_path = self.export_path(safe_id, "html")
@@ -1310,35 +1423,35 @@ class RunStore:
         if not self._is_guide_v1(safe_id) or not self.is_finalized(safe_id):
             return "stale"
         try:
-            with self._manifest_write_lock(safe_id):
-                assets = load_runtime_assets()
-                source_text = self.final_guide_json_path(safe_id).read_text(
-                    encoding="utf-8"
-                )
-                profile_snapshot = self._read_attached_profile_snapshot(safe_id)
-                profile = profile_snapshot[0] if profile_snapshot else None
-                validation_inputs = (
-                    profile_private_values(profile) if profile else (),
-                    PersonalizationValidationContext(
-                        profile_present=profile is not None,
-                        authoritative_goal_ids=tuple(
-                            goal.goal_id for goal in authoritative_goals(profile)
-                        ) if profile else (),
-                    ),
-                )
-                waiver_set = self._load_waiver_set(safe_id)
-                report, _, guide = self._validated_final(
-                    safe_id,
-                    source_text,
-                    validation_inputs=validation_inputs,
-                    assets=assets,
-                )
-                if guide is None:
-                    return "stale"
-                waiver_result = apply_waivers(report, waiver_set)
-                trace_projection, trace_file_sha256 = self._safe_trace_projection_bytes(
-                    safe_id, report, guide, profile_snapshot
-                )
+            assets = load_runtime_assets()
+            source_text = self.final_guide_json_path(safe_id).read_text(
+                encoding="utf-8"
+            )
+            profile_snapshot = self._read_attached_profile_snapshot(safe_id)
+            profile = profile_snapshot[0] if profile_snapshot else None
+            validation_inputs = (
+                profile_private_values(profile) if profile else (),
+                PersonalizationValidationContext(
+                    profile_present=profile is not None,
+                    authoritative_goal_ids=tuple(
+                        goal.goal_id for goal in authoritative_goals(profile)
+                    ) if profile else (),
+                ),
+            )
+            waiver_set = self._load_waiver_set(safe_id)
+            report, _, guide = self._validated_final(
+                safe_id,
+                source_text,
+                validation_inputs=validation_inputs,
+                assets=assets,
+            )
+            if guide is None:
+                return "stale"
+            waiver_result = apply_waivers(report, waiver_set)
+            trace_projection, trace_file_sha256 = self._safe_trace_projection_bytes(
+                safe_id, report, guide, profile_snapshot
+            )
+            if audit_snapshot is None:
                 audit_snapshot = self._public_audit_snapshot_locked(
                     safe_id,
                     current_bindings=(
@@ -1349,25 +1462,25 @@ class RunStore:
                     if profile_snapshot is not None and trace_file_sha256 is not None
                     else None,
                 )
-                export_bytes = export_path.read_bytes()
-                expected = self._quality_report_bytes(
-                    safe_id,
-                    report=report,
-                    waiver_result=waiver_result,
-                    waiver_set=waiver_set,
-                    guide=guide,
-                    export_sha256=hashlib.sha256(export_bytes).hexdigest(),
-                    runtime_css_sha256=hashlib.sha256(
-                        assets.css.encode("utf-8")
-                    ).hexdigest(),
-                    runtime_js_sha256=hashlib.sha256(
-                        assets.javascript.encode("utf-8")
-                    ).hexdigest(),
-                    runtime_version=assets.version,
-                    audit_snapshot=audit_snapshot,
-                    trace_projection=trace_projection,
-                )
-                return "current" if report_path.read_bytes() == expected else "stale"
+            export_bytes = export_path.read_bytes()
+            expected = self._quality_report_bytes(
+                safe_id,
+                report=report,
+                waiver_result=waiver_result,
+                waiver_set=waiver_set,
+                guide=guide,
+                export_sha256=hashlib.sha256(export_bytes).hexdigest(),
+                runtime_css_sha256=hashlib.sha256(
+                    assets.css.encode("utf-8")
+                ).hexdigest(),
+                runtime_js_sha256=hashlib.sha256(
+                    assets.javascript.encode("utf-8")
+                ).hexdigest(),
+                runtime_version=assets.version,
+                audit_snapshot=audit_snapshot,
+                trace_projection=trace_projection,
+            )
+            return "current" if report_path.read_bytes() == expected else "stale"
         except (ConfigError, OSError, UnicodeError, ValueError):
             return "stale"
 
@@ -1961,14 +2074,21 @@ class RunStore:
         if not trace_path.is_file():
             return "missing"
         try:
-            artifacts = self._compute_phase_report(safe_id, phase)
+            current = trace_path.read_bytes()
+        except OSError:
+            return "stale"
+        return self._personalization_trace_state_for_bytes(safe_id, phase, current)
+
+    def _personalization_trace_state_for_bytes(
+        self, topic_id: str, phase: str, current: bytes
+    ) -> str:
+        """Derive trace freshness from bytes captured by the current reader."""
+
+        try:
+            artifacts = self._compute_phase_report(topic_id, phase)
         except (ConfigError, OSError, UnicodeError):
             return "stale"
         if artifacts.trace is None:
-            return "stale"
-        try:
-            current = trace_path.read_bytes()
-        except OSError:
             return "stale"
         return (
             "current"

@@ -30,6 +30,8 @@ import type {
   ProfileDetail,
   ProfilePreview,
   ProfileSummary,
+  PersonalizationPayload,
+  AuditPreparationResult,
 } from "./types";
 import { isMetadataNumber, metadataNumber, metadataNumberValidationMessage } from "./types";
 
@@ -244,6 +246,10 @@ export const getTopic = (id: string) =>
   api<TopicDetail>(`/v1/topics/${encodeURIComponent(id)}`);
 export const getRunStatus = (topicId: string) =>
   api<RunStatus>(`/v1/runs/${encodeURIComponent(topicId)}`);
+export const getPersonalization = (topicId: string) =>
+  api<PersonalizationPayload>(
+    `/v1/runs/${encodeURIComponent(topicId)}/personalization`,
+  );
 export const getStageContent = (topicId: string, stage: string) =>
   api<StageContent>(
     `/v1/runs/${encodeURIComponent(topicId)}/stages/${encodeURIComponent(stage)}`,
@@ -280,6 +286,23 @@ export const duplicateProfile = (id: string, newId: string) =>
 
 export const postAdvance = (topicId: string) =>
   apiPost<AdvanceResult>(`/v1/runs/${encodeURIComponent(topicId)}/advance`, {});
+export const prepareAudit = (topicId: string, rebuild = false) =>
+  apiPost<AuditPreparationResult>(
+    `/v1/runs/${encodeURIComponent(topicId)}/audit`,
+    { rebuild },
+  );
+export const postAuditResponse = (topicId: string, text: string, force = false) =>
+  apiPost<ResponseResult>(
+    `/v1/runs/${encodeURIComponent(topicId)}/stages/audit/response`,
+    { text, force },
+  );
+export const approveAudit = (topicId: string, overwrite = false) =>
+  apiPost<ApproveResult>(
+    `/v1/runs/${encodeURIComponent(topicId)}/stages/audit/approve`,
+    { overwrite },
+  );
+export const enqueueAuditJob = (topicId: string, force = false) =>
+  apiPost<Job>("/v1/jobs", { topic_id: topicId, stage: "audit", force });
 export const postResponse = (topicId: string, stage: string, text: string, force = false) =>
   apiPost<ResponseResult>(
     `/v1/runs/${encodeURIComponent(topicId)}/stages/${encodeURIComponent(stage)}/response`,

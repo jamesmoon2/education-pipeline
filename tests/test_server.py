@@ -2,8 +2,10 @@ import hashlib
 import http.client
 import json
 import sys
+import threading
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +19,7 @@ from education_pipeline import (
     parse_model_plan,
 )
 from education_pipeline.daemon import StaticConfigSource, WorkspaceConfigSource
+from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobRunner, JobStore, Worker
 from education_pipeline.daemon.server import DaemonContext, build_server
 from education_pipeline.providers import Invocation, ProviderResponse, register_runner
@@ -953,6 +956,411 @@ def _audit_response_with_warning(runs, topic_id):
     response = json.loads(test_runs._valid_personalization_audit_response(runs, topic_id))
     response["goals"][0]["verdict"] = "weak"
     return json.dumps(response)
+
+
+def test_personalization_aggregate_projects_all_cockpit_states_without_artifact_paths(
+    server_with_context,
+):
+    port, context = server_with_context
+
+    status, no_profile = _req(port, "GET", "/v1/runs/g/personalization")
+    assert status == 200
+    assert no_profile == {
+        "topic_id": "g",
+        "profile": {"state": "not_attached", "id": None},
+        "trace": {"state": "missing", "goals": [], "facets": []},
+        "audit": {
+            "state": "not_run",
+            "stage_state": "not_run",
+            "available": False,
+            "unavailable_reason": "No learner profile is attached.",
+            "findings": [],
+        },
+        "findings": [],
+        "export": {"state": "missing"},
+    }
+
+    runs, topic_id = _ready_audit_http_run(context, "personalization-state")
+    status, trace_only = _req(
+        port, "GET", f"/v1/runs/{topic_id}/personalization"
+    )
+    assert status == 200
+    assert trace_only["profile"] == {
+        "state": "attached",
+        "id": f"{topic_id}-profile",
+    }
+    assert trace_only["trace"]["state"] == "current"
+    assert trace_only["trace"]["facets"] == ["pacing"]
+    assert trace_only["trace"]["goals"][0] == {
+        "goal_id": "goal-001",
+        "goal_text": "Synthetic private goal alpha",
+        "status": "served",
+        "evidence": [
+            {"kind": "module", "id": "loop-basics"},
+            {"kind": "outcome", "id": "identify-loop"},
+        ],
+        "exclusions": [],
+    }
+    assert trace_only["trace"]["goals"][2] == {
+        "goal_id": "goal-003",
+        "goal_text": "Synthetic private goal gamma",
+        "status": "excluded",
+        "evidence": [],
+        "exclusions": [{"reason": "Synthetic deferred objective."}],
+    }
+    assert trace_only["audit"] == {
+        "state": "not_run",
+        "stage_state": "not_run",
+        "available": True,
+        "unavailable_reason": None,
+        "findings": [],
+    }
+    assert trace_only["export"] == {"state": "missing"}
+
+    _req(port, "POST", f"/v1/runs/{topic_id}/audit")
+    private_narrative = "PLANTED_UNVALIDATED_AUDIT_NARRATIVE"
+    response = json.loads(_audit_response_with_warning(runs, topic_id))
+    response["overall_summary"] = private_narrative
+    _req(
+        port,
+        "POST",
+        f"/v1/runs/{topic_id}/stages/audit/response",
+        body={"text": json.dumps(response)},
+    )
+    _req(port, "POST", f"/v1/runs/{topic_id}/stages/audit/approve")
+
+    status, current_audit = _req(
+        port, "GET", f"/v1/runs/{topic_id}/personalization"
+    )
+    assert status == 200
+    assert current_audit["audit"]["state"] == "current"
+    assert current_audit["audit"]["stage_state"] == "approved"
+    assert current_audit["audit"]["findings"]
+    assert all(
+        finding["stage"] == "audit"
+        and finding["source_stage"] == "repair"
+        for finding in current_audit["audit"]["findings"]
+    )
+    rendered = json.dumps(current_audit)
+    assert private_narrative not in rendered
+    assert "audit.response.json" not in rendered
+    assert "personalization-trace.json" not in rendered
+
+    runs.finalize_run(topic_id)
+    runs.export_run(topic_id, format="html")
+    assert _req(port, "GET", f"/v1/runs/{topic_id}/personalization")[1][
+        "export"
+    ] == {"state": "current"}
+
+    served = test_runs._valid_personalization_audit_response(runs, topic_id)
+    runs.ingest_response(topic_id, "audit", served, force=True)
+    runs.approve_stage(topic_id, "audit", overwrite=True)
+    stale_export = _req(
+        port, "GET", f"/v1/runs/{topic_id}/personalization"
+    )[1]
+    assert stale_export["audit"]["state"] == "current"
+    assert stale_export["export"] == {"state": "stale"}
+
+    trace_path = runs.personalization_trace_path(topic_id)
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    trace["active_facets"] = []
+    trace_path.write_text(json.dumps(trace), encoding="utf-8")
+    stale_audit = _req(
+        port, "GET", f"/v1/runs/{topic_id}/personalization"
+    )[1]
+    assert stale_audit["trace"] == {
+        "state": "stale",
+        "goals": [],
+        "facets": [],
+    }
+    assert stale_audit["audit"]["state"] == "stale"
+    assert stale_audit["audit"]["findings"] == []
+
+    trace_path.write_text("{not json", encoding="utf-8")
+    invalid_trace = _req(
+        port, "GET", f"/v1/runs/{topic_id}/personalization"
+    )[1]
+    assert invalid_trace["trace"] == {
+        "state": "invalid",
+        "goals": [],
+        "facets": [],
+    }
+    assert invalid_trace["audit"]["state"] == "stale"
+
+
+def test_personalization_aggregate_redacts_malformed_profile_error_path(
+    server_with_context,
+):
+    port, context = server_with_context
+    runs, topic_id = _ready_audit_http_run(context, "personalization-invalid-profile")
+    snapshot_path = ProfileStore(context.root).topic_profile_snapshot_path(topic_id)
+    snapshot_path.write_text("{not toml", encoding="utf-8")
+
+    status, body = _req(port, "GET", f"/v1/runs/{topic_id}/personalization")
+
+    assert status == 400
+    assert body == {
+        "error": {
+            "code": "bad_request",
+            "message": "personalization state is unavailable",
+        }
+    }
+    assert str(snapshot_path) not in json.dumps(body)
+
+
+def test_personalization_aggregate_combines_deterministic_and_current_audit_findings(
+    tmp_path: Path,
+):
+    context = SimpleNamespace(root=tmp_path, runs=RunStore(tmp_path))
+    runs, topic_id = _ready_audit_http_run(context, "personalization-findings")
+    repair_path = runs.stage_paths(topic_id, "repair").approved_path
+    repair = json.loads(repair_path.read_text(encoding="utf-8"))
+    repair["outcomes"][0]["serves_goals"] = []
+    repair["modules"][0]["serves_goals"] = ["goal-002"]
+    repair_path.write_text(json.dumps(repair), encoding="utf-8")
+    runs.validate_run(topic_id, "final")
+
+    not_run = read_api.personalization_payload(runs, topic_id)
+    deterministic_ids = {
+        finding["id"]
+        for finding in not_run["findings"]
+        if finding["rule_id"].startswith("personalization.")
+    }
+    assert deterministic_ids
+    assert all(finding["stage"] != "audit" for finding in not_run["findings"])
+    assert not_run["audit"]["state"] == "not_run"
+    assert not_run["audit"]["findings"] == []
+
+    runs.prepare_personalization_audit(topic_id)
+    runs.ingest_response(
+        topic_id,
+        "audit",
+        test_runs._valid_personalization_audit_response(runs, topic_id),
+    )
+    runs.approve_stage(topic_id, "audit")
+    current = read_api.personalization_payload(runs, topic_id)
+    audit_ids = {finding["id"] for finding in current["audit"]["findings"]}
+    assert audit_ids
+    assert {finding["id"] for finding in current["findings"]} == (
+        deterministic_ids | audit_ids
+    )
+
+    repair["course"]["description"] += " Stale the approved audit generation."
+    repair_path.write_text(json.dumps(repair), encoding="utf-8")
+    runs.validate_run(topic_id, "final")
+    stale = read_api.personalization_payload(runs, topic_id)
+    assert stale["audit"]["state"] == "stale"
+    assert stale["audit"]["findings"] == []
+    assert {finding["id"] for finding in stale["findings"]} == deterministic_ids
+
+
+def test_personalization_aggregate_does_not_mix_concurrent_trace_and_audit_generations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    context = SimpleNamespace(root=tmp_path, runs=RunStore(tmp_path))
+    runs, topic_id = _ready_audit_http_run(context, "personalization-race")
+    runs.prepare_personalization_audit(topic_id)
+    runs.ingest_response(topic_id, "audit", _audit_response_with_warning(runs, topic_id))
+    runs.approve_stage(topic_id, "audit")
+
+    real_audit_state = RunStore.audit_state
+    changed = threading.Event()
+
+    def audit_state_with_concurrent_trace_change(store: RunStore, candidate: str) -> str:
+        state = real_audit_state(store, candidate)
+        if store is runs and candidate == topic_id and not changed.is_set():
+            trace_path = store.personalization_trace_path(candidate)
+
+            def change_trace() -> None:
+                trace = json.loads(trace_path.read_text(encoding="utf-8"))
+                trace["active_facets"] = []
+                trace_path.write_text(json.dumps(trace), encoding="utf-8")
+                changed.set()
+
+            writer = threading.Thread(target=change_trace)
+            writer.start()
+            writer.join(5)
+            assert not writer.is_alive()
+        return state
+
+    monkeypatch.setattr(RunStore, "audit_state", audit_state_with_concurrent_trace_change)
+
+    payload = read_api.personalization_payload(runs, topic_id)
+
+    assert not changed.is_set()
+    assert payload["audit"]["state"] == "current"
+    assert payload["audit"]["findings"]
+
+
+def test_personalization_snapshot_serializes_concurrent_audit_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    context = SimpleNamespace(root=tmp_path, runs=RunStore(tmp_path))
+    runs, topic_id = _ready_audit_http_run(context, "personalization-lock")
+    runs.prepare_personalization_audit(topic_id)
+    runs.ingest_response(topic_id, "audit", _audit_response_with_warning(runs, topic_id))
+    runs.approve_stage(topic_id, "audit")
+    runs.finalize_run(topic_id)
+    runs.export_run(topic_id, format="html")
+    initial = runs.personalization_snapshot(topic_id)
+    old_finding_ids = tuple(finding.id for finding in initial.audit_findings)
+    assert initial.export_state == "current"
+
+    replacement = test_runs._valid_personalization_audit_response(runs, topic_id)
+    runs.ingest_response(topic_id, "audit", replacement, force=True)
+
+    real_export_state = RunStore._export_state_locked
+    real_lock = RunStore._manifest_write_lock
+    export_state_started = threading.Event()
+    release_reader = threading.Event()
+    mutation_lock_requested = threading.Event()
+    mutation_finished = threading.Event()
+    reader_result = []
+    errors: list[BaseException] = []
+
+    def paused_export_state(store: RunStore, candidate: str, *, audit_snapshot):
+        if (
+            store is runs
+            and candidate == topic_id
+            and threading.current_thread().name == "personalization-reader"
+            and not export_state_started.is_set()
+        ):
+            assert tuple(
+                finding.id for finding in audit_snapshot.findings
+            ) == old_finding_ids
+            export_state_started.set()
+            assert release_reader.wait(5)
+        return real_export_state(
+            store,
+            candidate,
+            audit_snapshot=audit_snapshot,
+        )
+
+    def observed_lock(store: RunStore, candidate: str):
+        lock = real_lock(store, candidate)
+        if (
+            store is runs
+            and candidate == topic_id
+            and threading.current_thread().name == "audit-approver"
+        ):
+            mutation_lock_requested.set()
+        return lock
+
+    monkeypatch.setattr(RunStore, "_export_state_locked", paused_export_state)
+    monkeypatch.setattr(RunStore, "_manifest_write_lock", observed_lock)
+
+    def read_snapshot() -> None:
+        try:
+            reader_result.append(runs.personalization_snapshot(topic_id))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    def approve_replacement() -> None:
+        try:
+            runs.approve_stage(topic_id, "audit", overwrite=True)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+        finally:
+            mutation_finished.set()
+
+    reader = threading.Thread(target=read_snapshot, name="personalization-reader")
+    reader.start()
+    assert export_state_started.wait(5)
+
+    approver = threading.Thread(target=approve_replacement, name="audit-approver")
+    approver.start()
+    assert mutation_lock_requested.wait(5)
+    assert not mutation_finished.wait(0.2)
+
+    release_reader.set()
+    reader.join(5)
+    approver.join(5)
+
+    assert not errors
+    assert not reader.is_alive() and not approver.is_alive()
+    assert tuple(finding.id for finding in reader_result[0].audit_findings) == old_finding_ids
+    assert reader_result[0].export_state == "current"
+    current = runs.personalization_snapshot(topic_id)
+    assert tuple(finding.id for finding in current.audit_findings) != old_finding_ids
+    assert current.export_state == "stale"
+
+
+def test_personalization_snapshot_serializes_concurrent_profile_attachment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    context = SimpleNamespace(root=tmp_path, runs=RunStore(tmp_path))
+    runs, topic_id = _ready_audit_http_run(context, "personalization-profile-lock")
+    profiles = ProfileStore(tmp_path)
+    replacement_id = "replacement-profile"
+    replacement_toml = test_runs.PERSONALIZED_PROFILE_TOML.replace(
+        'id = "personalized-profile"', f'id = "{replacement_id}"'
+    ).replace(
+        "Synthetic private goal alpha", "Synthetic replacement goal alpha"
+    )
+    profiles.save_profile_toml(replacement_id, replacement_toml)
+
+    real_read = RunStore._read_attached_profile_snapshot
+    profile_captured = threading.Event()
+    release_reader = threading.Event()
+    attachment_started = threading.Event()
+    attachment_finished = threading.Event()
+    reader_result = []
+    errors: list[BaseException] = []
+
+    def paused_read(store: RunStore, candidate: str):
+        snapshot = real_read(store, candidate)
+        if (
+            store is runs
+            and candidate == topic_id
+            and threading.current_thread().name == "profile-snapshot-reader"
+            and not profile_captured.is_set()
+        ):
+            profile_captured.set()
+            assert release_reader.wait(5)
+        return snapshot
+
+    monkeypatch.setattr(RunStore, "_read_attached_profile_snapshot", paused_read)
+
+    def read_snapshot() -> None:
+        try:
+            reader_result.append(runs.personalization_snapshot(topic_id))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    def replace_profile() -> None:
+        attachment_started.set()
+        try:
+            profiles.attach_profile_to_topic(replacement_id, topic_id, overwrite=True)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+        finally:
+            attachment_finished.set()
+
+    reader = threading.Thread(target=read_snapshot, name="profile-snapshot-reader")
+    reader.start()
+    assert profile_captured.wait(5)
+
+    writer = threading.Thread(target=replace_profile, name="profile-attacher")
+    writer.start()
+    assert attachment_started.wait(5)
+    assert not attachment_finished.wait(0.2)
+
+    release_reader.set()
+    reader.join(5)
+    writer.join(5)
+
+    assert not errors
+    assert not reader.is_alive() and not writer.is_alive()
+    assert reader_result[0].profile is not None
+    assert reader_result[0].profile.id == f"{topic_id}-profile"
+    assert reader_result[0].trace_state == "current"
+    current = runs.personalization_snapshot(topic_id)
+    assert current.profile is not None
+    assert current.profile.id == replacement_id
+    assert current.trace_state == "stale"
 
 
 def test_audit_http_prepare_generic_ingest_approve_status_and_nonwaivable_refusal(
