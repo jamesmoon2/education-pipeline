@@ -1,29 +1,28 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useState } from "react";
+import { Link } from "react-router-dom";
 import {
   attachProfile,
   createTopic,
-  getConfigPlan,
+  getBlueprints,
   getProfiles,
   importTopic,
   postAdvance,
+  getRunStatus,
 } from "../api/client";
-import ErrorNotice from "../components/ErrorNotice";
+import type { BlueprintsPayload } from "../api/types";
+import BlueprintPicker from "../components/BlueprintPicker";
+import RunPlanPanel from "../components/RunPlanPanel";
+import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
-import type { PlanPayload } from "../api/types";
 
 type TopicMode = "describe" | "toml";
-
-// Step order is deliberately structural (spec §6): a blueprint-selection
-// step can slot in between "topic" and "plan" without reworking navigation.
-const STEP_ORDER = ["learner", "topic", "plan", "confirm"] as const;
-type Step = (typeof STEP_ORDER)[number];
+type Step = "topic" | "blueprint" | "profile" | "plan";
 
 export default function NewRunPage() {
-  const navigate = useNavigate();
-  const [step, setStep] = useState<Step>("learner");
-  const [profileId, setProfileId] = useState("");
   const [mode, setMode] = useState<TopicMode>("describe");
+  const [step, setStep] = useState<Step>("topic");
+  const [createdId, setCreatedId] = useState<string | null>(null);
+  const [nextStage, setNextStage] = useState<string | null>(null);
 
   // "Describe it" fields
   const [id, setId] = useState("");
@@ -31,134 +30,150 @@ export default function NewRunPage() {
   const [brief, setBrief] = useState("");
   const [audience, setAudience] = useState("");
   const [goals, setGoals] = useState("");
+  const [timeBudget, setTimeBudget] = useState("");
 
   // "Paste TOML" field
   const [toml, setToml] = useState("");
 
-  const [plan, setPlan] = useState<PlanPayload | null>(null);
-  const [planError, setPlanError] = useState<unknown>(null);
+  // Blueprint step state
+  const [blueprints, setBlueprints] = useState<BlueprintsPayload | null>(null);
+  const [selectedBlueprint, setSelectedBlueprint] = useState("");
 
-  // Create-time progress markers so a failed step can be retried without
-  // repeating the steps that already succeeded (topic create is not
-  // idempotent -- re-POSTing it would 409 already_exists).
-  const [createdId, setCreatedId] = useState<string | null>(null);
-  const [attached, setAttached] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<unknown>(null);
-
+  const topicAction = useAction();
   const { data: profileData } = usePolling(getProfiles, 30_000);
+  const profileAction = useAction();
+  const advanceAction = useAction();
+
   const profiles = profileData?.profiles ?? [];
 
-  useEffect(() => {
-    let cancelled = false;
-    getConfigPlan().then(
-      (payload) => {
-        if (!cancelled) setPlan(payload);
-      },
-      (err) => {
-        if (!cancelled) setPlanError(err);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // The blueprint the daemon would resolve on its own (topic field, else the
+  // recommendation). The advance body carries the selection only when the
+  // user overrides it, so an accepted recommendation keeps its
+  // "recommended" provenance.
+  const defaultBlueprintId =
+    blueprints?.topic_blueprint ?? blueprints?.recommendation?.id ?? null;
 
-  const goBack = () => {
-    const index = STEP_ORDER.indexOf(step);
-    if (index > 0) setStep(STEP_ORDER[index - 1]);
+  const enterPlanStep = async (topicId: string) => {
+    // Wait for postAdvance (run init) to complete before rendering
+    // RunPlanPanel, which fetches the run's plan — rendering it early would
+    // race the run-init call against the daemon's "no run started" 404.
+    const succeeded = await advanceAction.run(async () => {
+      const override =
+        selectedBlueprint && selectedBlueprint !== defaultBlueprintId
+          ? { blueprint: selectedBlueprint }
+          : undefined;
+      await postAdvance(topicId, override);
+      try {
+        const status = await getRunStatus(topicId);
+        setNextStage(status.next_action.stage);
+      } catch {
+        setNextStage(null);
+      }
+    });
+    // Only advance the wizard when run init actually succeeded — otherwise
+    // stay put so the error banner (rendered by the current step) is visible
+    // instead of the wizard silently moving on to a run that never started.
+    if (succeeded) {
+      setStep("plan");
+    }
   };
-  const goNext = () => {
-    const index = STEP_ORDER.indexOf(step);
-    if (index < STEP_ORDER.length - 1) setStep(STEP_ORDER[index + 1]);
+
+  const afterTopicCreated = async (createdTopicId: string) => {
+    setCreatedId(createdTopicId);
+    try {
+      const payload = await getBlueprints(createdTopicId);
+      setBlueprints(payload);
+      setSelectedBlueprint(
+        payload.topic_blueprint ??
+          payload.recommendation?.id ??
+          payload.blueprints[0]?.id ??
+          "",
+      );
+      setStep("blueprint");
+    } catch {
+      // Blueprint selection is an enhancement; a failed registry fetch falls
+      // back to the pre-blueprint flow (the daemon still records the
+      // recommendation on its own).
+      await continueAfterBlueprint(createdTopicId);
+    }
   };
 
-  const topicReady =
-    mode === "describe" ? id.trim().length > 0 && title.trim().length > 0 : toml.trim().length > 0;
+  const continueAfterBlueprint = async (topicId: string) => {
+    if (profiles.length === 0) {
+      await enterPlanStep(topicId);
+    } else {
+      setStep("profile");
+    }
+  };
 
-  const describeFields = () => {
+  const submitDescribe = () => {
     const parsedGoals = goals
       .split("\n")
       .map((g) => g.trim())
       .filter((g) => g.length > 0);
-    const fields: { id: string; title: string; brief?: string; audience?: string; goals?: string[] } = {
-      id: id.trim(),
-      title: title.trim(),
+    const fields: {
+      id: string;
+      title: string;
+      brief?: string;
+      audience?: string;
+      goals?: string[];
+      time_budget_minutes?: number;
+    } = {
+      id,
+      title,
     };
     if (brief.trim()) fields.brief = brief.trim();
     if (audience.trim()) fields.audience = audience.trim();
     if (parsedGoals.length > 0) fields.goals = parsedGoals;
-    return fields;
+    if (timeBudget.trim()) fields.time_budget_minutes = Number(timeBudget.trim());
+    void topicAction.run(
+      async () => {
+        const result = await createTopic(fields);
+        await afterTopicCreated(result.id);
+      },
+      { successMessage: "Topic created." },
+    );
   };
 
-  const createCourse = async () => {
-    setCreating(true);
-    setCreateError(null);
-    try {
-      let topicId = createdId;
-      if (!topicId) {
-        const created =
-          mode === "describe" ? await createTopic(describeFields()) : await importTopic(toml);
-        topicId = created.id;
-        setCreatedId(topicId);
-      }
-      if (profileId && !attached) {
-        await attachProfile(topicId, profileId);
-        setAttached(true);
-      }
-      await postAdvance(topicId);
-      navigate(`/topics/${topicId}`);
-    } catch (err) {
-      setCreateError(err);
-    } finally {
-      setCreating(false);
-    }
+  const submitToml = () => {
+    void topicAction.run(
+      async () => {
+        const result = await importTopic(toml);
+        await afterTopicCreated(result.id);
+      },
+      { successMessage: "Topic imported." },
+    );
   };
 
-  const summaryTopicId = mode === "describe" ? id.trim() : (createdId ?? "(from TOML)");
+  const [profileId, setProfileId] = useState("");
+
+  const attachAndContinue = () => {
+    if (!createdId) return;
+    void profileAction.run(
+      async () => {
+        await attachProfile(createdId, profileId);
+        await enterPlanStep(createdId);
+      },
+      { successMessage: "Profile attached." },
+    );
+  };
+
+  const skipProfile = () => {
+    if (!createdId) return;
+    void enterPlanStep(createdId);
+  };
 
   return (
     <div className="new-run-page">
-      <h2>New course</h2>
-      <ol className="wizard-steps" aria-label="Wizard steps">
-        {STEP_ORDER.map((name) => (
-          <li key={name} aria-current={step === name ? "step" : undefined}>
-            {name}
-          </li>
-        ))}
-      </ol>
+      <h2>Create your first course</h2>
 
-      {step === "learner" && (
-        <section aria-labelledby="new-run-learner-heading">
-          <h3 id="new-run-learner-heading">Learner</h3>
-          {profiles.length === 0 ? (
-            <p>
-              No profiles yet — you can continue without one, or{" "}
-              <Link to="/profiles">create or import a profile in Profiles</Link> first.
-            </p>
-          ) : (
-            <label>
-              Learner profile
-              <select value={profileId} onChange={(e) => setProfileId(e.target.value)}>
-                <option value="">No profile (generic course)</option>
-                {profiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.id} ({profile.attached_topic_count}{" "}
-                    {profile.attached_topic_count === 1 ? "topic" : "topics"})
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <p>
-            <button onClick={goNext}>Continue</button>
-          </p>
-        </section>
+      {advanceAction.feedback && advanceAction.isError && (
+        <p className="error">{advanceAction.feedback}</p>
       )}
 
       {step === "topic" && (
         <section aria-labelledby="new-run-topic-heading">
-          <h3 id="new-run-topic-heading">Topic and brief</h3>
+          <h3 id="new-run-topic-heading">Topic</h3>
           <p role="radiogroup" aria-label="Topic entry mode">
             <label>
               <input
@@ -202,6 +217,22 @@ export default function NewRunPage() {
                 Goals (one per line)
                 <textarea value={goals} onChange={(e) => setGoals(e.target.value)} rows={4} />
               </label>
+              <label>
+                Time budget (minutes, optional)
+                <input
+                  type="number"
+                  min={5}
+                  max={10000}
+                  value={timeBudget}
+                  onChange={(e) => setTimeBudget(e.target.value)}
+                />
+              </label>
+              <button
+                disabled={topicAction.busy || !id.trim() || !title.trim()}
+                onClick={submitDescribe}
+              >
+                Create topic
+              </button>
             </div>
           ) : (
             <div>
@@ -209,94 +240,80 @@ export default function NewRunPage() {
                 Topic TOML
                 <textarea value={toml} onChange={(e) => setToml(e.target.value)} rows={8} />
               </label>
+              <button disabled={topicAction.busy || !toml.trim()} onClick={submitToml}>
+                Import topic
+              </button>
             </div>
           )}
+          {topicAction.feedback && (
+            <p className={topicAction.isError ? "error" : "success"}>{topicAction.feedback}</p>
+          )}
+        </section>
+      )}
+
+      {step === "blueprint" && createdId && blueprints && (
+        <section aria-labelledby="new-run-blueprint-heading">
+          <h3 id="new-run-blueprint-heading">Choose a blueprint</h3>
+          <BlueprintPicker
+            payload={blueprints}
+            value={selectedBlueprint}
+            onChange={setSelectedBlueprint}
+          />
           <p>
-            <button onClick={goBack}>Back</button>{" "}
-            <button disabled={!topicReady} onClick={goNext}>
+            <button
+              disabled={advanceAction.busy || !selectedBlueprint}
+              onClick={() => void continueAfterBlueprint(createdId)}
+            >
               Continue
             </button>
           </p>
         </section>
       )}
 
-      {step === "plan" && (
-        <section aria-labelledby="new-run-plan-heading">
-          <h3 id="new-run-plan-heading">Model plan</h3>
-          <p>
-            The effective plan below applies to every new course.{" "}
-            <Link to="/settings">Adjust in Settings</Link> if needed — per-run overrides stay
-            available from the run board.
-          </p>
-          {planError ? (
-            <ErrorNotice prefix="Failed to load the model plan" error={planError} />
-          ) : !plan ? (
-            <p>Loading plan…</p>
+      {step === "profile" && createdId && (
+        <section aria-labelledby="new-run-profile-heading">
+          <h3 id="new-run-profile-heading">Attach a profile (optional)</h3>
+          {profiles.length === 0 ? (
+            <p>No profiles available.</p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Stage</th>
-                  <th>Provider</th>
-                  <th>Model</th>
-                  <th>Effort</th>
-                </tr>
-              </thead>
-              <tbody>
-                {plan.stages.map((stage) => (
-                  <tr key={stage.stage}>
-                    <td>{stage.stage}</td>
-                    <td>{stage.provider ?? plan.provider}</td>
-                    <td>{stage.model ?? "—"}</td>
-                    <td>{stage.effort ?? "—"}</td>
-                  </tr>
+            <label>
+              Profile
+              <select value={profileId} onChange={(e) => setProfileId(e.target.value)}>
+                <option value="">select a profile…</option>
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.id} ({profile.attached_topic_count} {profile.attached_topic_count === 1 ? "topic" : "topics"})
+                  </option>
                 ))}
-              </tbody>
-            </table>
+              </select>
+            </label>
           )}
           <p>
-            <button onClick={goBack}>Back</button>{" "}
-            <button onClick={goNext}>Continue</button>
+            <button
+              disabled={profileAction.busy || !profileId}
+              onClick={attachAndContinue}
+            >
+              Attach
+            </button>{" "}
+            <button disabled={profileAction.busy} onClick={skipProfile}>
+              Skip
+            </button>
           </p>
+          {profileAction.feedback && (
+            <p className={profileAction.isError ? "error" : "success"}>{profileAction.feedback}</p>
+          )}
         </section>
       )}
 
-      {step === "confirm" && (
-        <section aria-labelledby="new-run-confirm-heading">
-          <h3 id="new-run-confirm-heading">Confirm</h3>
-          <dl>
-            <dt>Learner</dt>
-            <dd>{profileId || "No profile (generic course)"}</dd>
-            <dt>Topic</dt>
-            <dd>{mode === "describe" ? `${summaryTopicId} — ${title.trim()}` : summaryTopicId}</dd>
-            <dt>Estimated stages</dt>
-            <dd>
-              {(plan?.stages.map((stage) => stage.stage) ?? [
-                "spec",
-                "outline",
-                "draft",
-                "qa",
-                "repair",
-              ]).join(" → ")}
-              , then deterministic finalize and export
-            </dd>
-            <dt>Model plan</dt>
-            <dd>
-              {plan
-                ? `${plan.provider} (adjust in Settings before creating if needed)`
-                : "default plan"}
-            </dd>
-          </dl>
-          {createError ? (
-            <ErrorNotice prefix="Course creation failed" error={createError} />
-          ) : null}
+      {step === "plan" && createdId && (
+        <section aria-labelledby="new-run-plan-heading">
+          <h3 id="new-run-plan-heading">Review the model plan</h3>
+          <p className="blueprint-line">
+            Blueprint: <strong>{selectedBlueprint || "(recommended default)"}</strong>
+          </p>
+          <RunPlanPanel topicId={createdId} nextStage={nextStage} />
           <p>
-            <button onClick={goBack} disabled={creating}>
-              Back
-            </button>{" "}
-            <button onClick={() => void createCourse()} disabled={creating}>
-              Create course
-            </button>
+            <Link to={`/topics/${createdId}`}>Go to run board</Link>
           </p>
         </section>
       )}

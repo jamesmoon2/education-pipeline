@@ -66,10 +66,40 @@ export interface StageProvenance {
   recorded_at: string;
 }
 
+export interface BlueprintInfo {
+  id: string;
+  title: string;
+  summary: string;
+  when_to_use: string;
+  required_interactions: string[];
+  default_difficulty: string;
+}
+
+export interface BlueprintsPayload {
+  blueprints: BlueprintInfo[];
+  recommendation: { id: string; rationale: string } | null;
+  topic_blueprint: string | null;
+}
+
+export interface RunBlueprint {
+  id: string;
+  source: "user" | "topic" | "recommended";
+  rationale?: string;
+}
+
+export interface RepairModulesPayload {
+  topic_id: string;
+  modules: { id: string; title: string; open_findings: number }[];
+  repair_scope: { module_id: string } | null;
+}
+
 export interface RunStatus {
   topic_id: string;
   finalized: boolean;
   content_contract: ContentContract;
+  // Optional so pre-blueprint payload fixtures stay valid; the daemon always
+  // sends it (null for legacy and pre-blueprint runs).
+  blueprint?: RunBlueprint | null;
   stage_provenance: StageProvenance[];
   validations: { draft: ValidationStatus; final: ValidationStatus };
   stages: StageStatus[];
@@ -133,6 +163,8 @@ export interface StageContent {
     | "text/markdown"
     | "application/json"
     | "application/vnd.education-pipeline.guide+json;version=1.0";
+  // Present only on the repair stage of interactive-guide runs.
+  repair_scope?: { module_id: string } | null;
 }
 
 export interface Job {

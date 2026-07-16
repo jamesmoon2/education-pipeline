@@ -300,3 +300,14 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.85em; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
 }
+
+/* Blueprint selection and module-scoped repair */
+.blueprint-picker { border: 1px solid color-mix(in srgb, currentColor 20%, transparent); padding: 0.9rem 1rem; }
+.blueprint-rationale { font-weight: 650; }
+.blueprint-option { display: block; margin-bottom: 0.75rem; }
+.blueprint-option .blueprint-summary,
+.blueprint-option .blueprint-when-to-use { display: block; margin-left: 1.55rem; font-size: 0.88rem; }
+.blueprint-option .blueprint-when-to-use { opacity: 0.8; }
+.blueprint-recommended { color: #356c50; font-size: 0.82rem; font-weight: 700; text-transform: uppercase; margin-left: 0.4rem; }
+.blueprint-line { font-size: 0.92rem; }
+.module-repair { border-left: 3px solid #4e829f; padding: 0.4rem 0.9rem; margin: 0.8rem 0; }

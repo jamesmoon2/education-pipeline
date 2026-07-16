@@ -14,6 +14,8 @@ vi.mock("../api/client", async () => {
   return {
     ApiRequestError: actual.ApiRequestError,
     getStageContent: vi.fn(),
+    getRepairModules: vi.fn(),
+    postAdvance: vi.fn(),
     getRunStatus: vi.fn(),
     postApprove: vi.fn(),
     approveAudit: vi.fn(),
@@ -28,6 +30,7 @@ import {
   ApiRequestError,
   approveAudit,
   enqueueAuditJob,
+  getRepairModules,
   getRunStatus,
   getStageContent,
   postApprove,
@@ -575,5 +578,46 @@ describe("StageViewerPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Diff against draft" }));
     expect(await screen.findByRole("button", { name: "Diff against draft" })).toBeInTheDocument();
     expect(document.querySelector(".diff")).toBeNull();
+  });
+
+  it("labels a scoped repair and offers module regeneration on guide runs", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      topic_id: "t",
+      finalized: false,
+      content_contract: { kind: "interactive_guide", schema_version: "1.0" },
+      stage_provenance: [],
+      validations: {
+        draft: { state: "current", blocking: 0, errors: 0, warnings: 0 },
+        final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+      },
+      stages: [],
+      next_action: { topic_id: "t", stage: "repair", action: "save_response", detail: "" },
+    });
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "repair",
+      prompt: "scoped prompt",
+      response: null,
+      approved: null,
+      response_sha256: null,
+      content_type: "application/vnd.education-pipeline.guide+json;version=1.0",
+      repair_scope: { module_id: "loop-basics" },
+    });
+    vi.mocked(getRepairModules).mockResolvedValue({
+      topic_id: "t",
+      modules: [{ id: "loop-basics", title: "How loops behave", open_findings: 1 }],
+      repair_scope: { module_id: "loop-basics" },
+    });
+    renderAt("/topics/t/stages/repair");
+
+    expect(
+      await screen.findByText(/The pending repair is scoped to module/),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Regenerate one module" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /How loops behave \(1 open finding\)/ }),
+    ).toBeInTheDocument();
   });
 });
