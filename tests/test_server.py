@@ -3159,3 +3159,122 @@ def test_get_run_plan_degrades_stage_when_stored_override_invalidated_by_catalog
     finally:
         worker.stop()
         srv.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Course library: enriched list, archive, duplicate, reveal (spec §5)
+
+
+def _topic_entry(port, topic_id):
+    status, body = _req(port, "GET", "/v1/topics")
+    assert status == 200
+    return next(t for t in body["topics"] if t["id"] == topic_id)
+
+
+def test_topics_list_is_enriched(server):
+    entry = _topic_entry(server, "t")
+    assert entry["archived"] is False
+    assert isinstance(entry["last_activity"], str)
+    assert entry["profile_id"] is None
+    completion = entry["completion"]
+    assert completion["stages_total"] == 5
+    assert completion["stages_approved"] == 0
+    assert completion["exported"] is False
+
+
+def test_topics_list_enrichment_null_without_run(server_with_context):
+    port, context = server_with_context
+    (context.root / "topics" / "norun.toml").write_text(
+        'schema_version = 1\nid = "norun"\ntitle = "No Run"\n', encoding="utf-8"
+    )
+    entry = _topic_entry(port, "norun")
+    assert entry["run"] is None
+    assert entry["archived"] is False
+    assert entry["last_activity"] is None
+    assert entry["completion"] is None
+
+
+def test_topics_list_reports_attached_profile_id(server_with_context):
+    port, context = server_with_context
+    status, _ = _req(
+        port, "POST", "/v1/topics/t/profile", body={"profile_id": "p"}
+    )
+    assert status == 200
+    assert _topic_entry(port, "t")["profile_id"] == "p"
+
+
+def test_archive_route_flips_flag_and_hides_nothing(server_with_context):
+    port, context = server_with_context
+    status, body = _req(port, "POST", "/v1/runs/t/archive", body={})
+    assert status == 200
+    assert body["archived"] is True
+    assert _topic_entry(port, "t")["archived"] is True
+    # Reads still work on an archived course.
+    status, _ = _req(port, "GET", "/v1/runs/t")
+    assert status == 200
+    status, body = _req(port, "POST", "/v1/runs/t/unarchive", body={})
+    assert status == 200
+    assert body["archived"] is False
+
+
+def test_archive_route_404_without_run(server_with_context):
+    port, context = server_with_context
+    (context.root / "topics" / "norun.toml").write_text(
+        'schema_version = 1\nid = "norun"\ntitle = "No Run"\n', encoding="utf-8"
+    )
+    status, body = _req(port, "POST", "/v1/runs/norun/archive", body={})
+    assert status == 404
+    assert body["error"]["code"] == "not_found"
+
+
+def test_archived_course_blocks_writes_over_http(server):
+    status, _ = _req(server, "POST", "/v1/runs/t/archive", body={})
+    assert status == 200
+    status, body = _req(server, "POST", "/v1/runs/t/advance", body={})
+    assert status == 409
+    assert body["error"]["code"] == "archived_course"
+    status, body = _req(
+        server, "POST", "/v1/jobs", body={"topic_id": "t", "stage": "draft"}
+    )
+    assert status == 409
+    assert body["error"]["code"] == "archived_course"
+
+
+def test_duplicate_route_creates_copy(server):
+    status, body = _req(server, "POST", "/v1/topics/t/duplicate", body={})
+    assert status == 201
+    assert body == {"id": "t-copy", "title": "Test Topic"}
+    entry = _topic_entry(server, "t-copy")
+    assert entry["run"] is None
+
+
+def test_reveal_route_success_returns_path(server_with_context, monkeypatch):
+    port, context = server_with_context
+    monkeypatch.setenv("EP_REVEAL_OPENER", "/bin/true")
+    status, body = _req(
+        port, "POST", "/v1/reveal", body={"target": "run", "topic_id": "t"}
+    )
+    assert status == 200
+    assert body["path"] == str(context.runs.run_dir("t").resolve())
+
+
+def test_reveal_route_failure_is_reveal_unsupported_with_path(
+    server_with_context, monkeypatch
+):
+    port, context = server_with_context
+    monkeypatch.setenv("EP_REVEAL_OPENER", "/bin/false")
+    status, body = _req(
+        port, "POST", "/v1/reveal", body={"target": "run", "topic_id": "t"}
+    )
+    assert status == 422
+    assert body["error"]["code"] == "reveal_unsupported"
+    assert body["error"]["detail"]["path"] == str(context.runs.run_dir("t").resolve())
+
+
+def test_reveal_route_rejects_unknown_target(server, monkeypatch):
+    monkeypatch.setenv("EP_REVEAL_OPENER", "/bin/true")
+    status, body = _req(
+        server, "POST", "/v1/reveal", body={"target": "responses", "topic_id": "t"}
+    )
+    assert status == 400
+    assert body["error"]["code"] == "invalid_request"

@@ -76,12 +76,39 @@ export interface RunStatus {
   next_action: NextAction;
 }
 
+export interface CompletionSummary {
+  stages_approved: number;
+  stages_total: number;
+  exported: boolean;
+}
+
 export interface TopicSummary {
   id: string;
   title: string | null;
   error: string | null;
   run: RunStatus | null;
+  archived: boolean;
+  last_activity: string | null;
+  profile_id: string | null;
+  completion: CompletionSummary | null;
 }
+
+export interface ArchiveResult {
+  topic_id: string;
+  archived: boolean;
+}
+
+export interface DuplicateTopicResult {
+  id: string;
+  title: string | null;
+  profile_id?: string;
+}
+
+export interface RevealResult {
+  path: string;
+}
+
+export type RevealTarget = "run" | "export" | "topic";
 
 export interface TopicDetail {
   id: string;

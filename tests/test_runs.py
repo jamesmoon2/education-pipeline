@@ -3736,3 +3736,109 @@ def test_write_plan_overrides_empty_dict_writes_empty_overrides(tmp_path: Path) 
 
     assert runs.plan_overrides_path("systems-thinking").exists()
     assert runs.read_plan_overrides("systems-thinking") == {}
+
+
+# ---------------------------------------------------------------------------
+# Archive flag (first-run milestone, spec §5.3)
+
+
+class TestArchiveRun:
+    def test_archive_sets_flag_and_timestamp_in_manifest(self, tmp_path: Path) -> None:
+        runs = _create_legacy_run(tmp_path, "t")
+        assert runs.is_archived("t") is False
+        runs.archive_run("t")
+        assert runs.is_archived("t") is True
+        manifest = runs.read_manifest("t")
+        assert manifest["archived"] is True
+        assert isinstance(manifest["archived_at"], str) and manifest["archived_at"]
+
+    def test_unarchive_is_a_pure_flag_flip(self, tmp_path: Path) -> None:
+        runs = _create_legacy_run(tmp_path, "t")
+        runs.archive_run("t")
+        runs.unarchive_run("t")
+        assert runs.is_archived("t") is False
+        manifest = runs.read_manifest("t")
+        assert manifest["archived"] is False
+        assert isinstance(manifest["unarchived_at"], str)
+
+    def test_archive_moves_nothing_on_disk(self, tmp_path: Path) -> None:
+        runs = _create_legacy_run(tmp_path, "t")
+        paths = runs.stage_paths("t", "spec")
+        paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.prompt_path.write_text("PROMPT", encoding="utf-8")
+        before = sorted(
+            p.relative_to(tmp_path).as_posix()
+            for p in (tmp_path / "runs").rglob("*")
+            if p.is_file()
+        )
+        runs.archive_run("t")
+        after = sorted(
+            p.relative_to(tmp_path).as_posix()
+            for p in (tmp_path / "runs").rglob("*")
+            if p.is_file()
+        )
+        assert before == after
+        assert paths.prompt_path.read_text(encoding="utf-8") == "PROMPT"
+
+    def test_archive_without_run_raises(self, tmp_path: Path) -> None:
+        runs = RunStore(tmp_path)
+        with pytest.raises(ConfigError):
+            runs.archive_run("missing")
+
+    def test_is_archived_false_when_no_run(self, tmp_path: Path) -> None:
+        assert RunStore(tmp_path).is_archived("missing") is False
+
+    def test_archive_under_lock_contention_loses_no_events(self, tmp_path: Path) -> None:
+        runs = _create_legacy_run(tmp_path, "t")
+        errors: list[Exception] = []
+
+        def flip(i: int) -> None:
+            try:
+                if i % 2:
+                    runs.archive_run("t")
+                else:
+                    runs.unarchive_run("t")
+            except Exception as exc:  # pragma: no cover - failure evidence
+                errors.append(exc)
+
+        def event(i: int) -> None:
+            try:
+                runs.append_manifest_event("t", {"action": f"contention-{i}"})
+            except Exception as exc:  # pragma: no cover - failure evidence
+                errors.append(exc)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            for i in range(10):
+                pool.submit(flip, i)
+                pool.submit(event, i)
+
+        assert errors == []
+        manifest = runs.read_manifest("t")
+        recorded = {e["action"] for e in manifest["events"] if "action" in e}
+        assert {f"contention-{i}" for i in range(10)} <= recorded
+        assert isinstance(manifest["archived"], bool)
+
+
+class TestLastActivity:
+    def test_last_activity_is_the_newest_artifact_mtime(self, tmp_path: Path) -> None:
+        import os
+
+        runs = _create_legacy_run(tmp_path, "t")
+        old = runs.stage_paths("t", "spec").prompt_path
+        old.parent.mkdir(parents=True, exist_ok=True)
+        old.write_text("old", encoding="utf-8")
+        newest = runs.stage_paths("t", "spec").response_path
+        newest.parent.mkdir(parents=True, exist_ok=True)
+        newest.write_text("new", encoding="utf-8")
+        base = 1_700_000_000
+        os.utime(runs.manifest_path("t"), (base, base))
+        os.utime(old, (base + 10, base + 10))
+        os.utime(newest, (base + 100, base + 100))
+
+        stamp = runs.last_activity_at("t")
+        from datetime import datetime, timezone
+
+        assert stamp == datetime.fromtimestamp(base + 100, timezone.utc).isoformat()
+
+    def test_last_activity_none_without_run_dir(self, tmp_path: Path) -> None:
+        assert RunStore(tmp_path).last_activity_at("missing") is None

@@ -22,6 +22,10 @@ import type {
   StageOverride,
   TopicDetail,
   TopicSummary,
+  ArchiveResult,
+  DuplicateTopicResult,
+  RevealResult,
+  RevealTarget,
   ValidateResult,
   ValidationResult,
   WaiverResult,
@@ -386,6 +390,17 @@ export const postExport = (topicId: string, format: ExportFormat, overwrite = fa
     format,
     overwrite,
   });
+export const archiveRun = (topicId: string) =>
+  apiPost<ArchiveResult>(`/v1/runs/${encodeURIComponent(topicId)}/archive`, {});
+export const unarchiveRun = (topicId: string) =>
+  apiPost<ArchiveResult>(`/v1/runs/${encodeURIComponent(topicId)}/unarchive`, {});
+export const duplicateTopic = (topicId: string, attachProfile = false) =>
+  apiPost<DuplicateTopicResult>(
+    `/v1/topics/${encodeURIComponent(topicId)}/duplicate`,
+    attachProfile ? { attach_profile: true } : {},
+  );
+export const revealTarget = (target: RevealTarget, topicId: string) =>
+  apiPost<RevealResult>("/v1/reveal", { target, topic_id: topicId });
 export const importTopic = (toml: string, overwrite = false) =>
   apiPost<ImportTopicResult>("/v1/topics", { toml, overwrite });
 export const createTopic = (

@@ -31,7 +31,8 @@ from education_pipeline.profiles import (
     render_profile_prompt_context,
     render_profile_public_summary,
 )
-from education_pipeline.runs import SUPPORTED_STAGES, RunStore
+from education_pipeline.export import EXPORT_FORMATS
+from education_pipeline.runs import REQUIRED_STAGES, SUPPORTED_STAGES, RunStore
 from education_pipeline.workspace import ProfileRecord, ProfileStore, TopicStore
 
 
@@ -46,7 +47,15 @@ def require_run(runs: RunStore, topic_id: str) -> None:
         raise NotFoundError(f"no run started for topic: {topic_id}")
 
 
-def list_topics(topics: TopicStore, runs: RunStore) -> dict:
+def list_topics(topics: TopicStore, runs: RunStore, profiles: ProfileStore) -> dict:
+    """The course-library payload, enriched server-side (spec §5.1).
+
+    Adds ``last_activity`` (ISO-8601 mtime of the newest run artifact),
+    ``archived`` (manifest flag; no run means ``false``), ``profile_id``
+    (attached snapshot's embedded id), and ``completion`` so the cockpit
+    stays presentation-only.
+    """
+
     entries = []
     for topic_id in topics.list_topic_ids():
         title: str | None = None
@@ -60,8 +69,46 @@ def list_topics(topics: TopicStore, runs: RunStore) -> dict:
             if runs.manifest_path(topic_id).is_file()
             else None
         )
-        entries.append({"id": topic_id, "title": title, "error": error, "run": run})
+        entries.append(
+            {
+                "id": topic_id,
+                "title": title,
+                "error": error,
+                "run": run,
+                "archived": runs.is_archived(topic_id) if run else False,
+                "last_activity": runs.last_activity_at(topic_id) if run else None,
+                "profile_id": _attached_profile_id(profiles, topic_id),
+                "completion": _completion_summary(runs, topic_id, run),
+            }
+        )
     return {"topics": entries}
+
+
+def _attached_profile_id(profiles: ProfileStore, topic_id: str) -> str | None:
+    if not profiles.topic_profile_snapshot_path(topic_id).is_file():
+        return None
+    try:
+        return profiles.load_topic_profile_snapshot(topic_id).id
+    except ConfigError:
+        return None  # unreadable snapshot; the run board surfaces the detail
+
+
+def _completion_summary(runs: RunStore, topic_id: str, run: dict | None) -> dict | None:
+    if run is None:
+        return None
+    approved = sum(
+        1
+        for stage in run["stages"]
+        if stage["stage"] in REQUIRED_STAGES and stage["approved"]
+    )
+    exported = any(
+        runs.export_path(topic_id, format).is_file() for format in EXPORT_FORMATS
+    )
+    return {
+        "stages_approved": approved,
+        "stages_total": len(REQUIRED_STAGES),
+        "exported": exported,
+    }
 
 
 def get_topic(topics: TopicStore, topic_id: str) -> dict:

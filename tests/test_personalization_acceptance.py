@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import test_runs
-from education_pipeline import ConfigError, ProfileStore
+from education_pipeline import ConfigError, ProfileStore, RunStore
 from education_pipeline.daemon import read_api, write_api
 
 
@@ -150,6 +150,7 @@ def test_structured_profile_lifecycle_preserves_attached_snapshot(
 
     attached = write_api.attach_profile(
         profiles,
+        RunStore(tmp_path),
         "structured-topic",
         "structured-copy",
     )

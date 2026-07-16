@@ -23,7 +23,7 @@ from education_pipeline.config import (
     ModelPlan,
     apply_overrides_lenient,
 )
-from education_pipeline.daemon import read_api, write_api
+from education_pipeline.daemon import read_api, reveal, write_api
 from education_pipeline.daemon.jobs import Job, JobStore, Worker
 from education_pipeline.daemon.static import resolve_static
 from education_pipeline.export import render_html_body
@@ -75,6 +75,11 @@ class DaemonContext:
     web_dist: Path | None = None
 
     def enqueue_stage(self, topic_id: str, stage: str | None, force: bool) -> Job:
+        if self.runs.is_archived(topic_id):
+            raise write_api.ConflictError(
+                "archived_course",
+                f"course {topic_id!r} is archived; unarchive it first",
+            )
         catalog, plan = self.config.load()
         overrides = self.runs.read_plan_overrides(topic_id)
         plan, override_errors = apply_overrides_lenient(plan, overrides, catalog)
@@ -304,7 +309,10 @@ def _make_handler(context: DaemonContext):
                 )
             if self.path == "/v1/topics":
                 return self._send(
-                    200, read_api.list_topics(context.topics, context.runs)
+                    200,
+                    read_api.list_topics(
+                        context.topics, context.runs, context.profiles
+                    ),
                 )
             m = re.match(r"^/v1/topics/([^/?]+)$", self.path)
             if m:
@@ -506,6 +514,49 @@ def _make_handler(context: DaemonContext):
                 self._send(200, {"ok": True})
                 context.on_shutdown()
                 return
+            if self.path == "/v1/reveal":
+                body = self._read_body()
+                unknown = sorted(set(body) - {"target", "topic_id"})
+                if unknown:
+                    raise ConfigError(
+                        "unknown reveal field(s): " + ", ".join(unknown)
+                    )
+                path = reveal.resolve_reveal_target(
+                    context.runs,
+                    context.topics,
+                    _require_str(body, "target"),
+                    _require_str(body, "topic_id"),
+                )
+                try:
+                    reveal.open_in_file_manager(path)
+                except reveal.RevealError as exc:
+                    # The resolved path rides along so the UI can fall back
+                    # to showing it with a copy button (spec §5.5).
+                    return self._error(
+                        422, "reveal_unsupported", str(exc), {"path": str(path)}
+                    )
+                return self._send(200, {"path": str(path)})
+            m = re.match(r"^/v1/runs/([^/?]+)/archive$", self.path)
+            if m:
+                self._read_body()  # enforce the JSON/size rules even when empty
+                return self._send(200, write_api.archive_run(context.runs, m.group(1)))
+            m = re.match(r"^/v1/runs/([^/?]+)/unarchive$", self.path)
+            if m:
+                self._read_body()
+                return self._send(
+                    200, write_api.unarchive_run(context.runs, m.group(1))
+                )
+            m = re.match(r"^/v1/topics/([^/?]+)/duplicate$", self.path)
+            if m:
+                return self._send(
+                    201,
+                    write_api.duplicate_topic(
+                        context.topics,
+                        context.profiles,
+                        m.group(1),
+                        self._read_body(),
+                    ),
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/advance$", self.path)
             if m:
                 self._read_body()  # enforce the JSON/size rules even for an empty body
@@ -653,6 +704,7 @@ def _make_handler(context: DaemonContext):
                     200,
                     write_api.attach_profile(
                         context.profiles,
+                        context.runs,
                         m.group(1),
                         _require_str(body, "profile_id"),
                         overwrite=bool(body.get("overwrite", True)),
