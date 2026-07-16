@@ -1212,10 +1212,12 @@ def test_personalization_snapshot_serializes_concurrent_audit_approval(
     runs.ingest_response(topic_id, "audit", replacement, force=True)
 
     real_export_state = RunStore._export_state_locked
-    real_lock = RunStore._manifest_write_lock
+    real_profile_lock = RunStore._profile_generation_lock
+    real_manifest_lock = RunStore._manifest_write_lock
     export_state_started = threading.Event()
     release_reader = threading.Event()
-    mutation_lock_requested = threading.Event()
+    profile_lock_requested = threading.Event()
+    manifest_lock_requested = threading.Event()
     mutation_finished = threading.Event()
     reader_result = []
     errors: list[BaseException] = []
@@ -1238,18 +1240,29 @@ def test_personalization_snapshot_serializes_concurrent_audit_approval(
             audit_snapshot=audit_snapshot,
         )
 
-    def observed_lock(store: RunStore, candidate: str):
-        lock = real_lock(store, candidate)
+    def observed_profile_lock(store: RunStore, candidate: str):
+        lock = real_profile_lock(store, candidate)
         if (
             store is runs
             and candidate == topic_id
             and threading.current_thread().name == "audit-approver"
         ):
-            mutation_lock_requested.set()
+            profile_lock_requested.set()
+        return lock
+
+    def observed_manifest_lock(store: RunStore, candidate: str):
+        lock = real_manifest_lock(store, candidate)
+        if (
+            store is runs
+            and candidate == topic_id
+            and threading.current_thread().name == "audit-approver"
+        ):
+            manifest_lock_requested.set()
         return lock
 
     monkeypatch.setattr(RunStore, "_export_state_locked", paused_export_state)
-    monkeypatch.setattr(RunStore, "_manifest_write_lock", observed_lock)
+    monkeypatch.setattr(RunStore, "_profile_generation_lock", observed_profile_lock)
+    monkeypatch.setattr(RunStore, "_manifest_write_lock", observed_manifest_lock)
 
     def read_snapshot() -> None:
         try:
@@ -1267,19 +1280,27 @@ def test_personalization_snapshot_serializes_concurrent_audit_approval(
 
     reader = threading.Thread(target=read_snapshot, name="personalization-reader")
     reader.start()
-    assert export_state_started.wait(5)
+    approver: threading.Thread | None = None
+    try:
+        assert export_state_started.wait(5)
 
-    approver = threading.Thread(target=approve_replacement, name="audit-approver")
-    approver.start()
-    assert mutation_lock_requested.wait(5)
-    assert not mutation_finished.wait(0.2)
+        approver = threading.Thread(target=approve_replacement, name="audit-approver")
+        approver.start()
+        assert profile_lock_requested.wait(5)
+        assert not manifest_lock_requested.wait(0.2)
+        assert not mutation_finished.wait(0.2)
 
-    release_reader.set()
-    reader.join(5)
-    approver.join(5)
+        release_reader.set()
+        assert manifest_lock_requested.wait(5)
+    finally:
+        release_reader.set()
+        reader.join(5)
+        if approver is not None:
+            approver.join(5)
 
     assert not errors
-    assert not reader.is_alive() and not approver.is_alive()
+    assert not reader.is_alive()
+    assert approver is not None and not approver.is_alive()
     assert tuple(finding.id for finding in reader_result[0].audit_findings) == old_finding_ids
     assert reader_result[0].export_state == "current"
     current = runs.personalization_snapshot(topic_id)
