@@ -208,3 +208,15 @@ describe("SettingsPage", () => {
     expect(getConfigPlan).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("SettingsPage welcome control", () => {
+  it("re-opens the welcome panel by clearing the dismissal flag", async () => {
+    const { WELCOME_DISMISSED_KEY } = await import("../components/WelcomePanel");
+    localStorage.setItem(WELCOME_DISMISSED_KEY, "1");
+    setup();
+    await userEvent.click(await screen.findByRole("button", { name: /show welcome/i }));
+    expect(localStorage.getItem(WELCOME_DISMISSED_KEY)).toBeNull();
+    expect(screen.getByText(/welcome panel will show/i)).toBeInTheDocument();
+    localStorage.clear();
+  });
+});

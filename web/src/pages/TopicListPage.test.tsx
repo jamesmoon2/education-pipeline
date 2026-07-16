@@ -11,6 +11,8 @@ vi.mock("../api/client", async () => {
     ApiRequestError: actual.ApiRequestError,
     getTopics: vi.fn(),
     getProfiles: vi.fn(),
+    getWorkspace: vi.fn(),
+    getConfigProviders: vi.fn(),
     importTopic: vi.fn(),
     importProfile: vi.fn(),
     attachProfile: vi.fn(),
@@ -24,6 +26,8 @@ vi.mock("../api/client", async () => {
 import {
   ApiRequestError,
   archiveRun,
+  getConfigProviders,
+  getWorkspace,
   attachProfile,
   duplicateTopic,
   getProfiles,
@@ -36,6 +40,14 @@ import {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The library page hosts WelcomePanel; a non-first-run workspace keeps it
+  // out of these tests (WelcomePanel has its own suite).
+  vi.mocked(getWorkspace).mockResolvedValue({
+    path: "/ws",
+    counts: { topics: 1, runs: 1, profiles: 0 },
+    first_run: false,
+  });
+  vi.mocked(getConfigProviders).mockResolvedValue({ providers: [] });
 });
 
 function makeRun(

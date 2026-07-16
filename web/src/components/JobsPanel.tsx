@@ -20,7 +20,10 @@ export default function JobsPanel({ topicId }: { topicId: string }) {
     <section>
       <h3>Jobs</h3>
       {data.jobs.length === 0 ? (
-        <p>No jobs yet for this topic.</p>
+        <p>
+          No jobs yet — the next action is shown above; run it with a configured
+          provider, or copy the prompt into any model and paste the response back.
+        </p>
       ) : (
         <table>
           <thead>

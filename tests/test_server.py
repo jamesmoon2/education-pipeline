@@ -3278,3 +3278,39 @@ def test_reveal_route_rejects_unknown_target(server, monkeypatch):
     )
     assert status == 400
     assert body["error"]["code"] == "invalid_request"
+
+
+# ---------------------------------------------------------------------------
+# Workspace read endpoint (spec §4.1)
+
+
+def test_workspace_payload_counts_and_first_run(server_with_context):
+    port, context = server_with_context
+    status, body = _req(port, "GET", "/v1/workspace")
+    assert status == 200
+    assert body["path"] == str(context.root)
+    # Fixture workspace: two topics with runs, one profile.
+    assert body["counts"] == {"topics": 2, "runs": 2, "profiles": 1}
+    assert body["first_run"] is False
+
+
+def test_workspace_first_run_true_with_zero_runs(tmp_path, monkeypatch):
+    import shutil
+
+    ws = tmp_path / "fresh"
+    (ws / "topics").mkdir(parents=True)
+    srv, worker, context = _start_server(ws, monkeypatch)
+    try:
+        shutil.rmtree(ws / "runs")
+        status, body = _req(srv.server_port, "GET", "/v1/workspace")
+        assert status == 200
+        assert body["counts"]["runs"] == 0
+        assert body["first_run"] is True
+    finally:
+        worker.stop()
+        srv.shutdown()
+
+
+def test_workspace_requires_token(server):
+    status, body = _req(server, "GET", "/v1/workspace", token="wrong")
+    assert status == 401

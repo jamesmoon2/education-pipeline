@@ -76,6 +76,12 @@ export interface RunStatus {
   next_action: NextAction;
 }
 
+export interface WorkspacePayload {
+  path: string;
+  counts: { topics: number; runs: number; profiles: number };
+  first_run: boolean;
+}
+
 export interface CompletionSummary {
   stages_approved: number;
   stages_total: number;

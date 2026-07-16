@@ -36,6 +36,7 @@ import type {
   ProfileSummary,
   PersonalizationPayload,
   AuditPreparationResult,
+  WorkspacePayload,
 } from "./types";
 import { isMetadataNumber, metadataNumber, metadataNumberValidationMessage } from "./types";
 
@@ -265,6 +266,7 @@ export async function download(path: string, filename: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
+export const getWorkspace = () => api<WorkspacePayload>("/v1/workspace");
 export const getTopics = () => api<{ topics: TopicSummary[] }>("/v1/topics");
 export const getTopic = (id: string) =>
   api<TopicDetail>(`/v1/topics/${encodeURIComponent(id)}`);

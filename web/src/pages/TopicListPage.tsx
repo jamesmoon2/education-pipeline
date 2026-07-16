@@ -10,6 +10,7 @@ import {
 } from "../api/client";
 import AttachProfileControl from "../components/AttachProfileControl";
 import ErrorNotice from "../components/ErrorNotice";
+import WelcomePanel from "../components/WelcomePanel";
 import ImportForm from "../components/ImportForm";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
@@ -130,6 +131,7 @@ export default function TopicListPage() {
 
   return (
     <div>
+      <WelcomePanel />
       {topics.length === 0 ? (
         <div className="empty-state">
           <p>No topics yet.</p>

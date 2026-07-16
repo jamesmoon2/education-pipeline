@@ -111,6 +111,23 @@ def _completion_summary(runs: RunStore, topic_id: str, run: dict | None) -> dict
     }
 
 
+def workspace_payload(
+    root: Path, topics: TopicStore, runs: RunStore, profiles: ProfileStore
+) -> dict:
+    """Read-only workspace summary powering the welcome panel (spec §4.1)."""
+
+    run_count = len(runs.list_run_ids())
+    return {
+        "path": str(root),
+        "counts": {
+            "topics": len(topics.list_topic_ids()),
+            "runs": run_count,
+            "profiles": len(profiles.list_profile_ids()),
+        },
+        "first_run": run_count == 0,
+    }
+
+
 def get_topic(topics: TopicStore, topic_id: str) -> dict:
     if not topics.topic_path(topic_id).is_file():
         raise NotFoundError(f"no such topic: {topic_id}")

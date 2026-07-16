@@ -307,6 +307,13 @@ def _make_handler(context: DaemonContext):
                 return self._send(
                     200, {"version": context.version, "started_at": None, "ok": True}
                 )
+            if self.path == "/v1/workspace":
+                return self._send(
+                    200,
+                    read_api.workspace_payload(
+                        context.root, context.topics, context.runs, context.profiles
+                    ),
+                )
             if self.path == "/v1/topics":
                 return self._send(
                     200,
