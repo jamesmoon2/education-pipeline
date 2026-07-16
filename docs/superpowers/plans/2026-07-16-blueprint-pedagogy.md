@@ -316,24 +316,24 @@ sanitized messages, and sidecar presence; absent context changes nothing.
 deterministic splice at approval, byte-identity of untouched modules, stale
 protection, event-log scope records, CLI and daemon triggers.
 
-- [ ] RED: `tests/test_guide_canonical.py` — `splice_module` success (canonical
+- [x] RED: `tests/test_guide_canonical.py` — `splice_module` success (canonical
   bytes; untouched modules byte-identical), module-id rename, unknown module,
   element-id collision with another module, dangling outcome reference,
   non-module payload, module-order preservation.
-- [ ] RED: `tests/test_prompts.py` — scoped prompt embeds contract, only
+- [x] RED: `tests/test_prompts.py` — scoped prompt embeds contract, only
   in-module deterministic findings, QA items split in/out of scope, course
   summary, single-module output contract; blueprint lines compose.
-- [ ] RED: `tests/test_runs.py` — scoped prompt writing (eligibility, unknown
+- [x] RED: `tests/test_runs.py` — scoped prompt writing (eligibility, unknown
   module usage error), scoped approval splices and validates, stale draft
   refusal, event scope records, repeated scoped repairs as ordinary retries,
   whole-guide repair unchanged.
-- [ ] RED: `tests/test_cli.py` — `advance --repair-module` happy path and
+- [x] RED: `tests/test_cli.py` — `advance --repair-module` happy path and
   usage errors (exit 2). `tests/test_server.py`/`test_write_api.py` — advance
   `repair_module`, `GET /v1/runs/{t}/repair/modules`, stage payload
   `repair_scope`.
-- [ ] GREEN: implement splice, scoped prompt compiler, `RunStore` flow, CLI,
+- [x] GREEN: implement splice, scoped prompt compiler, `RunStore` flow, CLI,
   daemon.
-- [ ] Focused suites green; commit
+- [x] Focused suites green; commit
   `feat(repair): add module-scoped regeneration with deterministic splice`.
 
 # Wave 4 — Cockpit
@@ -387,7 +387,7 @@ PRD entry moved to Delivered, post-milestone audit ledger.
 | 0 — Registry + topic fields | **complete** | `2808a84` | 1009 | — | — | — | Registry/recommender/topic fields/manifest record frozen as planned. Recommender matches whole words only ("example" never triggers "exam"); scanned fields are title/brief/goals/key_questions/constraints. `create_run` records a blueprint only for interactive-guide manifests and degrades silently on a missing/malformed stored topic; unregistered explicit or topic-declared ids raise at run creation. Existing guide-run test helpers now produce runs recorded as recommended `conceptual-foundations`, matching their spec-contract echoes. |
 | 1 — Prompts + echo | **complete** | `f006afc` | 1031 | — | — | — | `blueprint=None` byte-identity pinned first (`_GUIDE_V1_NO_BLUEPRINT_PROMPT_TEXT_SHA256`, hashes captured from pre-change compilers). Blueprint Contract sits between the header priority block and `## Topic`; QA rubric instructs one finding per unmet item. Echo/superset live in `extract_spec_contract(expected_blueprint=...)` and fire at spec approval via `run_blueprint()`. Daemon advance body accepts optional `blueprint` (recorded source `user` before advancing); `GET /v1/blueprints?topic=` 404s for unknown topics. |
 | 2 — Calibration | **complete** | `a6fcbea` | 1044 | — | — | — | Seven rules behind `CalibrationContext` (None → reports byte-identical). Constants pinned (200 WPM, per-block seconds, skill keywords, difficulty levels) with `estimated_reading_minutes()` public for tests. Boundaries: exceeded strictly above 1.1×, underrun strictly below 0.5×, implausible strictly beyond 2× either way, overrun strictly above 45 min, difficulty distance ≥ 2, `mixed`/ambiguous never fire. `RunStore._calibration_context` reads topic (silent degrade), manifest record, and profile snapshot; threaded through validate/gate/finalize/export-freshness so sidecar bytes stay reproducible. Note: the canonical fixture legitimately triggers `time.estimate_implausible` (30 declared vs ~9-minute model) — a nonblocking warning that no existing suite pinned against. |
-| 3 — Scoped repair | pending | | | | | | |
+| 3 — Scoped repair | **complete** | `2877c7a` | 1067 | — | — | — | Splice refuses renames/collisions/dangling refs via strict re-parse; untouched modules byte-identical (canonical). Splice runs at approval (covers provider ingest, cockpit paste, and manual file-save uniformly); approved/repair.json holds the merged whole guide while the response file keeps the raw fragment. Scope = latest repair prompt_written event's `repair_module`; whole-guide prompt clears it. Deviation from the frozen contract: none. Note for Wave 4: after a scoped approval the response fragment ≠ approved bytes, so the stage view must not rely on response==approved to derive approval state for scoped repairs — use run status + `repair_scope`. |
 | 4 — Cockpit | pending | | | | | | |
 | 5 — Acceptance + closeout | pending | | | | | | |
 
