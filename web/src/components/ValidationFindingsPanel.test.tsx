@@ -366,6 +366,41 @@ describe("ValidationFindingsPanel", () => {
     expect(links[1]).toHaveAttribute("href", expect.stringContaining("/stages/repair?"));
   });
 
+  it("renders supplemental audit findings without changing deterministic counts or waiver controls", async () => {
+    const auditFinding = {
+      ...report.findings[1],
+      id: "audit.goal:goal-001",
+      stage: "audit",
+      source_stage: "repair",
+      path: "/modules/0/sections/1",
+      related_ids: ["section-one"],
+      message: "Projected audit finding.",
+      waivable: true,
+    };
+    renderPanel("current", {
+      phase: "final",
+      supplementalFindings: [auditFinding],
+    });
+
+    expect(await screen.findByText("Projected audit finding.")).toBeInTheDocument();
+    expect(screen.getByText(/1 blocking · 1 errors · 1 warnings · 0 waived/)).toBeInTheDocument();
+    const links = screen.getAllByRole("link", { name: /Open source/ });
+    const link = links.find((candidate) => candidate.getAttribute("href")?.includes("section-one"));
+    expect(link).toBeDefined();
+    expect(link).toHaveAttribute(
+      "href",
+      "/topics/feedback%20loops/stages/repair?json_path=%2Fmodules%2F0%2Fsections%2F1&related_id=section-one",
+    );
+    expect(link).not.toHaveAttribute("href", expect.stringContaining("/stages/audit"));
+    expect(screen.getAllByRole("button", { name: "Waive…" })).toHaveLength(1);
+    expect(postWaiver).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates aggregate findings already present in the deterministic report", async () => {
+    renderPanel("current", { supplementalFindings: [report.findings[0]] });
+    expect(await screen.findAllByText("Unsafe content.")).toHaveLength(1);
+  });
+
   it("falls back to the repair stage for a pre-v2 finding with no stage on a final-phase report", async () => {
     const { stage: _stage, ...findingWithoutStage } = report.findings[0];
     vi.mocked(getValidation).mockResolvedValue({

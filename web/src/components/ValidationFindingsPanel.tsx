@@ -20,9 +20,12 @@ function findingHref(topicId: string, phase: Phase, finding: ValidationFinding):
   const params = new URLSearchParams({ json_path: finding.path });
   const relatedId = finding.related_ids?.[0];
   if (relatedId) params.set("related_id", relatedId);
-  // Pre-v2 reports (written before findings carried a stage) have no
-  // finding.stage; fall back to the phase-derived stage the old links used.
-  const stage = finding.stage ?? (phase === "draft" ? "draft" : "repair");
+  // Public projections may identify a safe source stage distinct from the
+  // stage that produced the finding. Pre-v2 findings carry neither field.
+  const stage =
+    finding.source_stage ??
+    finding.stage ??
+    (phase === "draft" ? "draft" : "repair");
   return `/topics/${encodeURIComponent(topicId)}/stages/${stage}?${params.toString()}`;
 }
 
@@ -31,6 +34,7 @@ export default function ValidationFindingsPanel({
   phase,
   state,
   effectiveBlocking,
+  supplementalFindings = [],
   onChanged,
 }: {
   topicId: string;
@@ -41,6 +45,10 @@ export default function ValidationFindingsPanel({
   // don't carry it fall back to the raw report.summary.blocking count, same
   // as before this field existed.
   effectiveBlocking?: number;
+  // Public-safe aggregate findings that are not persisted in the deterministic
+  // validation report (currently optional audit findings). Duplicate ids are
+  // ignored, and audit findings never participate in waiver or gate controls.
+  supplementalFindings?: ValidationFinding[];
   onChanged: () => void;
 }) {
   const [report, setReport] = useState<ValidationReport | null>(null);
@@ -89,17 +97,37 @@ export default function ValidationFindingsPanel({
     () => new Set(waivers.map((waiver) => waiver.finding_id)),
     [waivers],
   );
-  const findings = (report?.findings ?? []).filter((finding) => {
+  const combinedFindings = useMemo(() => {
+    const merged: ValidationFinding[] = [];
+    const seen = new Set<string>();
+    for (const finding of [...(report?.findings ?? []), ...supplementalFindings]) {
+      if (seen.has(finding.id)) continue;
+      seen.add(finding.id);
+      merged.push(finding);
+    }
+    return merged;
+  }, [report, supplementalFindings]);
+  const findings = combinedFindings.filter((finding) => {
+    const auditFinding = finding.stage === "audit";
     if (severity !== "all" && finding.severity !== severity) return false;
     if (status === "blocking" && !finding.blocking) return false;
-    if (status === "waivable" && (!finding.waivable || waivedIds.has(finding.id))) return false;
-    if (status === "waived" && !waivedIds.has(finding.id)) return false;
+    if (
+      status === "waivable" &&
+      (auditFinding || !finding.waivable || waivedIds.has(finding.id))
+    ) return false;
+    if (status === "waived" && (auditFinding || !waivedIds.has(finding.id))) return false;
     return true;
   });
 
   const submitWaiver = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!waiverFinding || !report || !reason.trim() || waiving) return;
+    if (
+      !waiverFinding ||
+      waiverFinding.stage === "audit" ||
+      !report ||
+      !reason.trim() ||
+      waiving
+    ) return;
     setWaiving(true);
     setFeedback(null);
     try {
@@ -125,7 +153,7 @@ export default function ValidationFindingsPanel({
   };
 
   const removeWaiver = async (finding: ValidationFinding) => {
-    if (!report || waiving) return;
+    if (!report || finding.stage === "audit" || waiving) return;
     setWaiving(true);
     setFeedback(null);
     try {
@@ -218,7 +246,8 @@ export default function ValidationFindingsPanel({
           {findings.length === 0 ? <p>No findings match these filters.</p> : (
             <ul className="validation-finding-list">
               {findings.map((finding) => {
-                const waived = waivedIds.has(finding.id);
+                const auditFinding = finding.stage === "audit";
+                const waived = !auditFinding && waivedIds.has(finding.id);
                 return (
                   <li key={finding.id}>
                     <p>
@@ -231,14 +260,14 @@ export default function ValidationFindingsPanel({
                     <a href={findingHref(topicId, phase, finding)}>
                       Open source at {finding.path}
                     </a>
-                    {finding.waivable && !waived && state === "current" && (
+                    {!auditFinding && finding.waivable && !waived && state === "current" && (
                       <button type="button" onClick={() => {
                         setWaiverFinding(finding);
                         setReason("");
                         setFeedback(null);
                       }}>Waive…</button>
                     )}
-                    {waived && state === "current" && (
+                    {!auditFinding && waived && state === "current" && (
                       <button
                         type="button"
                         disabled={waiving}
