@@ -430,7 +430,7 @@ def test_job_active_blocks_run_mutations_but_not_export(tmp_path):
     for call in blocked:
         with pytest.raises(write_api.ConflictError) as exc:
             call()
-        assert exc.value.code == "job_active"
+        assert exc.value.code == "job_conflict"
     # export is exempt: it only reads final/ and writes a file the worker never touches
     assert write_api.export_run(runs, "t", format="html")["export_path"] == "final/guide.html"
 

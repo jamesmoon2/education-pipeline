@@ -1134,3 +1134,37 @@ def test_workspace_check_warning_only_exits_0(
     out = capsys.readouterr().out
     assert code == 0
     assert "stale_daemon_record" in out
+
+
+def test_daemon_error_prints_catalog_remediation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from education_pipeline import cli
+    from education_pipeline.client import DaemonError
+
+    def _raise(*args, **kwargs):
+        raise DaemonError("job j1 is running for topic 't'", code="job_conflict")
+
+    monkeypatch.setattr(cli, "ensure_daemon", _raise)
+    code = _run(tmp_path, "run", "some-topic")
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "job j1 is running" in err
+    assert "Wait for the running job" in err  # catalog remediation line
+
+
+def test_daemon_error_without_code_prints_no_remediation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from education_pipeline import cli
+    from education_pipeline.client import DaemonError
+
+    def _raise(*args, **kwargs):
+        raise DaemonError("plain failure")
+
+    monkeypatch.setattr(cli, "ensure_daemon", _raise)
+    code = _run(tmp_path, "run", "some-topic")
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "plain failure" in err
+    assert "fix:" not in err

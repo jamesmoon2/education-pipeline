@@ -64,8 +64,8 @@ TypeScript, Vite, vitest, Playwright; file-backed local workspace artifacts.
 
 | Wave | Status | Commits | pytest | vitest | e2e | build | Notes for the next wave |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Baseline | pending | code HEAD `28bf6aa` | — | — | — | — | Fresh baseline being recorded 2026-07-16. |
-| 0 — Registry + validation | pending | — | — | — | — | — | — |
+| Baseline | **complete** | code HEAD `28bf6aa` | 973 | 210 | (per prior log: 53) | clean | Fresh pytest/vitest run 2026-07-16; e2e/build counts inherited from the personalization Wave Log gate on the same HEAD. |
+| 0 — Registry + validation | **complete** | `c02bd12` | 1009 (+1 skip as root) | n/a | n/a | n/a | Registry surface frozen: `load_registry`, `record_workspace`, `last_used_workspace`, `registry_path` (XDG). `validate_workspace`/`fix_workspace` + `WorkspaceFinding(code, severity, message, remediation, auto_fixable)`. `workspace check` exits 1 only on remaining blockers. `not_writable` test skips as root. |
 | 1 — Error catalog | pending | — | — | — | — | — | — |
 | 2 — `ui` launcher | pending | — | — | — | — | — | — |
 | 3 — Course library | pending | — | — | — | — | — | — |

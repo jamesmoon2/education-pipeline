@@ -14,6 +14,7 @@ import ResponseEditor from "../components/ResponseEditor";
 import ResponseForm from "../components/ResponseForm";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
+import ErrorNotice from "../components/ErrorNotice";
 
 const TABS = ["prompt", "response", "approved"] as const;
 type Tab = (typeof TABS)[number];
@@ -67,7 +68,7 @@ function StageViewerForRoute({
       </p>
     );
   }
-  if (error) return <p className="error">{error.message}</p>;
+  if (error) return <ErrorNotice prefix="Failed to load stage" error={error} onRetry={refresh} />;
   if (!data) return <p>Loading…</p>;
   if (data.topic_id !== topicId || data.stage !== stage) {
     return <p className="error" role="alert">Stage response does not match this route.</p>;

@@ -188,7 +188,10 @@ describe("RunBoardPage", () => {
     vi.mocked(getPersonalization).mockRejectedValue(new Error("aggregate unavailable"));
     renderAt("/topics/t");
     expect(await screen.findByText("Approved repair / final source")).toBeInTheDocument();
-    expect(await screen.findByRole("alert")).toHaveTextContent("aggregate unavailable");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Failed to load personalization/);
+    await userEvent.click(screen.getByRole("button", { name: /show details/i }));
+    expect(alert).toHaveTextContent("aggregate unavailable");
     expect(screen.queryByRole("region", { name: "Optional personalization audit" })).not.toBeInTheDocument();
   });
 

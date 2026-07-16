@@ -6,6 +6,7 @@ import AuditControls from "../components/AuditControls";
 import CanonicalGuidePreview, {
   type CanonicalGuidePreviewHandle,
 } from "../components/CanonicalGuidePreview";
+import ErrorNotice from "../components/ErrorNotice";
 import JobsPanel from "../components/JobsPanel";
 import PersonalizationPanel from "../components/PersonalizationPanel";
 import PrimaryAction from "../components/PrimaryAction";
@@ -106,9 +107,7 @@ function InteractiveGuidePanels({
       <section className="run-personalization-workspace" aria-label="Personalization workspace">
         <div className="run-personalization-sidebar">
           {error ? (
-            <p className="error" role="alert">
-              Failed to load personalization: {error.message}
-            </p>
+            <ErrorNotice prefix="Failed to load personalization" error={error} />
           ) : mismatchedTopic ? (
             <p className="error" role="alert">
               Personalization response does not match this run.
@@ -200,7 +199,7 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
       </div>
     );
   }
-  if (error) return <p className="error">Failed to load run: {error.message}</p>;
+  if (error) return <ErrorNotice prefix="Failed to load run" error={error} onRetry={refresh} />;
   if (!status) return <p>Loading…</p>;
   if (status.topic_id !== topicId) {
     return <p className="error" role="alert">Run response does not match this topic.</p>;

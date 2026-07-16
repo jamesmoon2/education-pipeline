@@ -33,3 +33,13 @@ def test_ensure_daemon_ignores_claim_placeholder(tmp_path):
     assert lifecycle.claim_discovery(tmp_path) is True
     with pytest.raises(DaemonError):
         ensure_daemon(tmp_path, autostart=False)
+
+
+def test_daemon_error_carries_catalog_code():
+    err = DaemonError("boom", code="job_conflict")
+    assert err.code == "job_conflict"
+    assert str(err) == "boom"
+
+
+def test_daemon_error_code_defaults_to_none():
+    assert DaemonError("boom").code is None

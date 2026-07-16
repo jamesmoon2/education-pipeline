@@ -242,7 +242,7 @@ def test_malformed_json_body_returns_400(server):
     body = b"{not valid json"
     status, payload = _raw_post(server, "/v1/jobs", body, str(len(body)))
     assert status == 400
-    assert payload["error"]["code"] == "bad_request"
+    assert payload["error"]["code"] == "invalid_request"
     # server survives: a well-formed request still succeeds afterward
     status, health = _req(server, "GET", "/v1/health")
     assert status == 200
@@ -251,7 +251,7 @@ def test_malformed_json_body_returns_400(server):
 def test_non_numeric_content_length_returns_400(server):
     status, payload = _raw_post(server, "/v1/jobs", b"{}", "notanumber")
     assert status == 400
-    assert payload["error"]["code"] == "bad_request"
+    assert payload["error"]["code"] == "invalid_request"
 
 
 def test_oversized_content_length_returns_400(server):
@@ -261,7 +261,7 @@ def test_oversized_content_length_returns_400(server):
     oversized = 2 * 1024 * 1024  # 2 MiB > the 1 MiB cap
     status, payload = _raw_post(server, "/v1/jobs", b"{}", str(oversized))
     assert status == 400
-    assert payload["error"]["code"] == "bad_request"
+    assert payload["error"]["code"] == "invalid_request"
     # server survives: a well-formed request still succeeds afterward
     status, health = _req(server, "GET", "/v1/health")
     assert status == 200
@@ -638,7 +638,7 @@ def test_stage_content_includes_response_sha256(server):
 def test_stage_content_bad_stage_is_400(server):
     status, body = _req(server, "GET", "/v1/runs/t/stages/banana")
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
 
 def test_manifest_endpoint(server):
@@ -916,7 +916,7 @@ def test_json_api_response_has_no_csp_header(server):
 def test_no_dist_returns_503(server):
     status, body = _req(server, "GET", "/", token=None)
     assert status == 503
-    assert body["error"]["code"] == "ui_unavailable"
+    assert body["error"]["code"] == "web_assets_missing"
 
 
 def test_write_endpoints_require_token(server):
@@ -1101,7 +1101,7 @@ def test_personalization_aggregate_redacts_malformed_profile_error_path(
     assert status == 400
     assert body == {
         "error": {
-            "code": "bad_request",
+            "code": "invalid_request",
             "message": "personalization state is unavailable",
         }
     }
@@ -1652,7 +1652,7 @@ def test_run_writes_blocked_while_job_active(server, monkeypatch):
     ):
         status, resp = _req(server, "POST", method_path, body=body)
         assert status == 409, method_path
-        assert resp["error"]["code"] == "job_active", method_path
+        assert resp["error"]["code"] == "job_conflict", method_path
 
     status, _ = _req(server, "POST", f"/v1/jobs/{job['id']}/cancel")
     assert status == 200
@@ -1792,7 +1792,7 @@ def test_profile_preview_rejects_wrong_nested_type_and_unknown_key(server):
         body={"profile": wrong_nested},
     )
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
     unknown = _api_profile("unknown-key")
     unknown["learning_preferences"]["secret_copy"] = "forbidden"
@@ -1803,7 +1803,7 @@ def test_profile_preview_rejects_wrong_nested_type_and_unknown_key(server):
         body={"profile": unknown},
     )
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
 
 def test_profile_put_create_update_and_get_status_shapes(server):
@@ -1911,7 +1911,7 @@ def test_profile_put_conflicts_expose_only_fresh_hash_and_no_values(server):
     )
     assert status == 409
     assert existing["error"]["code"] == "already_exists"
-    assert existing["error"]["details"] == {
+    assert existing["error"]["detail"] == {
         "current_sha256": created["content_sha256"]
     }
 
@@ -1924,12 +1924,12 @@ def test_profile_put_conflicts_expose_only_fresh_hash_and_no_values(server):
     )
     assert status == 409
     assert stale["error"]["code"] == "stale_content"
-    assert stale["error"]["details"] == {
+    assert stale["error"]["detail"] == {
         "current_sha256": created["content_sha256"]
     }
     rendered = json.dumps([existing, stale], sort_keys=True)
     assert "PLANTED_HTTP_PRIVATE" not in rendered
-    assert set(stale["error"]["details"]) == {"current_sha256"}
+    assert set(stale["error"]["detail"]) == {"current_sha256"}
 
 
 def test_profile_duplicate_endpoint_success_collision_and_missing_source(server):
@@ -1961,7 +1961,7 @@ def test_profile_duplicate_endpoint_success_collision_and_missing_source(server)
     )
     assert status == 409
     assert collision["error"]["code"] == "already_exists"
-    assert collision["error"]["details"] == {
+    assert collision["error"]["detail"] == {
         "current_sha256": duplicated["content_sha256"]
     }
 
@@ -2178,7 +2178,7 @@ def test_edit_response_put_blocked_while_job_active(server, monkeypatch):
         "/v1/runs/t/stages/draft/response",
         body={"text": "V2", "base_sha256": _sha_hex("V1")},
     )
-    assert status == 409 and body["error"]["code"] == "job_active"
+    assert status == 409 and body["error"]["code"] == "job_conflict"
 
     _req(server, "POST", f"/v1/jobs/{job['id']}/cancel")
     for _ in range(200):
@@ -2355,7 +2355,7 @@ def test_create_waiver_over_http_with_corrupt_element_returns_400_not_dropped_co
         },
     )
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
     # the corrupt file on disk is untouched: no orphaned mkstemp temp file
     # (``.tmp-<random>.json``, per ``_write_bytes_atomic``), no partial write
     assert not list(waivers_path.parent.glob(f".tmp-*{waivers_path.suffix}"))
@@ -2447,7 +2447,7 @@ def test_get_waivers_over_http_with_corrupt_file_returns_400_not_200(server, tmp
 
     status, body = _req(server, "GET", "/v1/runs/g/validation/draft/waivers")
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
 
 def test_delete_waiver_route_removes_the_waiver(server, tmp_path):
@@ -2737,7 +2737,7 @@ def test_put_config_plan_unknown_model_returns_400_and_writes_nothing(tmp_path, 
             },
         )
         assert status == 400
-        assert body["error"]["code"] == "bad_request"
+        assert body["error"]["code"] == "invalid_request"
         # The failed PUT wrote nothing: no workspace plan file was created.
         assert not plan_file.exists()
         assert config.plan_sha256() == base_sha256
@@ -2971,7 +2971,7 @@ def test_put_run_plan_sets_override_then_clears_it(run_plan_server):
 def test_put_run_plan_wrong_shape_nested_value_is_400_not_500(run_plan_server, body):
     status, payload = _req(run_plan_server, "PUT", "/v1/runs/t/plan", body=body)
     assert status == 400
-    assert payload["error"]["code"] == "bad_request"
+    assert payload["error"]["code"] == "invalid_request"
 
 
 def test_put_run_plan_invalid_model_is_400_and_overrides_unchanged(run_plan_server):
@@ -2982,7 +2982,7 @@ def test_put_run_plan_invalid_model_is_400_and_overrides_unchanged(run_plan_serv
         body={"overrides": {"draft": {"model": "does-not-exist"}}},
     )
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
     status, reread = _req(run_plan_server, "GET", "/v1/runs/t/plan")
     assert status == 200
@@ -3001,7 +3001,7 @@ def test_put_run_plan_unknown_topic_is_404(run_plan_server):
 def test_put_run_plan_missing_overrides_field_is_400(run_plan_server):
     status, body = _req(run_plan_server, "PUT", "/v1/runs/t/plan", body={})
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
 
 def test_get_run_plan_with_json_array_overrides_file_is_400_not_500(run_plan_server, tmp_path):
@@ -3010,7 +3010,7 @@ def test_get_run_plan_with_json_array_overrides_file_is_400_not_500(run_plan_ser
     status, body = _req(run_plan_server, "GET", "/v1/runs/t/plan")
 
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
 
 def test_get_run_plan_with_non_mapping_stages_overrides_file_is_400(run_plan_server, tmp_path):
@@ -3021,7 +3021,7 @@ def test_get_run_plan_with_non_mapping_stages_overrides_file_is_400(run_plan_ser
     status, body = _req(run_plan_server, "GET", "/v1/runs/t/plan")
 
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
 
 def test_get_run_plan_degrades_stage_when_stored_override_invalidated_by_catalog_change(
@@ -3155,7 +3155,7 @@ def test_get_run_plan_degrades_stage_when_stored_override_invalidated_by_catalog
             body={"overrides": {"draft": {"model": "premium"}}},
         )
         assert status == 400
-        assert body["error"]["code"] == "bad_request"
+        assert body["error"]["code"] == "invalid_request"
     finally:
         worker.stop()
         srv.shutdown()

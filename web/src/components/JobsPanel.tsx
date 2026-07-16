@@ -3,6 +3,7 @@ import { cancelJob, getJobs } from "../api/client";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 import JobLogView from "./JobLogView";
+import ErrorNotice from "./ErrorNotice";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 
@@ -12,7 +13,7 @@ export default function JobsPanel({ topicId }: { topicId: string }) {
   const [openJobId, setOpenJobId] = useState<string | null>(null);
   const cancel = useAction();
 
-  if (error) return <p className="error">Failed to load jobs: {error.message}</p>;
+  if (error) return <ErrorNotice prefix="Failed to load jobs" error={error} />;
   if (!data) return <p>Loading jobs…</p>;
 
   return (

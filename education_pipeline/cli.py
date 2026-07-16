@@ -47,8 +47,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except DaemonError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _print_daemon_error(exc)
         return 1
+
+
+def _print_daemon_error(exc: DaemonError) -> None:
+    """Print a proxied daemon error with the catalog remediation, if known."""
+
+    from education_pipeline.errors import remediation_for
+
+    print(f"error: {exc}", file=sys.stderr)
+    remediation = remediation_for(exc.code) if exc.code else None
+    if remediation:
+        print(f"fix: {remediation}", file=sys.stderr)
 
 
 def _run_profile_command(args: argparse.Namespace) -> int:
@@ -585,7 +596,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         client = ensure_daemon(root, autostart=args.autostart)
         job = client.enqueue(args.topic_id, stage=args.stage, force=args.force)
     except DaemonError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _print_daemon_error(exc)
         return 1
     print(f"enqueued job {job['id']} ({job['stage']})")
     if not args.wait:

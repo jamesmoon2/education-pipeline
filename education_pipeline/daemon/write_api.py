@@ -7,7 +7,7 @@ carry a precise conflict code; the store call remains the authority and its
 
 - :class:`read_api.NotFoundError` -> HTTP 404
 - :class:`ConflictError` -> HTTP 409 (codes: ``already_exists``, ``not_ready``,
-  ``job_active``, ``stale_content``)
+  ``job_conflict``, ``stale_content``)
 - ``ConfigError`` propagates -> HTTP 400
 """
 
@@ -62,7 +62,7 @@ def _require_no_active_job(jobs: JobStore, topic_id: str) -> None:
     job = jobs.any_active_for(topic_id)
     if job is not None:
         raise ConflictError(
-            "job_active",
+            "job_conflict",
             f"job {job.id} is {job.status} for topic {topic_id!r}; "
             "wait for it to finish or cancel it first",
         )
@@ -128,7 +128,7 @@ def validate_run(runs: RunStore, jobs: JobStore, topic_id: str, phase: str) -> d
     job = jobs.active_for(topic_id, stage)
     if job is not None:
         raise ConflictError(
-            "job_active", f"job {job.id} is {job.status} for {topic_id}/{stage}"
+            "job_conflict", f"job {job.id} is {job.status} for {topic_id}/{stage}"
         )
     runs.validate_run(topic_id, phase)
     return {

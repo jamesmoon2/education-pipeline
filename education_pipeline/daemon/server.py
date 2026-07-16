@@ -164,10 +164,12 @@ def _make_handler(context: DaemonContext):
             self.end_headers()
             self.wfile.write(body)
 
-        def _error(self, status: int, code: str, message: str, details=None) -> None:
+        def _error(self, status: int, code: str, message: str, detail=None) -> None:
+            # Envelope shape per the error-catalog contract (spec §7.1):
+            # {"error": {"code": <stable slug>, "message": ..., "detail": {}}}.
             error = {"code": code, "message": message}
-            if details is not None:
-                error["details"] = details
+            if detail is not None:
+                error["detail"] = detail
             self._send(status, {"error": error})
 
         def _last_resort(self, exc: Exception) -> None:
@@ -247,7 +249,7 @@ def _make_handler(context: DaemonContext):
             except read_api.NotFoundError as exc:
                 return self._error(404, "not_found", str(exc))
             except ConfigError as exc:
-                return self._error(400, "bad_request", str(exc))
+                return self._error(400, "invalid_request", str(exc))
             except Exception as exc:  # last resort: never drop the connection
                 return self._last_resort(exc)
 
@@ -273,7 +275,7 @@ def _make_handler(context: DaemonContext):
             if dist is None:
                 return self._error(
                     503,
-                    "ui_unavailable",
+                    "web_assets_missing",
                     "web UI not built; run `npm run build` in web/ or set EP_WEB_DIST",
                 )
             static = resolve_static(dist, self.path)
@@ -436,7 +438,7 @@ def _make_handler(context: DaemonContext):
                 # not fall through to a plausible-looking 500.
                 return self._error(422, "guide_not_renderable", str(exc))
             except ConfigError as exc:
-                return self._error(400, "bad_request", str(exc))
+                return self._error(400, "invalid_request", str(exc))
             except Exception as exc:  # last resort: never drop the connection
                 return self._last_resort(exc)
 
@@ -678,7 +680,7 @@ def _make_handler(context: DaemonContext):
                 # guide_not_renderable rather than a bare 500.
                 return self._error(422, "guide_not_renderable", str(exc))
             except ConfigError as exc:
-                return self._error(400, "bad_request", str(exc))
+                return self._error(400, "invalid_request", str(exc))
             except Exception as exc:  # last resort: never drop the connection
                 return self._last_resort(exc)
 
@@ -737,7 +739,7 @@ def _make_handler(context: DaemonContext):
             except (GuideDocumentError, ContractError, GuideParseError) as exc:
                 return self._error(422, "guide_not_renderable", str(exc))
             except ConfigError as exc:
-                return self._error(400, "bad_request", str(exc))
+                return self._error(400, "invalid_request", str(exc))
             except Exception as exc:  # last resort: never drop the connection
                 return self._last_resort(exc)
 

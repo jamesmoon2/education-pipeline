@@ -1,10 +1,11 @@
 import { Link } from "react-router-dom";
 import { getProfiles } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
+import ErrorNotice from "../components/ErrorNotice";
 
 export default function ProfilesPage() {
-  const { data, error } = usePolling(getProfiles, 30_000);
-  if (error) return <p className="error">Failed to load profiles: {error.message}</p>;
+  const { data, error, refresh } = usePolling(getProfiles, 30_000);
+  if (error) return <ErrorNotice prefix="Failed to load profiles" error={error} onRetry={refresh} />;
   if (!data) return <p>Loading profiles…</p>;
   return (
     <div className="profiles-page">
