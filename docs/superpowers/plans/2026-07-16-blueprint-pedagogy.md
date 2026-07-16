@@ -342,13 +342,13 @@ protection, event-log scope records, CLI and daemon triggers.
 recommendation rationale and override; run-header blueprint display; repair
 "Regenerate one module" control with finding counts and scope labeling.
 
-- [ ] RED (vitest): blueprint step render/override/rationale/time-budget,
+- [x] RED (vitest): blueprint step render/override/rationale/time-budget,
   wizard passes the override to advance, run-header blueprint display,
   module-regeneration list with finding counts, scoped-artifact label,
   API client coverage for the new routes.
-- [ ] GREEN: implement `BlueprintPicker`, `ModuleRepairControl`, wizard step,
+- [x] GREEN: implement `BlueprintPicker`, `ModuleRepairControl`, wizard step,
   header, stage-view integration in current base-branch style.
-- [ ] `npm run test -- --run` and `npm run build` green; commit
+- [x] `npm run test -- --run` and `npm run build` green; commit
   `feat(cockpit): add blueprint selection and module regeneration`.
 
 # Wave 5 — Acceptance, fixtures, docs, closeout
@@ -388,7 +388,7 @@ PRD entry moved to Delivered, post-milestone audit ledger.
 | 1 — Prompts + echo | **complete** | `f006afc` | 1031 | — | — | — | `blueprint=None` byte-identity pinned first (`_GUIDE_V1_NO_BLUEPRINT_PROMPT_TEXT_SHA256`, hashes captured from pre-change compilers). Blueprint Contract sits between the header priority block and `## Topic`; QA rubric instructs one finding per unmet item. Echo/superset live in `extract_spec_contract(expected_blueprint=...)` and fire at spec approval via `run_blueprint()`. Daemon advance body accepts optional `blueprint` (recorded source `user` before advancing); `GET /v1/blueprints?topic=` 404s for unknown topics. |
 | 2 — Calibration | **complete** | `a6fcbea` | 1044 | — | — | — | Seven rules behind `CalibrationContext` (None → reports byte-identical). Constants pinned (200 WPM, per-block seconds, skill keywords, difficulty levels) with `estimated_reading_minutes()` public for tests. Boundaries: exceeded strictly above 1.1×, underrun strictly below 0.5×, implausible strictly beyond 2× either way, overrun strictly above 45 min, difficulty distance ≥ 2, `mixed`/ambiguous never fire. `RunStore._calibration_context` reads topic (silent degrade), manifest record, and profile snapshot; threaded through validate/gate/finalize/export-freshness so sidecar bytes stay reproducible. Note: the canonical fixture legitimately triggers `time.estimate_implausible` (30 declared vs ~9-minute model) — a nonblocking warning that no existing suite pinned against. |
 | 3 — Scoped repair | **complete** | `2877c7a` | 1067 | — | — | — | Splice refuses renames/collisions/dangling refs via strict re-parse; untouched modules byte-identical (canonical). Splice runs at approval (covers provider ingest, cockpit paste, and manual file-save uniformly); approved/repair.json holds the merged whole guide while the response file keeps the raw fragment. Scope = latest repair prompt_written event's `repair_module`; whole-guide prompt clears it. Deviation from the frozen contract: none. Note for Wave 4: after a scoped approval the response fragment ≠ approved bytes, so the stage view must not rely on response==approved to derive approval state for scoped repairs — use run status + `repair_scope`. |
-| 4 — Cockpit | pending | | | | | | |
+| 4 — Cockpit | **complete** | `84aa9a4` | — | 221 | — | clean | `BlueprintPicker` + wizard blueprint step (topic → blueprint → profile → plan); accepted recommendation sends no override so provenance stays `recommended`; registry-fetch failure falls back to the pre-blueprint flow. `RunStatus.blueprint` and `StageContent.repair_scope` typed optional so existing fixtures stay valid. `ModuleRepairControl` hides itself until `GET repair/modules` succeeds. Known cosmetic quirk (accepted): after a scoped approval the response fragment ≠ approved bytes, so the generic Approve button stays visible like an edited response; re-approving re-splices idempotently. `web/e2e/new-run.spec.ts` will need the blueprint-step click — handled in Wave 5. |
 | 5 — Acceptance + closeout | pending | | | | | | |
 
 Baseline commands: `python3 -m pytest`; `cd web && npm run test -- --run`;
