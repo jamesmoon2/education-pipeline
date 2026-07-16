@@ -527,16 +527,30 @@ cannot silently package structurally invalid or privacy-leaking content.
 
 ### P1 — Make personalization visible and safe
 
-**Status: Design specified 2026-07-12** in
-[`docs/superpowers/specs/2026-07-12-personalization-design.md`](superpowers/specs/2026-07-12-personalization-design.md).
-Implementation waves 1–2 (privacy engine, profiles UI) may start
-alongside the release-gates milestone tail; wave 3 onward requires that
-milestone's Wave 2 (stage attribution + sidecar report).
+**Status: Delivered 2026-07-16** (closeout evidence in
+[`docs/superpowers/plans/2026-07-13-personalization.md`](superpowers/plans/2026-07-13-personalization.md)
+Wave Log; engine acceptance in `tests/test_personalization_acceptance.py`;
+browser acceptance in `web/e2e/personalization.spec.ts` and
+`web/e2e/guide-runtime.spec.ts`). The delivered implementation starts with
+Wave 0 commit `dc75c54`; the complete per-wave commit list is recorded in that
+Wave Log. Accepted limitations are recorded in the post-milestone audit named
+by the closeout plan.
+
+Milestone specification:
+
+- [`docs/superpowers/specs/2026-07-12-personalization-design.md`](superpowers/specs/2026-07-12-personalization-design.md)
 
 - Build profile creation/editing and publishable-summary UI.
 - Add privacy classification and warnings.
 - Add a personalization audit and outcome-to-learner trace.
 - Show “why this course fits you” in preview without exposing private details.
+
+**Exit evidence:** structured profiles are snapshot-attached to runs; guide
+source 1.1 produces a private, hash-bound trace and a stripped public
+projection; the optional audit remains nonblocking and projects only safe
+findings; the cockpit supports stale-state recovery and sandboxed evidence
+navigation; repeat exports produce deterministic public sidecars without
+private profile values, goals, exclusion reasons, or source annotations.
 
 ### P1 — First-run and course-management experience
 
