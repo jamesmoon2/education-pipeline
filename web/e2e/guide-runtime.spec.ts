@@ -185,6 +185,41 @@ test.describe("preview evidence message bridge", () => {
     await expect(page.locator('section[data-role="guide-section"]').first()).toHaveClass(/is-current/);
     await expect(page.locator('section[data-module-id="intervention-practice"]').first()).not.toBeFocused();
   });
+
+  test("receives parent evidence messages in an opaque sandboxed srcDoc", async ({ page }) => {
+    await page.setContent(
+      '<iframe title="Sandboxed guide preview" sandbox="allow-scripts"></iframe>',
+    );
+    const iframe = page.locator('iframe[title="Sandboxed guide preview"]');
+    await iframe.evaluate((element, html) => {
+      (element as HTMLIFrameElement).srcdoc = html;
+    }, previewDocumentHtml);
+
+    const preview = page.frameLocator('iframe[title="Sandboxed guide preview"]');
+    const firstSection = preview.locator('section[data-role="guide-section"]').first();
+    const target = preview
+      .locator('section[data-module-id="intervention-practice"]')
+      .first();
+    await expect(preview.locator("[data-guide-shell]")).toBeVisible();
+    await expect(firstSection).toHaveClass(/is-current/);
+
+    await iframe.evaluate((element) => {
+      (element as HTMLIFrameElement).contentWindow?.postMessage(
+        {
+          type: "education-pipeline:preview-evidence",
+          kind: "module",
+          id: "intervention-practice",
+        },
+        "*",
+      );
+    });
+
+    await expect(firstSection).not.toHaveClass(/is-current/);
+    await expect(target).toHaveClass(/is-current/);
+    await expect(target).toBeFocused();
+    await expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(iframe).not.toHaveAttribute("sandbox", /allow-same-origin/);
+  });
 });
 
 // The runtime shows one section at a time, so tests must open the section

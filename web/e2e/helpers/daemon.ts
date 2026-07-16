@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -35,26 +35,74 @@ export async function bootDaemon(
   opts: { env?: NodeJS.ProcessEnv; setup?: (ws: string) => void } = {},
 ): Promise<DaemonHandle> {
   const ws = mkdtempSync(join(tmpdir(), prefix));
-  mkdirSync(join(ws, "topics"), { recursive: true });
-  opts.setup?.(ws);
+  try {
+    mkdirSync(join(ws, "topics"), { recursive: true });
+    opts.setup?.(ws);
+  } catch (error) {
+    rmSync(ws, { recursive: true, force: true });
+    throw error;
+  }
 
-  const daemon = spawn("python3", ["-m", "education_pipeline.daemon", ws], {
-    cwd: REPO_ROOT,
-    env: { ...process.env, EP_WEB_DIST: WEB_DIST, ...(opts.env ?? {}) },
-    stdio: "inherit",
+  let daemon: ChildProcess;
+  try {
+    daemon = spawn("python3", ["-m", "education_pipeline.daemon", ws], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, EP_WEB_DIST: WEB_DIST, ...(opts.env ?? {}) },
+      stdio: "inherit",
+    });
+  } catch (error) {
+    rmSync(ws, { recursive: true, force: true });
+    throw error;
+  }
+
+  let resolveSpawnError!: (error: Error) => void;
+  const spawnError = new Promise<Error>((resolveError) => {
+    resolveSpawnError = resolveError;
   });
+  let firstSpawnError: Error | undefined;
+  const onSpawnError = (error: Error) => {
+    if (firstSpawnError) return;
+    firstSpawnError = error;
+    resolveSpawnError(error);
+  };
+  daemon.on("error", onSpawnError);
+
+  let resolveClose!: () => void;
+  const closed = new Promise<void>((resolveClosed) => {
+    resolveClose = resolveClosed;
+  });
+  const onClose = () => resolveClose();
+  daemon.once("close", onClose);
 
   const discovery = join(ws, ".education-pipeline", "daemon.json");
   let record: { port?: number } | undefined;
-  for (let i = 0; i < 100 && !record?.port; i++) {
-    await new Promise((r) => setTimeout(r, 100));
-    if (!existsSync(discovery)) continue;
-    try {
-      record = JSON.parse(readFileSync(discovery, "utf-8")) as { port?: number };
-    } catch {
-      // partially written record; keep polling
+  try {
+    for (let i = 0; i < 100 && !record?.port; i++) {
+      const error = await Promise.race([
+        new Promise<undefined>((resolveDelay) => setTimeout(resolveDelay, 100)),
+        spawnError,
+      ]);
+      if (error) throw error;
+      if (!existsSync(discovery)) continue;
+      try {
+        record = JSON.parse(readFileSync(discovery, "utf-8")) as { port?: number };
+      } catch {
+        // partially written record; keep polling
+      }
     }
+    if (!record?.port) {
+      throw new Error("daemon never wrote a ready discovery record");
+    }
+  } catch (error) {
+    if (daemon.exitCode === null && daemon.signalCode === null) daemon.kill();
+    await closed;
+    daemon.off("error", onSpawnError);
+    daemon.off("close", onClose);
+    rmSync(ws, { recursive: true, force: true });
+    throw error;
   }
-  if (!record?.port) throw new Error("daemon never wrote a ready discovery record");
+
+  daemon.off("error", onSpawnError);
+  daemon.off("close", onClose);
   return { daemon, baseURL: `http://127.0.0.1:${record.port}`, ws };
 }

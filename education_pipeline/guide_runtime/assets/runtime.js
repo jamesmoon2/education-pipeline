@@ -283,7 +283,14 @@
       State.setLastSection(id);
       updateNavLinks();
       if (location.hash.slice(1) !== id) {
-        history.replaceState(null, "", `#${id}`);
+        try {
+          history.replaceState(null, "", `#${id}`);
+        } catch (_error) {
+          // Sandboxed srcDoc previews have an opaque origin, so Chromium may
+          // reject history mutation. Navigation state remains in-memory and
+          // the rest of runtime boot (including the evidence bridge) must
+          // still complete.
+        }
       }
       if (opts.focus) {
         const heading = qs("h2", sections[idx].el);
