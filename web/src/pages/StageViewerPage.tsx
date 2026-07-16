@@ -20,14 +20,32 @@ type Tab = (typeof TABS)[number];
 
 export default function StageViewerPage() {
   const { topicId, stage } = useParams<{ topicId: string; stage: string }>();
+  if (!topicId || !stage) return <p className="error">Invalid stage route.</p>;
+
+  return (
+    <StageViewerForRoute
+      key={`${topicId}\u0000${stage}`}
+      topicId={topicId}
+      stage={stage}
+    />
+  );
+}
+
+function StageViewerForRoute({
+  topicId,
+  stage,
+}: {
+  topicId: string;
+  stage: string;
+}) {
   const [searchParams] = useSearchParams();
   const findingPath = searchParams.get("json_path");
   const relatedId = searchParams.get("related_id");
   const fetchContent = useCallback(
-    () => getStageContent(topicId!, stage!),
+    () => getStageContent(topicId, stage),
     [topicId, stage],
   );
-  const fetchRun = useCallback(() => getRunStatus(topicId!), [topicId]);
+  const fetchRun = useCallback(() => getRunStatus(topicId), [topicId]);
   const { data, error, refresh } = usePolling(fetchContent, 5_000);
   const { data: run } = usePolling(fetchRun, 5_000);
   const requestedTab = searchParams.get("tab");
@@ -51,6 +69,12 @@ export default function StageViewerPage() {
   }
   if (error) return <p className="error">{error.message}</p>;
   if (!data) return <p>Loading…</p>;
+  if (data.topic_id !== topicId || data.stage !== stage) {
+    return <p className="error" role="alert">Stage response does not match this route.</p>;
+  }
+  if (run && run.topic_id !== topicId) {
+    return <p className="error" role="alert">Run response does not match this route.</p>;
+  }
 
   const finalized = run ? run.finalized : true; // hide Edit until status loads
   const isAudit = data.stage === "audit";
@@ -65,7 +89,7 @@ export default function StageViewerPage() {
     setDiffOpen(next);
     if (next && draftApproved === null) {
       try {
-        const draft = await getStageContent(topicId!, "draft");
+        const draft = await getStageContent(topicId, "draft");
         setDraftApproved(draft.approved ?? "");
       } catch {
         setDiffOpen(false);
@@ -128,13 +152,13 @@ export default function StageViewerPage() {
               approve.run(
                 () =>
                   isAudit
-                    ? approveAudit(topicId!, false)
-                    : postApprove(topicId!, data.stage),
+                    ? approveAudit(topicId, false)
+                    : postApprove(topicId, data.stage),
                 {
                   retryWithOverwrite: () =>
                     isAudit
-                      ? approveAudit(topicId!, true)
-                      : postApprove(topicId!, data.stage, true),
+                      ? approveAudit(topicId, true)
+                      : postApprove(topicId, data.stage, true),
                   successMessage: `Approved ${data.stage}.`,
                 },
               )
@@ -155,8 +179,8 @@ export default function StageViewerPage() {
               void rerun.run(
                 () =>
                   isAudit
-                    ? enqueueAuditJob(topicId!, true)
-                    : enqueueJob(topicId!, data.stage, true),
+                    ? enqueueAuditJob(topicId, true)
+                    : enqueueJob(topicId, data.stage, true),
                 {
                   successMessage: `Provider rerun queued for ${data.stage}.`,
                 },
@@ -177,7 +201,7 @@ export default function StageViewerPage() {
         )}
       {pasteOpen && (data.response === null || isAudit) && (
         <ResponseForm
-          topicId={topicId!}
+          topicId={topicId}
           stage={data.stage}
           onDone={() => {
             setPasteOpen(false);
@@ -203,7 +227,7 @@ export default function StageViewerPage() {
       )}
       {showEditor ? (
         <ResponseEditor
-          topicId={topicId!}
+          topicId={topicId}
           stage={data.stage}
           content={data.response ?? ""}
           contentSha256={data.response_sha256 ?? ""}

@@ -1,6 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import {
+  Link,
+  MemoryRouter,
+  Route,
+  Routes,
+} from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import StageViewerPage from "./StageViewerPage";
 
@@ -61,6 +66,78 @@ beforeEach(() => {
 });
 
 describe("StageViewerPage", () => {
+  it("clears route-scoped content and rejects a mismatched stage response after navigation", async () => {
+    let resolveNext!: (value: Awaited<ReturnType<typeof getStageContent>>) => void;
+    vi.mocked(getStageContent).mockImplementation(async (topic, stage) => {
+      if (topic === "topic-a") {
+        return {
+          topic_id: topic,
+          stage,
+          prompt: "private prompt A",
+          response: "private response A",
+          approved: null,
+          response_sha256: "sha-a",
+          content_type: "text/markdown",
+        };
+      }
+      return new Promise((resolve) => {
+        resolveNext = resolve;
+      });
+    });
+    vi.mocked(getRunStatus).mockImplementation(async (topic) => ({
+      topic_id: topic,
+      finalized: false,
+      content_contract: { kind: "legacy_markdown" },
+      stage_provenance: [],
+      validations: {
+        draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+        final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+      },
+      stages: [],
+      next_action: { topic_id: topic, stage: null, action: "done", detail: "" },
+    }));
+    render(
+      <MemoryRouter initialEntries={["/topics/topic-a/stages/draft?tab=response"]}>
+        <Link to="/topics/topic-b/stages/audit">Go to topic B audit</Link>
+        <Routes>
+          <Route
+            path="/topics/:topicId/stages/:stage"
+            element={<StageViewerPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    expect(screen.getByLabelText("Edit response for draft")).toHaveValue(
+      "private response A",
+    );
+
+    await userEvent.click(screen.getByRole("link", { name: "Go to topic B audit" }));
+
+    expect(screen.queryByText("private prompt A")).not.toBeInTheDocument();
+    expect(screen.queryByText("private response A")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Edit response for draft")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveNext({
+        topic_id: "topic-a",
+        stage: "audit",
+        prompt: "wrong topic prompt",
+        response: "wrong topic response",
+        approved: null,
+        response_sha256: "sha-wrong",
+        content_type: "application/json",
+      });
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Stage response does not match this route.",
+    );
+    expect(screen.queryByText("wrong topic response")).not.toBeInTheDocument();
+  });
+
   it("shows the prompt by default and switches tabs", async () => {
     vi.mocked(getStageContent).mockResolvedValue({
       topic_id: "t",
