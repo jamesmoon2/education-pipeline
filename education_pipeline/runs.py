@@ -1290,9 +1290,10 @@ class RunStore:
         """Capture every personalization-cockpit state from one generation.
 
         The profile-snapshot lock is acquired before the topic lock and both
-        are held across all reads. Attachment takes only the former; audit and
-        validation writes take only the latter, so there is no opposing lock
-        order while neither generation can interleave this aggregate.
+        are held across all reads. Every transaction that needs both locks
+        follows that profile-then-manifest order; attachment takes only the
+        profile lock, and manifest-only writers never acquire the profile lock
+        from inside their critical section.
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
