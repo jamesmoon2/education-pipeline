@@ -1,0 +1,331 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" fill="#182033" role="img" aria-labelledby="pipeline-title pipeline-desc">
+  <title id="pipeline-title">From source record to defensible skill</title>
+  <desc id="pipeline-desc">An animated comparison between a one-shot AI prompt and the Education Pipeline's controlled workflow. Source filings pass through a preserved input snapshot, an approved production contract, staged drafting and review, deterministic validation, and a release package with a reproducible quality record.</desc>
+  <style>
+    :root {
+      color-scheme: light;
+      --carbon: #182033;
+      --paper: #f7f8fa;
+      --surface: #ffffff;
+      --subtle: #eef1f5;
+      --graphite: #5d6678;
+      --border: #cfd5df;
+      --border-strong: #9fa9ba;
+      --blueprint: #3157a4;
+      --blueprint-soft: #e7edfa;
+      --lichen: #47705d;
+      --lichen-soft: #e7f0eb;
+      --ochre: #a05410;
+      --ochre-soft: #f8ecdd;
+    }
+
+    text {
+      font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+      text-rendering: geometricPrecision;
+    }
+
+    .technical { font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace; }
+    .kicker { font-size: 13px; font-weight: 650; letter-spacing: .04em; fill: var(--graphite); }
+    .headline { font-size: 40px; font-weight: 680; letter-spacing: -.035em; }
+    .dek { font-size: 17px; fill: var(--graphite); }
+    .section-label { font-size: 12px; font-weight: 700; letter-spacing: .035em; fill: var(--graphite); }
+    .direct-title { font-size: 16px; font-weight: 650; }
+    .direct-copy { font-size: 13px; fill: var(--graphite); }
+    .stage-number { font-size: 11px; font-weight: 700; fill: var(--blueprint); }
+    .stage-title { font-size: 16px; font-weight: 680; letter-spacing: -.01em; }
+    .stage-copy { font-size: 12.5px; fill: var(--graphite); }
+    .evidence-title { font-size: 13px; font-weight: 680; }
+    .evidence-copy { font-size: 11.5px; fill: var(--graphite); }
+    .micro { font-size: 10.5px; fill: var(--graphite); }
+
+    .stage-card {
+      fill: var(--surface);
+      stroke: var(--border);
+      stroke-width: 1;
+      transition: opacity .2s ease;
+    }
+
+    .stage-node-ring { fill: var(--paper); stroke: var(--border-strong); stroke-width: 2; }
+    .stage-node-core { fill: var(--border-strong); }
+    .stage-group { animation: stageFocus 14s cubic-bezier(.2,.7,.2,1) infinite; animation-delay: var(--delay); }
+    .stage-group .stage-card { animation: cardFocus 14s cubic-bezier(.2,.7,.2,1) infinite; animation-delay: var(--delay); }
+    .stage-group .stage-node-ring { animation: ringFocus 14s ease infinite; animation-delay: var(--delay); }
+    .stage-group .stage-node-core { animation: coreFocus 14s ease infinite; animation-delay: var(--delay); }
+
+    .thread-base { stroke: var(--border-strong); stroke-width: 3; stroke-linecap: round; }
+    .thread-progress {
+      stroke: var(--lichen);
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-dasharray: 1084;
+      stroke-dashoffset: 1084;
+      animation: threadFill 14s cubic-bezier(.3,.1,.15,1) infinite;
+    }
+
+    .traveler {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: travel 14s cubic-bezier(.3,.1,.15,1) infinite;
+    }
+
+    .proof-mark { animation: proof 14s ease infinite; animation-delay: var(--delay); opacity: .24; }
+    .proof-line { animation: proofLine 14s ease infinite; animation-delay: var(--delay); }
+
+    @keyframes stageFocus {
+      0%, 18% { opacity: 1; }
+      24%, 100% { opacity: .76; }
+    }
+    @keyframes cardFocus {
+      0%, 18% { stroke: var(--blueprint); stroke-width: 1.5; }
+      24%, 100% { stroke: var(--border); stroke-width: 1; }
+    }
+    @keyframes ringFocus {
+      0%, 18% { fill: var(--blueprint-soft); stroke: var(--blueprint); }
+      24%, 100% { fill: var(--paper); stroke: var(--border-strong); }
+    }
+    @keyframes coreFocus {
+      0%, 18% { fill: var(--blueprint); }
+      24%, 100% { fill: var(--border-strong); }
+    }
+    @keyframes threadFill {
+      0%, 5% { stroke-dashoffset: 1084; }
+      20% { stroke-dashoffset: 820; }
+      39% { stroke-dashoffset: 555; }
+      58% { stroke-dashoffset: 285; }
+      78%, 92% { stroke-dashoffset: 0; }
+      100% { stroke-dashoffset: 1084; }
+    }
+    @keyframes travel {
+      0%, 5% { transform: translateX(0); opacity: 0; }
+      7% { opacity: 1; }
+      20% { transform: translateX(270px); }
+      39% { transform: translateX(540px); }
+      58% { transform: translateX(810px); }
+      78%, 92% { transform: translateX(1084px); opacity: 1; }
+      98%, 100% { transform: translateX(1084px); opacity: 0; }
+    }
+    @keyframes proof {
+      0%, 17% { opacity: .24; }
+      20%, 88% { opacity: 1; }
+      94%, 100% { opacity: .24; }
+    }
+    @keyframes proofLine {
+      0%, 17% { stroke: var(--border); }
+      20%, 88% { stroke: var(--lichen); }
+      94%, 100% { stroke: var(--border); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .stage-group,
+      .stage-group .stage-card,
+      .stage-group .stage-node-ring,
+      .stage-group .stage-node-core,
+      .thread-progress,
+      .traveler,
+      .proof-mark,
+      .proof-line { animation: none !important; }
+      .thread-progress { stroke-dashoffset: 0; }
+      .traveler { transform: translateX(1084px); }
+      .proof-mark { opacity: 1; }
+    }
+  </style>
+
+  <rect width="1440" height="900" fill="#f7f8fa"/>
+  <path d="M0 0h1440v8H0z" fill="#182033"/>
+
+  <!-- Header -->
+  <g transform="translate(72 57)">
+    <g aria-hidden="true" transform="translate(0 2)">
+      <path d="M12 2v30" stroke="#182033" stroke-width="2"/>
+      <circle cx="12" cy="5" r="4.5" fill="#182033"/>
+      <circle cx="12" cy="17" r="4.5" fill="#f7f8fa" stroke="#182033" stroke-width="2"/>
+      <circle cx="12" cy="29" r="4.5" fill="#f7f8fa" stroke="#182033" stroke-width="2"/>
+    </g>
+    <text x="31" y="18" font-size="16" font-weight="700" letter-spacing="-.01em">Education Pipeline</text>
+    <text class="kicker" x="0" y="69">CONTROLLED AI WORKFLOW</text>
+    <text class="headline" x="0" y="119">From source record to defensible skill.</text>
+    <text class="dek" x="0" y="153">Models supply judgment. The pipeline supplies the structure, evidence, and release discipline.</text>
+  </g>
+
+  <!-- Direct-prompt comparison -->
+  <g transform="translate(72 245)">
+    <text class="section-label" x="0" y="0">THE ONE-SHOT PATH</text>
+    <rect x="0" y="18" width="1296" height="84" rx="8" fill="#ffffff" stroke="#cfd5df"/>
+
+    <g transform="translate(24 39)" aria-hidden="true">
+      <path d="M0 1h25l9 9v35H0z" fill="#eef1f5" stroke="#9fa9ba"/>
+      <path d="M25 1v10h9" fill="none" stroke="#9fa9ba"/>
+      <path d="M7 23h20M7 30h17" stroke="#9fa9ba" stroke-width="1.5"/>
+    </g>
+    <text class="direct-title" x="76" y="53">Source filings</text>
+    <text class="direct-copy" x="76" y="75">Context assembled ad hoc</text>
+
+    <path d="M254 60h80" stroke="#9fa9ba" stroke-width="1.5" stroke-dasharray="4 5"/>
+    <path d="m327 55 8 5-8 5" fill="none" stroke="#9fa9ba" stroke-width="1.5"/>
+
+    <rect x="358" y="35" width="178" height="50" rx="6" fill="#182033"/>
+    <text x="447" y="56" fill="#eef1f6" text-anchor="middle" font-size="13" font-weight="650">Codex / Claude</text>
+    <text x="447" y="73" fill="#b4bdcc" text-anchor="middle" font-size="11">single conversation</text>
+
+    <path d="M560 60h80" stroke="#9fa9ba" stroke-width="1.5" stroke-dasharray="4 5"/>
+    <path d="m633 55 8 5-8 5" fill="none" stroke="#9fa9ba" stroke-width="1.5"/>
+
+    <g transform="translate(664 38)" aria-hidden="true">
+      <rect width="38" height="44" rx="3" fill="#eef1f5" stroke="#9fa9ba"/>
+      <path d="M8 13h22M8 20h22M8 27h15" stroke="#9fa9ba" stroke-width="1.5"/>
+    </g>
+    <text class="direct-title" x="720" y="53">Plausible output</text>
+    <text class="direct-copy" x="720" y="75">Quality depends on one prompt and one review</text>
+
+    <line x1="1012" y1="35" x2="1012" y2="85" stroke="#cfd5df"/>
+    <path d="m1042 47 8 14h-16z" fill="#f8ecdd" stroke="#a05410"/>
+    <path d="M1042 52v5m0 3v1" stroke="#a05410" stroke-width="1.5"/>
+    <text x="1065" y="53" font-size="13" font-weight="680" fill="#a05410">No enforced chain of custody</text>
+    <text class="direct-copy" x="1065" y="73">Structure, provenance, and release checks remain optional.</text>
+  </g>
+
+  <!-- Controlled pipeline -->
+  <g transform="translate(72 389)">
+    <text class="section-label" x="0" y="0">THE CONTROLLED PATH</text>
+    <text class="micro technical" x="1296" y="0" text-anchor="end">14-second walkthrough · loops automatically</text>
+
+    <line class="thread-base" x1="106" y1="74" x2="1190" y2="74"/>
+    <line class="thread-progress" x1="106" y1="74" x2="1190" y2="74"/>
+
+    <!-- Moving seal -->
+    <g transform="translate(106 74)" aria-hidden="true">
+      <g class="traveler">
+        <circle r="11" fill="#f7f8fa" stroke="#47705d" stroke-width="2"/>
+        <path d="m-5 0 3.5 3.5L5-4" fill="none" stroke="#47705d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+    </g>
+
+    <!-- Stage 1 -->
+    <g class="stage-group" style="--delay:0s" transform="translate(0 0)">
+      <circle class="stage-node-ring" cx="106" cy="74" r="12"/>
+      <circle class="stage-node-core" cx="106" cy="74" r="4"/>
+      <rect class="stage-card" x="0" y="103" width="212" height="151" rx="8"/>
+      <text class="stage-number technical" x="18" y="127">01</text>
+      <text class="stage-title" x="18" y="153">Preserve the record</text>
+      <text class="stage-copy" x="18" y="177">Files, instructions, and profile</text>
+      <text class="stage-copy" x="18" y="195">become a fixed run snapshot.</text>
+      <g transform="translate(18 213)">
+        <rect width="157" height="25" rx="4" fill="#e7edfa"/>
+        <path d="M10 7v11m4-8v8m4-5v5" stroke="#3157a4" stroke-width="1.5"/>
+        <text x="27" y="17" font-size="10.5" font-weight="650" fill="#3157a4">Immutable input baseline</text>
+      </g>
+    </g>
+
+    <!-- Stage 2 -->
+    <g class="stage-group" style="--delay:2.5s" transform="translate(270 0)">
+      <circle class="stage-node-ring" cx="106" cy="74" r="12"/>
+      <circle class="stage-node-core" cx="106" cy="74" r="4"/>
+      <rect class="stage-card" x="0" y="103" width="212" height="151" rx="8"/>
+      <text class="stage-number technical" x="18" y="127">02</text>
+      <text class="stage-title" x="18" y="153">Set the contract</text>
+      <text class="stage-copy" x="18" y="177">Requirements, organization, and</text>
+      <text class="stage-copy" x="18" y="195">constraints are made explicit.</text>
+      <g transform="translate(18 213)">
+        <rect width="148" height="25" rx="4" fill="#e7f0eb"/>
+        <path d="m10 12 3 3 6-7" fill="none" stroke="#47705d" stroke-width="1.7"/>
+        <text x="27" y="17" font-size="10.5" font-weight="650" fill="#47705d">Human-approved scope</text>
+      </g>
+    </g>
+
+    <!-- Stage 3 -->
+    <g class="stage-group" style="--delay:5s" transform="translate(540 0)">
+      <circle class="stage-node-ring" cx="106" cy="74" r="12"/>
+      <circle class="stage-node-core" cx="106" cy="74" r="4"/>
+      <rect class="stage-card" x="0" y="103" width="212" height="151" rx="8"/>
+      <text class="stage-number technical" x="18" y="127">03</text>
+      <text class="stage-title" x="18" y="153">Stage the work</text>
+      <text class="stage-copy technical" x="18" y="177">draft → critique → repair</text>
+      <text class="stage-copy" x="18" y="195">with the right model for each job.</text>
+      <g transform="translate(18 213)">
+        <rect width="165" height="25" rx="4" fill="#e7edfa"/>
+        <path d="M9 8h10M9 13h7M9 18h10" stroke="#3157a4" stroke-width="1.5"/>
+        <text x="27" y="17" font-size="10.5" font-weight="650" fill="#3157a4">Reviewable stage artifacts</text>
+      </g>
+    </g>
+
+    <!-- Stage 4 -->
+    <g class="stage-group" style="--delay:7.5s" transform="translate(810 0)">
+      <circle class="stage-node-ring" cx="106" cy="74" r="12"/>
+      <circle class="stage-node-core" cx="106" cy="74" r="4"/>
+      <rect class="stage-card" x="0" y="103" width="212" height="151" rx="8"/>
+      <text class="stage-number technical" x="18" y="127">04</text>
+      <text class="stage-title" x="18" y="153">Prove the output</text>
+      <text class="stage-copy" x="18" y="177">Structure, privacy, interaction,</text>
+      <text class="stage-copy" x="18" y="195">and runtime checks run on export.</text>
+      <g transform="translate(18 213)">
+        <rect width="162" height="25" rx="4" fill="#e7f0eb"/>
+        <path d="M9 8h10v10H9zM12 11l4 4m0-4-4 4" fill="none" stroke="#47705d" stroke-width="1.3"/>
+        <text x="27" y="17" font-size="10.5" font-weight="650" fill="#47705d">Deterministic release gate</text>
+      </g>
+    </g>
+
+    <!-- Stage 5 -->
+    <g class="stage-group" style="--delay:10s" transform="translate(1084 0)">
+      <circle class="stage-node-ring" cx="106" cy="74" r="12"/>
+      <circle class="stage-node-core" cx="106" cy="74" r="4"/>
+      <rect class="stage-card" x="0" y="103" width="212" height="151" rx="8"/>
+      <text class="stage-number technical" x="18" y="127">05</text>
+      <text class="stage-title" x="18" y="153">Release with evidence</text>
+      <text class="stage-copy" x="18" y="177">The skill and its quality record</text>
+      <text class="stage-copy" x="18" y="195">share exact content fingerprints.</text>
+      <g transform="translate(18 213)">
+        <rect width="168" height="25" rx="4" fill="#e7f0eb"/>
+        <path d="m10 12 3 3 6-7" fill="none" stroke="#47705d" stroke-width="1.7"/>
+        <text x="27" y="17" font-size="10.5" font-weight="650" fill="#47705d">Reproducible package</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Evidence ledger -->
+  <g transform="translate(72 706)">
+    <line x1="0" y1="0" x2="1296" y2="0" stroke="#cfd5df"/>
+    <text class="section-label" x="0" y="30">WHAT THE PIPELINE ADDS</text>
+
+    <g transform="translate(0 53)">
+      <g>
+        <circle class="proof-mark" style="--delay:0s" cx="8" cy="9" r="8" fill="#e7f0eb" stroke="#47705d"/>
+        <path class="proof-mark" style="--delay:0s" d="m4 9 3 3 5-6" fill="none" stroke="#47705d" stroke-width="1.5"/>
+        <text class="evidence-title" x="27" y="7">Consistent structure</text>
+        <text class="evidence-copy" x="27" y="25">Every run follows the same explicit contract.</text>
+      </g>
+      <line class="proof-line" style="--delay:2.5s" x1="258" y1="-2" x2="258" y2="31" stroke="#cfd5df"/>
+      <g transform="translate(284 0)">
+        <circle class="proof-mark" style="--delay:2.5s" cx="8" cy="9" r="8" fill="#e7f0eb" stroke="#47705d"/>
+        <path class="proof-mark" style="--delay:2.5s" d="m4 9 3 3 5-6" fill="none" stroke="#47705d" stroke-width="1.5"/>
+        <text class="evidence-title" x="27" y="7">Controlled change</text>
+        <text class="evidence-copy" x="27" y="25">Upstream edits invalidate stale approvals.</text>
+      </g>
+      <line class="proof-line" style="--delay:5s" x1="520" y1="-2" x2="520" y2="31" stroke="#cfd5df"/>
+      <g transform="translate(546 0)">
+        <circle class="proof-mark" style="--delay:5s" cx="8" cy="9" r="8" fill="#e7f0eb" stroke="#47705d"/>
+        <path class="proof-mark" style="--delay:5s" d="m4 9 3 3 5-6" fill="none" stroke="#47705d" stroke-width="1.5"/>
+        <text class="evidence-title" x="27" y="7">Provider independence</text>
+        <text class="evidence-copy" x="27" y="25">Codex, Claude, or manual—same safeguards.</text>
+      </g>
+      <line class="proof-line" style="--delay:7.5s" x1="806" y1="-2" x2="806" y2="31" stroke="#cfd5df"/>
+      <g transform="translate(832 0)">
+        <circle class="proof-mark" style="--delay:7.5s" cx="8" cy="9" r="8" fill="#e7f0eb" stroke="#47705d"/>
+        <path class="proof-mark" style="--delay:7.5s" d="m4 9 3 3 5-6" fill="none" stroke="#47705d" stroke-width="1.5"/>
+        <text class="evidence-title" x="27" y="7">Auditable exceptions</text>
+        <text class="evidence-copy" x="27" y="25">Waivers require reasons and match exact content.</text>
+      </g>
+      <line class="proof-line" style="--delay:10s" x1="1081" y1="-2" x2="1081" y2="31" stroke="#cfd5df"/>
+      <g transform="translate(1107 0)">
+        <circle class="proof-mark" style="--delay:10s" cx="8" cy="9" r="8" fill="#e7f0eb" stroke="#47705d"/>
+        <path class="proof-mark" style="--delay:10s" d="m4 9 3 3 5-6" fill="none" stroke="#47705d" stroke-width="1.5"/>
+        <text class="evidence-title" x="27" y="7">Verifiable release</text>
+        <text class="evidence-copy" x="27" y="25">The report fingerprints what ships.</text>
+      </g>
+    </g>
+  </g>
+
+  <g transform="translate(72 861)">
+    <text class="micro technical" x="0" y="0">LOCAL-FIRST · INSPECTABLE · PROVIDER-FLEXIBLE</text>
+    <text class="micro" x="1296" y="0" text-anchor="end">A maintained process around model judgment—not another black box.</text>
+  </g>
+</svg>

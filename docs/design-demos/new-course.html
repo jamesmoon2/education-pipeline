@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>New course — Education Pipeline demo</title>
+  <link rel="stylesheet" href="demo.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to course setup</a>
+  <div class="workbench-shell">
+    <aside class="app-rail" aria-label="Application navigation">
+      <a class="brand" href="index.html">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        Education Pipeline
+      </a>
+      <nav class="rail-nav">
+        <a href="workbench.html">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v13H4zM8 9h8M8 13h5"/></svg>
+          Courses
+        </a>
+        <a href="new-course.html" aria-current="page">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          New course
+        </a>
+        <a href="#">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3"/><path d="M5.5 19c.8-3 3-4.5 6.5-4.5s5.7 1.5 6.5 4.5"/></svg>
+          Profiles
+        </a>
+        <a href="#">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1a8 8 0 0 0-1.7-1L14.5 3h-5l-.3 3.1a8 8 0 0 0-1.7 1l-2.4-1-2 3.4L5.1 11A7 7 0 0 0 5 12c0 .3 0 .7.1 1l-2 1.5 2 3.4 2.4-1a8 8 0 0 0 1.7 1l.3 3.1h5l.3-3.1a8 8 0 0 0 1.7-1l2.4 1 2-3.4-2-1.5c.1-.3.1-.7.1-1Z"/></svg>
+          Settings
+        </a>
+      </nav>
+      <div class="rail-footer"><strong>Stored locally</strong>Workspace: ~/Education</div>
+    </aside>
+
+    <div class="workbench-body">
+      <div class="mobile-bar">
+        <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>Education Pipeline</a>
+        <button class="icon-button" type="button" data-theme-toggle aria-label="Toggle theme">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.5A8 8 0 0 1 8.5 4 8 8 0 1 0 20 15.5Z"/></svg>
+        </button>
+      </div>
+      <header class="workbench-topbar">
+        <nav class="breadcrumb" aria-label="Breadcrumb"><a href="index.html">Courses</a><span class="slash">/</span><strong>New course</strong></nav>
+        <div class="topbar-actions">
+          <button class="icon-button" type="button" data-theme-toggle aria-label="Toggle theme">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.5A8 8 0 0 1 8.5 4 8 8 0 1 0 20 15.5Z"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="setup-layout" id="main">
+        <section>
+          <div class="setup-progress" aria-label="Step 2 of 6">
+            <span class="done"></span><span class="current"></span><span></span><span></span><span></span><span></span>
+            <b>2 of 6</b>
+          </div>
+          <p class="eyebrow">Define the outcome</p>
+          <h1 class="page-title">What should you be able to do?</h1>
+          <p class="lede">A concrete outcome gives the course a boundary and lets the quality checks determine whether the lessons and practice actually support it.</p>
+
+          <form>
+            <div class="form-block">
+              <label for="outcome">Primary learning outcome</label>
+              <textarea class="text-area" id="outcome">Diagnose recurring operational problems by identifying feedback loops, delays, and leverage points—and explain the diagnosis to a cross-functional team.</textarea>
+              <p class="form-help">Start with a decision or action, not “understand.” You can add supporting outcomes later.</p>
+            </div>
+
+            <fieldset class="form-block" style="border: 0; padding: 0">
+              <legend style="margin-bottom: 10px; font-weight: 680">How deep should this course go?</legend>
+              <div class="choice-stack">
+                <label class="choice-row">
+                  <input type="radio" name="depth">
+                  <span><strong>Working fluency</strong><small>Recognize the main patterns and use them with guidance.</small></span>
+                </label>
+                <label class="choice-row">
+                  <input type="radio" name="depth" checked>
+                  <span><strong>Independent practice</strong><small>Apply the ideas to unfamiliar situations and defend your reasoning.</small></span>
+                </label>
+                <label class="choice-row">
+                  <input type="radio" name="depth">
+                  <span><strong>Advanced depth</strong><small>Compare formal models, critique assumptions, and build quantitative simulations.</small></span>
+                </label>
+              </div>
+            </fieldset>
+
+            <div class="form-block">
+              <label for="time">Available study time</label>
+              <select class="select-field" id="time">
+                <option>About 2 hours</option>
+                <option selected>4–6 hours over two weeks</option>
+                <option>8–12 hours over a month</option>
+              </select>
+            </div>
+
+            <div class="form-actions">
+              <a class="button button-quiet" href="index.html">Back to topic</a>
+              <a class="button button-primary" href="workbench.html">Continue to learner profile</a>
+            </div>
+          </form>
+        </section>
+
+        <aside class="course-summary" aria-label="Course summary">
+          <h2>Course so far</h2>
+          <div class="summary-row"><span>Topic</span><strong>Systems thinking for operational decisions</strong></div>
+          <div class="summary-row"><span>Outcome</span><strong>Diagnose recurring problems and explain the structure</strong></div>
+          <div class="summary-row"><span>Depth</span><strong>Independent practice</strong></div>
+          <div class="summary-row"><span>Study time</span><strong>4–6 hours</strong></div>
+          <p class="privacy-note"><strong>Local by default.</strong> Your answers stay in this workspace. Before export, you can inspect exactly what the guide includes.</p>
+        </aside>
+      </main>
+    </div>
+  </div>
+  <script src="demo.js"></script>
+</body>
+</html>
