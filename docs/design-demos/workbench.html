@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Course run — Education Pipeline demo</title>
+  <link rel="stylesheet" href="demo.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to course run</a>
+  <div class="workbench-shell">
+    <aside class="app-rail" aria-label="Application navigation">
+      <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>Education Pipeline</a>
+      <nav class="rail-nav">
+        <a href="workbench.html" aria-current="page">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v13H4zM8 9h8M8 13h5"/></svg>Courses
+        </a>
+        <a href="new-course.html"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>New course</a>
+        <a href="#"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3"/><path d="M5.5 19c.8-3 3-4.5 6.5-4.5s5.7 1.5 6.5 4.5"/></svg>Profiles</a>
+        <a href="#"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1a8 8 0 0 0-1.7-1L14.5 3h-5l-.3 3.1a8 8 0 0 0-1.7 1l-2.4-1-2 3.4L5.1 11A7 7 0 0 0 5 12c0 .3 0 .7.1 1l-2 1.5 2 3.4 2.4-1a8 8 0 0 0 1.7 1l.3 3.1h5l.3-3.1a8 8 0 0 0 1.7-1l2.4 1 2-3.4-2-1.5c.1-.3.1-.7.1-1Z"/></svg>Settings</a>
+      </nav>
+      <div class="rail-footer"><strong>Stored locally</strong>Last saved 2 minutes ago</div>
+    </aside>
+
+    <div class="workbench-body">
+      <div class="mobile-bar">
+        <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>Education Pipeline</a>
+        <button class="icon-button" type="button" data-theme-toggle aria-label="Toggle theme"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.5A8 8 0 0 1 8.5 4 8 8 0 1 0 20 15.5Z"/></svg></button>
+      </div>
+      <header class="workbench-topbar">
+        <nav class="breadcrumb" aria-label="Breadcrumb"><a href="index.html">Courses</a><span class="slash">/</span><span>Systems thinking</span><span class="slash">/</span><strong>Run</strong></nav>
+        <div class="topbar-actions">
+          <a class="button button-secondary button-small" href="guide.html">Preview guide</a>
+          <button class="icon-button" type="button" data-theme-toggle aria-label="Toggle theme"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.5A8 8 0 0 1 8.5 4 8 8 0 1 0 20 15.5Z"/></svg></button>
+        </div>
+      </header>
+
+      <div class="workbench-grid">
+        <main class="workbench-main" id="main">
+          <div class="page-heading-row">
+            <div>
+              <p class="eyebrow">Course run</p>
+              <h1 class="page-title">Systems thinking for operational decisions</h1>
+              <p class="lede">Build a practical course for diagnosing recurring problems, delayed effects, and high-leverage interventions.</p>
+            </div>
+            <span class="status status-attention">Outline needs review</span>
+          </div>
+
+          <ol class="stage-thread" aria-label="Course production stages">
+            <li class="thread-stage complete">
+              <span class="thread-node" aria-hidden="true"></span>
+              <div class="thread-card"><div class="thread-heading"><h2>Course brief</h2><span class="status status-complete">Approved</span></div></div>
+            </li>
+            <li class="thread-stage complete">
+              <span class="thread-node" aria-hidden="true"></span>
+              <div class="thread-card"><div class="thread-heading"><h2>Learning contract</h2><span class="status status-complete">Approved</span></div></div>
+            </li>
+            <li class="thread-stage current">
+              <span class="thread-node" aria-hidden="true"></span>
+              <div class="thread-card">
+                <div class="thread-heading"><h2>Course outline</h2><span class="status status-attention">Needs review</span></div>
+                <p class="stage-summary">The proposed sequence covers all four outcomes in five modules and includes two applied decisions.</p>
+                <div class="current-stage-body">
+                  <div><p><strong>Your decision:</strong> confirm that the sequence, scope, and practice plan match what you want to learn.</p></div>
+                  <button class="button button-primary" type="button" data-approve-outline>Approve outline</button>
+                </div>
+              </div>
+            </li>
+            <li class="thread-stage">
+              <span class="thread-node" aria-hidden="true"></span>
+              <div class="thread-card"><div class="thread-heading"><h2>Draft course</h2><span class="status status-waiting">Waiting</span></div></div>
+            </li>
+            <li class="thread-stage">
+              <span class="thread-node" aria-hidden="true"></span>
+              <div class="thread-card"><div class="thread-heading"><h2>Quality checks</h2><span class="status status-waiting">Waiting</span></div></div>
+            </li>
+            <li class="thread-stage">
+              <span class="thread-node" aria-hidden="true"></span>
+              <div class="thread-card"><div class="thread-heading"><h2>Repair and final review</h2><span class="status status-waiting">Waiting</span></div></div>
+            </li>
+            <li class="thread-stage">
+              <span class="thread-node" aria-hidden="true"></span>
+              <div class="thread-card"><div class="thread-heading"><h2>Export guide</h2><span class="status status-waiting">Waiting</span></div></div>
+            </li>
+          </ol>
+
+          <section class="outline-preview" aria-labelledby="outline-title">
+            <div class="outline-header"><h2 id="outline-title">Proposed outline</h2><a href="#">Open full artifact</a></div>
+            <article class="outline-module"><span class="module-number">01</span><div><h3>From events to structure</h3><p>Separate visible incidents from the patterns and relationships producing them.</p></div><span class="duration">45 min</span></article>
+            <article class="outline-module"><span class="module-number">02</span><div><h3>Feedback, delay, and accumulation</h3><p>Read reinforcing and balancing loops; identify when delayed evidence distorts decisions.</p></div><span class="duration">65 min</span></article>
+            <article class="outline-module"><span class="module-number">03</span><div><h3>Recurring operational archetypes</h3><p>Diagnose fixes that fail, shifting the burden, and limits to growth without forcing a pattern.</p></div><span class="duration">55 min</span></article>
+            <article class="outline-module"><span class="module-number">04</span><div><h3>Finding leverage without wishful thinking</h3><p>Compare intervention points and surface the assumptions behind each recommendation.</p></div><span class="duration">60 min</span></article>
+            <article class="outline-module"><span class="module-number">05</span><div><h3>Decision clinic</h3><p>Build and defend a causal diagnosis of a cross-functional service problem.</p></div><span class="duration">75 min</span></article>
+          </section>
+        </main>
+
+        <aside class="context-rail" aria-label="Course evidence and details">
+          <section class="context-section">
+            <h2 class="context-title">Review evidence</h2>
+            <ul class="evidence-list">
+              <li class="evidence-item"><span class="status status-complete">4 of 4 outcomes covered</span><p>Every outcome is introduced, practiced, and assessed.</p></li>
+              <li class="evidence-item"><span class="status status-attention">1 scope note</span><p>Quantitative simulation is intentionally deferred to an advanced follow-up.</p></li>
+              <li class="evidence-item"><span class="status status-complete">Profile fit checked</span><p>Examples use service operations and cross-functional decision work.</p></li>
+            </ul>
+          </section>
+          <section class="context-section">
+            <h2 class="context-title">Run details</h2>
+            <dl class="meta-list"><dt>Learner</dt><dd>Maya Chen</dd><dt>Blueprint</dt><dd>Concepts + cases</dd><dt>Study time</dt><dd>5 hours</dd><dt>Last activity</dt><dd>2 min ago</dd></dl>
+          </section>
+          <section class="context-section">
+            <h2 class="context-title">Provenance</h2>
+            <p class="context-copy">Outline produced with the recommended reasoning plan. Commands, prompts, and the complete response remain available in Details.</p>
+            <p class="technical" style="margin: 14px 0 0; color: var(--ep-color-text-muted)">outline · strong-reasoning<br>content 2d81…ac90</p>
+          </section>
+        </aside>
+      </div>
+    </div>
+  </div>
+  <script src="demo.js"></script>
+</body>
+</html>

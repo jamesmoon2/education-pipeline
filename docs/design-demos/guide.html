@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Feedback loops: Seeing structure beneath events — Guide demo</title>
+  <link rel="stylesheet" href="demo.css">
+</head>
+<body class="guide-body">
+  <a class="skip-link" href="#lesson">Skip to lesson</a>
+  <header class="guide-header">
+    <div class="guide-header-row">
+      <div>
+        <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>Education Pipeline</a>
+        <p class="eyebrow" style="margin-top: 31px">Systems thinking for operational decisions</p>
+        <h1 class="guide-course-title">Feedback loops: Seeing structure beneath events</h1>
+        <p class="guide-subtitle">Module 2 of 5 · About 22 minutes</p>
+      </div>
+      <div class="guide-progress-block" aria-label="Course progress">
+        <div class="guide-progress-label"><span data-progress-copy>42% complete</span><span>5 of 12 sections</span></div>
+        <div class="guide-progress-track"><span class="guide-progress-value"></span></div>
+      </div>
+    </div>
+  </header>
+
+  <div class="guide-shell">
+    <nav class="guide-nav" aria-label="Course map">
+      <h2>Course map</h2>
+      <button class="button button-secondary button-small" type="button" data-guide-menu aria-expanded="false" style="display: none">Show course map</button>
+      <ol class="guide-thread">
+        <li class="guide-thread-item complete"><a href="#">From events to structure</a><small>2 sections complete</small></li>
+        <li class="guide-thread-item current"><a href="#lesson" aria-current="page">Feedback loops</a><small>Current section</small></li>
+        <li class="guide-thread-item"><a href="#">Delay and accumulation</a><small>Next · 18 min</small></li>
+        <li class="guide-thread-item"><a href="#">Operational archetypes</a><small>3 sections</small></li>
+        <li class="guide-thread-item"><a href="#">Finding leverage</a><small>2 sections</small></li>
+        <li class="guide-thread-item"><a href="#">Decision clinic</a><small>Applied assessment</small></li>
+      </ol>
+    </nav>
+
+    <main class="guide-main" id="lesson">
+      <p class="module-context">Module 2 · Feedback, delay, and accumulation</p>
+      <h2 class="lesson-title">A result can become its own cause.</h2>
+      <p class="lesson-intro">Feedback is what makes a system behave over time. The difficult part is that the loop is often longer—and the evidence later—than the decision-maker can see from one incident.</p>
+
+      <section class="reading-section" aria-labelledby="loop-title">
+        <h2 id="loop-title">Read the loop, not just the arrow</h2>
+        <p>A causal arrow says that one thing influences another. A loop says that the influence eventually returns to alter its starting condition. That return path changes the question from “What caused this result?” to “What behavior does this structure keep producing?”</p>
+        <p>Reinforcing loops amplify movement: adoption creates advocacy, advocacy creates more adoption. Balancing loops resist movement: a service backlog triggers added capacity, which reduces the backlog. Neither is inherently good or bad. Their value depends on the outcome, the delay, and the boundary you chose.</p>
+
+        <figure class="relationship-map" aria-labelledby="map-caption">
+          <figcaption id="map-caption">A balancing loop with delayed evidence</figcaption>
+          <div class="map-flow" role="img" aria-label="A rising support backlog leads managers to add staff, which increases resolved cases after a delay and then reduces the backlog">
+            <div class="map-node"><span><strong>Backlog rises</strong>Customers wait longer</span></div>
+            <span class="map-arrow" aria-hidden="true">→</span>
+            <div class="map-node active"><span><strong>Add capacity</strong>Managers reassign staff</span></div>
+            <span class="map-arrow" aria-hidden="true">→</span>
+            <div class="map-node"><span><strong>Cases resolve</strong>Backlog falls after a delay</span></div>
+          </div>
+          <p class="form-help" style="margin-top: 16px">The return path is implied: fewer unresolved cases reduce the pressure to add capacity. The delay is where overcorrection enters.</p>
+        </figure>
+      </section>
+
+      <aside class="learning-object cross-training" aria-labelledby="cross-title">
+        <h3 id="cross-title">Cross-training: transfer your budgeting judgment</h3>
+        <div class="cross-grid">
+          <div><h4>What transfers</h4><p>A budget variance is a signal produced by a process over time. Your instinct to ask when a cost was committed, recognized, and reported is the same instinct needed to find a delay in a feedback loop.</p></div>
+          <div><h4>Where it breaks</h4><p>A causal map is not a ledger. Its arrows describe influence, not accounting identity. Do not treat an unlabeled loop as proof that the quantities balance.</p></div>
+        </div>
+      </aside>
+
+      <section class="reading-section" aria-labelledby="delay-title">
+        <h2 id="delay-title">Why delay changes the decision</h2>
+        <p>Suppose a manager adds capacity every week until the backlog falls. If staffing changes take three weeks to affect resolved cases, the manager will make the same correction three times before seeing the result of the first. When all three changes arrive, the team has excess capacity and reverses course. The system oscillates even though each local decision looked reasonable.</p>
+
+        <aside class="learning-object failure-mode" aria-labelledby="failure-title">
+          <h3 id="failure-title">When “find the loop” misleads</h3>
+          <p>People can draw a loop around almost any story. A useful loop names observable variables, marks the direction of influence, identifies a return path, and predicts a pattern you could disconfirm.</p>
+          <strong class="tripwire">Tripwire: if changing the diagram would not change any decision or prediction, it is probably narrative decoration.</strong>
+        </aside>
+      </section>
+
+      <section class="knowledge-check" aria-labelledby="check-title">
+        <h2 id="check-title">Check your diagnosis</h2>
+        <p>A team repeatedly raises its weekly service target. Performance improves briefly, then misses by an even larger amount. Which clue should you investigate first?</p>
+        <div class="answer-list">
+          <label class="answer-choice"><input type="radio" name="loop-check" value="motivation"><span>The team may not be sufficiently motivated by the target.</span></label>
+          <label class="answer-choice"><input type="radio" name="loop-check" value="delay"><span>The performance data may arrive after the corrective action has already been repeated.</span></label>
+          <label class="answer-choice"><input type="radio" name="loop-check" value="benchmark"><span>The original benchmark may have been too conservative.</span></label>
+        </div>
+        <div class="check-actions"><button class="button button-primary" type="button" data-check-answer>Check reasoning</button></div>
+        <div class="check-feedback" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="guide-mobile-tools" aria-labelledby="mobile-tools-title">
+        <h2 id="mobile-tools-title">Study tools</h2>
+        <a class="study-link" href="#">Open glossary <span aria-hidden="true">→</span></a>
+        <a class="study-link" href="#">Review this later <span aria-hidden="true">→</span></a>
+        <a class="study-link" href="#">View sources <span aria-hidden="true">→</span></a>
+      </section>
+
+      <footer class="section-footer">
+        <div><strong>Ready to continue?</strong><div class="section-footer-copy">Your progress is stored only in this browser.</div></div>
+        <button class="button button-primary" type="button" data-complete-section aria-pressed="false">Mark section complete</button>
+      </footer>
+    </main>
+
+    <aside class="study-rail" aria-label="Study tools">
+      <section class="study-section">
+        <h2>Outcomes in this section</h2>
+        <ul class="outcome-list"><li class="met">Distinguish an event from a feedback structure</li><li>Explain how delay creates overcorrection</li><li>Test whether a loop is decision-useful</li></ul>
+      </section>
+      <section class="study-section">
+        <h2>Study tools</h2>
+        <a class="study-link" href="#">Open glossary <span aria-hidden="true">→</span></a>
+        <a class="study-link" href="#">Review this later <span aria-hidden="true">→</span></a>
+        <a class="study-link" href="#">View 3 sources <span aria-hidden="true">→</span></a>
+      </section>
+      <section class="study-section">
+        <h2>Local and private</h2>
+        <p class="context-copy">Progress and notes stay in this browser. This guide has no analytics and makes no network requests.</p>
+        <button class="button button-secondary button-small" type="button" data-theme-toggle style="margin-top: 14px"><span data-theme-label>Use dark theme</span></button>
+      </section>
+    </aside>
+  </div>
+  <script src="demo.js"></script>
+  <script>
+    const mobileMenu = document.querySelector('[data-guide-menu]');
+    if (mobileMenu && window.matchMedia('(max-width: 820px)').matches) mobileMenu.style.display = 'inline-flex';
+  </script>
+</body>
+</html>
