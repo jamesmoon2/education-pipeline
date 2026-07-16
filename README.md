@@ -58,6 +58,36 @@ Commands: `topic`/`profile` (`import`, `list`, `attach`, `show`), and
 runs over the same API; the CLI remains the supported power-user surface and an
 end-to-end way to verify the engine.
 
+### Launching the cockpit (`education-pipeline ui`)
+
+One command starts everything:
+
+```bash
+education-pipeline ui                 # resolve workspace, start daemon, open browser
+education-pipeline ui --workspace ~/EducationPipeline
+education-pipeline ui --no-browser    # headless/remote: just print the URL
+```
+
+`ui` resolves the workspace from `--workspace`, then the last-used entry in
+the user-level registry (`$XDG_CONFIG_HOME/education-pipeline/workspaces.json`,
+default `~/.config/education-pipeline/workspaces.json` on every platform),
+and otherwise offers to create `~/EducationPipeline` on an interactive
+terminal. It validates/scaffolds the workspace, reuses a live daemon when one
+already serves it, always prints the cockpit URL, and opens your browser
+unless `--no-browser` is passed. Only `ui` consults the registry — every
+other command keeps its explicit `-C/--workspace` (default: current
+directory) behavior.
+
+Packaged releases bundle the built cockpit inside the wheel, so
+`pip install` + `education-pipeline ui` needs no Node toolchain. In a dev
+checkout, build the assets once with `npm run build` in `web/`.
+
+`education-pipeline workspace check [--fix]` validates a workspace's layout
+and setup (missing subdirectories, permissions, stale daemon records) and can
+apply the safe fixes automatically. Daemon errors carry stable codes from
+`education_pipeline/errors.py`; the CLI and cockpit map them to plain-language
+recovery steps.
+
 ### Configuring and starting runs from the cockpit
 
 The cockpit's **Settings** page (`/settings`) shows provider availability and
