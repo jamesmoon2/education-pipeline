@@ -587,6 +587,15 @@ map to user-directed recovery actions.
 
 ### P1 — Blueprint-driven pedagogy
 
+**Status: Design specified 2026-07-16** in
+[`docs/superpowers/specs/2026-07-16-blueprint-pedagogy-design.md`](superpowers/specs/2026-07-16-blueprint-pedagogy-design.md).
+Blueprint becomes user-selected run configuration backed by an
+application-owned six-blueprint registry; prompts and the QA rubric are
+parameterized per blueprint; deterministic time-budget and difficulty
+calibration checks warn without blocking; and section-level regeneration
+ships as a module-scoped variant of the repair stage with a deterministic
+splice. No guide-schema change.
+
 - Ship the initial blueprint set and selection guidance.
 - Add blueprint-specific prompt and QA requirements.
 - Add section-level regeneration so one weak lesson does not require rebuilding
