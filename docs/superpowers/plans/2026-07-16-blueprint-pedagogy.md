@@ -296,18 +296,18 @@ CLI and daemon read surfaces.
 `CalibrationContext`, with pinned constant tables, correct stage attribution,
 sanitized messages, and sidecar presence; absent context changes nothing.
 
-- [ ] RED: `tests/test_guide_validation.py` — trigger and non-trigger cases per
+- [x] RED: `tests/test_guide_validation.py` — trigger and non-trigger cases per
   rule (including boundary values: exactly +10 %, exactly 50 %, exactly 2×,
   exactly 45 min, exactly two-level difficulty distance), no-context and
   no-budget silence, `mixed`/unmappable never fire, constant-table pinning,
   message sanitization (no profile values, presence-only wording), stage
   attribution, waivability/blocking flags.
-- [ ] RED: `tests/test_runs.py` — gate-time context construction from
+- [x] RED: `tests/test_runs.py` — gate-time context construction from
   topic/manifest/profile snapshot; findings appear in draft/final reports and
   the sidecar; warning-only rules leave the gate open; missing topic file
   degrades silently.
-- [ ] GREEN: implement rules + context wiring.
-- [ ] Focused suites green; commit
+- [x] GREEN: implement rules + context wiring.
+- [x] Focused suites green; commit
   `feat(validation): add blueprint and calibration checks`.
 
 # Wave 3 — Module-scoped repair and deterministic splice
@@ -386,7 +386,7 @@ PRD entry moved to Delivered, post-milestone audit ledger.
 | Baseline | **recorded** | branch base `28bf6aa` + spec cherry-pick `6e291f5` | 973 (prior gate) | 210 (prior gate) | 53 (prior gate) | clean (prior gate) | Baseline counts are the personalization Wave 4 closeout gate recorded on the same code HEAD (`docs/superpowers/plans/2026-07-13-personalization.md`); the cherry-pick is docs-only. |
 | 0 — Registry + topic fields | **complete** | `2808a84` | 1009 | — | — | — | Registry/recommender/topic fields/manifest record frozen as planned. Recommender matches whole words only ("example" never triggers "exam"); scanned fields are title/brief/goals/key_questions/constraints. `create_run` records a blueprint only for interactive-guide manifests and degrades silently on a missing/malformed stored topic; unregistered explicit or topic-declared ids raise at run creation. Existing guide-run test helpers now produce runs recorded as recommended `conceptual-foundations`, matching their spec-contract echoes. |
 | 1 — Prompts + echo | **complete** | `f006afc` | 1031 | — | — | — | `blueprint=None` byte-identity pinned first (`_GUIDE_V1_NO_BLUEPRINT_PROMPT_TEXT_SHA256`, hashes captured from pre-change compilers). Blueprint Contract sits between the header priority block and `## Topic`; QA rubric instructs one finding per unmet item. Echo/superset live in `extract_spec_contract(expected_blueprint=...)` and fire at spec approval via `run_blueprint()`. Daemon advance body accepts optional `blueprint` (recorded source `user` before advancing); `GET /v1/blueprints?topic=` 404s for unknown topics. |
-| 2 — Calibration | pending | | | | | | |
+| 2 — Calibration | **complete** | `a6fcbea` | 1044 | — | — | — | Seven rules behind `CalibrationContext` (None → reports byte-identical). Constants pinned (200 WPM, per-block seconds, skill keywords, difficulty levels) with `estimated_reading_minutes()` public for tests. Boundaries: exceeded strictly above 1.1×, underrun strictly below 0.5×, implausible strictly beyond 2× either way, overrun strictly above 45 min, difficulty distance ≥ 2, `mixed`/ambiguous never fire. `RunStore._calibration_context` reads topic (silent degrade), manifest record, and profile snapshot; threaded through validate/gate/finalize/export-freshness so sidecar bytes stay reproducible. Note: the canonical fixture legitimately triggers `time.estimate_implausible` (30 declared vs ~9-minute model) — a nonblocking warning that no existing suite pinned against. |
 | 3 — Scoped repair | pending | | | | | | |
 | 4 — Cockpit | pending | | | | | | |
 | 5 — Acceptance + closeout | pending | | | | | | |
