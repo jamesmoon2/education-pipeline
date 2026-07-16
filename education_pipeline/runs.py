@@ -336,6 +336,18 @@ class RunStore:
                 self._manifest_locks[topic_id] = existing
             return existing
 
+    def _profile_generation_lock(self, topic_id: str) -> threading.Lock:
+        """Return the outer lock for profile-derived run transactions.
+
+        Persisted artifacts derived from an attached profile hold this lock
+        across their complete read/validate/write transaction. If the
+        manifest lock is also needed, this profile lock is always acquired
+        first. Attachment uses the same lock, so replacement can land only
+        before or after one persisted generation, never midway through it.
+        """
+
+        return ProfileStore(self.root).topic_profile_snapshot_lock(topic_id)
+
     @property
     def runs_dir(self) -> Path:
         return self.root / "runs"
@@ -1719,8 +1731,9 @@ class RunStore:
         """Export only the finalized canonical guide through the packaged runtime."""
 
         safe_id = _artifact_id(topic_id, "topic id")
-        with self._manifest_write_lock(safe_id):
-            return self._export_guide_v1_locked(safe_id, overwrite=overwrite)
+        with self._profile_generation_lock(safe_id):
+            with self._manifest_write_lock(safe_id):
+                return self._export_guide_v1_locked(safe_id, overwrite=overwrite)
 
     def _export_guide_v1_locked(self, topic_id: str, *, overwrite: bool) -> Path:
         """Build and persist one immutable export snapshot under the topic lock."""
@@ -2349,47 +2362,49 @@ class RunStore:
         effect and the gate outcome from a single invocation.
         """
 
-        artifacts = self._compute_phase_report(topic_id, phase)
-        self.create_run(artifacts.safe_id)
-        with self._manifest_write_lock(artifacts.safe_id):
-            _write_bytes_atomic(
-                artifacts.report_path,
-                canonical_report_bytes(artifacts.report),
-            )
-            if artifacts.trace_bytes is not None:
+        safe_id = _artifact_id(topic_id, "topic id")
+        with self._profile_generation_lock(safe_id):
+            artifacts = self._compute_phase_report(safe_id, phase)
+            self.create_run(artifacts.safe_id)
+            with self._manifest_write_lock(artifacts.safe_id):
                 _write_bytes_atomic(
-                    self.personalization_trace_path(artifacts.safe_id),
-                    artifacts.trace_bytes,
+                    artifacts.report_path,
+                    canonical_report_bytes(artifacts.report),
                 )
-            event_files = {
-                "report_file": artifacts.report_path,
-                "source_file": artifacts.source_path,
-            }
-            if artifacts.profile_snapshot_path is not None:
-                event_files["profile_snapshot_file"] = artifacts.profile_snapshot_path
-            if artifacts.trace_bytes is not None:
-                event_files["personalization_trace_file"] = self.personalization_trace_path(
-                    artifacts.safe_id
+                if artifacts.trace_bytes is not None:
+                    _write_bytes_atomic(
+                        self.personalization_trace_path(artifacts.safe_id),
+                        artifacts.trace_bytes,
+                    )
+                event_files = {
+                    "report_file": artifacts.report_path,
+                    "source_file": artifacts.source_path,
+                }
+                if artifacts.profile_snapshot_path is not None:
+                    event_files["profile_snapshot_file"] = artifacts.profile_snapshot_path
+                if artifacts.trace_bytes is not None:
+                    event_files["personalization_trace_file"] = (
+                        self.personalization_trace_path(artifacts.safe_id)
+                    )
+                event_extra: dict[str, object] = {
+                    "phase": phase,
+                    "source_file_sha256": artifacts.source_sha256,
+                }
+                if artifacts.profile_snapshot_sha256 is not None:
+                    event_extra["profile_snapshot_file_sha256"] = (
+                        artifacts.profile_snapshot_sha256
+                    )
+                self._append_event_locked(
+                    artifacts.safe_id,
+                    stage=artifacts.source_stage,
+                    action="validated",
+                    files=event_files,
+                    extra=event_extra,
                 )
-            event_extra: dict[str, object] = {
-                "phase": phase,
-                "source_file_sha256": artifacts.source_sha256,
-            }
-            if artifacts.profile_snapshot_sha256 is not None:
-                event_extra["profile_snapshot_file_sha256"] = (
-                    artifacts.profile_snapshot_sha256
-                )
-            self._append_event_locked(
-                artifacts.safe_id,
-                stage=artifacts.source_stage,
-                action="validated",
-                files=event_files,
-                extra=event_extra,
+            return apply_waivers(
+                artifacts.report,
+                self._load_waiver_set(artifacts.safe_id),
             )
-        return apply_waivers(
-            artifacts.report,
-            self._load_waiver_set(artifacts.safe_id),
-        )
 
     def write_spec_prompt(
         self,
@@ -2849,68 +2864,71 @@ class RunStore:
 
         safe_id = _artifact_id(topic_id, "topic id")
         paths = self.stage_paths(safe_id, "audit")
-        self.require_provider_ready_prompt(safe_id, "audit")
-        response_bytes = paths.response_path.read_bytes()
-        inputs = self._current_audit_inputs(safe_id)
-        try:
-            audit = parse_audit_response(
-                response_bytes,
-                guide=inputs.guide,
-                trace=inputs.trace_bytes,
-                private_values=profile_private_values(inputs.profile),
+        with self._profile_generation_lock(safe_id):
+            self.require_provider_ready_prompt(safe_id, "audit")
+            response_bytes = paths.response_path.read_bytes()
+            inputs = self._current_audit_inputs(safe_id)
+            try:
+                audit = parse_audit_response(
+                    response_bytes,
+                    guide=inputs.guide,
+                    trace=inputs.trace_bytes,
+                    private_values=profile_private_values(inputs.profile),
+                )
+            except AuditResponseError as exc:
+                raise ConfigError(str(exc)) from exc
+            projection_bytes = canonical_safe_audit_projection_bytes(
+                audit, guide=inputs.guide
             )
-        except AuditResponseError as exc:
-            raise ConfigError(str(exc)) from exc
-        projection_bytes = canonical_safe_audit_projection_bytes(
-            audit, guide=inputs.guide
-        )
-        projection_path = self.audit_projection_path(safe_id)
+            projection_path = self.audit_projection_path(safe_id)
 
-        with self._manifest_write_lock(safe_id):
-            current = self._current_audit_inputs(safe_id)
-            if self._audit_input_hashes(current) != self._audit_input_hashes(inputs):
-                raise StaleContentError(
-                    "personalization audit inputs changed during approval; retry"
-                )
-            if paths.response_path.read_bytes() != response_bytes:
-                raise StaleContentError(
-                    "the audit response changed on disk during approval; reload and retry"
-                )
-            if not self.audit_prompt_is_current(safe_id):
-                raise StaleContentError(
-                    "audit prompt is stale; rebuild it before approval"
-                )
-            if paths.approved_path.exists() and not overwrite:
-                raise ConfigError(f"refusing to overwrite existing file: {paths.approved_path}")
+            with self._manifest_write_lock(safe_id):
+                current = self._current_audit_inputs(safe_id)
+                if self._audit_input_hashes(current) != self._audit_input_hashes(inputs):
+                    raise StaleContentError(
+                        "personalization audit inputs changed during approval; retry"
+                    )
+                if paths.response_path.read_bytes() != response_bytes:
+                    raise StaleContentError(
+                        "the audit response changed on disk during approval; reload and retry"
+                    )
+                if not self.audit_prompt_is_current(safe_id):
+                    raise StaleContentError(
+                        "audit prompt is stale; rebuild it before approval"
+                    )
+                if paths.approved_path.exists() and not overwrite:
+                    raise ConfigError(
+                        f"refusing to overwrite existing file: {paths.approved_path}"
+                    )
 
-            bindings = {"guide_sha256": current.guide_sha256}
-            self._append_event_locked(
-                safe_id,
-                stage="audit",
-                action="audit_approval_started",
-                files={
-                    "prompt_file": paths.prompt_path,
-                    "response_file": paths.response_path,
-                    "profile_snapshot_file": current.profile_snapshot_path,
-                    "personalization_trace_file": current.trace_path,
-                },
-                extra=bindings,
-            )
-            _write_bytes_atomic(paths.approved_path, response_bytes)
-            _write_bytes_atomic(projection_path, projection_bytes)
-            self._append_event_locked(
-                safe_id,
-                stage="audit",
-                action="response_approved",
-                files={
-                    "prompt_file": paths.prompt_path,
-                    "approved_file": paths.approved_path,
-                    "profile_snapshot_file": current.profile_snapshot_path,
-                    "personalization_trace_file": current.trace_path,
-                    "audit_projection_file": projection_path,
-                },
-                extra=bindings,
-            )
+                bindings = {"guide_sha256": current.guide_sha256}
+                self._append_event_locked(
+                    safe_id,
+                    stage="audit",
+                    action="audit_approval_started",
+                    files={
+                        "prompt_file": paths.prompt_path,
+                        "response_file": paths.response_path,
+                        "profile_snapshot_file": current.profile_snapshot_path,
+                        "personalization_trace_file": current.trace_path,
+                    },
+                    extra=bindings,
+                )
+                _write_bytes_atomic(paths.approved_path, response_bytes)
+                _write_bytes_atomic(projection_path, projection_bytes)
+                self._append_event_locked(
+                    safe_id,
+                    stage="audit",
+                    action="response_approved",
+                    files={
+                        "prompt_file": paths.prompt_path,
+                        "approved_file": paths.approved_path,
+                        "profile_snapshot_file": current.profile_snapshot_path,
+                        "personalization_trace_file": current.trace_path,
+                        "audit_projection_file": projection_path,
+                    },
+                    extra=bindings,
+                )
         return paths.approved_path
 
     def _manifest_events(self, topic_id: str) -> list[dict]:

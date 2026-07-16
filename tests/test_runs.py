@@ -3028,6 +3028,139 @@ def test_audit_projection_replacement_waits_for_immutable_export_snapshot(
     assert store.export_state(tid) == "stale"
 
 
+def _profile_replacement_worker(
+    tmp_path: Path, topic_id: str, replacement_id: str
+) -> tuple[threading.Thread, threading.Event, threading.Event, list[BaseException]]:
+    profiles = ProfileStore(tmp_path)
+    replacement = PERSONALIZED_PROFILE_TOML.replace(
+        'id = "personalized-profile"', f'id = "{replacement_id}"'
+    ).replace(
+        "Synthetic private goal alpha", "Synthetic replacement goal alpha"
+    )
+    profiles.save_profile_toml(replacement_id, replacement)
+    attempting = threading.Event()
+    finished = threading.Event()
+    errors: list[BaseException] = []
+
+    def replace_profile() -> None:
+        try:
+            attempting.set()
+            profiles.attach_profile_to_topic(replacement_id, topic_id, overwrite=True)
+        except BaseException as exc:  # pragma: no cover - asserted by the caller
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    return threading.Thread(target=replace_profile), attempting, finished, errors
+
+
+def test_profile_reattachment_waits_for_export_profile_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tid = "systems-thinking"
+    store = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_finalize_ready(store, tid)
+    store.finalize_run(tid)
+    worker, attachment_attempting, attachment_finished, errors = (
+        _profile_replacement_worker(
+            tmp_path, tid, "export-replacement-profile"
+        )
+    )
+    real_projection = RunStore._safe_trace_projection_bytes
+
+    def pause_after_profile_capture(self, *args, **kwargs):
+        worker.start()
+        assert attachment_attempting.wait(1)
+        assert not attachment_finished.wait(0.2)
+        return real_projection(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        RunStore, "_safe_trace_projection_bytes", pause_after_profile_capture
+    )
+
+    assert store.export_run(tid).is_file()
+    monkeypatch.setattr(RunStore, "_safe_trace_projection_bytes", real_projection)
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert not errors
+    assert store._read_attached_profile_snapshot(tid)[0].id == (
+        "export-replacement-profile"
+    )
+    assert store.export_state(tid) == "stale"
+
+
+def test_profile_reattachment_waits_for_validation_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tid = "systems-thinking"
+    store = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_finalize_ready(store, tid)
+    worker, attachment_attempting, attachment_finished, errors = (
+        _profile_replacement_worker(
+            tmp_path, tid, "validation-replacement-profile"
+        )
+    )
+    real_compute = RunStore._compute_phase_report
+
+    def pause_after_profile_capture(self, *args, **kwargs):
+        artifacts = real_compute(self, *args, **kwargs)
+        worker.start()
+        assert attachment_attempting.wait(1)
+        assert not attachment_finished.wait(0.2)
+        return artifacts
+
+    monkeypatch.setattr(RunStore, "_compute_phase_report", pause_after_profile_capture)
+
+    store.validate_run(tid, "final")
+    monkeypatch.setattr(RunStore, "_compute_phase_report", real_compute)
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert not errors
+    assert store.report_state(tid, "final") == "stale"
+    assert store.personalization_trace_state(tid, phase="final") == "stale"
+
+
+def test_profile_reattachment_waits_for_audit_approval_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tid = "systems-thinking"
+    store = _create_profiled_guide_run(tmp_path)
+    _drive_profiled_guide_to_finalize_ready(store, tid)
+    store.prepare_personalization_audit(tid)
+    store.ingest_response(tid, "audit", _valid_personalization_audit_response(store, tid))
+    worker, attachment_attempting, attachment_finished, errors = (
+        _profile_replacement_worker(
+            tmp_path, tid, "audit-replacement-profile"
+        )
+    )
+    import education_pipeline.runs as runs_module
+
+    real_projection = runs_module.canonical_safe_audit_projection_bytes
+
+    def pause_after_profile_capture(*args, **kwargs):
+        worker.start()
+        assert attachment_attempting.wait(1)
+        assert not attachment_finished.wait(0.2)
+        return real_projection(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runs_module,
+        "canonical_safe_audit_projection_bytes",
+        pause_after_profile_capture,
+    )
+
+    assert store.approve_stage(tid, "audit").is_file()
+    monkeypatch.setattr(
+        runs_module,
+        "canonical_safe_audit_projection_bytes",
+        real_projection,
+    )
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert not errors
+    assert store.audit_state(tid) == "stale"
+
+
 def _relative_to_run(path: Path, store, topic_id: str) -> str:
     return path.relative_to(store.run_dir(topic_id)).as_posix()
 
