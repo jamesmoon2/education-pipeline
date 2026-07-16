@@ -18,6 +18,10 @@ from education_pipeline.guides.document import (
 )
 
 FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.guide.json"
+PERSONALIZED_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures/guides/feedback-loops.personalized.guide.json"
+)
 
 
 def guide():
@@ -124,6 +128,16 @@ def test_print_visible_content_survives_progressive_disclosure_markup() -> None:
     assert "Draft a private loop map" in document  # reflection placeholder attribute
 
 
+def test_markdown_headings_nest_one_level_under_the_section_heading() -> None:
+    """The shell owns <h1> (course title) and <h2> (section title). '##' is the
+    shallowest heading a learner-Markdown author may write (markdown.invalid_
+    heading_level bans '#'), so it must render as <h3> -- directly under the
+    section heading, skipping nothing."""
+    assert render_guide_markdown("## Foo", {"known"}) == "<h3>Foo</h3>"
+    assert render_guide_markdown("### Bar", {"known"}) == "<h4>Bar</h4>"
+    assert render_guide_markdown("###### Deep", {"known"}) == "<h6>Deep</h6>"
+
+
 def test_unknown_schema_runtime_and_mode_fail_closed() -> None:
     value = guide()
     with pytest.raises(GuideDocumentError, match="schema"):
@@ -132,3 +146,21 @@ def test_unknown_schema_runtime_and_mode_fail_closed() -> None:
         assemble_guide_document(value, RuntimeAssets("x", "y", "2.0"))
     with pytest.raises(GuideDocumentError, match="mode"):
         assemble_guide_document(value, mode="other")
+
+
+def test_document_accepts_1_1_but_embeds_only_the_public_projection() -> None:
+    source = normalize_guide(parse_guide(PERSONALIZED_FIXTURE.read_bytes()))
+
+    document = assemble_guide_document(source)
+    payload_text = re.search(
+        r'<script id="guide-data" type="application/json">(.*?)</script>', document
+    ).group(1)
+    payload = json.loads(payload_text)
+
+    assert source.course.goal_exclusions[0].reason == "Synthetic deferred objective."
+    assert source.outcomes[0].serves_goals == ("goal-001",)
+    assert 'data-guide-schema="1.1"' in document
+    assert payload["schema_version"] == "1.1"
+    assert "serves_goals" not in payload_text
+    assert "goal_exclusions" not in payload_text
+    assert "Synthetic deferred objective." not in document

@@ -14,6 +14,7 @@ from html.parser import HTMLParser
 from ..guide_runtime import RUNTIME_VERSION, RuntimeAssets, load_runtime_assets
 from .document import GuideDocumentError, assemble_guide_document
 from .model import Guide
+from .projection import public_guide_projection
 from .validation import ValidationContext
 
 _STRUCTURAL_MARKERS = ("data-guide-shell", 'id="guide-data"', "skip-link")
@@ -38,7 +39,7 @@ class _Analyzer(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.controls_ok = True
         self.heading_ok = True
-        self._deepest_heading = 0
+        self._previous_heading = 0
         # {"has_text": bool, "wraps_unnamed": bool} per open <label>
         self._open_labels: list[dict[str, bool]] = []
         self._open_buttons: list[dict[str, bool]] = []  # {"named": bool}
@@ -49,9 +50,15 @@ class _Analyzer(HTMLParser):
             self._open_labels.append({"has_text": False, "wraps_unnamed": False})
         if tag in _HEADINGS:
             level = _HEADINGS[tag]
-            if self._deepest_heading and level > self._deepest_heading + 1:
+            # Skip detection is relative to the *previous* heading, not the
+            # deepest seen so far: after h1,h2,h3, a later h2 -> h4 skips h3
+            # even though an h3 appeared earlier in the document. A document
+            # whose first heading is deeper than h1 has skipped the levels
+            # above it. Going shallower is never a skip.
+            allowed = self._previous_heading + 1 if self._previous_heading else 1
+            if level > allowed:
                 self.heading_ok = False
-            self._deepest_heading = max(self._deepest_heading, level)
+            self._previous_heading = level
         if tag == "button":
             self._open_buttons.append({"named": bool((attributes.get("aria-label") or "").strip())})
         if tag in _LABELABLE:
@@ -94,8 +101,13 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def compute_static_checks(guide: Guide, assets: RuntimeAssets | None = None) -> StaticCheckResult:
-    packaged = load_runtime_assets()
+def compute_static_checks(
+    guide: Guide,
+    assets: RuntimeAssets | None = None,
+    *,
+    packaged_assets: RuntimeAssets | None = None,
+) -> StaticCheckResult:
+    packaged = packaged_assets if packaged_assets is not None else load_runtime_assets()
     if assets is None:
         assets = packaged
     assets_match = (
@@ -103,8 +115,9 @@ def compute_static_checks(guide: Guide, assets: RuntimeAssets | None = None) -> 
         and _sha(assets.css) == _sha(packaged.css)
         and _sha(assets.javascript) == _sha(packaged.javascript)
     )
+    projected = public_guide_projection(guide)
     try:
-        document = assemble_guide_document(guide, assets=assets, mode="export")
+        document = assemble_guide_document(projected, assets=assets, mode="export")
     except GuideDocumentError:
         # assets_match is input-derived, so it stays computed even when
         # assembly fails; the document-derived checks (controls, headings)

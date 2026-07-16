@@ -1,8 +1,13 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiRequestError, getRunStatus, postAdvance } from "../api/client";
+import { ApiRequestError, getPersonalization, getRunStatus, postAdvance } from "../api/client";
 import type { RunStatus, StageProvenance } from "../api/types";
+import AuditControls from "../components/AuditControls";
+import CanonicalGuidePreview, {
+  type CanonicalGuidePreviewHandle,
+} from "../components/CanonicalGuidePreview";
 import JobsPanel from "../components/JobsPanel";
+import PersonalizationPanel from "../components/PersonalizationPanel";
 import PrimaryAction from "../components/PrimaryAction";
 import RunPlanPanel from "../components/RunPlanPanel";
 import ValidationFindingsPanel from "../components/ValidationFindingsPanel";
@@ -59,10 +64,120 @@ function combinedFindingsByStage(status: RunStatus): Record<string, number> {
   return merged;
 }
 
-export default function RunBoardPage() {
-  const { topicId } = useParams<{ topicId: string }>();
-  const fetchStatus = useCallback(() => getRunStatus(topicId!), [topicId]);
-  const { data: status, error, refresh } = usePolling(fetchStatus, 5_000);
+function InteractiveGuidePanels({
+  status,
+  mutationGeneration,
+  onStatusChanged,
+}: {
+  status: RunStatus;
+  mutationGeneration: number;
+  onStatusChanged: () => void;
+}) {
+  const fetchPersonalization = useCallback(
+    () => getPersonalization(status.topic_id),
+    [status.topic_id],
+  );
+  const {
+    data: personalization,
+    error,
+    refresh: refreshPersonalization,
+  } = usePolling(fetchPersonalization, 5_000);
+  const previewRef = useRef<CanonicalGuidePreviewHandle>(null);
+  const observedMutationGeneration = useRef(mutationGeneration);
+  const [previewGeneration, setPreviewGeneration] = useState(0);
+  const refreshWorkspace = useCallback(() => {
+    onStatusChanged();
+    refreshPersonalization();
+    setPreviewGeneration((generation) => generation + 1);
+  }, [onStatusChanged, refreshPersonalization]);
+
+  useEffect(() => {
+    if (observedMutationGeneration.current === mutationGeneration) return;
+    observedMutationGeneration.current = mutationGeneration;
+    refreshPersonalization();
+    setPreviewGeneration((generation) => generation + 1);
+  }, [mutationGeneration, refreshPersonalization]);
+
+  const mismatchedTopic = personalization && personalization.topic_id !== status.topic_id;
+  const currentPersonalization = !error && !mismatchedTopic ? personalization : null;
+
+  return (
+    <>
+      <section className="run-personalization-workspace" aria-label="Personalization workspace">
+        <div className="run-personalization-sidebar">
+          {error ? (
+            <p className="error" role="alert">
+              Failed to load personalization: {error.message}
+            </p>
+          ) : mismatchedTopic ? (
+            <p className="error" role="alert">
+              Personalization response does not match this run.
+            </p>
+          ) : currentPersonalization ? (
+            <>
+              <PersonalizationPanel
+                personalization={currentPersonalization}
+                onEvidence={(evidence) => previewRef.current?.revealEvidence(evidence)}
+              />
+              <AuditControls
+                topicId={status.topic_id}
+                audit={currentPersonalization.audit}
+                exportState={currentPersonalization.export.state}
+                onChanged={refreshWorkspace}
+              />
+            </>
+          ) : (
+            <p role="status" aria-label="Loading personalization">
+              Loading personalization…
+            </p>
+          )}
+        </div>
+        <CanonicalGuidePreview
+          key={previewGeneration}
+          ref={previewRef}
+          topicId={status.topic_id}
+        />
+      </section>
+      <section aria-labelledby="validation-heading">
+        <h3 id="validation-heading">Validation milestones</h3>
+        <table>
+          <thead><tr><th>Phase</th><th>State</th><th>Blocking</th><th>Errors</th><th>Warnings</th></tr></thead>
+          <tbody>
+            {(["draft", "final"] as const).map((phase) => {
+              const validation = status.validations[phase];
+              return <tr key={phase}>
+                <td>{phase}</td><td>{validation.state}</td><td>{validation.blocking}</td>
+                <td>{validation.errors}</td><td>{validation.warnings}</td>
+              </tr>;
+            })}
+          </tbody>
+        </table>
+        {(["draft", "final"] as const).map((phase) => (
+          <ValidationFindingsPanel
+            key={phase}
+            topicId={status.topic_id}
+            phase={phase}
+            state={status.validations[phase].state}
+            effectiveBlocking={status.validations[phase].effective_blocking}
+            supplementalFindings={
+              phase === "final" ? currentPersonalization?.audit.findings : []
+            }
+            onChanged={refreshWorkspace}
+          />
+        ))}
+      </section>
+    </>
+  );
+}
+
+function RunBoardForTopic({ topicId }: { topicId: string }) {
+  const fetchStatus = useCallback(() => getRunStatus(topicId), [topicId]);
+  const { data: status, error, refresh: refreshStatus } = usePolling(fetchStatus, 5_000);
+  const [contentGeneration, setContentGeneration] = useState(0);
+  const refresh = useCallback(() => {
+    refreshStatus();
+    setContentGeneration((generation) => generation + 1);
+  }, [refreshStatus]);
   const start = useAction(refresh);
 
   if (error instanceof ApiRequestError && error.status === 404) {
@@ -74,7 +189,7 @@ export default function RunBoardPage() {
         <button
           disabled={start.busy}
           onClick={() =>
-            start.run(() => postAdvance(topicId!), { successMessage: "Run started." })
+            start.run(() => postAdvance(topicId), { successMessage: "Run started." })
           }
         >
           Advance
@@ -87,6 +202,9 @@ export default function RunBoardPage() {
   }
   if (error) return <p className="error">Failed to load run: {error.message}</p>;
   if (!status) return <p>Loading…</p>;
+  if (status.topic_id !== topicId) {
+    return <p className="error" role="alert">Run response does not match this topic.</p>;
+  }
 
   const provenanceByStage = latestProvenanceByStage(status.stage_provenance);
   const findingsByStage = combinedFindingsByStage(status);
@@ -99,31 +217,11 @@ export default function RunBoardPage() {
       </p>
       <PrimaryAction status={status} onChanged={refresh} />
       {status.content_contract.kind === "interactive_guide" && (
-        <section aria-labelledby="validation-heading">
-          <h3 id="validation-heading">Validation milestones</h3>
-          <table>
-            <thead><tr><th>Phase</th><th>State</th><th>Blocking</th><th>Errors</th><th>Warnings</th></tr></thead>
-            <tbody>
-              {(["draft", "final"] as const).map((phase) => {
-                const validation = status.validations[phase];
-                return <tr key={phase}>
-                  <td>{phase}</td><td>{validation.state}</td><td>{validation.blocking}</td>
-                  <td>{validation.errors}</td><td>{validation.warnings}</td>
-                </tr>;
-              })}
-            </tbody>
-          </table>
-          {(["draft", "final"] as const).map((phase) => (
-            <ValidationFindingsPanel
-              key={phase}
-              topicId={status.topic_id}
-              phase={phase}
-              state={status.validations[phase].state}
-              effectiveBlocking={status.validations[phase].effective_blocking}
-              onChanged={refresh}
-            />
-          ))}
-        </section>
+        <InteractiveGuidePanels
+          status={status}
+          mutationGeneration={contentGeneration}
+          onStatusChanged={refreshStatus}
+        />
       )}
       <table>
         <thead>
@@ -149,7 +247,6 @@ export default function RunBoardPage() {
                   {findingsCount > 0 && (
                     <span
                       className="findings-badge"
-                      role="status"
                       aria-label={`${findingsCount} ${findingsCount === 1 ? "finding" : "findings"}`}
                     >
                       {findingsCount}
@@ -169,4 +266,10 @@ export default function RunBoardPage() {
       <JobsPanel topicId={status.topic_id} />
     </div>
   );
+}
+
+export default function RunBoardPage() {
+  const { topicId } = useParams<{ topicId: string }>();
+  if (!topicId) return <p className="error">Topic id is required.</p>;
+  return <RunBoardForTopic key={topicId} topicId={topicId} />;
 }

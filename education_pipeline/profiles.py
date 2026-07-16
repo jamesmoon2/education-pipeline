@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -39,6 +40,10 @@ _TOP_LEVEL_KEYS = {
     "privacy",
     "metadata",
 }
+
+
+class _FrozenMetadataList(tuple):
+    """Internal marker distinguishing validated arrays from caller tuples."""
 
 
 @dataclass(frozen=True)
@@ -181,13 +186,14 @@ def parse_learner_profile(data: Mapping[str, Any]) -> LearnerProfile:
     if not isinstance(data, Mapping):
         raise ConfigError("learner profile must be a table")
 
+    _reject_non_string_keys(data, "learner profile")
     unknown = sorted(set(data) - _TOP_LEVEL_KEYS)
     if unknown:
         unknown_fields = ", ".join(unknown)
         raise ConfigError(f"unknown learner profile field(s): {unknown_fields}")
 
     schema_version = data.get("schema_version", PROFILE_SCHEMA_VERSION)
-    if not isinstance(schema_version, int) or isinstance(schema_version, bool):
+    if type(schema_version) is not int:
         raise ConfigError("learner profile field 'schema_version' must be an integer")
     if schema_version != PROFILE_SCHEMA_VERSION:
         raise ConfigError(
@@ -206,6 +212,7 @@ def parse_learner_profile(data: Mapping[str, Any]) -> LearnerProfile:
     metadata = data.get("metadata", {})
     if not isinstance(metadata, Mapping):
         raise ConfigError("learner profile field 'metadata' must be a table")
+    validated_metadata = _validate_metadata(metadata, "metadata.*")
 
     return LearnerProfile(
         schema_version=schema_version,
@@ -239,7 +246,7 @@ def parse_learner_profile(data: Mapping[str, Any]) -> LearnerProfile:
         learning_preferences=learning_preferences,
         localization=localization,
         privacy=privacy,
-        metadata=MappingProxyType(dict(metadata)),
+        metadata=validated_metadata,
     )
 
 
@@ -404,17 +411,25 @@ def _bool_label(value: bool) -> str:
 
 
 def _reject_unknown(data: Mapping[str, Any], allowed: set[str], context: str) -> None:
+    _reject_non_string_keys(data, context)
     unknown = sorted(set(data) - allowed)
     if unknown:
         unknown_fields = ", ".join(unknown)
         raise ConfigError(f"unknown {context} field(s): {unknown_fields}")
 
 
+def _reject_non_string_keys(data: Mapping[Any, Any], context: str) -> None:
+    if any(type(key) is not str for key in data):
+        raise ConfigError(f"{context} must use string keys")
+    for key in data:
+        _validate_unicode_scalar(key, f"{context}.*")
+
+
 def _required_string(data: Mapping[str, Any], key: str, context: str) -> str:
     value = data.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{context} must define non-empty string {key!r}")
-    return value
+    return _validate_unicode_scalar(value, f"{context}.{key}")
 
 
 def _optional_string(data: Mapping[str, Any], key: str, context: str) -> str | None:
@@ -425,7 +440,7 @@ def _optional_string(data: Mapping[str, Any], key: str, context: str) -> str | N
         return None
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{context} field {key!r} must be a non-empty string when set")
-    return value
+    return _validate_unicode_scalar(value, f"{context}.{key}")
 
 
 def _optional_bool(data: Mapping[str, Any], key: str, default: bool, context: str) -> bool:
@@ -451,5 +466,47 @@ def _string_tuple(data: Mapping[str, Any], key: str, context: str) -> tuple[str,
             raise ConfigError(
                 f"{context} field {key!r} item #{index} must be a non-empty string"
             )
-        strings.append(item)
+        strings.append(_validate_unicode_scalar(item, f"{context}.{key}[{index - 1}]"))
     return tuple(strings)
+
+
+def _validate_metadata(value: Mapping[str, Any], path: str) -> Mapping[str, Any]:
+    validated: dict[str, Any] = {}
+    for key, child in value.items():
+        if type(key) is not str:
+            raise ConfigError(f"learner profile field '{path}' must use string keys")
+        _validate_unicode_scalar(key, path)
+        validated[key] = _validate_metadata_value(child, path)
+    return MappingProxyType(validated)
+
+
+def _validate_metadata_value(value: Any, path: str) -> Any:
+    if type(value) is str:
+        return _validate_unicode_scalar(value, path)
+    if type(value) is bool:
+        return value
+    if type(value) is int:
+        if not -(2**63) <= value < 2**63:
+            raise ConfigError(f"learner profile field '{path}' integer is outside TOML range")
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ConfigError(f"learner profile field '{path}' must be a finite float")
+        return value
+    if type(value) is list or isinstance(value, _FrozenMetadataList):
+        return _FrozenMetadataList(
+            _validate_metadata_value(child, f"{path}[{index}]")
+            for index, child in enumerate(value)
+        )
+    if isinstance(value, Mapping):
+        return _validate_metadata(value, path)
+    raise ConfigError(
+        f"learner profile field '{path}' must be a string, Boolean, integer, "
+        "finite float, list, or string-keyed table"
+    )
+
+
+def _validate_unicode_scalar(value: str, path: str) -> str:
+    if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+        raise ConfigError(f"learner profile field '{path}' must contain Unicode scalar values")
+    return value

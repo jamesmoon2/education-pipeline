@@ -9,6 +9,8 @@ from typing import Any
 
 from .model import Guide
 
+_EMPTY_OMITTED_FIELDS = {"serves_goals", "goal_exclusions"}
+
 
 def guide_to_dict(value: Any) -> Any:
     if is_dataclass(value):
@@ -16,6 +18,10 @@ def guide_to_dict(value: Any) -> Any:
             field.name: guide_to_dict(getattr(value, field.name))
             for field in fields(value)
             if getattr(value, field.name) is not None
+            and not (
+                field.name in _EMPTY_OMITTED_FIELDS
+                and not getattr(value, field.name)
+            )
         }
     if isinstance(value, tuple):
         return [guide_to_dict(item) for item in value]

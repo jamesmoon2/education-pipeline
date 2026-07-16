@@ -7,6 +7,8 @@
 
   const qs = (sel, root) => (root || document).querySelector(sel);
   const qsa = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+  const PREVIEW_EVIDENCE_MESSAGE_TYPE = "education-pipeline:preview-evidence";
+  const GUIDE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 
   function isPlainObject(v) {
     return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -281,7 +283,14 @@
       State.setLastSection(id);
       updateNavLinks();
       if (location.hash.slice(1) !== id) {
-        history.replaceState(null, "", `#${id}`);
+        try {
+          history.replaceState(null, "", `#${id}`);
+        } catch (_error) {
+          // Sandboxed srcDoc previews have an opaque origin, so Chromium may
+          // reject history mutation. Navigation state remains in-memory and
+          // the rest of runtime boot (including the evidence bridge) must
+          // still complete.
+        }
       }
       if (opts.focus) {
         const heading = qs("h2", sections[idx].el);
@@ -333,6 +342,17 @@
           el.focus({ preventScroll: true });
         });
       }
+    }
+    function revealEvidenceTarget(target) {
+      const owning = target.matches('section[data-role="guide-section"]')
+        ? target
+        : target.closest('section[data-role="guide-section"]');
+      if (owning) show(owning.id, { focus: false });
+      requestAnimationFrame(() => {
+        target.scrollIntoView({ block: "start" });
+        if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+        target.focus({ preventScroll: true });
+      });
     }
     function handleUnknownFragment(id) {
       show(first());
@@ -393,8 +413,45 @@
       if (restored && indexOf(restored) > -1) startId = restored;
       show(startId);
     }
-    return { boot, toggleDrawer };
+    return { boot, toggleDrawer, revealEvidenceTarget };
   })();
+
+  // ---------------------------------------------------------------------
+  // Sandboxed cockpit preview evidence bridge
+  // ---------------------------------------------------------------------
+
+  function installPreviewEvidenceBridge(guide) {
+    if (document.documentElement.dataset.guideMode !== "preview") return;
+    const outcomeIds = new Set(
+      Array.isArray(guide.outcomes)
+        ? guide.outcomes
+            .filter((outcome) => isPlainObject(outcome) && typeof outcome.id === "string")
+            .map((outcome) => outcome.id)
+        : [],
+    );
+
+    window.addEventListener("message", (event) => {
+      if (event.source !== window.parent || !isPlainObject(event.data)) return;
+      const keys = Object.keys(event.data).sort();
+      if (keys.length !== 3 || keys.join(",") !== "id,kind,type") return;
+      if (event.data.type !== PREVIEW_EVIDENCE_MESSAGE_TYPE) return;
+      if (event.data.kind !== "module" && event.data.kind !== "outcome") return;
+      if (typeof event.data.id !== "string" || !GUIDE_ID_PATTERN.test(event.data.id)) return;
+
+      let target = null;
+      if (event.data.kind === "module") {
+        target = qsa('section[data-role="guide-section"]').find(
+          (section) => section.dataset.moduleId === event.data.id,
+        ) || null;
+      } else {
+        target = outcomeIds.has(event.data.id)
+          ? document.getElementById(event.data.id)
+          : null;
+      }
+      if (!target) return;
+      Nav.revealEvidenceTarget(target);
+    });
+  }
 
   // ---------------------------------------------------------------------
   // Defensive per-block enhancement
@@ -770,7 +827,12 @@
     try {
       const rawText = dataEl.textContent;
       const guide = JSON.parse(rawText);
-      if (guide.schema_version !== "1.0" || expectedSchema !== "1.0" || expectedRuntime !== "1.0") {
+      const supportedSchemas = new Set(["1.0", "1.1"]);
+      if (
+        !supportedSchemas.has(guide.schema_version) ||
+        guide.schema_version !== expectedSchema ||
+        expectedRuntime !== "1.0"
+      ) {
         throw new Error("unsupported guide schema/runtime version");
       }
       shell.hidden = false;
@@ -785,6 +847,7 @@
       enhanceCourseControls();
       enhanceBlocks();
       Nav.boot();
+      installPreviewEvidenceBridge(guide);
       Progress.update();
     } catch (error) {
       shell.hidden = true;

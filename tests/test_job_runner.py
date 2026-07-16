@@ -86,6 +86,154 @@ def test_execute_success_ingests_response(tmp_path, monkeypatch):
     assert "recorded_at" in entry
 
 
+@pytest.mark.parametrize("prompt_state", ["missing", "stale"])
+def test_execute_audit_stage_refuses_unready_prompt_before_provider_build(
+    tmp_path, monkeypatch, prompt_state
+):
+    monkeypatch.setenv("FAKE_STDOUT", '{"findings": []}\n')
+    provider = FakeRunner()
+    build_calls = []
+    original_build = provider.build_invocation
+
+    def tracking_build(model, plan, prompt_path):
+        build_calls.append(prompt_path)
+        return original_build(model, plan, prompt_path)
+
+    monkeypatch.setattr(provider, "build_invocation", tracking_build)
+    register_runner(provider)
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    prompt = runs.stage_paths("t", "audit").prompt_path
+    if prompt_state == "stale":
+        prompt.parent.mkdir(parents=True, exist_ok=True)
+        prompt.write_text("AUDIT PROMPT", encoding="utf-8")
+    catalog = parse_model_catalog(
+        {"providers": [{"id": "fake", "models": [{"id": "m", "argv_model": "x"}]}]}
+    )
+    plan = parse_model_plan(
+        {"provider": "fake", "stages": {"audit": {"model": "m"}}},
+        catalog,
+    )
+    store = JobStore(tmp_path)
+    job = store.create("t", "audit", "fake", "m", None)
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(
+        job, threading.Event()
+    )
+
+    assert done.status == "failed"
+    expected = (
+        "audit prompt is missing; prepare it before enqueue"
+        if prompt_state == "missing"
+        else "audit prompt is stale; rebuild it before enqueue or response ingest"
+    )
+    assert done.error == expected
+    assert build_calls == []
+    assert runs.stage_paths("t", "audit").response_path.exists() is False
+
+
+def test_execute_ready_audit_preflights_then_runs_and_ingests_json(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FAKE_STDOUT", '{"schema_version":1}\n')
+    call_order = []
+
+    class TrackingRunner(FakeRunner):
+        def build_invocation(self, model, plan, prompt_path):
+            call_order.append("build")
+            return super().build_invocation(model, plan, prompt_path)
+
+    register_runner(TrackingRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    paths = runs.stage_paths("t", "audit")
+    paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.prompt_path.write_text("BOUND AUDIT PROMPT", encoding="utf-8")
+
+    def ready_prompt(self, topic_id, stage):
+        call_order.append("preflight")
+        assert (topic_id, stage) == ("t", "audit")
+        return paths.prompt_path
+
+    def ingest(self, topic_id, stage, text, *, force=False):
+        call_order.append("ingest")
+        assert (topic_id, stage, force) == ("t", "audit", False)
+        paths.response_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.response_path.write_text(text, encoding="utf-8")
+        return paths.response_path
+
+    monkeypatch.setattr(RunStore, "require_provider_ready_prompt", ready_prompt)
+    monkeypatch.setattr(RunStore, "ingest_response", ingest)
+    catalog = parse_model_catalog(
+        {"providers": [{"id": "fake", "models": [{"id": "m", "argv_model": "x"}]}]}
+    )
+    plan = parse_model_plan(
+        {"provider": "fake", "stages": {"audit": {"model": "m"}}},
+        catalog,
+    )
+    store = JobStore(tmp_path)
+    job = store.create("t", "audit", "fake", "m", None)
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(
+        job, threading.Event()
+    )
+
+    assert done.status == "succeeded"
+    assert done.response_path == str(paths.response_path)
+    assert call_order == ["preflight", "build", "ingest"]
+    assert paths.response_path.read_text(encoding="utf-8") == '{"schema_version":1}\n'
+
+
+def test_audit_stdout_is_ingested_but_never_mirrored_to_job_log(
+    tmp_path, monkeypatch
+):
+    planted = "PLANTED PRIVATE AUDIT NARRATIVE"
+    planted_stderr = "PLANTED PRIVATE AUDIT STDERR"
+    monkeypatch.setenv(
+        "FAKE_STDOUT",
+        '{"schema_version":1,"overall_summary":"' + planted + '"}\n',
+    )
+    monkeypatch.setenv("FAKE_STDERR", planted_stderr + "\n")
+    register_runner(FakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    paths = runs.stage_paths("t", "audit")
+    paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.prompt_path.write_text("BOUND AUDIT PROMPT", encoding="utf-8")
+
+    monkeypatch.setattr(
+        RunStore,
+        "require_provider_ready_prompt",
+        lambda self, topic_id, stage: paths.prompt_path,
+    )
+
+    def ingest(self, topic_id, stage, text, *, force=False):
+        paths.response_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.response_path.write_text(text, encoding="utf-8")
+        return paths.response_path
+
+    monkeypatch.setattr(RunStore, "ingest_response", ingest)
+    catalog = parse_model_catalog(
+        {"providers": [{"id": "fake", "models": [{"id": "m"}]}]}
+    )
+    plan = parse_model_plan(
+        {"provider": "fake", "stages": {"audit": {"model": "m"}}}, catalog
+    )
+    store = JobStore(tmp_path)
+    job = store.create("t", "audit", "fake", "m", None)
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(
+        job, threading.Event()
+    )
+
+    assert done.status == "succeeded"
+    assert planted in paths.response_path.read_text(encoding="utf-8")
+    log_text = store.log_path("t", job.id).read_text(encoding="utf-8")
+    assert planted not in log_text
+    assert planted_stderr not in log_text
+    assert log_text == ""
+
+
 def test_execute_nonzero_exit_fails_without_response(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_EXIT", "3")
     runs, catalog, plan, store = _setup(tmp_path)

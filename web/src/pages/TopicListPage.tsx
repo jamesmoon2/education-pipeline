@@ -4,6 +4,7 @@ import { getProfiles, getTopics } from "../api/client";
 import AttachProfileControl from "../components/AttachProfileControl";
 import ImportForm from "../components/ImportForm";
 import { usePolling } from "../hooks/usePolling";
+import type { ProfileSummary } from "../api/types";
 
 export default function TopicListPage() {
   const { data, error, refresh } = usePolling(getTopics, 10_000);
@@ -13,7 +14,7 @@ export default function TopicListPage() {
   if (error) return <p className="error">Failed to load topics: {error.message}</p>;
   if (!data) return <p>Loading…</p>;
 
-  const profiles = profileData?.profiles ?? [];
+  const profiles: ProfileSummary[] = profileData?.profiles ?? [];
 
   return (
     <div>

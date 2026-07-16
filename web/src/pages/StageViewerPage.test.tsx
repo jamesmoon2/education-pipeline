@@ -1,6 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import {
+  Link,
+  MemoryRouter,
+  Route,
+  Routes,
+} from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import StageViewerPage from "./StageViewerPage";
 
@@ -11,6 +16,8 @@ vi.mock("../api/client", async () => {
     getStageContent: vi.fn(),
     getRunStatus: vi.fn(),
     postApprove: vi.fn(),
+    approveAudit: vi.fn(),
+    enqueueAuditJob: vi.fn(),
     postResponse: vi.fn(),
     putResponse: vi.fn(),
     postPreview: vi.fn(),
@@ -18,6 +25,9 @@ vi.mock("../api/client", async () => {
 });
 
 import {
+  ApiRequestError,
+  approveAudit,
+  enqueueAuditJob,
   getRunStatus,
   getStageContent,
   postApprove,
@@ -56,6 +66,78 @@ beforeEach(() => {
 });
 
 describe("StageViewerPage", () => {
+  it("clears route-scoped content and rejects a mismatched stage response after navigation", async () => {
+    let resolveNext!: (value: Awaited<ReturnType<typeof getStageContent>>) => void;
+    vi.mocked(getStageContent).mockImplementation(async (topic, stage) => {
+      if (topic === "topic-a") {
+        return {
+          topic_id: topic,
+          stage,
+          prompt: "private prompt A",
+          response: "private response A",
+          approved: null,
+          response_sha256: "sha-a",
+          content_type: "text/markdown",
+        };
+      }
+      return new Promise((resolve) => {
+        resolveNext = resolve;
+      });
+    });
+    vi.mocked(getRunStatus).mockImplementation(async (topic) => ({
+      topic_id: topic,
+      finalized: false,
+      content_contract: { kind: "legacy_markdown" },
+      stage_provenance: [],
+      validations: {
+        draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+        final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+      },
+      stages: [],
+      next_action: { topic_id: topic, stage: null, action: "done", detail: "" },
+    }));
+    render(
+      <MemoryRouter initialEntries={["/topics/topic-a/stages/draft?tab=response"]}>
+        <Link to="/topics/topic-b/stages/audit">Go to topic B audit</Link>
+        <Routes>
+          <Route
+            path="/topics/:topicId/stages/:stage"
+            element={<StageViewerPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    expect(screen.getByLabelText("Edit response for draft")).toHaveValue(
+      "private response A",
+    );
+
+    await userEvent.click(screen.getByRole("link", { name: "Go to topic B audit" }));
+
+    expect(screen.queryByText("private prompt A")).not.toBeInTheDocument();
+    expect(screen.queryByText("private response A")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Edit response for draft")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveNext({
+        topic_id: "topic-a",
+        stage: "audit",
+        prompt: "wrong topic prompt",
+        response: "wrong topic response",
+        approved: null,
+        response_sha256: "sha-wrong",
+        content_type: "application/json",
+      });
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Stage response does not match this route.",
+    );
+    expect(screen.queryByText("wrong topic response")).not.toBeInTheDocument();
+  });
+
   it("shows the prompt by default and switches tabs", async () => {
     vi.mocked(getStageContent).mockResolvedValue({
       topic_id: "t",
@@ -154,6 +236,172 @@ describe("StageViewerPage", () => {
     expect(
       await screen.findByRole("button", { name: "Edit" }),
     ).toBeInTheDocument();
+  });
+
+  it("opens audit JSON in the JSON editor without a markdown preview", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "audit",
+      prompt: "audit prompt",
+      response: '{"findings":[]}',
+      approved: null,
+      response_sha256: "sha-audit",
+      content_type: "application/json",
+    });
+    renderAt("/topics/t/stages/audit");
+    await userEvent.click(await screen.findByRole("tab", { name: /^response/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    const textarea = screen.getByLabelText("Edit response for audit");
+    expect(textarea).toHaveValue('{"findings":[]}');
+    expect(screen.queryByRole("button", { name: "Preview" })).not.toBeInTheDocument();
+  });
+
+  it("uses the audit approval adapter from the shared stage viewer", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "audit",
+      prompt: "audit prompt",
+      response: '{"findings":[]}',
+      approved: null,
+      response_sha256: "sha-audit",
+      content_type: "application/json",
+    });
+    vi.mocked(approveAudit).mockResolvedValue({} as never);
+    renderAt("/topics/t/stages/audit?tab=response");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve audit" }));
+    expect(approveAudit).toHaveBeenCalledWith("t", false);
+    expect(postApprove).not.toHaveBeenCalled();
+  });
+
+  it("uses the forced audit job adapter for a provider rerun", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "audit",
+      prompt: "audit prompt",
+      response: '{"findings":[]}',
+      approved: '{"findings":[]}',
+      response_sha256: "sha-audit",
+      content_type: "application/json",
+    });
+    vi.mocked(enqueueAuditJob).mockResolvedValue({} as never);
+    renderAt("/topics/t/stages/audit");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Rerun with provider…" }));
+    expect(enqueueAuditJob).toHaveBeenCalledWith("t", true);
+  });
+
+  it("keeps finalized audit response editing and provider rerun available", async () => {
+    mockRun(true);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "audit",
+      prompt: "audit prompt",
+      response: '{"findings":[]}',
+      approved: '{"findings":[]}',
+      response_sha256: "sha-audit",
+      content_type: "application/json",
+    });
+    vi.mocked(enqueueAuditJob).mockResolvedValue({} as never);
+    renderAt("/topics/t/stages/audit?tab=response");
+
+    expect(await screen.findByRole("button", { name: "Edit" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Rerun with provider…" }));
+    expect(enqueueAuditJob).toHaveBeenCalledWith("t", true);
+  });
+
+  it("uses the shared paste form to replace an existing finalized audit response after confirmation", async () => {
+    mockRun(true);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "audit",
+      prompt: "audit prompt",
+      response: '{"findings":[]}',
+      approved: '{"findings":[]}',
+      response_sha256: "sha-audit",
+      content_type: "application/json",
+    });
+    vi.mocked(postResponse)
+      .mockRejectedValueOnce(new ApiRequestError(409, "already_exists", "response exists"))
+      .mockResolvedValueOnce({} as never);
+    renderAt("/topics/t/stages/audit?tab=response&paste=1");
+
+    fireEvent.change(await screen.findByLabelText("Response for audit"), {
+      target: { value: '{"findings":[1]}' },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Save response" }));
+
+    expect(postResponse).toHaveBeenNthCalledWith(1, "t", "audit", '{"findings":[1]}');
+    expect(postResponse).toHaveBeenNthCalledWith(2, "t", "audit", '{"findings":[1]}', true);
+  });
+
+  it("never force-overwrites an existing audit response without confirmation", async () => {
+    mockRun(true);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "audit",
+      prompt: "audit prompt",
+      response: '{"findings":[]}',
+      approved: '{"findings":[]}',
+      response_sha256: "sha-audit",
+      content_type: "application/json",
+    });
+    vi.mocked(postResponse).mockRejectedValue(
+      new ApiRequestError(409, "already_exists", "response exists"),
+    );
+    renderAt("/topics/t/stages/audit?tab=response&paste=1");
+
+    fireEvent.change(await screen.findByLabelText("Response for audit"), {
+      target: { value: '{"findings":[1]}' },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Save response" }));
+
+    expect(postResponse).toHaveBeenCalledTimes(1);
+    expect(postResponse).not.toHaveBeenCalledWith("t", "audit", expect.any(String), true);
+  });
+
+  it("requires the pending audit response tab before approval", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "audit",
+      prompt: "audit prompt",
+      response: '{"findings":[{"id":"new"}]}',
+      approved: '{"findings":[]}',
+      response_sha256: "sha-audit",
+      content_type: "application/json",
+    });
+    renderAt("/topics/t/stages/audit?tab=approved");
+
+    expect(await screen.findByText(/Review the pending audit response before approval/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve audit" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: /^response/ }));
+    expect(screen.getByRole("button", { name: "Approve audit" })).toBeInTheDocument();
+  });
+
+  it("announces stage action success and errors with status semantics", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "audit",
+      prompt: "audit prompt",
+      response: '{"findings":[]}',
+      approved: null,
+      response_sha256: "sha-audit",
+      content_type: "application/json",
+    });
+    vi.mocked(approveAudit).mockResolvedValue({} as never);
+    renderAt("/topics/t/stages/audit?tab=response");
+    await userEvent.click(await screen.findByRole("button", { name: "Approve audit" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Approved audit.");
+
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(enqueueAuditJob).mockRejectedValue(new Error("Provider unavailable."));
+    await userEvent.click(screen.getByRole("button", { name: "Rerun with provider…" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Provider unavailable.");
   });
 
   it("groups stage actions in a toolbar above the content", async () => {

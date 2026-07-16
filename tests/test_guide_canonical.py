@@ -11,6 +11,10 @@ from education_pipeline.guides import (
 )
 
 FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.guide.json"
+PERSONALIZED_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures/guides/feedback-loops.personalized.guide.json"
+)
 EXPECTED_SHA256 = "99fde906c6bb1231c33c4d5d9f1adab011a1f4313c03c574eb7aa27cdbe70b07"
 
 
@@ -59,3 +63,31 @@ def test_object_keys_sort_recursively_and_arrays_keep_authored_order() -> None:
         "release-balancing",
         "release-unrelated",
     ]
+
+
+def test_schema_1_1_canonical_round_trip_preserves_authored_version_and_annotations() -> None:
+    source = PERSONALIZED_FIXTURE.read_bytes()
+    guide = normalize_guide(parse_guide(source))
+
+    canonical = canonical_guide_bytes(guide)
+    decoded = json.loads(canonical)
+
+    assert decoded["schema_version"] == "1.1"
+    assert decoded["outcomes"][0]["serves_goals"] == ["goal-001"]
+    assert decoded["modules"][0]["serves_goals"] == ["goal-001", "goal-002"]
+    assert decoded["course"]["goal_exclusions"] == [
+        {"goal_id": "goal-003", "reason": "Synthetic deferred objective."}
+    ]
+    assert canonical == canonical_guide_bytes(normalize_guide(parse_guide(canonical)))
+
+
+def test_empty_personalization_annotations_are_omitted_for_both_versions() -> None:
+    for version in ("1.0", "1.1"):
+        data = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        data["schema_version"] = version
+        canonical = canonical_guide_bytes(
+            normalize_guide(parse_guide(json.dumps(data, ensure_ascii=False)))
+        )
+
+        assert b'"serves_goals"' not in canonical
+        assert b'"goal_exclusions"' not in canonical

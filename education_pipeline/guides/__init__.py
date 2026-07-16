@@ -26,7 +26,13 @@ from .document import (
     assemble_guide_document,
     render_guide_markdown,
 )
-from .reports import Finding, ValidationReport, ValidationSummary, canonical_report_bytes
+from .reports import (
+    Finding,
+    REPORT_SCHEMA_VERSION,
+    ValidationReport,
+    ValidationSummary,
+    canonical_report_bytes,
+)
 from .static_checks import StaticCheckResult, compute_static_checks
 from .validation import MAX_GUIDE_SOURCE_BYTES, ValidationContext, validate_guide
 from .waivers import Waiver, WaiverResult, WaiverSet, apply_waivers
@@ -42,6 +48,7 @@ __all__ = [
     "ParseDiagnostic",
     "ParseResult",
     "QUALITY_REPORT_SCHEMA_VERSION",
+    "REPORT_SCHEMA_VERSION",
     "StaticCheckResult",
     "ValidationReport",
     "ValidationSummary",

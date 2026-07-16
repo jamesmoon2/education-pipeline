@@ -17,7 +17,19 @@ import {
   getConfigPlan,
   putConfigPlan,
   getRunPlan,
+  getProfile,
+  getProfiles,
+  previewProfile,
+  putProfile,
+  duplicateProfile,
+  getPersonalization,
+  prepareAudit,
+  postAuditResponse,
+  approveAudit,
+  enqueueAuditJob,
 } from "./client";
+import { metadataNumber } from "./types";
+import type { LearnerProfile } from "./types";
 
 function mockFetch(routes: Record<string, { status: number; body: unknown }>) {
   return vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
@@ -74,7 +86,7 @@ describe("api client", () => {
 });
 
 function mockFetchWithInit(
-  routes: Record<string, { status: number; body: unknown }>,
+  routes: Record<string, { status: number; body: unknown; rawBody?: string }>,
 ) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
@@ -85,6 +97,7 @@ function mockFetchWithInit(
       ok: route.status >= 200 && route.status < 300,
       status: route.status,
       json: async () => route.body,
+      text: async () => route.rawBody ?? JSON.stringify(route.body),
     } as Response;
   });
 }
@@ -135,6 +148,87 @@ describe("apiPost", () => {
     expect(err).toBeInstanceOf(ApiRequestError);
     expect(err.status).toBe(409);
     expect(err.code).toBe("already_exists");
+  });
+});
+
+describe("personalization audit adapters", () => {
+  afterEach(() => {
+    resetSessionForTests();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("fetches the typed personalization aggregate", async () => {
+    const payload = {
+      topic_id: "topic/a",
+      profile: { state: "not_attached", id: null },
+      trace: { state: "missing", goals: [], facets: [] },
+      audit: {
+        state: "not_run",
+        stage_state: "not_run",
+        available: false,
+        unavailable_reason: "No learner profile is attached.",
+        findings: [],
+      },
+      findings: [
+        {
+          id: "personalization.goal_uncovered:goal-001",
+          rule_id: "personalization.goal_uncovered",
+          severity: "warning",
+          blocking: false,
+          waivable: true,
+          path: "",
+          message: "An authoritative learner goal is not served or validly excluded.",
+          remediation: "Serve the goal or add a valid exclusion.",
+          stage: "draft",
+        },
+      ],
+      export: { state: "missing" },
+    };
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/topic%2Fa/personalization": { status: 200, body: payload },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getPersonalization("topic/a");
+
+    expect(result).toEqual(payload);
+    expect(result.findings[0]?.rule_id).toBe("personalization.goal_uncovered");
+  });
+
+  it("uses exact audit action routes and bodies", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/topic%2Fa/audit": { status: 200, body: { topic_id: "topic/a", stage: "audit" } },
+      "/v1/runs/topic%2Fa/stages/audit/response": {
+        status: 200,
+        body: { topic_id: "topic/a", stage: "audit", response_path: "responses/audit.response.json" },
+      },
+      "/v1/runs/topic%2Fa/stages/audit/approve": {
+        status: 200,
+        body: { topic_id: "topic/a", stage: "audit", approved_path: "approved/audit.json" },
+      },
+      "/v1/jobs": { status: 200, body: { id: "job-1", topic_id: "topic/a", stage: "audit" } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await prepareAudit("topic/a", true);
+    await postAuditResponse("topic/a", "{}", true);
+    await approveAudit("topic/a", true);
+    await enqueueAuditJob("topic/a", true);
+
+    const bodies = Object.fromEntries(
+      fetchMock.mock.calls
+        .filter(([, init]) => init?.body)
+        .map(([url, init]) => [String(url), JSON.parse(init!.body as string)]),
+    );
+    expect(bodies).toEqual({
+      "/v1/runs/topic%2Fa/audit": { rebuild: true },
+      "/v1/runs/topic%2Fa/stages/audit/response": { text: "{}", force: true },
+      "/v1/runs/topic%2Fa/stages/audit/approve": { overwrite: true },
+      "/v1/jobs": { topic_id: "topic/a", stage: "audit", force: true },
+    });
   });
 });
 
@@ -479,5 +573,207 @@ describe("apiPut", () => {
       guide_sha256: "hash",
       reason: "accepted",
     });
+  });
+});
+
+const structuredProfile: LearnerProfile = {
+  schema_version: 1,
+  id: "learner-a",
+  target_learner: "A synthetic learner",
+  adjacent_domains: [],
+  learning_goals: ["Understand systems"],
+  preferred_examples: [],
+  examples_to_avoid: [],
+  assessment_styles: [],
+  accessibility_constraints: [],
+  sensitive_areas: [],
+  learning_preferences: {
+    preferred_modalities: [],
+    preferred_visual_aids: [],
+    practice_style: [],
+    common_sticking_points: [],
+    attention_constraints: [],
+    review_style: [],
+  },
+  localization: {},
+  privacy: { private_by_default: true, include_in_published_output: false },
+  metadata: { cohort: { year: 2026 }, active: true },
+};
+
+describe("profile endpoints", () => {
+  afterEach(() => {
+    resetSessionForTests();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("uses the structured list and detail endpoints", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/profiles": {
+        status: 200,
+        body: { profiles: [{ id: "learner-a", attached_topic_count: 2 }] },
+      },
+      "/v1/profiles/learner-a": {
+        status: 200,
+        body: {
+          id: "learner-a",
+          parsed: structuredProfile,
+          sensitivity: { target_learner: "high" },
+          content_sha256: "sha-1",
+          warnings: [],
+          attached_topic_count: 2,
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect((await getProfiles()).profiles[0]).toEqual({
+      id: "learner-a",
+      attached_topic_count: 2,
+    });
+    expect((await getProfile("learner-a")).content_sha256).toBe("sha-1");
+  });
+
+  it("previews, creates, updates, and duplicates structured profiles", async () => {
+    const detail = {
+      id: "learner-a",
+      parsed: structuredProfile,
+      sensitivity: { target_learner: "high" },
+      content_sha256: "sha-2",
+      warnings: [],
+      attached_topic_count: 0,
+    };
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/profiles/preview": {
+        status: 200,
+        body: { ...detail, prompt_context: "# Learner Profile Context", publishable_summary: null },
+      },
+      "/v1/profiles/learner-a": { status: 200, body: detail },
+      "/v1/profiles/learner-a/duplicate": {
+        status: 201,
+        body: { ...detail, id: "learner-copy", parsed: { ...structuredProfile, id: "learner-copy" } },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await previewProfile(structuredProfile);
+    await putProfile("learner-a", structuredProfile, null);
+    await putProfile("learner-a", structuredProfile, "sha-1");
+    await duplicateProfile("learner-a", "learner-copy");
+
+    const calls = fetchMock.mock.calls.filter(([url]) => String(url) !== "/v1/session");
+    expect(JSON.parse((calls[0][1] as RequestInit).body as string)).toEqual({ profile: structuredProfile });
+    expect(JSON.parse((calls[1][1] as RequestInit).body as string)).toEqual({
+      profile: structuredProfile,
+      base_sha256: null,
+    });
+    expect(JSON.parse((calls[2][1] as RequestInit).body as string)).toEqual({
+      profile: structuredProfile,
+      base_sha256: "sha-1",
+    });
+    expect(JSON.parse((calls[3][1] as RequestInit).body as string)).toEqual({ new_id: "learner-copy" });
+  });
+
+  it("preserves safe structured conflict details", async () => {
+    vi.stubGlobal("fetch", mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/profiles/learner-a": {
+        status: 409,
+        body: {
+          error: {
+            code: "stale_content",
+            message: "reload profiles before retrying",
+            details: { current_sha256: "sha-current" },
+          },
+        },
+      },
+    }));
+
+    const error = await putProfile("learner-a", structuredProfile, "sha-old").catch((value) => value) as ApiRequestError;
+    expect(error.status).toBe(409);
+    expect(error.details).toEqual({ current_sha256: "sha-current" });
+  });
+
+  it("round-trips exact metadata numeric text without changing the HTTP contract", async () => {
+    const rawDetail = JSON.stringify({
+      id: "learner-a", parsed: structuredProfile, sensitivity: {}, content_sha256: "sha", warnings: [], attached_topic_count: 0,
+    }).replace('"year":2026', '"year":2.0');
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/profiles/learner-a": { status: 200, body: {}, rawBody: rawDetail },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const loaded = await getProfile("learner-a");
+    await putProfile("learner-a", loaded.parsed, "sha");
+
+    const body = String((fetchMock.mock.calls[fetchMock.mock.calls.length - 1]?.[1] as RequestInit).body);
+    expect(body).toContain('"year":2.0');
+    expect(JSON.parse(body)).toEqual({
+      profile: expect.objectContaining({ id: "learner-a", metadata: expect.objectContaining({ cohort: { year: 2 } }) }),
+      base_sha256: "sha",
+    });
+  });
+
+  it("serializes switched numeric kinds, exponents, and boundary integers verbatim", async () => {
+    const exactProfile: LearnerProfile = {
+      ...structuredProfile,
+      metadata: {
+        integerToFloat: metadataNumber("2.0", "float"),
+        floatToInteger: metadataNumber("2", "integer"),
+        exponent: metadataNumber("-2.5e+3", "float"),
+        minI64: metadataNumber("-9223372036854775808", "integer"),
+        maxI64: metadataNumber("9223372036854775807", "integer"),
+      },
+    };
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/profiles/learner-a": { status: 200, body: { ...structuredProfile, parsed: exactProfile } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await putProfile("learner-a", exactProfile, null);
+
+    const body = String((fetchMock.mock.calls[fetchMock.mock.calls.length - 1]?.[1] as RequestInit).body);
+    expect(body).toContain('"integerToFloat":2.0');
+    expect(body).toContain('"floatToInteger":2');
+    expect(body).toContain('"exponent":-2.5e+3');
+    expect(body).toContain('"minI64":-9223372036854775808');
+    expect(body).toContain('"maxI64":9223372036854775807');
+  });
+
+  it("preserves legal metadata objects whose keys resemble the internal number wrapper", async () => {
+    const collision = { rawJsonNumber: true, source: "user-authored", nested: { value: 3 } };
+    const rawDetail = JSON.stringify({
+      id: "learner-a",
+      parsed: { ...structuredProfile, metadata: { collision } },
+      sensitivity: {},
+      content_sha256: "sha",
+      warnings: [],
+      attached_topic_count: 0,
+    });
+    vi.stubGlobal("fetch", mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/profiles/learner-a": { status: 200, body: {}, rawBody: rawDetail },
+    }));
+
+    const loaded = await getProfile("learner-a");
+
+    expect(loaded.parsed.metadata.collision).toEqual({
+      rawJsonNumber: true,
+      source: "user-authored",
+      nested: { value: expect.objectContaining({ kind: "integer", text: "3" }) },
+    });
+  });
+
+  it("refuses to serialize an invalid numeric draft instead of coercing it to zero", () => {
+    const invalidProfile: LearnerProfile = {
+      ...structuredProfile,
+      metadata: { count: metadataNumber("-", "integer") },
+    };
+
+    expect(() => putProfile("learner-a", invalidProfile, "sha")).toThrow("Invalid integer metadata value");
   });
 });

@@ -130,6 +130,34 @@ def test_export_and_sidecar_are_byte_identical_across_independent_runs(tmp_path:
     assert sidecar_a.read_bytes() == sidecar_b.read_bytes()
 
 
+@pytest.mark.parametrize("audit_state", ["not_run", "current", "stale"])
+def test_profiled_export_and_sidecar_are_byte_identical_in_every_audit_state(
+    tmp_path: Path, audit_state: str
+) -> None:
+    tid = "systems-thinking"
+    outputs = []
+    for workspace in ("workspace-a", "workspace-b"):
+        runs = test_runs._create_profiled_guide_run(tmp_path / workspace)
+        test_runs._drive_profiled_guide_to_finalize_ready(runs, tid)
+        if audit_state != "not_run":
+            runs.prepare_personalization_audit(tid)
+            runs.ingest_response(
+                tid,
+                "audit",
+                test_runs._valid_personalization_audit_response(runs, tid),
+            )
+            runs.approve_stage(tid, "audit")
+            if audit_state == "stale":
+                projection = runs.audit_projection_path(tid)
+                projection.write_bytes(projection.read_bytes() + b"\n")
+        assert runs.audit_state(tid) == audit_state
+        runs.finalize_run(tid)
+        export = runs.export_run(tid)
+        outputs.append((export.read_bytes(), runs.export_report_path(tid).read_bytes()))
+
+    assert outputs[0] == outputs[1]
+
+
 def test_stale_waiver_never_reopens_the_gate(tmp_path: Path) -> None:
     """A waiver recorded against one hash of repair content must not apply
     once that content changes: ``apply_waivers``/``gate_result`` reports

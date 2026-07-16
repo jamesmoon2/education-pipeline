@@ -28,15 +28,21 @@ from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
 from education_pipeline.runs import RunStore, StaleContentError
 from education_pipeline.topics import Topic, emit_topic_toml
-from education_pipeline.workspace import ProfileStore, TopicStore
+from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
 
 
 class ConflictError(Exception):
     """The request is well-formed but current run/workspace state refuses it."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        details: dict | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details
 
 
 class UnprocessableError(Exception):
@@ -68,6 +74,49 @@ def advance_run(runs: RunStore, jobs: JobStore, topic_id: str) -> dict:
     return {
         "performed": result.performed,
         "status": read_api.run_status_payload(runs, result.topic_id),
+    }
+
+
+def prepare_audit(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    *,
+    overwrite: bool = False,
+) -> dict:
+    """Prepare the optional audit prompt without affecting primary advance."""
+
+    read_api.require_run(runs, topic_id)
+    _require_no_active_job(jobs, topic_id)
+    # The frozen action is "prepare or rebuild": repeating the explicit POST
+    # rebuilds the fixed prompt path instead of making callers first discover
+    # whether it exists. RunStore still owns freshness and approval-preservation
+    # semantics for identical inputs.
+    prompt_exists = runs.stage_paths(topic_id, "audit").prompt_path.exists()
+    prepared = runs.prepare_personalization_audit(
+        topic_id, overwrite=overwrite or prompt_exists
+    )
+    response_path = _run_relative(runs, topic_id, prepared.response_path)
+    provider_step = {"action": "enqueue", "stage": "audit"}
+    if prepared.response_path.exists():
+        # Provider ingestion preserves the general no-clobber contract. A
+        # rebuilt prompt often retains the prior response, so the exact next
+        # provider action must opt into replacing it.
+        provider_step["force"] = True
+    return {
+        "topic_id": prepared.topic_id,
+        "stage": prepared.stage,
+        "prompt_path": _run_relative(runs, topic_id, prepared.prompt_path),
+        "response_path": response_path,
+        "audit": read_api.audit_summary(runs, topic_id),
+        "next_steps": {
+            "manual": {
+                "action": "save_response",
+                "stage": "audit",
+                "response_path": response_path,
+            },
+            "provider": provider_step,
+        },
     }
 
 
@@ -135,14 +184,40 @@ def create_waiver(
     # other caller, the CLI's `waive` command, which has no
     # read_api.validation_payload precondition of its own.
     #
-    # Use the private `_record_waiver`, which also returns the WaiverSet
-    # that was written *inside* the locked critical section, instead of
-    # taking a second, unlocked `load_waiver_set` snapshot afterward: that
-    # extra read would be racy (a concurrent writer bound to a different
-    # guide_sha256 could land between the two calls and cause this
-    # response to silently drop the waiver just recorded) and would
-    # dereference `load_waiver_set`'s Optional return without a guard.
-    _, waiver_set = runs._record_waiver(topic_id, phase, finding_id, reason.strip())
+    # Use the public `record_waiver_with_set`, which also returns the
+    # WaiverSet that was written *inside* the locked critical section,
+    # instead of taking a second, unlocked `load_waiver_set` snapshot
+    # afterward: that extra read would be racy (a concurrent writer bound
+    # to a different guide_sha256 could land between the two calls and
+    # cause this response to silently drop the waiver just recorded) and
+    # would dereference `load_waiver_set`'s Optional return without a
+    # guard.
+    _, waiver_set = runs.record_waiver_with_set(topic_id, phase, finding_id, reason.strip())
+    value = {
+        "schema_version": waiver_set.schema_version,
+        "guide_sha256": waiver_set.guide_sha256,
+        "waivers": [
+            {"finding_id": w.finding_id, "reason": w.reason} for w in waiver_set.waivers
+        ],
+    }
+    return {"waivers": value, **read_api.validation_payload(runs, topic_id, phase)}
+
+
+def delete_waiver(runs: RunStore, topic_id: str, phase: str, finding_id: str) -> dict:
+    """Remove one waiver and return the resulting waiver set plus validation payload.
+
+    Mirrors ``create_waiver``'s response shape so the cockpit reuses one type.
+
+    No ``guide_sha256`` guard, unlike ``create_waiver``: removal is fail-safe
+    by construction. ``remove_waiver_with_set`` recomputes the report and
+    hash-binds internally, and a removal can only ever close a gate, never
+    open one -- so an optimistic-concurrency check would add a failure mode
+    without preventing one. Uses the public tuple method so the rendered set
+    is the one written inside the locked critical section (an unlocked re-read
+    would be racy).
+    """
+
+    _, waiver_set = runs.remove_waiver_with_set(topic_id, phase, finding_id)
     value = {
         "schema_version": waiver_set.schema_version,
         "guide_sha256": waiver_set.guide_sha256,
@@ -371,13 +446,85 @@ def create_topic(topics: TopicStore, body: dict, *, overwrite: bool = False) -> 
 
 def import_profile(profiles: ProfileStore, toml_text: str, *, overwrite: bool = False) -> dict:
     profile_id = _parse_toml_id(toml_text, "profile")
-    if profiles.profile_path(profile_id).is_file() and not overwrite:
-        raise ConflictError(
-            "already_exists",
-            f"profile {profile_id!r} already exists; retry with overwrite to replace it",
+    try:
+        record = profiles.import_profile_toml(
+            profile_id,
+            toml_text,
+            overwrite=overwrite,
         )
-    profile = profiles.save_profile_toml(profile_id, toml_text, overwrite=overwrite)
-    return {"id": profile.id}
+    except ProfileWriteConflict as exc:
+        raise _profile_conflict("already_exists", exc.current_sha256) from exc
+    return {"id": record.profile.id}
+
+
+def put_profile(
+    profiles: ProfileStore,
+    profile_id: str,
+    body: dict,
+) -> tuple[int, dict]:
+    """Create or compare-and-swap one structured profile."""
+
+    _reject_profile_request_keys(body, {"profile", "base_sha256"})
+    if "profile" not in body or not isinstance(body["profile"], dict):
+        raise ConfigError("body field 'profile' must be an object")
+    if "base_sha256" not in body:
+        raise ConfigError("body must define field 'base_sha256'")
+
+    base_sha256 = body["base_sha256"]
+    if base_sha256 is None:
+        status = 201
+        operation = profiles.create_profile
+        operation_kwargs = {}
+        conflict_code = "already_exists"
+    elif isinstance(base_sha256, str) and base_sha256:
+        status = 200
+        operation = profiles.update_profile
+        operation_kwargs = {"base_sha256": base_sha256}
+        conflict_code = "stale_content"
+    else:
+        raise ConfigError("body field 'base_sha256' must be null or a non-empty string")
+
+    try:
+        record = operation(profile_id, body["profile"], **operation_kwargs)
+    except ProfileWriteConflict as exc:
+        raise _profile_conflict(conflict_code, exc.current_sha256) from exc
+    return status, read_api.profile_payload(
+        profiles,
+        profile_id,
+        record=record,
+    )
+
+
+def duplicate_profile(profiles: ProfileStore, profile_id: str, body: dict) -> dict:
+    """Create a canonical copy with a new embedded and artifact id."""
+
+    _reject_profile_request_keys(body, {"new_id"})
+    new_id = body.get("new_id")
+    if not isinstance(new_id, str) or not new_id.strip():
+        raise ConfigError("body must define non-empty string 'new_id'")
+    if not profiles.profile_path(profile_id).is_file():
+        raise NotFoundError("no such profile")
+    try:
+        record = profiles.duplicate_profile(profile_id, new_id)
+    except ProfileWriteConflict as exc:
+        raise _profile_conflict("already_exists", exc.current_sha256) from exc
+    return read_api.profile_payload(profiles, new_id, record=record)
+
+
+def _reject_profile_request_keys(body: dict, allowed: set[str]) -> None:
+    unknown = sorted(set(body) - allowed)
+    if unknown:
+        raise ConfigError(
+            "unknown profile request field(s): " + ", ".join(unknown)
+        )
+
+
+def _profile_conflict(code: str, current_sha256: str | None) -> ConflictError:
+    return ConflictError(
+        code,
+        "profile write precondition failed; reload profiles before retrying",
+        {"current_sha256": current_sha256},
+    )
 
 
 def update_global_plan(config, body: dict) -> dict:
@@ -447,7 +594,7 @@ def attach_profile(
     profiles: ProfileStore, topic_id: str, profile_id: str, *, overwrite: bool = True
 ) -> dict:
     if not profiles.profile_path(profile_id).is_file():
-        raise NotFoundError(f"no such profile: {profile_id}")
+        raise NotFoundError("no such profile")
     attachment = profiles.attach_profile_to_topic(profile_id, topic_id, overwrite=overwrite)
     run_dir = profiles.runs_dir / attachment.topic_id
     return {

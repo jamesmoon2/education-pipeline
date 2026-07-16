@@ -75,6 +75,32 @@ Hand-editing `<workspace>/config/model-plan.toml` (and
 without restarting the daemon; the cockpit and the TOML files read and write
 the same underlying configuration.
 
+### Learner profiles and personalization
+
+The cockpit's **Profiles** page supports structured create, edit, duplicate,
+privacy preview, and run attachment. Attaching a profile snapshots its current
+canonical contents into the run, so later profile edits do not silently change
+an in-progress course. New personalized guide runs use the backward-compatible
+interactive-guide 1.1 source contract and keep their outcome-to-learner trace
+local to the workspace.
+
+On a run board, **Personalization fit** shows safe goal, facet, exclusion,
+and evidence summaries next to the repair or final preview. Evidence links can
+reveal and focus the corresponding module or outcome inside the sandboxed
+preview. The optional personalization audit can be prepared, run through a
+configured provider or pasted manually, reviewed, approved, rerun, and
+re-exported; it never becomes a prerequisite for validation, finalization, or
+export.
+
+Private profile values, goal text, exclusion reasons, source annotations,
+private traces, raw audit responses, prompts, and provider output remain local.
+Exported HTML and `guide.report.json` are assembled from the public guide
+projection and contain only allowlisted, deterministic personalization
+findings and provenance. A changed guide makes its trace, audit, and prior
+export visibly stale; regenerate or rerun the affected artifact before relying
+on its evidence. Real profiles and all generated personalization artifacts must
+stay in the workspace, never in this public repository.
+
 ### Executing a stage through a provider
 
 Instead of copying a prompt into a model UI, run it through a configured

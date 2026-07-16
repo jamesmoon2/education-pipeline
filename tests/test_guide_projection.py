@@ -5,8 +5,13 @@ from education_pipeline.guides import (
     parse_guide,
     project_guide_markdown,
 )
+from education_pipeline.guides.projection import public_guide_projection
 
 FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.guide.json"
+PERSONALIZED_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures/guides/feedback-loops.personalized.guide.json"
+)
 
 
 def guide():
@@ -62,3 +67,17 @@ def test_projection_contains_no_learner_notes() -> None:
 
     assert "learner response" not in markdown.lower()
     assert "private loop map" in markdown
+
+
+def test_public_projection_strips_source_only_personalization_annotations() -> None:
+    source = normalize_guide(parse_guide(PERSONALIZED_FIXTURE.read_bytes()))
+
+    projected = public_guide_projection(source)
+
+    assert source.schema_version == projected.schema_version == "1.1"
+    assert source.course.goal_exclusions[0].reason == "Synthetic deferred objective."
+    assert source.outcomes[0].serves_goals == ("goal-001",)
+    assert source.modules[0].serves_goals == ("goal-001", "goal-002")
+    assert projected.course.goal_exclusions == ()
+    assert all(outcome.serves_goals == () for outcome in projected.outcomes)
+    assert all(module.serves_goals == () for module in projected.modules)

@@ -9,12 +9,15 @@ produces an identical sidecar.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
+import re
 
-from .reports import ValidationReport
+from .reports import Finding, ValidationReport
 from .waivers import WaiverResult, WaiverSet
 
-QUALITY_REPORT_SCHEMA_VERSION = 1
+QUALITY_REPORT_SCHEMA_VERSION = 2
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}\Z")
 
 
 def quality_report_bytes(
@@ -26,26 +29,60 @@ def quality_report_bytes(
     runtime_css_sha256: str,
     runtime_js_sha256: str,
     runtime_version: str,
+    public_guide_sha256: str,
+    audit_state: str,
+    safe_audit_projection_sha256: str | None,
+    safe_trace_projection_sha256: str | None,
+    safe_audit_findings: tuple[Finding, ...],
+    export_input_sha256: str,
 ) -> bytes:
     """Serialize the sidecar quality report to canonical UTF-8 bytes.
 
-    The ``guide_sha256`` recorded under ``waivers`` is the hash the waiver
-    set was bound to when a set is present, falling back to the validation
-    report's own guide hash when there are no waivers.
+    The local validation report and waiver set remain bound to canonical source
+    bytes. The public sidecar consistently substitutes the public-guide
+    projection hash so private source-only annotations cannot influence a
+    published hash field.
     """
 
-    guide_sha256 = (
-        waiver_set.guide_sha256 if waiver_set is not None else report.guide_sha256
+    if audit_state not in {"not_run", "current", "stale"}:
+        raise ValueError("invalid public audit state")
+    if audit_state == "current" and (
+        not isinstance(safe_audit_projection_sha256, str)
+        or _SHA256_RE.fullmatch(safe_audit_projection_sha256) is None
+    ):
+        raise ValueError("current audit requires a valid projection SHA-256")
+    if audit_state != "current" and (
+        safe_audit_projection_sha256 is not None or safe_audit_findings
+    ):
+        raise ValueError("only a current audit may contribute public evidence")
+    if any(finding.stage != "audit" for finding in safe_audit_findings):
+        raise ValueError("safe audit findings must be attributed to audit")
+
+    public_report = replace(
+        report,
+        guide_sha256=public_guide_sha256,
+        findings=report.findings + safe_audit_findings,
     )
+    audit_payload: dict[str, object] = {
+        "state": audit_state,
+        "safe_trace_projection_sha256": safe_trace_projection_sha256,
+        "safe_finding_ids": [finding.id for finding in safe_audit_findings],
+    }
+    if safe_audit_projection_sha256 is not None:
+        audit_payload["safe_audit_projection_sha256"] = (
+            safe_audit_projection_sha256
+        )
+
     payload = {
         "quality_report_schema_version": QUALITY_REPORT_SCHEMA_VERSION,
         "gate": {
             "open": waiver_result.gate_open,
             "effective_blocking": waiver_result.effective_blocking,
         },
-        "report": report.to_dict(),
+        "audit": audit_payload,
+        "report": public_report.to_dict(),
         "waivers": {
-            "guide_sha256": guide_sha256,
+            "guide_sha256": public_guide_sha256,
             "applied": list(waiver_result.waived_finding_ids),
             "rejected": list(waiver_result.rejected_finding_ids),
             "orphaned": list(waiver_result.orphaned_finding_ids),
@@ -53,6 +90,7 @@ def quality_report_bytes(
         },
         "export": {
             "file_sha256": export_sha256,
+            "input_sha256": export_input_sha256,
             "runtime_version": runtime_version,
             "runtime_css_sha256": runtime_css_sha256,
             "runtime_js_sha256": runtime_js_sha256,

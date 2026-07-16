@@ -6,8 +6,13 @@ import pytest
 from education_pipeline.guide_runtime import RuntimeAssets, load_runtime_assets
 from education_pipeline.guides import compute_static_checks
 from education_pipeline.guides.parse import normalize_guide, parse_guide
+from education_pipeline.guides.projection import public_guide_projection
 
 FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.guide.json"
+PERSONALIZED_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures/guides/feedback-loops.personalized.guide.json"
+)
 
 
 @pytest.fixture()
@@ -108,3 +113,83 @@ def test_label_text_after_control_passes_controls_check():
 
     doc = '<label><input type="text">Name</label><h2>a</h2>'
     assert _analyze_document(doc).controls_have_labels is True
+
+
+def test_previous_heading_skip_is_detected_even_after_a_deeper_heading():
+    """The rule the deepest-seen implementation missed: h1,h2,h3 establishes
+    depth 3, so a later h2 -> h4 was waved through even though it skips h3."""
+    from education_pipeline.guides.static_checks import _analyze_document
+
+    doc = "<h1>a</h1><h2>b</h2><h3>c</h3><h2>d</h2><h4>e</h4>"
+    assert _analyze_document(doc).heading_order_valid is False
+
+
+def test_returning_to_a_shallower_heading_is_never_a_skip():
+    from education_pipeline.guides.static_checks import _analyze_document
+
+    doc = "<h1>a</h1><h2>b</h2><h3>c</h3><h2>d</h2><h3>e</h3>"
+    assert _analyze_document(doc).heading_order_valid is True
+
+
+def test_document_whose_first_heading_is_below_h1_is_a_skip():
+    """Unreachable through the assembler (the shell always emits <h1> first),
+    but the analyzer is a general-purpose checker and must not pass a document
+    that opens four levels deep."""
+    from education_pipeline.guides.static_checks import _analyze_document
+
+    assert _analyze_document("<h4>a</h4>").heading_order_valid is False
+    assert _analyze_document("<h1>a</h1><h2>b</h2>").heading_order_valid is True
+
+
+def test_rich_text_section_opening_with_a_markdown_heading_passes(guide):
+    """A section whose first block is rich_text opening with '##' must not
+    skip a heading level: the shell emits <h2> for the section title, so the
+    markdown heading must render as <h3>, not <h4>.
+
+    This is the ordinary shape of a written lesson and the exact case the
+    tightened rule would otherwise block with no legal remediation ('#' is
+    banned by markdown.invalid_heading_level).
+    """
+    import dataclasses
+
+    from education_pipeline.guides.model import RichText
+
+    section = guide.modules[0].sections[0]
+    heading_block = RichText(
+        id="blk-md-heading",
+        markdown="## Why loops compound\n\nA short explanation.",
+    )
+    patched_section = dataclasses.replace(section, blocks=(heading_block, *section.blocks))
+    patched_module = dataclasses.replace(
+        guide.modules[0], sections=(patched_section, *guide.modules[0].sections[1:])
+    )
+    patched = dataclasses.replace(guide, modules=(patched_module, *guide.modules[1:]))
+
+    result = compute_static_checks(patched)
+    assert result.document is not None
+    assert "<h3>Why loops compound</h3>" in result.document
+    assert result.context.heading_order_valid is True
+
+
+def test_static_checks_assemble_the_exact_public_projection(monkeypatch):
+    from education_pipeline.guides import static_checks as mod
+
+    source = normalize_guide(parse_guide(PERSONALIZED_FIXTURE.read_bytes()))
+    expected = public_guide_projection(source)
+    assembled = []
+
+    def capture(candidate, *, assets, mode):
+        assembled.append(candidate)
+        return (
+            '<h1>Course</h1><div data-guide-shell></div>'
+            '<script id="guide-data"></script><a class="skip-link"></a>'
+        )
+
+    monkeypatch.setattr(mod, "assemble_guide_document", capture)
+
+    result = compute_static_checks(source)
+
+    assert assembled == [expected]
+    assert result.document is not None
+    assert source.course.goal_exclusions
+    assert not assembled[0].course.goal_exclusions

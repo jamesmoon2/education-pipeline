@@ -27,7 +27,7 @@ from education_pipeline.export import EXPORT_FORMATS
 from education_pipeline.profiles import load_learner_profile
 from education_pipeline.runs import ContentContract, RunStore
 from education_pipeline.topics import load_topic
-from education_pipeline.workspace import ProfileStore, TopicStore
+from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -36,12 +36,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "profile":
+            return _run_profile_command(args)
         return args.func(args)
+    except ProfileWriteConflict as exc:
+        current = exc.current_sha256 or "missing"
+        print(f"error: profile write conflict; current sha256: {current}", file=sys.stderr)
+        return 2
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except DaemonError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run_profile_command(args: argparse.Namespace) -> int:
+    try:
+        return args.func(args)
+    except ProfileWriteConflict:
+        raise
+    except ConfigError:
+        print("error: profile command failed", file=sys.stderr)
         return 1
 
 
@@ -73,6 +89,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p = profile.add_parser("import", help="import a learner profile TOML file")
     p.add_argument("file")
     p.set_defaults(func=_cmd_profile_import)
+    p = profile.add_parser("show", help="print a stored profile's canonical TOML")
+    p.add_argument("profile_id")
+    p.set_defaults(func=_cmd_profile_show)
+    p = profile.add_parser("edit", help="replace a stored profile from a TOML file")
+    p.add_argument("profile_id")
+    p.add_argument("--from-file", required=True)
+    p.set_defaults(func=_cmd_profile_edit)
+    p = profile.add_parser("duplicate", help="duplicate a stored profile under a new id")
+    p.add_argument("profile_id")
+    p.add_argument("new_id")
+    p.set_defaults(func=_cmd_profile_duplicate)
     p = profile.add_parser("attach", help="attach a profile snapshot to a topic run")
     p.add_argument("profile_id")
     p.add_argument("topic_id")
@@ -94,6 +121,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("advance", help="perform the run's next machine step")
     p.add_argument("topic_id")
     p.set_defaults(func=_cmd_advance)
+
+    p = sub.add_parser("audit", help="prepare or rebuild the optional personalization audit")
+    p.add_argument("topic_id")
+    p.set_defaults(func=_cmd_audit)
 
     p = sub.add_parser("approve", help="approve a stage's saved response")
     p.add_argument("topic_id")
@@ -207,6 +238,31 @@ def _cmd_profile_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_profile_show(args: argparse.Namespace) -> int:
+    record = ProfileStore(_root(args)).read_profile_record(args.profile_id)
+    sys.stdout.buffer.write(record.canonical_bytes)
+    return 0
+
+
+def _cmd_profile_edit(args: argparse.Namespace) -> int:
+    profile = load_learner_profile(args.from_file)
+    store = ProfileStore(_root(args))
+    current = store.read_profile_record(args.profile_id)
+    store.update_profile(
+        args.profile_id,
+        profile,
+        base_sha256=current.content_sha256,
+    )
+    print(f"updated profile {args.profile_id}")
+    return 0
+
+
+def _cmd_profile_duplicate(args: argparse.Namespace) -> int:
+    ProfileStore(_root(args)).duplicate_profile(args.profile_id, args.new_id)
+    print(f"duplicated profile {args.profile_id} as {args.new_id}")
+    return 0
+
+
 def _cmd_profile_attach(args: argparse.Namespace) -> int:
     attachment = ProfileStore(_root(args)).attach_profile_to_topic(
         args.profile_id, args.topic_id, overwrite=True
@@ -244,6 +300,24 @@ def _cmd_advance(args: argparse.Namespace) -> int:
     result = RunStore(_root(args)).advance(args.topic_id)
     print(f"Performed: {result.performed or 'nothing (waiting on you)'}")
     _print_next(result.status.next_action)
+    return 0
+
+
+def _cmd_audit(args: argparse.Namespace) -> int:
+    runs = RunStore(_root(args))
+    prompt_exists = runs.stage_paths(args.topic_id, "audit").prompt_path.exists()
+    prepared = runs.prepare_personalization_audit(
+        args.topic_id, overwrite=prompt_exists
+    )
+    prompt_path = prepared.prompt_path.relative_to(runs.run_dir(args.topic_id))
+    response_path = prepared.response_path.relative_to(runs.run_dir(args.topic_id))
+    force = " --force" if prepared.response_path.exists() else ""
+    print(f"prepared audit: {prompt_path}")
+    print(f"Next (manual): save the response to {response_path}")
+    print(
+        "Next (provider): education-pipeline "
+        f"-C {args.workspace} run {args.topic_id} --stage audit{force}"
+    )
     return 0
 
 
@@ -321,6 +395,40 @@ def _warn_if_report_stale(runs: RunStore, topic_id: str, phase: str) -> None:
         )
 
 
+def _warn_if_export_stale(runs: RunStore, topic_id: str) -> None:
+    """Warn when a printed export sidecar no longer matches live inputs."""
+
+    if runs.export_state(topic_id) == "stale":
+        print(
+            f"warning: exported quality report for {topic_id!r} is stale; "
+            "re-export to publish current audit and validation metadata",
+            file=sys.stderr,
+        )
+
+
+def _combined_finding_dicts(
+    runs: RunStore, topic_id: str, phase: str, persisted: list[dict]
+) -> list[dict]:
+    """Use the shared accessor, retaining the existing pre-v2 read fallback."""
+
+    try:
+        return [
+            finding.to_dict()
+            for finding in runs.combined_findings(topic_id, phase=phase)
+        ]
+    except ConfigError:
+        # Historical report readers intentionally tolerate findings written
+        # before stage attribution existed. A malformed current-schema report
+        # still fails closed; only the recognizable stage-less legacy shape
+        # keeps the old CLI fallback behavior.
+        if persisted and all(
+            isinstance(finding, dict) and "stage" not in finding
+            for finding in persisted
+        ):
+            return persisted
+        raise
+
+
 def _cmd_findings(args: argparse.Namespace) -> int:
     """Print a phase's validation findings.
 
@@ -345,6 +453,10 @@ def _cmd_findings(args: argparse.Namespace) -> int:
             )
         _warn_if_report_stale(runs, args.topic_id, args.phase)
         report = json.loads(report_path.read_text(encoding="utf-8"))
+        if args.phase == "final":
+            report["findings"] = _combined_finding_dicts(
+                runs, args.topic_id, args.phase, report.get("findings", [])
+            )
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -381,6 +493,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
         export_report_path = runs.export_report_path(args.topic_id)
         if export_report_path.is_file():
             _warn_if_report_stale(runs, args.topic_id, "final")
+            _warn_if_export_stale(runs, args.topic_id)
             text = export_report_path.read_text(encoding="utf-8")
             data = json.loads(text)
             gate_open = bool(data.get("gate", {}).get("open"))
@@ -391,7 +504,11 @@ def _cmd_report(args: argparse.Namespace) -> int:
                     f"no final validation report for {args.topic_id!r}; run `validate` first"
                 )
             _warn_if_report_stale(runs, args.topic_id, "final")
-            text = report_path.read_text(encoding="utf-8")
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+            data["findings"] = _combined_finding_dicts(
+                runs, args.topic_id, "final", data.get("findings", [])
+            )
+            text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
             gate_open = runs.gate_result(args.topic_id, "final").gate_open
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -414,6 +531,18 @@ def _cmd_waive(args: argparse.Namespace) -> int:
 
     runs = RunStore(_root(args))
     try:
+        presented = next(
+            (
+                finding
+                for finding in runs.combined_findings(
+                    args.topic_id, phase=args.phase
+                )
+                if finding.id == args.finding_id
+            ),
+            None,
+        )
+        if presented is not None and not presented.waivable:
+            raise ConfigError(f"finding {args.finding_id!r} is not waivable")
         result = runs.record_waiver(args.topic_id, args.phase, args.finding_id, args.reason)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)

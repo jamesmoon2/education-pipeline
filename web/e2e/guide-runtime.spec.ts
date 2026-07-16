@@ -9,18 +9,22 @@ import path from "node:path";
 
 const ROOT = path.resolve(process.cwd(), "..");
 
-function assembleFixtureDocument(): string {
+function assembleFixtureDocument(
+  fixture = "tests/fixtures/guides/feedback-loops.guide.json",
+): string {
   const script = [
     "from pathlib import Path",
     "from education_pipeline.guides import parse_guide, normalize_guide",
     "from education_pipeline.guides.document import assemble_guide_document",
-    "p=Path('tests/fixtures/guides/feedback-loops.guide.json')",
+    `p=Path('${fixture}')`,
     "print(assemble_guide_document(normalize_guide(parse_guide(p.read_bytes()))), end='')",
   ].join(";");
   return execFileSync("python3", ["-c", script], { cwd: ROOT, encoding: "utf8" });
 }
 
 let documentHtml: string;
+let personalizedDocumentHtml: string;
+let previewDocumentHtml: string;
 let httpServer: Server;
 let httpBaseUrl: string;
 let tempDir: string;
@@ -28,6 +32,13 @@ let fileUrl: string;
 
 test.beforeAll(async () => {
   documentHtml = assembleFixtureDocument();
+  personalizedDocumentHtml = assembleFixtureDocument(
+    "tests/fixtures/guides/feedback-loops.personalized.guide.json",
+  );
+  previewDocumentHtml = documentHtml.replace(
+    'data-guide-mode="export"',
+    'data-guide-mode="preview"',
+  );
 
   tempDir = mkdtempSync(path.join(tmpdir(), "guide-runtime-e2e-"));
   const filePath = path.join(tempDir, "guide.html");
@@ -50,6 +61,166 @@ test.afterAll(async () => {
 });
 
 const TRANSPORTS = ["http", "file"] as const;
+
+test.describe("guide schema compatibility", () => {
+  test("loads a stripped schema 1.1 guide", async ({ page }) => {
+    await page.setContent(personalizedDocumentHtml, { waitUntil: "load" });
+
+    await expect(
+      page.getByRole("heading", { name: "Thinking in Feedback Loops" }),
+    ).toBeVisible();
+    await expect(page.locator("[data-guide-status]")).toBeHidden();
+    const embedded = await page.locator("#guide-data").textContent();
+    expect(embedded).not.toContain("serves_goals");
+    expect(embedded).not.toContain("goal_exclusions");
+    expect(embedded).not.toContain("Synthetic deferred objective.");
+  });
+
+  test("rejects an unknown schema version", async ({ page }) => {
+    const unknown = documentHtml
+      .replace('data-guide-schema="1.0"', 'data-guide-schema="2.0"')
+      .replace('"schema_version":"1.0"', '"schema_version":"2.0"');
+    await page.setContent(unknown, { waitUntil: "load" });
+
+    await expect(page.locator("[data-guide-shell]")).toBeHidden();
+    await expect(page.locator("[data-guide-status]")).toContainText(
+      "schema 2.0, runtime 1.0",
+    );
+  });
+});
+
+test.describe("preview evidence message bridge", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.setContent(previewDocumentHtml, { waitUntil: "load" });
+  });
+
+  test("reveals, scrolls, and focuses the first section for module evidence", async ({ page }) => {
+    await page.evaluate(() => {
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function scrollIntoView(options) {
+        document.documentElement.dataset.evidenceScrolledTo = this.id;
+        if (original) original.call(this, options);
+      };
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        data: {
+          type: "education-pipeline:preview-evidence",
+          kind: "module",
+          id: "intervention-practice",
+        },
+      }));
+    });
+
+    const target = page.locator('section[data-module-id="intervention-practice"]').first();
+    await expect(target).toHaveClass(/is-current/);
+    await expect(target).toBeFocused();
+    await expect(target).toHaveAttribute("tabindex", "-1");
+    await expect(page.locator("html")).toHaveAttribute(
+      "data-evidence-scrolled-to",
+      "delays-and-leverage",
+    );
+  });
+
+  test("resolves outcome evidence by DOM id and focuses the target", async ({ page }) => {
+    await page.evaluate(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        data: {
+          type: "education-pipeline:preview-evidence",
+          kind: "outcome",
+          id: "identify-loop",
+        },
+      }));
+    });
+
+    await expect(page.locator("#identify-loop")).toBeFocused();
+    await expect(page.locator("#identify-loop")).toHaveAttribute("tabindex", "-1");
+  });
+
+  test("rejects malformed, unknown, and non-parent messages", async ({ page }) => {
+    await expect(page.locator('section[data-role="guide-section"]').first()).toHaveClass(/is-current/);
+    await page.evaluate(() => {
+      const dispatch = (data: unknown, source: MessageEventSource | null = window) =>
+        window.dispatchEvent(new MessageEvent("message", { source, data }));
+      dispatch({ type: "education-pipeline:preview-evidence", kind: "module", id: "missing" });
+      dispatch({ type: "education-pipeline:preview-evidence", kind: "module", id: "intervention-practice", extra: true });
+      dispatch({ type: "education-pipeline:preview-evidence", kind: "block", id: "intervention-practice" });
+      dispatch({ type: "education-pipeline:preview-evidence", kind: "module", id: "Not A Guide ID" });
+      dispatch({ type: "education-pipeline:preview-evidence", kind: "module", id: "intervention-practice" }, null);
+    });
+
+    await expect(page.locator('section[data-role="guide-section"]').first()).toHaveClass(/is-current/);
+    await expect(page.locator('section[data-module-id="intervention-practice"]').first()).not.toBeFocused();
+  });
+
+  test("rejects a DOM id that is not a declared outcome", async ({ page }) => {
+    await page.evaluate(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        data: {
+          type: "education-pipeline:preview-evidence",
+          kind: "outcome",
+          id: "guide-main",
+        },
+      }));
+    });
+
+    await expect(page.locator("#guide-main")).not.toBeFocused();
+    await expect(page.locator("#guide-main")).not.toHaveAttribute("tabindex", "-1");
+  });
+
+  test("export-mode documents ignore otherwise valid evidence messages", async ({ page }) => {
+    await page.setContent(documentHtml, { waitUntil: "load" });
+    await page.evaluate(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        data: {
+          type: "education-pipeline:preview-evidence",
+          kind: "module",
+          id: "intervention-practice",
+        },
+      }));
+    });
+
+    await expect(page.locator('section[data-role="guide-section"]').first()).toHaveClass(/is-current/);
+    await expect(page.locator('section[data-module-id="intervention-practice"]').first()).not.toBeFocused();
+  });
+
+  test("receives parent evidence messages in an opaque sandboxed srcDoc", async ({ page }) => {
+    await page.setContent(
+      '<iframe title="Sandboxed guide preview" sandbox="allow-scripts"></iframe>',
+    );
+    const iframe = page.locator('iframe[title="Sandboxed guide preview"]');
+    await iframe.evaluate((element, html) => {
+      (element as HTMLIFrameElement).srcdoc = html;
+    }, previewDocumentHtml);
+
+    const preview = page.frameLocator('iframe[title="Sandboxed guide preview"]');
+    const firstSection = preview.locator('section[data-role="guide-section"]').first();
+    const target = preview
+      .locator('section[data-module-id="intervention-practice"]')
+      .first();
+    await expect(preview.locator("[data-guide-shell]")).toBeVisible();
+    await expect(firstSection).toHaveClass(/is-current/);
+
+    await iframe.evaluate((element) => {
+      (element as HTMLIFrameElement).contentWindow?.postMessage(
+        {
+          type: "education-pipeline:preview-evidence",
+          kind: "module",
+          id: "intervention-practice",
+        },
+        "*",
+      );
+    });
+
+    await expect(firstSection).not.toHaveClass(/is-current/);
+    await expect(target).toHaveClass(/is-current/);
+    await expect(target).toBeFocused();
+    await expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(iframe).not.toHaveAttribute("sandbox", /allow-same-origin/);
+  });
+});
 
 // The runtime shows one section at a time, so tests must open the section
 // that owns the block they exercise. Uses the fragment router (a tested

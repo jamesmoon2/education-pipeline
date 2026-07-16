@@ -17,3 +17,6 @@ recommendation = "fast_cheap_check"
 
 [stages.repair]
 recommendation = "strong_or_premium_repair"
+
+[stages.audit]
+recommendation = "strong_personalization_audit"

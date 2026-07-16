@@ -1,8 +1,8 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { RunStatus } from "../api/types";
+import type { PersonalizationPayload, RunStatus } from "../api/types";
 import RunBoardPage from "./RunBoardPage";
 
 vi.mock("../api/client", async () => {
@@ -10,6 +10,10 @@ vi.mock("../api/client", async () => {
   return {
     ApiRequestError: actual.ApiRequestError,
     getRunStatus: vi.fn(),
+    getPersonalization: vi.fn(),
+    getStageContent: vi.fn(),
+    postGuidePreview: vi.fn(),
+    prepareAudit: vi.fn(),
     getJobs: vi.fn(),
     getJobLog: vi.fn(),
     postAdvance: vi.fn(),
@@ -30,11 +34,16 @@ vi.mock("../api/client", async () => {
 
 import {
   ApiRequestError,
+  enqueueJob,
   getConfigCatalog,
   getConfigProviders,
   getJobs,
+  getPersonalization,
   getRunPlan,
   getRunStatus,
+  getStageContent,
+  postGuidePreview,
+  prepareAudit,
   postAdvance,
 } from "../api/client";
 
@@ -91,6 +100,36 @@ const status: RunStatus = {
   },
 };
 
+const personalization: PersonalizationPayload = {
+  topic_id: "t",
+  profile: { state: "attached", id: "learner-a" },
+  trace: {
+    state: "current",
+    facets: ["pacing"],
+    goals: [{
+      goal_id: "goal-001",
+      goal_text: "Recognize feedback loops",
+      status: "served",
+      evidence: [{ kind: "module", id: "loop-basics" }],
+      exclusions: [],
+    }],
+  },
+  audit: {
+    state: "not_run",
+    stage_state: "not_run",
+    available: true,
+    unavailable_reason: null,
+    findings: [],
+  },
+  findings: [],
+  export: { state: "missing" },
+};
+
+const interactiveStatus: RunStatus = {
+  ...status,
+  content_contract: { kind: "interactive_guide", schema_version: "1.1" },
+};
+
 function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -103,9 +142,160 @@ function renderAt(path: string) {
 
 describe("RunBoardPage", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.mocked(getConfigProviders).mockResolvedValue({ providers: planProviders });
     vi.mocked(getConfigCatalog).mockResolvedValue({ providers: planCatalog });
     vi.mocked(getRunPlan).mockResolvedValue(makePlan());
+    vi.mocked(getPersonalization).mockResolvedValue(personalization);
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "repair",
+      prompt: null,
+      response: null,
+      approved: null,
+      response_sha256: null,
+      content_type: "application/vnd.education-pipeline.guide+json;version=1.0",
+    });
+    vi.mocked(postGuidePreview).mockResolvedValue({
+      html: "<!doctype html><p>Guide preview</p>",
+      content_sha256: "a".repeat(64),
+      validation: { blocking: 0, errors: 0, warnings: 0 },
+    });
+  });
+
+  it("integrates trace-only personalization beside the durable preview", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue(interactiveStatus);
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    expect(await screen.findByRole("region", { name: "Personalization fit" })).toBeInTheDocument();
+    expect(screen.getByText("Recognize feedback loops")).toBeInTheDocument();
+    expect(screen.getByText("Optional audit has not been run.")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Optional personalization audit" })).toBeInTheDocument();
+    expect(screen.getByText("Approved repair / final source")).toBeInTheDocument();
+  });
+
+  it("keeps the durable preview available while personalization is loading or unavailable", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue(interactiveStatus);
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    vi.mocked(getPersonalization).mockReturnValue(new Promise(() => undefined));
+    const loading = renderAt("/topics/t");
+
+    expect(await screen.findByText("Approved repair / final source")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: /Loading personalization/i })).toBeInTheDocument();
+    loading.unmount();
+
+    vi.mocked(getPersonalization).mockRejectedValue(new Error("aggregate unavailable"));
+    renderAt("/topics/t");
+    expect(await screen.findByText("Approved repair / final source")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("aggregate unavailable");
+    expect(screen.queryByRole("region", { name: "Optional personalization audit" })).not.toBeInTheDocument();
+  });
+
+  it("refreshes the durable preview after a run mutation", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue(interactiveStatus);
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    vi.mocked(enqueueJob).mockResolvedValue({
+      id: "job-refresh",
+      topic_id: "t",
+      stage: "outline",
+      provider: "claude-code",
+      model: "sonnet",
+      effort: null,
+      status: "queued",
+      created_at: "2026-07-15T00:00:00Z",
+      started_at: null,
+      ended_at: null,
+      exit_code: null,
+      error: null,
+    });
+    renderAt("/topics/t");
+
+    await screen.findByText("No approved repair guide is available yet.");
+    expect(getStageContent).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole("button", { name: "Run with provider" }));
+    await waitFor(() => expect(getStageContent).toHaveBeenCalledTimes(2));
+  });
+
+  it("preserves audit success feedback while refreshing personalization and preview", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue(interactiveStatus);
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    vi.mocked(prepareAudit).mockResolvedValue({} as never);
+    renderAt("/topics/t");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Prepare audit" }));
+    expect(await screen.findByText("Audit prompt prepared.")).toHaveAttribute("role", "status");
+    await waitFor(() => expect(getPersonalization).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(getStageContent).toHaveBeenCalledTimes(2));
+  });
+
+  it("never renders personalization state from another topic", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue(interactiveStatus);
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    vi.mocked(getPersonalization).mockResolvedValue({
+      ...personalization,
+      topic_id: "other-topic",
+    });
+    renderAt("/topics/t");
+
+    expect(await screen.findByText("Approved repair / final source")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/does not match/i);
+    expect(screen.queryByRole("region", { name: "Personalization fit" })).not.toBeInTheDocument();
+  });
+
+  it("renders current and stale audit states plus the re-export prompt", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue(interactiveStatus);
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    vi.mocked(getPersonalization).mockResolvedValue({
+      ...personalization,
+      audit: {
+        ...personalization.audit,
+        state: "current",
+        stage_state: "approved",
+      },
+      export: { state: "current" },
+    });
+    const view = renderAt("/topics/t");
+
+    expect(await screen.findByText("Optional audit is current.")).toBeInTheDocument();
+    expect(screen.getByText("Export is current.")).toBeInTheDocument();
+
+    vi.mocked(getPersonalization).mockResolvedValue({
+      ...personalization,
+      audit: {
+        ...personalization.audit,
+        state: "stale",
+        stage_state: "stale",
+      },
+      export: { state: "stale" },
+    });
+    view.unmount();
+    renderAt("/topics/t");
+
+    expect(await screen.findByText("Optional audit is stale.")).toBeInTheDocument();
+    expect(screen.getByText("Re-export to publish the current personalization evidence.")).toBeInTheDocument();
+    expect(screen.getByText("Re-export the guide to publish the current audit projection.")).toBeInTheDocument();
+  });
+
+  it("renders the no-profile state without evidence controls", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue(interactiveStatus);
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    vi.mocked(getPersonalization).mockResolvedValue({
+      ...personalization,
+      profile: { state: "not_attached", id: null },
+      trace: { state: "missing", goals: [], facets: [] },
+      audit: {
+        state: "not_run",
+        stage_state: "not_run",
+        available: false,
+        unavailable_reason: "No learner profile is attached.",
+        findings: [],
+      },
+    });
+    renderAt("/topics/t");
+
+    expect(await screen.findByText("No learner profile is attached.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Open module/ })).not.toBeInTheDocument();
   });
 
   it("renders stages, next action, and jobs", async () => {
@@ -136,6 +326,7 @@ describe("RunBoardPage", () => {
     expect(stageLink).toHaveAttribute("href", "/topics/t/stages/spec");
     expect(await screen.findByText("20260710T000000Z-abcd")).toBeInTheDocument();
     expect(screen.getByText("running")).toBeInTheDocument();
+    expect(getPersonalization).not.toHaveBeenCalled();
   });
 
   it("shows a friendly message when no run exists", async () => {
@@ -145,6 +336,7 @@ describe("RunBoardPage", () => {
     vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
     renderAt("/topics/t");
     expect(await screen.findByText(/No run started/)).toBeInTheDocument();
+    expect(getPersonalization).not.toHaveBeenCalled();
   });
 
   it("renders the primary action for the current next_action", async () => {
@@ -194,9 +386,9 @@ describe("RunBoardPage", () => {
 
     // outline: 2 (draft) + 1 (final) summed; repair: 3 from the final report only.
     const repairRow = await screen.findByRole("row", { name: /repair/ });
-    expect(within(repairRow).getByRole("status", { name: "3 findings" })).toBeInTheDocument();
+    expect(within(repairRow).getByLabelText("3 findings")).toBeInTheDocument();
     const outlineRow = screen.getByRole("row", { name: /outline/ });
-    expect(within(outlineRow).getByRole("status", { name: "3 findings" })).toBeInTheDocument();
+    expect(within(outlineRow).getByLabelText("3 findings")).toBeInTheDocument();
   });
 
   it("ignores findings_by_stage from a phase whose report is not current", async () => {
@@ -224,8 +416,8 @@ describe("RunBoardPage", () => {
     renderAt("/topics/t");
 
     const repairRow = await screen.findByRole("row", { name: /repair/ });
-    expect(within(repairRow).getByRole("status", { name: "1 finding" })).toBeInTheDocument();
-    expect(screen.queryByRole("status", { name: "5 findings" })).not.toBeInTheDocument();
+    expect(within(repairRow).getByLabelText("1 finding")).toBeInTheDocument();
+    expect(screen.queryByLabelText("5 findings")).not.toBeInTheDocument();
   });
 
   it("shows no badge for a phase whose every blocker is waived (server-netted findings_by_stage)", async () => {
@@ -265,9 +457,31 @@ describe("RunBoardPage", () => {
     renderAt("/topics/t");
 
     const repairRow = await screen.findByRole("row", { name: /repair/ });
-    expect(within(repairRow).getByRole("status", { name: "1 finding" })).toBeInTheDocument();
+    expect(within(repairRow).getByLabelText("1 finding")).toBeInTheDocument();
     const outlineRow = screen.getByRole("row", { name: /outline/ });
-    expect(within(outlineRow).queryByRole("status")).not.toBeInTheDocument();
+    expect(within(outlineRow).queryByLabelText(/finding/)).not.toBeInTheDocument();
+  });
+
+  it("does not announce the findings badge as a live region", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      ...status,
+      validations: {
+        draft: {
+          state: "current",
+          blocking: 2,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { outline: 2 },
+        },
+        final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+      },
+    });
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    const badge = await screen.findByLabelText(/2 findings/i);
+    expect(badge).not.toHaveAttribute("role", "status");
+    expect(badge).toHaveAttribute("aria-label", "2 findings");
   });
 
   it("shows a provenance line for a stage present in stage_provenance", async () => {

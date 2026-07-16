@@ -21,8 +21,18 @@ from education_pipeline.config import (
     weak_stage_warning,
 )
 from education_pipeline.providers import get_runner
+from education_pipeline.privacy import (
+    profile_field_sensitivity,
+    profile_summary_warnings,
+    profile_to_dict,
+)
+from education_pipeline.profiles import (
+    parse_learner_profile,
+    render_profile_prompt_context,
+    render_profile_public_summary,
+)
 from education_pipeline.runs import SUPPORTED_STAGES, RunStore
-from education_pipeline.workspace import ProfileStore, TopicStore
+from education_pipeline.workspace import ProfileRecord, ProfileStore, TopicStore
 
 
 class NotFoundError(Exception):
@@ -66,13 +76,74 @@ def get_topic(topics: TopicStore, topic_id: str) -> dict:
 
 
 def list_profiles(profiles: ProfileStore) -> dict:
-    return {"profiles": list(profiles.list_profile_ids())}
+    return {
+        "profiles": [
+            {
+                "id": profile_id,
+                "attached_topic_count": profiles.profile_attachment_count(profile_id),
+            }
+            for profile_id in profiles.list_profile_ids()
+        ]
+    }
 
 
 def get_profile(profiles: ProfileStore, profile_id: str) -> dict:
     if not profiles.profile_path(profile_id).is_file():
-        raise NotFoundError(f"no such profile: {profile_id}")
-    return {"id": profile_id, "toml": profiles.read_profile_toml(profile_id)}
+        raise NotFoundError("no such profile")
+    return profile_payload(
+        profiles,
+        profile_id,
+        record=profiles.read_profile_record(profile_id),
+    )
+
+
+def profile_payload(
+    profiles: ProfileStore,
+    profile_id: str,
+    *,
+    record: ProfileRecord,
+) -> dict:
+    """Project one canonical store record to the frozen structured API shape."""
+
+    return {
+        "id": profile_id,
+        "parsed": profile_to_dict(record.profile),
+        "sensitivity": _profile_sensitivity_payload(),
+        "content_sha256": record.content_sha256,
+        "warnings": _profile_warnings_payload(record.profile),
+        "attached_topic_count": profiles.profile_attachment_count(profile_id),
+    }
+
+
+def preview_profile(value: object) -> dict:
+    """Render a structured profile without consulting or mutating the store."""
+
+    profile = parse_learner_profile(value)
+    return {
+        "parsed": profile_to_dict(profile),
+        "prompt_context": render_profile_prompt_context(profile),
+        "publishable_summary": render_profile_public_summary(profile),
+        "sensitivity": _profile_sensitivity_payload(),
+        "warnings": _profile_warnings_payload(profile),
+    }
+
+
+def _profile_sensitivity_payload() -> dict:
+    return {
+        field_path: tier.value
+        for field_path, tier in profile_field_sensitivity().items()
+    }
+
+
+def _profile_warnings_payload(profile) -> list[dict]:
+    return [
+        {
+            "code": warning.code,
+            "field_path": warning.field_path,
+            "fingerprint": warning.fingerprint,
+        }
+        for warning in profile_summary_warnings(profile)
+    ]
 
 
 def run_status_payload(runs: RunStore, topic_id: str) -> dict:
@@ -113,6 +184,97 @@ def list_runs(runs: RunStore) -> dict:
     return {"runs": list(runs.list_run_ids())}
 
 
+def personalization_payload(runs: RunStore, topic_id: str) -> dict:
+    """Return the one authenticated local cockpit personalization aggregate.
+
+    Private profile goals and exclusions are intentionally available to the
+    local cockpit. Model-authored audit narratives and artifact locations are
+    not: audit presentation is sourced only from the strict safe projection
+    captured by :meth:`RunStore.personalization_snapshot`.
+    """
+
+    require_run(runs, topic_id)
+    try:
+        snapshot = runs.personalization_snapshot(topic_id)
+    except ConfigError:
+        raise ConfigError("personalization state is unavailable") from None
+    profile = snapshot.profile
+    trace = snapshot.trace
+    trace_state = snapshot.trace_state
+    goals: list[dict] = []
+    facets: list[str] = []
+    if trace is not None and trace_state == "current":
+        facets = list(trace.active_facets)
+        for goal in trace.goals:
+            evidence = [
+                {"kind": "module", "id": element_id}
+                for element_id in goal.serving_module_ids
+            ] + [
+                {"kind": "outcome", "id": element_id}
+                for element_id in goal.serving_outcome_ids
+            ]
+            goals.append(
+                {
+                    "goal_id": goal.goal_id,
+                    "goal_text": goal.goal_text,
+                    "status": (
+                        "served"
+                        if evidence
+                        else "excluded"
+                        if goal.exclusions
+                        else "missing"
+                    ),
+                    "evidence": evidence,
+                    "exclusions": [
+                        {"reason": exclusion.reason}
+                        for exclusion in goal.exclusions
+                    ],
+                }
+            )
+
+    audit_findings = [
+        finding.to_dict()
+        for finding in snapshot.audit_findings
+        if finding.stage == "audit"
+    ]
+    findings = [
+        finding.to_dict()
+        for finding in snapshot.findings
+        if finding.rule_id.startswith("personalization.")
+        or finding.stage == "audit"
+    ]
+
+    available = False
+    unavailable_reason: str | None
+    if profile is None:
+        unavailable_reason = "No learner profile is attached."
+    elif snapshot.final_report_state != "current":
+        unavailable_reason = "Final validation is not current."
+    elif trace_state != "current":
+        unavailable_reason = "The personalization trace is not current."
+    else:
+        available = True
+        unavailable_reason = None
+
+    return {
+        "topic_id": topic_id,
+        "profile": {
+            "state": "attached" if profile is not None else "not_attached",
+            "id": profile.id if profile is not None else None,
+        },
+        "trace": {"state": trace_state, "goals": goals, "facets": facets},
+        "audit": {
+            "state": snapshot.audit_state,
+            "stage_state": snapshot.audit_stage_state,
+            "available": available,
+            "unavailable_reason": unavailable_reason,
+            "findings": audit_findings,
+        },
+        "findings": findings,
+        "export": {"state": snapshot.export_state},
+    }
+
+
 def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
     require_run(runs, topic_id)
     paths = runs.stage_paths(topic_id, stage)  # ConfigError on bad stage -> 400
@@ -138,7 +300,7 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
 
 def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
     if runs.content_contract(topic_id).kind != "interactive_guide":
-        return {
+        result = {
             "state": "missing",
             "blocking": 0,
             "errors": 0,
@@ -146,6 +308,9 @@ def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
             "findings_by_stage": {},
             "effective_blocking": 0,
         }
+        if phase == "final":
+            result["audit"] = {"state": "not_run", "finding_count": 0}
+        return result
     state = runs.report_state(topic_id, phase)
     counts = {"blocking": 0, "errors": 0, "warnings": 0}
     by_stage: dict[str, int] = {}
@@ -215,12 +380,27 @@ def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
                 if by_stage[stage] <= 0:
                     del by_stage[stage]
 
-    return {
+    result = {
         "state": state,
         **counts,
         "findings_by_stage": by_stage,
         "effective_blocking": effective_blocking,
     }
+    if phase == "final":
+        result["audit"] = audit_summary(runs, topic_id)
+    return result
+
+
+def audit_summary(runs: RunStore, topic_id: str) -> dict:
+    """Return only public-safe audit state and its additive finding count."""
+
+    state = runs.audit_state(topic_id)
+    finding_count = 0
+    if state == "current":
+        finding_count = sum(
+            finding.stage == "audit" for finding in runs.combined_findings(topic_id)
+        )
+    return {"state": state, "finding_count": finding_count}
 
 
 def validation_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
@@ -238,6 +418,14 @@ def validation_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
         raise ConfigError(f"invalid validation report: {path}") from exc
     if not isinstance(report, dict):
         raise ConfigError(f"invalid validation report: {path}")
+    if phase == "final":
+        # Presentation surfaces consume the shared combined accessor. The
+        # deterministic report on disk remains audit-free and continues to
+        # own all blocker, waiver, and gate semantics.
+        report = dict(report)
+        report["findings"] = [
+            finding.to_dict() for finding in runs.combined_findings(topic_id)
+        ]
     return {"state": runs.report_state(topic_id, phase), "report": report}
 
 

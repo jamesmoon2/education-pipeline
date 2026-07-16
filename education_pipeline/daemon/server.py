@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 import re
 import secrets
-import traceback
+import sys
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Protocol
+from urllib.parse import unquote
 
 from education_pipeline.config import (
     ConfigError,
@@ -35,7 +36,7 @@ from education_pipeline.guides import (
     parse_guide,
     validate_guide,
 )
-from education_pipeline.runs import RunStore, SUPPORTED_STAGES
+from education_pipeline.runs import RunStore, StaleContentError, SUPPORTED_STAGES
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
@@ -90,6 +91,11 @@ class DaemonContext:
                 f"override for stage {target_stage!r} is invalid: "
                 f"{override_errors[target_stage]}"
             )
+        if target_stage == "audit":
+            try:
+                self.runs.require_provider_ready_prompt(topic_id, target_stage)
+            except StaleContentError as exc:
+                raise ConfigError(str(exc)) from exc
         # Structural approval gate: only enqueue when the next action is to run a prompt.
         action = status.next_action
         if stage is None and action.action != "save_response":
@@ -167,9 +173,15 @@ def _make_handler(context: DaemonContext):
         def _last_resort(self, exc: Exception) -> None:
             # Any exception not mapped by a typed handler must never escape to
             # socketserver, which would silently drop the connection with no
-            # status line at all. Convert it to a diagnosable 500 and log the
-            # traceback to stderr; never let this handler itself raise.
-            traceback.print_exc()
+            # status line at all. Convert it to a value-free 500 and log only
+            # the exception type; never let this handler itself raise.
+            try:
+                print(
+                    f"daemon internal error: {type(exc).__name__}",
+                    file=sys.stderr,
+                )
+            except Exception:
+                pass
             if getattr(self, "_response_started", False):
                 # A status line (and possibly a partial body) already went
                 # out on this connection — appending a second status line
@@ -180,17 +192,19 @@ def _make_handler(context: DaemonContext):
                 # client disconnecting mid-response (e.g. BrokenPipeError from
                 # self.wfile.write on a plain /v1/health call), not something
                 # specific to /v1/shutdown. The best available response is to
-                # log the traceback (above) and give up on this connection.
+                # log the safe exception type (above) and give up on this
+                # connection.
                 return
             try:
-                # The message echoes str(exc), which can include filesystem
-                # paths. Deliberately acceptable here: this socket is
-                # loopback-only and token-gated (see module docstring), and
-                # existing ConfigError responses already surface raw
-                # exception text the same way.
-                self._error(500, "internal", f"internal server error: {exc}")
-            except Exception:
-                traceback.print_exc()
+                self._error(500, "internal", "internal server error")
+            except Exception as send_exc:
+                try:
+                    print(
+                        f"daemon internal error: {type(send_exc).__name__}",
+                        file=sys.stderr,
+                    )
+                except Exception:
+                    pass
 
         def _guard(self) -> bool:
             if not self._host_ok():
@@ -319,6 +333,12 @@ def _make_handler(context: DaemonContext):
                 return self._send(
                     200, read_api.manifest_payload(context.runs, m.group(1))
                 )
+            m = re.match(r"^/v1/runs/([^/?]+)/personalization$", self.path)
+            if m:
+                return self._send(
+                    200,
+                    read_api.personalization_payload(context.runs, m.group(1)),
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)$", self.path)
             if m:
                 return self._send(
@@ -341,7 +361,7 @@ def _make_handler(context: DaemonContext):
                 guide_v1 = context.runs.content_contract(topic_id).kind == "interactive_guide"
                 return self._send_file(
                     path,
-                    "application/vnd.education-pipeline.guide+json;version=1.0"
+                    context.runs.stage_paths(topic_id, "repair").content_type
                     if guide_v1 else "text/markdown; charset=utf-8",
                     f"{topic_id}-guide.json" if guide_v1 else f"{topic_id}-guide.md",
                 )
@@ -404,7 +424,7 @@ def _make_handler(context: DaemonContext):
             except read_api.NotFoundError as exc:
                 return self._error(404, "not_found", str(exc))
             except write_api.ConflictError as exc:
-                return self._error(409, exc.code, str(exc))
+                return self._error(409, exc.code, str(exc), exc.details)
             except write_api.UnprocessableError as exc:
                 return self._error(422, exc.code, str(exc), exc.details)
             except (GuideDocumentError, ContractError, GuideParseError) as exc:
@@ -421,6 +441,16 @@ def _make_handler(context: DaemonContext):
                 return self._last_resort(exc)
 
         def _api_post_routes(self):
+            if self.path == "/v1/profiles/preview":
+                body = self._read_body()
+                unknown = sorted(set(body) - {"profile"})
+                if unknown:
+                    raise ConfigError(
+                        "unknown profile preview field(s): " + ", ".join(unknown)
+                    )
+                if "profile" not in body:
+                    raise ConfigError("body must define field 'profile'")
+                return self._send(200, read_api.preview_profile(body["profile"]))
             if self.path == "/v1/preview":
                 body = self._read_body()
                 return self._send(
@@ -479,6 +509,25 @@ def _make_handler(context: DaemonContext):
                 self._read_body()  # enforce the JSON/size rules even for an empty body
                 return self._send(
                     200, write_api.advance_run(context.runs, context.store, m.group(1))
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/audit$", self.path)
+            if m:
+                body = self._read_body()
+                unknown = sorted(set(body) - {"rebuild"})
+                if unknown:
+                    raise ConfigError(
+                        "unknown audit preparation field(s): " + ", ".join(unknown)
+                    )
+                if "rebuild" in body and not isinstance(body["rebuild"], bool):
+                    raise ConfigError("body field 'rebuild' must be a boolean")
+                return self._send(
+                    200,
+                    write_api.prepare_audit(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        overwrite=body.get("rebuild", False),
+                    ),
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/validate$", self.path)
             if m:
@@ -585,6 +634,16 @@ def _make_handler(context: DaemonContext):
                         overwrite=bool(body.get("overwrite")),
                     ),
                 )
+            m = re.match(r"^/v1/profiles/([^/?]+)/duplicate$", self.path)
+            if m:
+                return self._send(
+                    201,
+                    write_api.duplicate_profile(
+                        context.profiles,
+                        m.group(1),
+                        self._read_body(),
+                    ),
+                )
             m = re.match(r"^/v1/topics/([^/?]+)/profile$", self.path)
             if m:
                 body = self._read_body()
@@ -610,7 +669,7 @@ def _make_handler(context: DaemonContext):
             except read_api.NotFoundError as exc:
                 return self._error(404, "not_found", str(exc))
             except write_api.ConflictError as exc:
-                return self._error(409, exc.code, str(exc))
+                return self._error(409, exc.code, str(exc), exc.details)
             except write_api.UnprocessableError as exc:
                 return self._error(422, exc.code, str(exc), exc.details)
             except (GuideDocumentError, ContractError, GuideParseError) as exc:
@@ -624,6 +683,14 @@ def _make_handler(context: DaemonContext):
                 return self._last_resort(exc)
 
         def _api_put_routes(self):
+            m = re.match(r"^/v1/profiles/([^/?]+)$", self.path)
+            if m:
+                status, payload = write_api.put_profile(
+                    context.profiles,
+                    m.group(1),
+                    self._read_body(),
+                )
+                return self._send(status, payload)
             if self.path == "/v1/config/plan":
                 return self._send(
                     200,
@@ -649,6 +716,44 @@ def _make_handler(context: DaemonContext):
                         m.group(2),
                         _require_str(body, "text"),
                         base_sha256=_require_str(body, "base_sha256"),
+                    ),
+                )
+            self._error(404, "not_found", "unknown path")
+
+        def do_DELETE(self):
+            # Wrap the whole verb, including the pre-route _guard() check,
+            # so nothing on this path can escape to socketserver.
+            self._response_started = False
+            try:
+                if not self._guard():
+                    return
+                return self._api_delete_routes()
+            except read_api.NotFoundError as exc:
+                return self._error(404, "not_found", str(exc))
+            except write_api.ConflictError as exc:
+                return self._error(409, exc.code, str(exc), exc.details)
+            except write_api.UnprocessableError as exc:
+                return self._error(422, exc.code, str(exc), exc.details)
+            except (GuideDocumentError, ContractError, GuideParseError) as exc:
+                return self._error(422, "guide_not_renderable", str(exc))
+            except ConfigError as exc:
+                return self._error(400, "bad_request", str(exc))
+            except Exception as exc:  # last resort: never drop the connection
+                return self._last_resort(exc)
+
+        def _api_delete_routes(self):
+            m = re.match(
+                r"^/v1/runs/([^/?]+)/validation/(draft|final)/waivers/([^/?]+)$", self.path
+            )
+            if m:
+                # Finding ids embed a JSON path (e.g. "a11y.heading_order:/sections/0"),
+                # so the client percent-encodes the segment. The decoded id is only
+                # string-compared against waiver entries -- never used to build a
+                # filesystem path -- so decoding adds no traversal surface.
+                return self._send(
+                    200,
+                    write_api.delete_waiver(
+                        context.runs, m.group(1), m.group(2), unquote(m.group(3))
                     ),
                 )
             self._error(404, "not_found", "unknown path")

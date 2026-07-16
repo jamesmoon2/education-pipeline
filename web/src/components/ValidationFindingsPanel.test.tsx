@@ -11,12 +11,14 @@ vi.mock("../api/client", async () => {
     getValidation: vi.fn(),
     getWaivers: vi.fn(),
     postWaiver: vi.fn(),
+    deleteWaiver: vi.fn(),
     postValidate: vi.fn(),
   };
 });
 
 import {
   ApiRequestError,
+  deleteWaiver,
   getValidation,
   getWaivers,
   postValidate,
@@ -293,6 +295,59 @@ describe("ValidationFindingsPanel", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
+  it("removes a waiver when Unwaive is clicked and re-blocks the gate", async () => {
+    vi.mocked(getWaivers).mockResolvedValue({
+      state: "current",
+      waivers: {
+        schema_version: 1,
+        guide_sha256: report.guide_sha256,
+        waivers: [{ finding_id: "quality:two", reason: "Accepted for this release" }],
+      },
+    });
+    const updatedReport: ValidationReport = {
+      ...report,
+      summary: { blocking: 1, errors: 1, warnings: 0, info: 0 },
+      findings: [report.findings[0]],
+    };
+    vi.mocked(deleteWaiver).mockResolvedValue({
+      state: "current",
+      report: updatedReport,
+      waivers: {
+        schema_version: 1,
+        guide_sha256: report.guide_sha256,
+        waivers: [],
+      },
+    });
+    const props = renderPanel();
+    expect(await screen.findByText("waived")).toBeInTheDocument();
+
+    const unwaive = await screen.findByRole("button", { name: /unwaive/i });
+    await userEvent.click(unwaive);
+
+    await waitFor(() => expect(deleteWaiver).toHaveBeenCalledWith(
+      "feedback loops", "draft", "quality:two",
+    ));
+    await waitFor(() => expect(screen.queryByText("waived")).not.toBeInTheDocument());
+    expect(props.onChanged).toHaveBeenCalled();
+    expect(screen.getByText(/1 blocking · 1 errors · 0 warnings · 0 waived/)).toBeInTheDocument();
+  });
+
+  it("offers no Unwaive control when the report is stale", async () => {
+    vi.mocked(getValidation).mockResolvedValue({ state: "stale", report });
+    vi.mocked(getWaivers).mockResolvedValue({
+      state: "current",
+      waivers: {
+        schema_version: 1,
+        guide_sha256: report.guide_sha256,
+        waivers: [{ finding_id: "quality:two", reason: "Accepted for this release" }],
+      },
+    });
+    renderPanel("stale");
+    await screen.findByText(/report is stale/);
+    expect(await screen.findByText("waived")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /unwaive/i })).not.toBeInTheDocument();
+  });
+
   it("links each finding to its own responsible stage, not the panel's phase", async () => {
     vi.mocked(getValidation).mockResolvedValue({
       state: "current",
@@ -309,6 +364,41 @@ describe("ValidationFindingsPanel", () => {
     const links = await screen.findAllByRole("link", { name: /Open source/ });
     expect(links[0]).toHaveAttribute("href", expect.stringContaining("/stages/outline?"));
     expect(links[1]).toHaveAttribute("href", expect.stringContaining("/stages/repair?"));
+  });
+
+  it("renders supplemental audit findings without changing deterministic counts or waiver controls", async () => {
+    const auditFinding = {
+      ...report.findings[1],
+      id: "audit.goal:goal-001",
+      stage: "audit",
+      source_stage: "repair",
+      path: "/modules/0/sections/1",
+      related_ids: ["section-one"],
+      message: "Projected audit finding.",
+      waivable: true,
+    };
+    renderPanel("current", {
+      phase: "final",
+      supplementalFindings: [auditFinding],
+    });
+
+    expect(await screen.findByText("Projected audit finding.")).toBeInTheDocument();
+    expect(screen.getByText(/1 blocking · 1 errors · 1 warnings · 0 waived/)).toBeInTheDocument();
+    const links = screen.getAllByRole("link", { name: /Open source/ });
+    const link = links.find((candidate) => candidate.getAttribute("href")?.includes("section-one"));
+    expect(link).toBeDefined();
+    expect(link).toHaveAttribute(
+      "href",
+      "/topics/feedback%20loops/stages/repair?json_path=%2Fmodules%2F0%2Fsections%2F1&related_id=section-one",
+    );
+    expect(link).not.toHaveAttribute("href", expect.stringContaining("/stages/audit"));
+    expect(screen.getAllByRole("button", { name: "Waive…" })).toHaveLength(1);
+    expect(postWaiver).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates aggregate findings already present in the deterministic report", async () => {
+    renderPanel("current", { supplementalFindings: [report.findings[0]] });
+    expect(await screen.findAllByText("Unsafe content.")).toHaveLength(1);
   });
 
   it("falls back to the repair stage for a pre-v2 finding with no stage on a final-phase report", async () => {
