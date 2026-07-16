@@ -9,6 +9,7 @@ import type {
   ImportProfileResult,
   ImportTopicResult,
   Job,
+  GuidePreviewResult,
   LogChunk,
   PreviewResult,
   ResponseResult,
@@ -17,6 +18,10 @@ import type {
   StageContent,
   TopicDetail,
   TopicSummary,
+  ValidateResult,
+  ValidationResult,
+  WaiverResult,
+  WaiversResult,
 } from "./types";
 
 export class ApiRequestError extends Error {
@@ -169,6 +174,32 @@ export const putResponse = (
   );
 export const postPreview = (text: string) =>
   apiPost<PreviewResult>("/v1/preview", { text });
+export const postGuidePreview = (text: string) =>
+  apiPost<GuidePreviewResult>("/v1/guide-preview", {
+    text,
+    include_validation: true,
+  });
+export const postValidate = (topicId: string, phase: "draft" | "final") =>
+  apiPost<ValidateResult>(`/v1/runs/${encodeURIComponent(topicId)}/validate`, { phase });
+export const getValidation = (topicId: string, phase: "draft" | "final") =>
+  api<ValidationResult>(
+    `/v1/runs/${encodeURIComponent(topicId)}/validation/${phase}`,
+  );
+export const postWaiver = (
+  topicId: string,
+  phase: "draft" | "final",
+  findingId: string,
+  guideSha256: string,
+  reason: string,
+) =>
+  apiPost<WaiverResult>(
+    `/v1/runs/${encodeURIComponent(topicId)}/validation/${phase}/waivers`,
+    { finding_id: findingId, guide_sha256: guideSha256, reason },
+  );
+export const getWaivers = (topicId: string, phase: "draft" | "final") =>
+  api<WaiversResult>(
+    `/v1/runs/${encodeURIComponent(topicId)}/validation/${phase}/waivers`,
+  );
 export const postApprove = (topicId: string, stage: string, overwrite = false) =>
   apiPost<ApproveResult>(
     `/v1/runs/${encodeURIComponent(topicId)}/stages/${encodeURIComponent(stage)}/approve`,
@@ -189,12 +220,18 @@ export const attachProfile = (topicId: string, profileId: string) =>
   apiPost<AttachProfileResult>(`/v1/topics/${encodeURIComponent(topicId)}/profile`, {
     profile_id: profileId,
   });
-export const enqueueJob = (topicId: string, stage?: string) =>
-  apiPost<Job>("/v1/jobs", stage ? { topic_id: topicId, stage } : { topic_id: topicId });
+export const enqueueJob = (topicId: string, stage?: string, force = false) =>
+  apiPost<Job>(
+    "/v1/jobs",
+    stage ? { topic_id: topicId, stage, force } : { topic_id: topicId, force },
+  );
 export const cancelJob = (jobId: string) =>
   apiPost<Job>(`/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {});
-export const downloadFinal = (topicId: string) =>
-  download(`/v1/runs/${encodeURIComponent(topicId)}/final/download`, `${topicId}-guide.md`);
+export const downloadFinal = (topicId: string, guideV1 = false) =>
+  download(
+    `/v1/runs/${encodeURIComponent(topicId)}/final/download`,
+    `${topicId}-guide.${guideV1 ? "json" : "md"}`,
+  );
 export const downloadExport = (topicId: string, format: ExportFormat) =>
   download(
     `/v1/runs/${encodeURIComponent(topicId)}/exports/${format}/download`,

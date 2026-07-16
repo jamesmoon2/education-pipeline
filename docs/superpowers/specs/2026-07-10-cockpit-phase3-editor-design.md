@@ -1,6 +1,6 @@
 # Cockpit Phase 3 — In-browser editing and diff views
 
-Phase 3 of the cockpit UI (per `frontendplan.md`). Phase 2 made every human
+Phase 3 of the cockpit UI (per `docs/archive/frontendplan.md`). Phase 2 made every human
 step of a run work from the browser; Phase 3 makes the *content* workable
 there too: edit a stage response in the browser and save it back safely, see
 a live preview, and compare documents side by side.
@@ -29,7 +29,7 @@ Out of scope (decided during design):
   hand; their buffer is never discarded.
 - Raising the 1 MiB request-body cap. 1 MiB of markdown is far beyond any
   guide this pipeline produces; the UI surfaces the 413 envelope error in the
-  unlikely event it is hit. (Resolves `frontendplan.md` open question 3:
+  unlikely event it is hit. (Resolves `docs/archive/frontendplan.md` open question 3:
   **keep the cap**.)
 - Anything already out of scope for the cockpit: SSE, multi-user, remote
   access, daemon lifecycle from the UI, deleting/renaming artifacts.

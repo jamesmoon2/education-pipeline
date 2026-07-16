@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from education_pipeline import RunStore, parse_model_catalog, parse_model_plan
+from education_pipeline import ContentContract, RunStore, parse_model_catalog, parse_model_plan
 from education_pipeline.config import ConfigError
 from education_pipeline.daemon.jobs import Job, JobRunner, JobStore, Worker
 from education_pipeline.providers import Invocation, ProviderResponse, register_runner
@@ -30,7 +30,7 @@ class FakeRunner:
 def _factory(tmp_path):
     register_runner(FakeRunner())
     runs = RunStore(tmp_path)
-    runs.create_run("t")
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
     p = runs.stage_paths("t", "draft").prompt_path
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("PROMPT", encoding="utf-8")

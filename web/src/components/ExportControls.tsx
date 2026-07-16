@@ -3,7 +3,7 @@ import { downloadExport, downloadFinal, postExport } from "../api/client";
 import type { ExportFormat } from "../api/types";
 import { useAction } from "../hooks/useAction";
 
-export default function ExportControls({ topicId }: { topicId: string }) {
+export default function ExportControls({ topicId, guideV1 = false }: { topicId: string; guideV1?: boolean }) {
   const [format, setFormat] = useState<ExportFormat>("html");
   const { busy, feedback, isError, run } = useAction();
   return (
@@ -15,7 +15,7 @@ export default function ExportControls({ topicId }: { topicId: string }) {
           onChange={(e) => setFormat(e.target.value as ExportFormat)}
         >
           <option value="html">html</option>
-          <option value="markdown">markdown</option>
+          {!guideV1 && <option value="markdown">markdown</option>}
         </select>
       </label>{" "}
       <button
@@ -31,7 +31,7 @@ export default function ExportControls({ topicId }: { topicId: string }) {
       </button>{" "}
       <button
         disabled={busy}
-        onClick={() => run(() => downloadFinal(topicId), { successMessage: "Download started." })}
+        onClick={() => run(() => downloadFinal(topicId, guideV1), { successMessage: "Download started." })}
       >
         Download final guide
       </button>{" "}
@@ -42,15 +42,17 @@ export default function ExportControls({ topicId }: { topicId: string }) {
         }
       >
         Download html export
-      </button>{" "}
-      <button
-        disabled={busy}
-        onClick={() =>
-          run(() => downloadExport(topicId, "markdown"), { successMessage: "Download started." })
-        }
-      >
-        Download markdown export
       </button>
+      {!guideV1 && (
+        <button
+          disabled={busy}
+          onClick={() =>
+            run(() => downloadExport(topicId, "markdown"), { successMessage: "Download started." })
+          }
+        >
+          Download markdown export
+        </button>
+      )}
       {feedback && <p className={isError ? "error" : "success"}>{feedback}</p>}
     </div>
   );

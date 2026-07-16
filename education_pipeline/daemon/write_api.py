@@ -14,6 +14,7 @@ carry a precise conflict code; the store call remains the authority and its
 from __future__ import annotations
 
 import hashlib
+import json
 import tomllib
 from pathlib import Path
 
@@ -31,6 +32,15 @@ class ConflictError(Exception):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class UnprocessableError(Exception):
+    """Safe input that cannot be accepted under the guide contract."""
+
+    def __init__(self, code: str, message: str, details: dict | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
 
 
 def _run_relative(runs: RunStore, topic_id: str, path: Path) -> str:
@@ -54,6 +64,67 @@ def advance_run(runs: RunStore, jobs: JobStore, topic_id: str) -> dict:
         "performed": result.performed,
         "status": read_api.run_status_payload(runs, result.topic_id),
     }
+
+
+def validate_run(runs: RunStore, jobs: JobStore, topic_id: str, phase: str) -> dict:
+    read_api.require_run(runs, topic_id)
+    if phase not in {"draft", "final"}:
+        raise ConfigError("phase must be 'draft' or 'final'")
+    stage = "draft" if phase == "draft" else "repair"
+    job = jobs.active_for(topic_id, stage)
+    if job is not None:
+        raise ConflictError(
+            "job_active", f"job {job.id} is {job.status} for {topic_id}/{stage}"
+        )
+    runs.validate_run(topic_id, phase)
+    return {
+        **read_api.validation_payload(runs, topic_id, phase),
+        "status": read_api.run_status_payload(runs, topic_id),
+    }
+
+
+def create_waiver(
+    runs: RunStore,
+    topic_id: str,
+    phase: str,
+    finding_id: str,
+    guide_sha256: str,
+    reason: str,
+) -> dict:
+    payload = read_api.validation_payload(runs, topic_id, phase)
+    if payload["state"] != "current":
+        raise ConflictError("stale_validation", "validation report or guide input is stale")
+    report = payload["report"]
+    if report.get("guide_sha256") != guide_sha256:
+        raise ConflictError("stale_validation", "guide hash does not match the current report")
+    if not reason.strip():
+        raise ConfigError("waiver reason must not be empty")
+    finding = next(
+        (item for item in report.get("findings", []) if item.get("id") == finding_id),
+        None,
+    )
+    if finding is None:
+        raise NotFoundError(f"no finding {finding_id!r} in the current {phase} report")
+    if not finding.get("waivable"):
+        raise UnprocessableError("finding_not_waivable", f"finding {finding_id!r} is not waivable")
+
+    path = runs.waivers_path(topic_id)
+    existing: list[dict] = []
+    if path.is_file():
+        try:
+            old = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ConfigError(f"invalid validation waivers file: {path}") from exc
+        if old.get("guide_sha256") == guide_sha256 and isinstance(old.get("waivers"), list):
+            existing = [item for item in old["waivers"] if item.get("finding_id") != finding_id]
+    existing.append({"finding_id": finding_id, "reason": reason.strip()})
+    existing.sort(key=lambda item: item["finding_id"])
+    value = {"schema_version": 1, "guide_sha256": guide_sha256, "waivers": existing}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp.replace(path)
+    return {"waivers": value, **read_api.validation_payload(runs, topic_id, phase)}
 
 
 def ingest_response(

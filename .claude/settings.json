@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *package-lock.json) echo 'Blocked: package-lock.json must only change via npm commands, not direct edits.' >&2; exit 2;; esac"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in */web/src/*.ts|*/web/src/*.tsx) cd \"$CLAUDE_PROJECT_DIR/web\" && npx tsc --noEmit 1>&2 || exit 2;; esac",
+            "timeout": 120,
+            "statusMessage": "Type-checking web/ with tsc"
+          }
+        ]
+      }
+    ]
+  }
+}

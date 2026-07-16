@@ -12,7 +12,7 @@ compiled prompt through a model provider (Claude Code or Codex) and capture the
 response — instead of the human copying the prompt into a model UI by hand.
 
 This is the Phase 5 "model provider" work from
-`docs/open-source-readiness-plan.md`. It is built **runner-first**: usable from
+`docs/archive/open-source-readiness-plan.md`. It is built **runner-first**: usable from
 the CLI now, with a JSON API that the future browser GUI (Spec 2) consumes as a
 second client. The engine (`RunStore`, `config`) stays synchronous and
 provider-agnostic; only the new daemon spawns provider processes.
@@ -402,5 +402,5 @@ Deterministic and offline — no real model calls in CI.
 - Claude Code headless docs: https://code.claude.com/docs/en/headless
 - Codex non-interactive mode: https://developers.openai.com/codex/noninteractive
 - codex/docs/exec.md: https://github.com/openai/codex/blob/main/docs/exec.md
-- `docs/open-source-readiness-plan.md` (Phase 5, Model Provider Settings)
-- `docs/roadmap.md` (Phase 4, Model Plan UI)
+- `docs/archive/open-source-readiness-plan.md` (Phase 5, Model Provider Settings)
+- `docs/archive/roadmap.md` (Phase 4, Model Plan UI)

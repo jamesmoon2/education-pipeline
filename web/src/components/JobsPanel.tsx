@@ -27,6 +27,7 @@ export default function JobsPanel({ topicId }: { topicId: string }) {
               <th>Job</th>
               <th>Stage</th>
               <th>Provider</th>
+              <th>Model / effort</th>
               <th>Status</th>
               <th></th>
             </tr>
@@ -38,6 +39,7 @@ export default function JobsPanel({ topicId }: { topicId: string }) {
                   <td>{job.id}</td>
                   <td>{job.stage}</td>
                   <td>{job.provider}</td>
+                  <td>{job.model ?? "default"}{job.effort ? ` / ${job.effort}` : ""}</td>
                   <td>
                     {job.status}
                     {job.error ? <span className="error"> — {job.error}</span> : null}
@@ -64,7 +66,7 @@ export default function JobsPanel({ topicId }: { topicId: string }) {
                 </tr>
                 {openJobId === job.id ? (
                   <tr>
-                    <td colSpan={5}>
+                    <td colSpan={6}>
                       <JobLogView jobId={job.id} active={ACTIVE_STATUSES.has(job.status)} />
                     </td>
                   </tr>

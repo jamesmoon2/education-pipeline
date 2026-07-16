@@ -1,0 +1,169 @@
+{
+  "schema_version": "1.0",
+  "course": {
+    "id": "feedback-loops",
+    "title": "Thinking in Feedback Loops",
+    "subtitle": "A practical introduction through projects and gardens",
+    "description": "Learn to recognize feedback, map its structure, and choose thoughtful interventions.",
+    "language": "en",
+    "blueprint": "conceptual-foundations",
+    "estimated_minutes": 30,
+    "difficulty": "introductory",
+    "learner_summary": "Designed for a project manager who values concrete gardening examples and scenario practice."
+  },
+  "outcomes": [
+    {"id": "identify-loop", "text": "Identify reinforcing and balancing feedback in a familiar system."},
+    {"id": "map-loop", "text": "Map a feedback loop by tracing a changing quantity back to itself."},
+    {"id": "choose-intervention", "text": "Choose an intervention that accounts for feedback structure and delays."}
+  ],
+  "modules": [
+    {
+      "id": "loop-basics",
+      "title": "How loops behave",
+      "summary": "Recognize the structures that amplify change or move a system toward a goal.",
+      "outcome_ids": ["identify-loop", "map-loop"],
+      "estimated_minutes": 14,
+      "sections": [
+        {
+          "id": "feedback-foundations",
+          "title": "From events to loops",
+          "blocks": [
+            {
+              "id": "loop-introduction",
+              "type": "rich_text",
+              "outcome_ids": ["identify-loop"],
+              "source_ids": ["meadows-2008"],
+              "markdown": "A **feedback loop** exists when a change travels through a system and eventually influences its starting quantity. Reinforcing loops amplify direction; balancing loops resist a gap or move toward a goal."
+            },
+            {
+              "id": "garden-connection",
+              "type": "callout",
+              "kind": "connection",
+              "title": "Connect it to gardening",
+              "outcome_ids": ["identify-loop"],
+              "markdown": "More leaf growth can capture more sunlight, enabling still more growth—a reinforcing loop. A thermostat-like watering controller instead compares soil moisture with a target and reduces the gap."
+            }
+          ]
+        },
+        {
+          "id": "recognize-loop-types",
+          "title": "Recognize loop behavior",
+          "blocks": [
+            {
+              "id": "check-loop-type",
+              "type": "knowledge_check",
+              "outcome_ids": ["identify-loop"],
+              "mode": "single",
+              "prompt": "A project team learns from each successful release, making later releases smoother and creating more opportunities to learn. What kind of loop dominates?",
+              "choices": [
+                {"id": "release-reinforcing", "label": "Reinforcing", "correct": true},
+                {"id": "release-balancing", "label": "Balancing", "correct": false},
+                {"id": "release-unrelated", "label": "No feedback loop", "correct": false}
+              ],
+              "explanation": "Success increases learning, which improves later success: the change amplifies itself.",
+              "retry": true
+            },
+            {
+              "id": "map-growth-loop",
+              "type": "worked_reveal",
+              "outcome_ids": ["map-loop"],
+              "prompt": "Map the reinforcing loop in a young garden's plant growth.",
+              "steps": [
+                {"id": "choose-biomass", "title": "Choose the quantity", "markdown": "Start with **plant biomass**, something that can rise or fall over time."},
+                {"id": "trace-leaf-area", "title": "Trace the first effect", "markdown": "More biomass usually creates more leaf area, assuming the plant remains healthy."},
+                {"id": "close-growth-loop", "title": "Close the loop", "markdown": "More leaf area captures more sunlight, which supports growth and increases biomass again."}
+              ],
+              "conclusion": "The loop reinforces growth until water, nutrients, space, or another limiting factor becomes important."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "intervention-practice",
+      "title": "Intervene with the whole loop in view",
+      "summary": "Use a loop map to avoid treating symptoms and to anticipate delayed effects.",
+      "outcome_ids": ["map-loop", "choose-intervention"],
+      "estimated_minutes": 16,
+      "sections": [
+        {
+          "id": "delays-and-leverage",
+          "title": "Delays change what you see",
+          "blocks": [
+            {
+              "id": "delay-explanation",
+              "type": "rich_text",
+              "outcome_ids": ["map-loop", "choose-intervention"],
+              "source_ids": ["meadows-2008"],
+              "markdown": "A **delay** separates an action from its visible result. Teams may add work when progress looks slow, just as gardeners may water again before moisture reaches deeper roots. Mapping the delay helps prevent overcorrection."
+            },
+            {
+              "id": "delay-warning",
+              "type": "callout",
+              "kind": "warning",
+              "title": "Watch for overcorrection",
+              "outcome_ids": ["choose-intervention"],
+              "markdown": "Before acting twice, ask whether the first action is still moving through the system."
+            },
+            {
+              "id": "check-delay-response",
+              "type": "knowledge_check",
+              "outcome_ids": ["map-loop", "choose-intervention"],
+              "mode": "multiple",
+              "prompt": "Which actions help when a delayed balancing loop appears unresponsive?",
+              "choices": [
+                {"id": "delay-map", "label": "Map when the intervention should affect the measured quantity", "correct": true},
+                {"id": "delay-observe", "label": "Observe a leading indicator while waiting", "correct": true},
+                {"id": "delay-double", "label": "Immediately double the intervention", "correct": false}
+              ],
+              "explanation": "Mapping the delay and watching a leading indicator distinguish slow response from failed response; immediately doubling can produce oscillation or overshoot.",
+              "retry": true
+            }
+          ]
+        },
+        {
+          "id": "garden-decision",
+          "title": "Practice a gardening decision",
+          "blocks": [
+            {
+              "id": "pest-density-scenario",
+              "type": "scenario",
+              "outcome_ids": ["choose-intervention"],
+              "prompt": "Pest damage rises as garden beds become denser. What should you inspect first before choosing an intervention?",
+              "choices": [
+                {"id": "pest-spray", "label": "Immediately increase pesticide use", "quality": "weak", "feedback": "This treats visible damage before checking how density, pest reproduction, and predator populations interact."},
+                {"id": "pest-map", "label": "Map plant density, pest pressure, predator response, and their delays", "quality": "best", "feedback": "This exposes both reinforcing pest pressure and a potentially delayed balancing response from predators."},
+                {"id": "pest-ignore", "label": "Wait indefinitely because nature always balances itself", "quality": "harmful", "feedback": "A balancing response may be too weak or delayed to prevent serious damage; observation needs a decision threshold."}
+              ],
+              "debrief": "A thoughtful intervention begins by locating the important loops, their relative strength, and the delay before each response becomes visible."
+            },
+            {
+              "id": "project-reflection",
+              "type": "reflection",
+              "outcome_ids": ["map-loop", "choose-intervention"],
+              "prompt": "Where might a delayed feedback loop be shaping a project you know?",
+              "guidance": "Name the changing quantity, trace how it eventually affects itself, and identify one delay before proposing an intervention.",
+              "placeholder": "Draft a private loop map in words…"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "glossary": [
+    {"id": "feedback-loop-term", "term": "Feedback loop", "definition": "A chain of cause and effect that eventually influences its starting quantity."},
+    {"id": "reinforcing-loop-term", "term": "Reinforcing loop", "definition": "A loop that amplifies change in the same direction."},
+    {"id": "balancing-loop-term", "term": "Balancing loop", "definition": "A loop that counteracts a gap or moves a system toward a goal."},
+    {"id": "delay-term", "term": "Delay", "definition": "The elapsed time between a cause and an observable effect in a feedback structure."}
+  ],
+  "sources": [
+    {
+      "id": "meadows-2008",
+      "title": "Thinking in Systems: A Primer",
+      "authors": ["Donella H. Meadows"],
+      "url": "https://www.chelseagreen.com/product/thinking-in-systems/",
+      "published": "2008",
+      "note": "General background on feedback structures, delays, and intervention in systems."
+    }
+  ]
+}

@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { enqueueJob, postAdvance, postApprove, postFinalize } from "../api/client";
+import {
+  enqueueJob,
+  postAdvance,
+  postApprove,
+  postFinalize,
+  postValidate,
+} from "../api/client";
 import type { RunStatus } from "../api/types";
 import { useAction } from "../hooks/useAction";
 import ExportControls from "./ExportControls";
@@ -69,6 +75,25 @@ export default function PrimaryAction({
           <Link to={`/topics/${topicId}/stages/${stage}`}>review first</Link>
         </>
       )}
+      {next.action === "validate" && stage && (
+        <button
+          disabled={busy}
+          onClick={() =>
+            run(
+              () => postValidate(topicId, stage === "draft" ? "draft" : "final"),
+              { successMessage: `${stage === "draft" ? "Draft" : "Final"} validation complete.` },
+            )
+          }
+        >
+          Run {stage === "draft" ? "draft" : "final"} validation
+        </button>
+      )}
+      {next.action === "resolve_findings" && stage && (
+        <>
+          <Link to={`/topics/${topicId}/stages/${stage}`}>Review findings</Link>{" "}
+          <span className="blocked-reason">Finalization blocked: {next.detail}</span>
+        </>
+      )}
       {next.action === "finalize" && (
         <button
           disabled={busy}
@@ -82,7 +107,12 @@ export default function PrimaryAction({
           Finalize
         </button>
       )}
-      {next.action === "done" && <ExportControls topicId={topicId} />}
+      {next.action === "done" && (
+        <ExportControls
+          topicId={topicId}
+          guideV1={status.content_contract.kind === "interactive_guide"}
+        />
+      )}
       {feedback && <p className={isError ? "error" : "success"}>{feedback}</p>}
     </div>
   );

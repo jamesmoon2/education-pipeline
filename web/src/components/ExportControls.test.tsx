@@ -52,11 +52,20 @@ describe("ExportControls", () => {
     );
     render(<ExportControls topicId="t" />);
     await userEvent.click(screen.getByRole("button", { name: "Download final guide" }));
-    expect(downloadFinal).toHaveBeenCalledWith("t");
+    expect(downloadFinal).toHaveBeenCalledWith("t", false);
     await userEvent.click(screen.getByRole("button", { name: "Download markdown export" }));
     expect(downloadExport).toHaveBeenCalledWith("t", "markdown");
     expect(
       await screen.findByText(/no markdown export produced/),
     ).toBeInTheDocument();
+  });
+
+  it("limits guide-v1 exports to HTML and downloads canonical JSON", async () => {
+    vi.mocked(downloadFinal).mockResolvedValue(undefined);
+    render(<ExportControls topicId="g" guideV1 />);
+    expect(screen.queryByRole("option", { name: "markdown" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Download markdown export" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Download final guide" }));
+    expect(downloadFinal).toHaveBeenCalledWith("g", true);
   });
 });

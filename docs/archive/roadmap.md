@@ -1,4 +1,7 @@
-# Roadmap
+# Archived Roadmap
+
+> Archived on 2026-07-11. This roadmap records the initial extraction and
+> pipeline build. It is superseded by `../product-requirements.md`.
 
 ## Phase 1: Public Skeleton
 

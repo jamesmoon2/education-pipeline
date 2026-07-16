@@ -1,4 +1,7 @@
-# Open Source Readiness Plan
+# Archived Open Source Readiness Plan
+
+> Archived on 2026-07-11. This plan records the original public-extraction
+> strategy. It is superseded by `../product-requirements.md`.
 
 The open-source version of this project should be a fresh public repo named
 `education-pipeline`: a local-first, prompt-first education content generator

@@ -29,6 +29,11 @@ import { ApiRequestError, getJobs, getRunStatus, postAdvance } from "../api/clie
 const status: RunStatus = {
   topic_id: "t",
   finalized: false,
+  content_contract: { kind: "legacy_markdown" },
+  validations: {
+    draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+    final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+  },
   stages: [
     { stage: "spec", state: "approved", prompt_written: true, response_ingested: true, approved: true },
     { stage: "outline", state: "prompt_written", prompt_written: true, response_ingested: false, approved: false },

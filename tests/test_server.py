@@ -5,13 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from education_pipeline import RunStore, parse_model_catalog, parse_model_plan
+from education_pipeline import ContentContract, RunStore, parse_model_catalog, parse_model_plan
 from education_pipeline.daemon.jobs import JobRunner, JobStore, Worker
 from education_pipeline.daemon.server import DaemonContext, build_server
 from education_pipeline.providers import Invocation, ProviderResponse, register_runner
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 FAKE = Path(__file__).parent / "fake_provider.py"
+GUIDE_FIXTURE = Path(__file__).parent / "fixtures" / "guides" / "feedback-loops.guide.json"
 
 
 class FakeRunner:
@@ -32,7 +33,8 @@ def _start_server(tmp_path, monkeypatch, web_dist=None):
     monkeypatch.setenv("FAKE_STDOUT", "GENERATED\n")
     register_runner(FakeRunner())
     runs = RunStore(tmp_path)
-    runs.create_run("t")
+    # Explicit legacy: server suite exercises Markdown response paths and finalize.
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
     p = runs.stage_paths("t", "draft").prompt_path
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("PROMPT", encoding="utf-8")
@@ -300,6 +302,7 @@ def test_stage_content_returns_prompt_and_nulls(server):
         "response": None,
         "approved": None,
         "response_sha256": None,
+        "content_type": "text/markdown",
     }
 
 
@@ -708,10 +711,12 @@ def test_downloads_require_token(server):
     assert status == 401
 
 
-def test_full_pipeline_over_http(server):
+def test_full_pipeline_over_http(server, tmp_path):
     toml = 'schema_version = 1\nid = "full"\ntitle = "Full Pipeline"\n'
     status, body = _req(server, "POST", "/v1/topics", body={"toml": toml})
     assert (status, body) == (200, {"id": "full", "title": "Full Pipeline"})
+    # Opt the new topic into the explicit legacy Markdown path before advancing.
+    RunStore(tmp_path).create_run("full", content_contract=ContentContract.legacy_markdown())
 
     for stage in ("spec", "outline", "draft", "qa", "repair"):
         status, body = _req(server, "POST", "/v1/runs/full/advance")
@@ -801,3 +806,24 @@ def test_preview_not_blocked_by_active_job(server, monkeypatch):
         if current["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
             break
         time.sleep(0.02)
+
+
+def test_guide_preview_renders_full_sandbox_document(server):
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/guide-preview",
+        body={"text": GUIDE_FIXTURE.read_text(encoding="utf-8"), "include_validation": True},
+    )
+    assert status == 200
+    assert body["html"].startswith("<!doctype html>")
+    assert 'data-guide-mode="preview"' in body["html"]
+    assert body["validation"]["blocking"] == 0
+    assert len(body["content_sha256"]) == 64
+
+
+def test_guide_preview_error_semantics(server):
+    status, body = _req(server, "POST", "/v1/guide-preview", body={"text": "{"})
+    assert status == 400 and body["error"]["code"] == "invalid_guide_json"
+    status, body = _req(server, "POST", "/v1/guide-preview", body={"text": "{}"})
+    assert status == 422 and body["error"]["code"] == "guide_not_renderable"

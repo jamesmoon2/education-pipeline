@@ -6,7 +6,14 @@ export interface Session {
 export interface NextAction {
   topic_id: string;
   stage: string | null;
-  action: "write_prompt" | "save_response" | "approve" | "finalize" | "done";
+  action:
+    | "write_prompt"
+    | "save_response"
+    | "approve"
+    | "validate"
+    | "resolve_findings"
+    | "finalize"
+    | "done";
   detail: string;
 }
 
@@ -14,7 +21,25 @@ export type StageState =
   | "pending"
   | "prompt_written"
   | "response_ingested"
-  | "approved";
+  | "approved"
+  | "stale";
+
+export interface ContentContract {
+  kind: "legacy_markdown" | "interactive_guide";
+  schema_version?: string;
+}
+
+export type ValidationState = "missing" | "current" | "stale";
+
+export interface ValidationCounts {
+  blocking: number;
+  errors: number;
+  warnings: number;
+}
+
+export interface ValidationStatus extends ValidationCounts {
+  state: ValidationState;
+}
 
 export interface StageStatus {
   stage: string;
@@ -27,6 +52,8 @@ export interface StageStatus {
 export interface RunStatus {
   topic_id: string;
   finalized: boolean;
+  content_contract: ContentContract;
+  validations: { draft: ValidationStatus; final: ValidationStatus };
   stages: StageStatus[];
   next_action: NextAction;
 }
@@ -51,6 +78,9 @@ export interface StageContent {
   response: string | null;
   approved: string | null;
   response_sha256: string | null;
+  content_type:
+    | "text/markdown"
+    | "application/vnd.education-pipeline.guide+json;version=1.0";
 }
 
 export interface Job {
@@ -130,4 +160,61 @@ export interface EditResponseResult {
 
 export interface PreviewResult {
   html: string;
+}
+
+export interface ValidationFinding {
+  id: string;
+  rule_id: string;
+  severity: "blocker" | "error" | "warning" | "info";
+  blocking: boolean;
+  waivable: boolean;
+  path: string;
+  message: string;
+  remediation: string;
+  related_ids?: string[];
+}
+
+export interface ValidationReport {
+  report_schema_version: number;
+  guide_schema_version: string;
+  phase: "draft" | "final";
+  guide_sha256: string;
+  validator_version: string;
+  summary: ValidationCounts & { info: number };
+  findings: ValidationFinding[];
+}
+
+export interface ValidationResult {
+  state: ValidationState;
+  report: ValidationReport;
+}
+
+export interface ValidateResult extends ValidationResult {
+  status: RunStatus;
+}
+
+export interface Waiver {
+  finding_id: string;
+  reason: string;
+}
+
+export interface WaiverSet {
+  schema_version: number;
+  guide_sha256: string;
+  waivers: Waiver[];
+}
+
+export interface WaiverResult extends ValidationResult {
+  waivers: WaiverSet;
+}
+
+export interface WaiversResult {
+  state: ValidationState;
+  waivers: WaiverSet;
+}
+
+export interface GuidePreviewResult {
+  html: string;
+  content_sha256: string;
+  validation: ValidationCounts;
 }

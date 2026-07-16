@@ -12,6 +12,7 @@ vi.mock("../api/client", async () => {
     postAdvance: vi.fn(),
     postApprove: vi.fn(),
     postFinalize: vi.fn(),
+    postValidate: vi.fn(),
     postResponse: vi.fn(),
     postExport: vi.fn(),
     enqueueJob: vi.fn(),
@@ -26,6 +27,7 @@ import {
   postAdvance,
   postApprove,
   postFinalize,
+  postValidate,
   postResponse,
 } from "../api/client";
 
@@ -38,6 +40,11 @@ function makeStatus(action: NextAction["action"], stage: string | null): RunStat
   return {
     topic_id: "t",
     finalized: action === "done",
+    content_contract: { kind: "legacy_markdown" },
+    validations: {
+      draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+      final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+    },
     stages: [],
     next_action: { topic_id: "t", stage, action, detail: `detail for ${action}` },
   };
@@ -107,6 +114,22 @@ describe("PrimaryAction", () => {
     renderAction(makeStatus("finalize", null));
     await userEvent.click(screen.getByRole("button", { name: "Finalize" }));
     expect(postFinalize).toHaveBeenCalledWith("t");
+  });
+
+  it("runs the phase-specific validation machine action", async () => {
+    vi.mocked(postValidate).mockResolvedValue({} as never);
+    renderAction(makeStatus("validate", "repair"));
+    await userEvent.click(screen.getByRole("button", { name: "Run final validation" }));
+    expect(postValidate).toHaveBeenCalledWith("t", "final");
+  });
+
+  it("explains and links resolve_findings without offering finalize", () => {
+    renderAction(makeStatus("resolve_findings", "repair"));
+    expect(screen.getByRole("link", { name: "Review findings" })).toHaveAttribute(
+      "href", "/topics/t/stages/repair",
+    );
+    expect(screen.getByText(/Finalization blocked/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Finalize" })).toBeNull();
   });
 
   it("shows the envelope message on job_active", async () => {

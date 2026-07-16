@@ -2,16 +2,22 @@ import { useEffect, useState } from "react";
 import {
   ApiRequestError,
   getStageContent,
+  postGuidePreview,
   postPreview,
   putResponse,
 } from "../api/client";
 import { useAction } from "../hooks/useAction";
+import GuidePreviewFrame from "./GuidePreviewFrame";
+
+const GUIDE_CONTENT_TYPE =
+  "application/vnd.education-pipeline.guide+json;version=1.0";
 
 export default function ResponseEditor({
   topicId,
   stage,
   content,
   contentSha256,
+  contentType,
   onSaved,
   onClose,
 }: {
@@ -19,6 +25,7 @@ export default function ResponseEditor({
   stage: string;
   content: string;
   contentSha256: string;
+  contentType: "text/markdown" | typeof GUIDE_CONTENT_TYPE;
   onSaved: () => void;
   onClose: () => void;
 }) {
@@ -31,24 +38,34 @@ export default function ResponseEditor({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewHtml, setPreviewHtml] = useState("");
   const save = useAction(onSaved);
+  const isGuide = contentType === GUIDE_CONTENT_TYPE;
+  let jsonError: string | null = null;
+  if (isGuide) {
+    try {
+      JSON.parse(buffer);
+    } catch (error) {
+      jsonError = error instanceof SyntaxError ? error.message : "Invalid JSON";
+    }
+  }
+
+  const requestPreview = () =>
+    (isGuide ? postGuidePreview(buffer) : postPreview(buffer))
+      .then((r) => setPreviewHtml(r.html))
+      .catch(() => {}); // keep the last good preview on transient errors
 
   useEffect(() => {
     if (!previewOpen) return;
     const timer = window.setTimeout(() => {
-      postPreview(buffer)
-        .then((r) => setPreviewHtml(r.html))
-        .catch(() => {}); // keep the last good preview on transient errors
+      if (jsonError === null) void requestPreview();
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [previewOpen, buffer]);
+  }, [previewOpen, buffer, isGuide, jsonError]);
 
   const togglePreview = () => {
     const next = !previewOpen;
     setPreviewOpen(next);
     if (next) {
-      postPreview(buffer)
-        .then((r) => setPreviewHtml(r.html))
-        .catch(() => {});
+      if (jsonError === null) void requestPreview();
     }
   };
 
@@ -83,26 +100,7 @@ export default function ResponseEditor({
 
   return (
     <div className="response-editor">
-      <div className="editor-panes">
-        <label>
-          Edit response for {stage}
-          <textarea
-            value={buffer}
-            onChange={(e) => setBuffer(e.target.value)}
-            rows={20}
-          />
-        </label>
-        {previewOpen && (
-          <div
-            className="preview content"
-            // Safe: the server renderer escapes all content and emits no
-            // scripts, and this page is same-origin authed loopback.
-            dangerouslySetInnerHTML={{ __html: previewHtml }}
-          />
-        )}
-        {currentOnDisk !== null && <pre className="content">{currentOnDisk}</pre>}
-      </div>
-      <div className="editor-controls">
+      <div className="editor-controls" role="toolbar" aria-label="Editor actions">
         <button disabled={save.busy || !buffer.trim()} onClick={doSave}>
           Save
         </button>
@@ -114,6 +112,29 @@ export default function ResponseEditor({
           <button onClick={() => void reload()}>Reload current content</button>
         )}
       </div>
+      <div className="editor-panes">
+        <label>
+          Edit response for {stage}
+          <textarea
+            value={buffer}
+            onChange={(e) => setBuffer(e.target.value)}
+            rows={20}
+          />
+        </label>
+        {previewOpen && isGuide && previewHtml && (
+          <GuidePreviewFrame html={previewHtml} />
+        )}
+        {previewOpen && !isGuide && (
+          <div
+            className="preview content"
+            // Safe: the server renderer escapes all content and emits no
+            // scripts, and this page is same-origin authed loopback.
+            dangerouslySetInnerHTML={{ __html: previewHtml }}
+          />
+        )}
+        {currentOnDisk !== null && <pre className="content">{currentOnDisk}</pre>}
+      </div>
+      {jsonError && <p className="error" role="alert">JSON syntax error: {jsonError}</p>}
       {save.feedback && (
         <p className={save.isError ? "error" : "success"}>{save.feedback}</p>
       )}
