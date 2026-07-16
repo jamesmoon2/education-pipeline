@@ -119,6 +119,43 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.85em; }
   background: white;
 }
 
+/* Run-board personalization workspace */
+.run-personalization-workspace {
+  display: grid;
+  grid-template-columns: minmax(17rem, 2fr) minmax(0, 3fr);
+  gap: 1rem;
+  align-items: start;
+  margin: 1.25rem 0;
+}
+.run-personalization-sidebar {
+  display: grid;
+  gap: 1rem;
+}
+.run-personalization-workspace .personalization-panel,
+.run-personalization-workspace .audit-controls,
+.run-personalization-workspace .canonical-guide-preview {
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 6px;
+}
+.run-personalization-workspace h3,
+.run-personalization-workspace h4 {
+  margin-top: 0;
+}
+.run-personalization-workspace .audit-controls [role="toolbar"] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+}
+.run-personalization-workspace .personalization-goals {
+  padding-left: 1.25rem;
+}
+.run-personalization-workspace .canonical-guide-preview {
+  min-width: 0;
+  border-top: 4px solid #4e829f;
+}
+
 /* Personalization workspace */
 .visually-hidden {
   position: absolute;
@@ -249,6 +286,7 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.85em; }
 .duplicate-panel label { display: flex; flex-direction: column; gap: 0.3rem; max-width: 24rem; margin-bottom: 0.65rem; }
 
 @media (max-width: 50rem) {
+  .run-personalization-workspace { grid-template-columns: 1fr; }
   .profile-workspace { grid-template-columns: 1fr; }
   .privacy-preview { position: static; max-height: none; }
 }
