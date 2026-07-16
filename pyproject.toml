@@ -40,6 +40,9 @@ include = ["education_pipeline*"]
 
 [tool.setuptools.package-data]
 "education_pipeline.guide_runtime" = ["assets/runtime.js", "assets/runtime.css"]
+# Built cockpit assets copied in by scripts/build_webdist.py at release time;
+# gitignored, present only in built wheels and locally after that script runs.
+"education_pipeline" = ["_webdist/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

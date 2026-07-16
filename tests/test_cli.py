@@ -1168,3 +1168,45 @@ def test_daemon_error_without_code_prints_no_remediation(
     assert code == 1
     assert "plain failure" in err
     assert "fix:" not in err
+
+
+# ---------------------------------------------------------------------------
+# ui launcher wiring (spec §2)
+
+
+def _patch_run_ui(monkeypatch: pytest.MonkeyPatch) -> dict:
+    import education_pipeline.ui as ui_module
+
+    seen: dict = {}
+
+    def fake_run_ui(workspace, *, no_browser=False, deps=None):
+        seen["workspace"] = workspace
+        seen["no_browser"] = no_browser
+        return 0
+
+    monkeypatch.setattr(ui_module, "run_ui", fake_run_ui)
+    return seen
+
+
+def test_ui_subcommand_passes_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _patch_run_ui(monkeypatch)
+    assert main(["ui", "--workspace", str(tmp_path), "--no-browser"]) == 0
+    assert seen == {"workspace": str(tmp_path), "no_browser": True}
+
+
+def test_ui_subcommand_defaults_to_registry_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _patch_run_ui(monkeypatch)
+    assert main(["ui", "--no-browser"]) == 0
+    assert seen["workspace"] is None
+
+
+def test_ui_subcommand_honors_top_level_workspace_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _patch_run_ui(monkeypatch)
+    assert main(["--workspace", str(tmp_path), "ui", "--no-browser"]) == 0
+    assert seen["workspace"] == str(tmp_path)

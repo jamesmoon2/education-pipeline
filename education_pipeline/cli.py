@@ -204,6 +204,23 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("job_id")
     p.set_defaults(func=_cmd_cancel)
 
+    p = sub.add_parser(
+        "ui",
+        help="launch the cockpit: pick a workspace, start the daemon, open the browser",
+    )
+    p.add_argument(
+        "--workspace",
+        dest="ui_workspace",
+        default=None,
+        help="workspace directory (default: last-used from the user registry)",
+    )
+    p.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="print the cockpit URL without opening a browser",
+    )
+    p.set_defaults(func=_cmd_ui)
+
     workspace = sub.add_parser("workspace", help="manage the workspace itself").add_subparsers(
         dest="workspace_command", required=True
     )
@@ -656,6 +673,19 @@ def _cmd_cancel(args: argparse.Namespace) -> int:
     job = client.cancel(args.job_id)
     print(f"job {job['id']} {job['status']}")
     return 0
+
+
+def _cmd_ui(args: argparse.Namespace) -> int:
+    """Launch the cockpit. The only command that consults the user registry."""
+
+    from education_pipeline.ui import run_ui
+
+    # `ui --workspace` wins; a top-level -C other than the default also counts
+    # as an explicit choice. Otherwise the registry/first-run flow decides.
+    workspace = args.ui_workspace
+    if workspace is None and args.workspace != ".":
+        workspace = args.workspace
+    return run_ui(workspace, no_browser=args.no_browser)
 
 
 def _cmd_workspace_check(args: argparse.Namespace) -> int:
