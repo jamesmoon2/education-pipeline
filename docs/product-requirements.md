@@ -1,7 +1,7 @@
 # Education Pipeline Product Requirements
 
 **Status:** Authoritative product direction
-**Last updated:** 2026-07-11
+**Last updated:** 2026-07-12
 **Target:** Local-first public application, initial release `v0.1`
 **Supersedes:** `docs/archive/roadmap.md`,
 `docs/archive/open-source-readiness-plan.md`, and
@@ -505,6 +505,15 @@ underlying local configuration.
 
 ### P0 — Establish deterministic release gates
 
+**Status: Delivered 2026-07-13** (closeout evidence in
+[`docs/superpowers/plans/2026-07-12-deterministic-release-gates.md`](superpowers/plans/2026-07-12-deterministic-release-gates.md)
+Wave Log, acceptance tests `tests/test_release_gate_acceptance.py`, and e2e
+`web/e2e/release-gates.spec.ts`).
+
+Milestone specification:
+
+- [`docs/superpowers/specs/2026-07-12-deterministic-release-gates-design.md`](superpowers/specs/2026-07-12-deterministic-release-gates-design.md)
+
 - Implement structured validator results and severities.
 - Add schema, privacy, outcome coverage, link, interaction, accessibility, and
   browser-runtime checks.
@@ -516,12 +525,25 @@ cannot silently package structurally invalid or privacy-leaking content.
 
 ### P1 — Make personalization visible and safe
 
+**Status: Design specified 2026-07-12** in
+[`docs/superpowers/specs/2026-07-12-personalization-design.md`](superpowers/specs/2026-07-12-personalization-design.md).
+Implementation waves 1–2 (privacy engine, profiles UI) may start
+alongside the release-gates milestone tail; wave 3 onward requires that
+milestone's Wave 2 (stage attribution + sidecar report).
+
 - Build profile creation/editing and publishable-summary UI.
 - Add privacy classification and warnings.
 - Add a personalization audit and outcome-to-learner trace.
 - Show “why this course fits you” in preview without exposing private details.
 
 ### P1 — First-run and course-management experience
+
+**Status: Design specified 2026-07-12** in
+[`docs/superpowers/specs/2026-07-12-first-run-course-management-design.md`](superpowers/specs/2026-07-12-first-run-course-management-design.md).
+Launcher-first approach: cockpit assets bundle into the wheel, a user-level
+workspace registry backs `education-pipeline ui`, and library/error work lands
+as thin layers on existing surfaces. Profile editing and blueprint
+recommendation stay in their own P1 milestones.
 
 - Add workspace selection and setup validation.
 - Add a guided New Course flow.

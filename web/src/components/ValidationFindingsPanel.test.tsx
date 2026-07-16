@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ValidationReport } from "../api/types";
+import type { RunStatus, ValidationReport } from "../api/types";
 import ValidationFindingsPanel from "./ValidationFindingsPanel";
 
 vi.mock("../api/client", async () => {
@@ -11,10 +11,17 @@ vi.mock("../api/client", async () => {
     getValidation: vi.fn(),
     getWaivers: vi.fn(),
     postWaiver: vi.fn(),
+    postValidate: vi.fn(),
   };
 });
 
-import { ApiRequestError, getValidation, getWaivers, postWaiver } from "../api/client";
+import {
+  ApiRequestError,
+  getValidation,
+  getWaivers,
+  postValidate,
+  postWaiver,
+} from "../api/client";
 
 const report: ValidationReport = {
   report_schema_version: 1,
@@ -34,6 +41,7 @@ const report: ValidationReport = {
       message: "Unsafe content.",
       remediation: "Remove it.",
       related_ids: ["block-one"],
+      stage: "draft",
     },
     {
       id: "quality:two",
@@ -44,8 +52,27 @@ const report: ValidationReport = {
       path: "/modules/0/sections/1",
       message: "Improve this section.",
       remediation: "Add detail.",
+      stage: "draft",
     },
   ],
+};
+
+const runStatus: RunStatus = {
+  topic_id: "feedback loops",
+  finalized: false,
+  content_contract: { kind: "interactive_guide" },
+  stage_provenance: [],
+  validations: {
+    draft: { state: "current", blocking: 0, errors: 0, warnings: 1 },
+    final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+  },
+  stages: [],
+  next_action: {
+    topic_id: "feedback loops",
+    stage: null,
+    action: "done",
+    detail: "",
+  },
 };
 
 function renderPanel(
@@ -114,6 +141,94 @@ describe("ValidationFindingsPanel", () => {
     expect(screen.queryByRole("button", { name: "Waive…" })).not.toBeInTheDocument();
   });
 
+  it("offers Re-run validation when the report is stale", async () => {
+    vi.mocked(getValidation).mockResolvedValue({ state: "stale", report });
+    renderPanel("stale");
+    expect(await screen.findByRole("button", { name: "Re-run validation" })).toBeInTheDocument();
+  });
+
+  it("offers Re-run validation for a current report with blocking findings", async () => {
+    renderPanel(); // default report has summary.blocking === 1
+    expect(await screen.findByRole("button", { name: "Re-run validation" })).toBeInTheDocument();
+  });
+
+  it("does not offer Re-run validation for a current, clean report", async () => {
+    const cleanReport: ValidationReport = {
+      ...report,
+      summary: { blocking: 0, errors: 0, warnings: 0, info: 0 },
+      findings: [],
+    };
+    vi.mocked(getValidation).mockResolvedValue({ state: "current", report: cleanReport });
+    renderPanel();
+    await screen.findByText("The draft validation report is current.");
+    expect(screen.queryByRole("button", { name: "Re-run validation" })).not.toBeInTheDocument();
+  });
+
+  it("does not offer Re-run validation when every blocker is waived (effectiveBlocking 0) despite raw blocking findings", async () => {
+    // report.summary.blocking is 1 (unwaived on disk), but the caller
+    // supplies the post-waiver gate count of 0: the raw finding still
+    // lists (marked waived) but there is nothing left to re-run for.
+    renderPanel("current", { effectiveBlocking: 0 });
+    await screen.findByText("The draft validation report is current.");
+    expect(screen.queryByRole("button", { name: "Re-run validation" })).not.toBeInTheDocument();
+  });
+
+  it("offers Re-run validation when effectiveBlocking is greater than 0", async () => {
+    renderPanel("current", { effectiveBlocking: 2 });
+    expect(await screen.findByRole("button", { name: "Re-run validation" })).toBeInTheDocument();
+  });
+
+  it("offers Re-run validation for a stale report regardless of effectiveBlocking", async () => {
+    vi.mocked(getValidation).mockResolvedValue({ state: "stale", report });
+    renderPanel("stale", { effectiveBlocking: 0 });
+    expect(await screen.findByRole("button", { name: "Re-run validation" })).toBeInTheDocument();
+  });
+
+  it("re-runs validation, disables the button while in flight, updates counts, and notifies the parent", async () => {
+    let resolvePost!: (value: {
+      state: "current";
+      report: ValidationReport;
+      status: RunStatus;
+    }) => void;
+    vi.mocked(postValidate).mockReturnValue(
+      new Promise((resolve) => {
+        resolvePost = resolve;
+      }),
+    );
+    const props = renderPanel("stale");
+    const button = await screen.findByRole("button", { name: "Re-run validation" });
+    await userEvent.click(button);
+
+    expect(postValidate).toHaveBeenCalledWith("feedback loops", "draft");
+    expect(screen.getByRole("button", { name: /Re-running/ })).toBeDisabled();
+
+    const updatedReport: ValidationReport = {
+      ...report,
+      summary: { blocking: 0, errors: 0, warnings: 1, info: 0 },
+      findings: [report.findings[1]],
+    };
+    resolvePost({ state: "current", report: updatedReport, status: runStatus });
+
+    await waitFor(() =>
+      expect(screen.getByText(/0 blocking · 0 errors · 1 warnings · 0 waived/)).toBeInTheDocument(),
+    );
+    expect(props.onChanged).toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Re-run validation" })).not.toBeDisabled();
+  });
+
+  it("surfaces an ApiRequestError from Re-run validation", async () => {
+    vi.mocked(postValidate).mockRejectedValue(
+      new ApiRequestError(409, "stale_validation", "The guide changed since the last approval."),
+    );
+    renderPanel("stale");
+    const button = await screen.findByRole("button", { name: "Re-run validation" });
+    await userEvent.click(button);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The guide changed since the last approval.",
+    );
+    expect(screen.getByRole("button", { name: "Re-run validation" })).not.toBeDisabled();
+  });
+
   it("separates stale saved waivers from current findings", async () => {
     vi.mocked(getWaivers).mockResolvedValue({
       state: "stale",
@@ -178,16 +293,51 @@ describe("ValidationFindingsPanel", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
-  it("maps final findings to the repair stage", async () => {
+  it("links each finding to its own responsible stage, not the panel's phase", async () => {
     vi.mocked(getValidation).mockResolvedValue({
       state: "current",
-      report: { ...report, phase: "final" },
+      report: {
+        ...report,
+        phase: "final",
+        findings: [
+          { ...report.findings[0], stage: "outline" },
+          { ...report.findings[1], stage: "repair" },
+        ],
+      },
     });
     renderPanel("current", { phase: "final" });
     const links = await screen.findAllByRole("link", { name: /Open source/ });
-    expect(links).not.toHaveLength(0);
-    for (const link of links) {
-      expect(link).toHaveAttribute("href", expect.stringContaining("/stages/repair?"));
-    }
+    expect(links[0]).toHaveAttribute("href", expect.stringContaining("/stages/outline?"));
+    expect(links[1]).toHaveAttribute("href", expect.stringContaining("/stages/repair?"));
+  });
+
+  it("falls back to the repair stage for a pre-v2 finding with no stage on a final-phase report", async () => {
+    const { stage: _stage, ...findingWithoutStage } = report.findings[0];
+    vi.mocked(getValidation).mockResolvedValue({
+      state: "current",
+      report: {
+        ...report,
+        phase: "final",
+        findings: [findingWithoutStage as typeof report.findings[0]],
+      },
+    });
+    renderPanel("current", { phase: "final" });
+    const link = await screen.findByRole("link", { name: /Open source/ });
+    expect(link).toHaveAttribute("href", expect.stringContaining("/stages/repair?"));
+  });
+
+  it("falls back to the draft stage for a pre-v2 finding with no stage on a draft-phase report", async () => {
+    const { stage: _stage, ...findingWithoutStage } = report.findings[0];
+    vi.mocked(getValidation).mockResolvedValue({
+      state: "current",
+      report: {
+        ...report,
+        phase: "draft",
+        findings: [findingWithoutStage as typeof report.findings[0]],
+      },
+    });
+    renderPanel("current", { phase: "draft" });
+    const link = await screen.findByRole("link", { name: /Open source/ });
+    expect(link).toHaveAttribute("href", expect.stringContaining("/stages/draft?"));
   });
 });

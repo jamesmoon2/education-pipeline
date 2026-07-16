@@ -62,6 +62,26 @@ def test_update_global_plan_with_unknown_model_raises_config_error_and_leaves_pl
     assert config.plan_sha256() == base_sha256
 
 
+def test_update_global_plan_rejects_unknown_stage_key_instead_of_silently_dropping_it():
+    """PUT /v1/config/plan is the strict write path: a misspelled stage key
+    (e.g. 'modle' instead of 'model') must raise ConfigError, not silently
+    discard the key and return 200."""
+
+    config = _config_source()
+    base_sha256 = config.plan_sha256()
+    with pytest.raises(ConfigError, match="unknown stage-override key"):
+        write_api.update_global_plan(
+            config,
+            {
+                "base_sha256": base_sha256,
+                "provider": "fake",
+                "stages": {"draft": {"modle": "opus"}},
+            },
+        )
+    assert config.plan.provider == "manual"
+    assert config.plan_sha256() == base_sha256
+
+
 def test_update_run_plan_sets_override_and_source_and_command_change(tmp_path):
     config = _config_source()
     runs, _jobs = _workspace(tmp_path)
@@ -97,6 +117,17 @@ def test_update_run_plan_invalid_model_is_400_and_stored_overrides_untouched(tmp
             config,
             "t",
             {"overrides": {"draft": {"provider": "fake", "model": "does-not-exist"}}},
+        )
+    assert runs.read_plan_overrides("t") == before
+
+
+def test_update_run_plan_unknown_override_key_is_config_error_and_not_persisted(tmp_path):
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    before = runs.read_plan_overrides("t")
+    with pytest.raises(ConfigError):
+        write_api.update_run_plan(
+            runs, config, "t", {"overrides": {"draft": {"modle": "m"}}}
         )
     assert runs.read_plan_overrides("t") == before
 
@@ -429,3 +460,217 @@ def test_waiver_requires_current_hash_reason_and_waivable_finding(tmp_path):
         write_api.create_waiver(
             runs, "t", "draft", nonwaivable["id"], report["guide_sha256"], "reason"
         )
+
+
+def test_create_waiver_response_built_from_locked_write_not_unlocked_reread(tmp_path, monkeypatch):
+    """create_waiver must build its response from the WaiverSet the locked
+    write inside RunStore.record_waiver already produced, not via a second,
+    unlocked call to load_waiver_set: that extra re-read is racy (a
+    concurrent writer bound to a different guide_sha256 could land between
+    the two calls and cause the echoed payload to silently drop the
+    waiver the client just recorded) and dereferences load_waiver_set's
+    Optional return (``.schema_version``) without a guard. Prove the extra
+    read is gone: monkeypatch load_waiver_set to explode, and confirm
+    create_waiver still succeeds and returns the just-recorded waiver."""
+    runs, jobs = _workspace(tmp_path, create_legacy_run=False)
+    runs.create_run("t")
+    guide = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("t", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = write_api.validate_run(runs, jobs, "t", "draft")["report"]
+    finding = next(item for item in report["findings"] if item["waivable"])
+
+    def _boom(self, topic_id):
+        raise AssertionError(
+            "create_waiver must not re-read load_waiver_set after the locked write"
+        )
+
+    monkeypatch.setattr(RunStore, "load_waiver_set", _boom)
+
+    result = write_api.create_waiver(
+        runs, "t", "draft", finding["id"], report["guide_sha256"], "Accepted example"
+    )
+    assert result["waivers"]["waivers"][0]["finding_id"] == finding["id"]
+    assert result["waivers"]["waivers"][0]["reason"] == "Accepted example"
+    assert result["waivers"]["guide_sha256"] == report["guide_sha256"]
+
+
+def test_waiver_rejects_wrong_shape_persisted_waivers_file(tmp_path):
+    """A corrupted/non-object waivers file on disk must surface as ConfigError
+    (400), not crash the process with AttributeError when the builder calls
+    .get() on whatever json.loads() handed back."""
+    runs, jobs = _workspace(tmp_path, create_legacy_run=False)
+    runs.create_run("t")
+    guide = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("t", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = write_api.validate_run(runs, jobs, "t", "draft")["report"]
+    finding = next(item for item in report["findings"] if item["waivable"])
+
+    path = runs.waivers_path("t")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        write_api.create_waiver(
+            runs, "t", "draft", finding["id"], report["guide_sha256"], "reason"
+        )
+
+
+def _corrupt_waivers_setup(tmp_path, corrupt_waivers_list):
+    runs, jobs = _workspace(tmp_path, create_legacy_run=False)
+    runs.create_run("t")
+    guide = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("t", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = write_api.validate_run(runs, jobs, "t", "draft")["report"]
+    finding = next(item for item in report["findings"] if item["waivable"])
+
+    path = runs.waivers_path("t")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "guide_sha256": report["guide_sha256"],
+                "waivers": corrupt_waivers_list,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return runs, finding, report
+
+
+@pytest.mark.parametrize(
+    "corrupt_waivers_list",
+    [
+        [1, 2, 3],
+        ["str"],
+        [None],
+        [[]],
+        [{"reason": "no id key"}],
+        [{"finding_id": 7}],
+        [{"finding_id": None}],
+    ],
+)
+def test_waiver_rejects_element_level_corrupt_waivers_list(tmp_path, corrupt_waivers_list):
+    """Even when the root of validation-waivers.json is a well-formed object,
+    a corrupt element inside its ``waivers`` list must surface as ConfigError
+    (400), not crash the process when the builder calls ``.get()`` / compares
+    ``finding_id`` values on whatever json.loads() handed back for an element."""
+    runs, finding, report = _corrupt_waivers_setup(tmp_path, corrupt_waivers_list)
+
+    with pytest.raises(ConfigError):
+        write_api.create_waiver(
+            runs, "t", "draft", finding["id"], report["guide_sha256"], "reason"
+        )
+
+    # The write must be atomic: a raised guard must leave no partial write and
+    # no orphaned mkstemp temp file (``.tmp-<random>.json``, per
+    # ``_write_bytes_atomic``), and the original corrupt file must be
+    # untouched.
+    path = runs.waivers_path("t")
+    assert not list(path.parent.glob(f".tmp-*{path.suffix}"))
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["waivers"] == corrupt_waivers_list
+
+
+@pytest.mark.parametrize(
+    "corrupt_waivers_list",
+    [
+        [1, 2, 3],
+        ["str"],
+        [None],
+        [[]],
+        [{"reason": "no id key"}],
+        [{"finding_id": 7}],
+        [{"finding_id": None}],
+    ],
+)
+def test_waivers_payload_agrees_with_loader_on_corrupt_waivers_file(
+    tmp_path, corrupt_waivers_list
+):
+    """The read-side ``waivers_payload`` builder used to keep a third, weaker
+    copy of the waivers schema: it only checked that the file's root was a
+    dict, then echoed the corrupt content back verbatim with
+    ``"state": "current"``. That let GET report a run as healthy while the
+    write endpoint and ``RunStore.load_waiver_set`` both raised ConfigError
+    for the exact same file. All three surfaces must agree: a corrupt file
+    is a typed error, not a 200."""
+    runs, finding, report = _corrupt_waivers_setup(tmp_path, corrupt_waivers_list)
+
+    with pytest.raises(ConfigError):
+        write_api.read_api.waivers_payload(runs, "t", "draft")
+
+
+@pytest.mark.parametrize("bad_reason", [5, None, [], {}])
+def test_waiver_rejects_non_string_reason(tmp_path, bad_reason):
+    runs, jobs = _workspace(tmp_path, create_legacy_run=False)
+    runs.create_run("t")
+    guide = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("t", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = write_api.validate_run(runs, jobs, "t", "draft")["report"]
+    finding = next(item for item in report["findings"] if item["waivable"])
+
+    with pytest.raises(ConfigError):
+        write_api.create_waiver(
+            runs, "t", "draft", finding["id"], report["guide_sha256"], bad_reason
+        )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"provider": "manual", "stages": "draft"},
+        {"provider": "manual", "stages": {"draft": "opus"}},
+        {"provider": "manual", "stages": {"draft": {"model": 5}}},
+        {"provider": "manual", "stages": {"draft": {"provider": []}}},
+        {"provider": {}, "stages": {}},
+    ],
+)
+def test_update_global_plan_rejects_wrong_shape_nested_values(body):
+    config = _config_source()
+    body = {**body, "base_sha256": config.plan_sha256()}
+    with pytest.raises(ConfigError):
+        write_api.update_global_plan(config, body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"overrides": "not-a-dict"},
+        {"overrides": {"draft": "opus"}},
+        {"overrides": {"draft": {"model": 5}}},
+        {"overrides": {"draft": {"provider": []}}},
+        {"overrides": {"draft": []}},
+    ],
+)
+def test_update_run_plan_rejects_wrong_shape_nested_values(tmp_path, body):
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    with pytest.raises(ConfigError):
+        write_api.update_run_plan(runs, config, "t", body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"id": "x", "title": "T", "goals": "not-a-list"},
+        {"id": "x", "title": "T", "goals": {"a": 1}},
+        {"id": "x", "title": "T", "goals": [1, 2]},
+        {"id": "x", "title": "T", "brief": {}},
+        {"id": "x", "title": "T", "audience": []},
+        {"id": {"a": 1}, "title": "T"},
+        {"id": "x", "title": {"a": 1}},
+    ],
+)
+def test_create_topic_rejects_wrong_shape_nested_values(tmp_path, body):
+    from education_pipeline.workspace import TopicStore
+
+    topics = TopicStore(tmp_path)
+    with pytest.raises(ConfigError):
+        write_api.create_topic(topics, body)

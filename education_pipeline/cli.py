@@ -109,6 +109,34 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--format", "-f", default="html", choices=EXPORT_FORMATS)
     p.set_defaults(func=_cmd_export)
 
+    p = sub.add_parser("validate", help="run deterministic validation and report the gate")
+    p.add_argument("topic_id")
+    p.add_argument("--phase", default="final", choices=["draft", "final"])
+    p.set_defaults(func=_cmd_validate)
+
+    p = sub.add_parser("findings", help="list a validation report's findings")
+    p.add_argument("topic_id")
+    p.add_argument("--phase", default="final", choices=["draft", "final"])
+    p.add_argument("--blocking", action="store_true", help="show only blocking findings")
+    p.set_defaults(func=_cmd_findings)
+
+    p = sub.add_parser("report", help="print the export sidecar quality report, or the final report")
+    p.add_argument("topic_id")
+    p.set_defaults(func=_cmd_report)
+
+    p = sub.add_parser("waive", help="waive a waivable blocking finding to open the gate")
+    p.add_argument("topic_id")
+    p.add_argument("finding_id")
+    p.add_argument("--reason", required=True, help="reason the finding is being waived")
+    p.add_argument("--phase", default="final", choices=["draft", "final"])
+    p.set_defaults(func=_cmd_waive)
+
+    p = sub.add_parser("unwaive", help="remove a previously recorded waiver")
+    p.add_argument("topic_id")
+    p.add_argument("finding_id")
+    p.add_argument("--phase", default="final", choices=["draft", "final"])
+    p.set_defaults(func=_cmd_unwaive)
+
     p = sub.add_parser("run", help="enqueue the next-stage provider run for a topic")
     p.add_argument("topic_id")
     p.add_argument("--stage", default=None, help="override the stage to run")
@@ -236,6 +264,182 @@ def _cmd_finalize(args: argparse.Namespace) -> int:
 def _cmd_export(args: argparse.Namespace) -> int:
     export_path = RunStore(_root(args)).export_run(args.topic_id, format=args.format)
     print(f"exported ({args.format}): {export_path}")
+    return 0
+
+
+def _cmd_validate(args: argparse.Namespace) -> int:
+    """Validate a phase and report the resulting gate.
+
+    Caught locally (rather than left to `main`'s generic `ConfigError`
+    handler, which returns 1) so a nonexistent run or bad phase -- a usage
+    error -- exits 2, distinct from a real, computed "gate blocked" (1).
+    Without this, `education-pipeline validate typo-topic` and a genuine
+    blocked gate would be indistinguishable to a script checking exit codes.
+    """
+
+    runs = RunStore(_root(args))
+    try:
+        result = runs.validate_and_gate(args.topic_id, args.phase)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    state = "open" if result.gate_open else "blocked"
+    parts = [
+        f"validate ({args.phase}): gate {state}; "
+        f"{result.effective_blocking} blocking finding(s) remain"
+    ]
+    if result.stale:
+        parts.append("stale waivers were ignored")
+    if result.rejected_finding_ids:
+        parts.append(
+            "non-waivable or empty-reason waivers were rejected: "
+            + ", ".join(result.rejected_finding_ids)
+        )
+    print("; ".join(parts))
+    return 0 if result.gate_open else 1
+
+
+def _warn_if_report_stale(runs: RunStore, topic_id: str, phase: str) -> None:
+    """Print a staleness warning to stderr when the on-disk report for
+    ``phase`` no longer matches its approved source.
+
+    Read commands (``findings``, ``report``) still print whatever is on
+    disk rather than refusing outright -- unlike gate/write commands
+    (``validate``, ``finalize``, export), which fail closed via
+    ``report_state`` (see ``RunStore._export_guide_v1``) because they would
+    otherwise act on stale content. A read command has no such side effect,
+    so a clear warning keeps the output usable while making the staleness
+    visible, instead of silently disagreeing with a freshly recomputed gate.
+    """
+
+    if runs.report_state(topic_id, phase) == "stale":
+        print(
+            f"warning: {phase} validation report for {topic_id!r} is stale "
+            "(the approved source changed since this report was written); "
+            "run `validate` again for current results",
+            file=sys.stderr,
+        )
+
+
+def _cmd_findings(args: argparse.Namespace) -> int:
+    """Print a phase's validation findings.
+
+    ``ConfigError`` (nonexistent run, bad phase, no report on disk yet) is
+    caught locally rather than left to `main`'s generic handler (which
+    returns 1) -- a usage/config error must exit 2, distinct from the
+    findings-listing itself, which always exits 0 once a report exists.
+    """
+
+    import json
+
+    runs = RunStore(_root(args))
+    try:
+        report_path = (
+            runs.draft_report_path(args.topic_id)
+            if args.phase == "draft"
+            else runs.final_report_path(args.topic_id)
+        )
+        if not report_path.is_file():
+            raise ConfigError(
+                f"no {args.phase} validation report for {args.topic_id!r}; run `validate` first"
+            )
+        _warn_if_report_stale(runs, args.topic_id, args.phase)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    findings = report.get("findings", [])
+    if args.blocking:
+        findings = [f for f in findings if f.get("blocking")]
+    # Pre-v2 reports (written before findings carried a stage) have no
+    # finding["stage"]; fall back to the phase-derived stage the cockpit
+    # uses (see web's findingHref): draft-phase -> draft, final-phase ->
+    # repair.
+    default_stage = "draft" if args.phase == "draft" else "repair"
+    for finding in findings:
+        stage = finding.get("stage", default_stage)
+        print(
+            f"{finding['severity']}\t{finding['rule_id']}\t{stage}\t"
+            f"{finding['path']}\t{finding['message']}"
+        )
+    return 0
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    """Print the export sidecar report, or the raw final report if not yet exported.
+
+    ``ConfigError`` (nonexistent run, no final report on disk yet) is caught
+    locally rather than left to `main`'s generic handler (which returns 1)
+    -- a usage/config error must exit 2, distinct from a genuinely computed
+    "gate blocked" (1).
+    """
+
+    import json
+
+    runs = RunStore(_root(args))
+    try:
+        export_report_path = runs.export_report_path(args.topic_id)
+        if export_report_path.is_file():
+            _warn_if_report_stale(runs, args.topic_id, "final")
+            text = export_report_path.read_text(encoding="utf-8")
+            data = json.loads(text)
+            gate_open = bool(data.get("gate", {}).get("open"))
+        else:
+            report_path = runs.final_report_path(args.topic_id)
+            if not report_path.is_file():
+                raise ConfigError(
+                    f"no final validation report for {args.topic_id!r}; run `validate` first"
+                )
+            _warn_if_report_stale(runs, args.topic_id, "final")
+            text = report_path.read_text(encoding="utf-8")
+            gate_open = runs.gate_result(args.topic_id, "final").gate_open
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(text, end="")
+    return 0 if gate_open else 1
+
+
+def _cmd_waive(args: argparse.Namespace) -> int:
+    """Waive a blocking finding so the gate can open.
+
+    Exit codes deliberately diverge from ``validate``/``report``: this is an
+    action command (0 = the waiver was recorded), not a gate-status probe,
+    so a still-blocked gate after waiving one of several blockers is not a
+    failure. An empty reason or a finding that doesn't exist / isn't
+    waivable is a usage error (2), caught here rather than left to `main`'s
+    generic ``ConfigError`` handler -- which returns 1 -- so usage errors
+    stay distinct from the gate's blocked-exit-1 convention.
+    """
+
+    runs = RunStore(_root(args))
+    try:
+        result = runs.record_waiver(args.topic_id, args.phase, args.finding_id, args.reason)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    state = "open" if result.gate_open else "blocked"
+    print(
+        f"waive ({args.phase}): {args.finding_id} waived; gate {state}; "
+        f"{result.effective_blocking} blocking finding(s) remain"
+    )
+    return 0
+
+
+def _cmd_unwaive(args: argparse.Namespace) -> int:
+    """Remove a previously recorded waiver, potentially closing the gate again."""
+
+    runs = RunStore(_root(args))
+    try:
+        result = runs.remove_waiver(args.topic_id, args.phase, args.finding_id)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    state = "open" if result.gate_open else "blocked"
+    print(
+        f"unwaive ({args.phase}): {args.finding_id} waiver removed; gate {state}; "
+        f"{result.effective_blocking} blocking finding(s) remain"
+    )
     return 0
 
 

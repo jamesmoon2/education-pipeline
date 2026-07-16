@@ -149,7 +149,22 @@ def parse_model_catalog(data: Mapping[str, Any]) -> ModelCatalog:
 def parse_model_plan(
     data: Mapping[str, Any],
     catalog: ModelCatalog | None = None,
+    *,
+    strict_keys: bool = False,
 ) -> ModelPlan:
+    """Parse a raw model-plan mapping into a :class:`ModelPlan`.
+
+    ``strict_keys=True`` rejects a stage table containing any key outside
+    ``_STAGE_OVERRIDE_KEYS`` (the same allowlist ``apply_overrides`` already
+    enforces for run-level overrides) instead of silently ignoring it. The
+    owner's decision is strict at write, lenient on disk: pass
+    ``strict_keys=True`` only from the daemon's ``PUT /v1/config/plan``
+    write path (``write_api.update_global_plan``). The default ``False``
+    keeps loading a hand-edited ``model-plan.toml`` with a stray key exactly
+    as before -- the disk loader (:func:`load_model_plan`) is deliberately
+    left lenient.
+    """
+
     provider_id = _required_string(data, "provider", "model plan")
     base_provider = catalog.require_provider(provider_id) if catalog is not None else None
 
@@ -168,6 +183,16 @@ def parse_model_plan(
         raw_stage = raw_stages.get(stage_name, {})
         if not isinstance(raw_stage, Mapping):
             raise ConfigError(f"model plan stage {stage_name!r} must be a table")
+
+        if strict_keys:
+            unknown_keys = sorted(set(raw_stage) - _STAGE_OVERRIDE_KEYS)
+            if unknown_keys:
+                keys = ", ".join(repr(k) for k in unknown_keys)
+                allowed = ", ".join(sorted(_STAGE_OVERRIDE_KEYS))
+                raise ConfigError(
+                    f"unknown stage-override key(s) {keys} for stage {stage_name!r}; "
+                    f"allowed: {allowed}"
+                )
 
         recommendation = _optional_string(
             raw_stage,
@@ -228,6 +253,9 @@ def emit_model_plan_toml(plan: ModelPlan) -> str:
     return "\n".join(lines)
 
 
+_STAGE_OVERRIDE_KEYS = frozenset({"provider", "model", "effort", "recommendation"})
+
+
 def apply_overrides(
     plan: ModelPlan,
     overrides: Mapping[str, Any],
@@ -260,6 +288,13 @@ def apply_overrides(
     for stage_name, stage_override in override_stages.items():
         if not isinstance(stage_override, Mapping):
             raise ConfigError(f"override for stage {stage_name!r} must be a table")
+        unknown = sorted(set(stage_override) - _STAGE_OVERRIDE_KEYS)
+        if unknown:
+            keys = ", ".join(repr(k) for k in unknown)
+            allowed = ", ".join(sorted(_STAGE_OVERRIDE_KEYS))
+            raise ConfigError(
+                f"unknown stage-override key(s) {keys} for stage {stage_name!r}; allowed: {allowed}"
+            )
         merged_stage = dict(raw["stages"].get(stage_name, {}))
         merged_stage.update(stage_override)
         raw["stages"][stage_name] = merged_stage

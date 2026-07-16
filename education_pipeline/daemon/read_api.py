@@ -138,19 +138,89 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
 
 def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:
     if runs.content_contract(topic_id).kind != "interactive_guide":
-        return {"state": "missing", "blocking": 0, "errors": 0, "warnings": 0}
+        return {
+            "state": "missing",
+            "blocking": 0,
+            "errors": 0,
+            "warnings": 0,
+            "findings_by_stage": {},
+            "effective_blocking": 0,
+        }
     state = runs.report_state(topic_id, phase)
     counts = {"blocking": 0, "errors": 0, "warnings": 0}
+    by_stage: dict[str, int] = {}
+    waived_ids: set[str] = set()
     path = runs.draft_report_path(topic_id) if phase == "draft" else runs.final_report_path(topic_id)
+    report: dict | None = None
     if path.is_file():
         try:
-            summary = json.loads(path.read_text(encoding="utf-8")).get("summary", {})
+            report = json.loads(path.read_text(encoding="utf-8"))
+            summary = report.get("summary", {})
             for key in counts:
                 if isinstance(summary.get(key), int):
                     counts[key] = summary[key]
+            for finding in report.get("findings", []):
+                if finding.get("blocking") or finding.get("severity") == "error":
+                    stage = finding.get("stage", "draft")
+                    by_stage[stage] = by_stage.get(stage, 0) + 1
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
-            pass
-    return {"state": state, **counts}
+            report = None
+
+    # Waivers are hash-bound (apply_waivers, guides/waivers.py): a waiver set
+    # recorded against different content is dropped, so a recomputed gate on
+    # changed content closes automatically. effective_blocking inherits that
+    # fail-safe for free -- no extra staleness logic needed here.
+    #
+    # gate_result recomputes the report from the approved source, while
+    # counts/by_stage above come from the report *file on disk*. Pairing a
+    # stale on-disk body with a fresh recomputed gate would make this summary
+    # disagree with itself -- the exact trap Task 3.1's review caught in the
+    # CLI's _cmd_report. Only trust a recomputed effective_blocking when the
+    # on-disk report is confirmed "current"; otherwise leave it equal to the
+    # raw blocking count and let the stale banner + re-run button do their
+    # job.
+    #
+    # gate_result's recompute is a full parse + normalize + static-checks
+    # pass (plus, for final, a runtime render and a11y pass) -- expensive
+    # enough that paying for it on every 5s cockpit poll matters for large
+    # guides. Skip it entirely when the topic has no waiver set: with
+    # waiver_set=None, apply_waivers always returns
+    # effective_blocking == len(blocking findings), which for a "current"
+    # report is exactly counts["blocking"] already computed above -- so the
+    # short-circuit is semantically a no-op for the overwhelmingly common
+    # no-waivers case.
+    effective_blocking = counts["blocking"]
+    if state == "current":
+        try:
+            gate = (
+                runs.gate_result(topic_id, phase)
+                if runs.load_waiver_set(topic_id) is not None
+                else None
+            )
+        except ConfigError:
+            gate = None
+        if gate is not None and not gate.stale:
+            effective_blocking = gate.effective_blocking
+            waived_ids = set(gate.waived_finding_ids)
+
+    if waived_ids and by_stage and report is not None:
+        for finding in report.get("findings", []):
+            if finding.get("id") not in waived_ids:
+                continue
+            if not (finding.get("blocking") or finding.get("severity") == "error"):
+                continue
+            stage = finding.get("stage", "draft")
+            if by_stage.get(stage):
+                by_stage[stage] -= 1
+                if by_stage[stage] <= 0:
+                    del by_stage[stage]
+
+    return {
+        "state": state,
+        **counts,
+        "findings_by_stage": by_stage,
+        "effective_blocking": effective_blocking,
+    }
 
 
 def validation_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
@@ -172,18 +242,25 @@ def validation_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
 
 
 def waivers_payload(runs: RunStore, topic_id: str, phase: str) -> dict:
+    # Route through RunStore.load_waiver_set -- the single source of truth
+    # for the waivers-file schema -- instead of re-parsing the raw JSON here.
+    # A second, weaker shape check (root-is-a-dict only) previously let this
+    # route echo a corrupt file back verbatim with "state": "current" while
+    # the write route and the loader itself both raised ConfigError for the
+    # very same file. All three surfaces must now agree.
     validation = validation_payload(runs, topic_id, phase)
     report_hash = validation["report"].get("guide_sha256")
-    value = {"schema_version": 1, "guide_sha256": report_hash, "waivers": []}
-    path = runs.waivers_path(topic_id)
-    if path.is_file():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ConfigError(f"invalid validation waivers file: {path}") from exc
-        if not isinstance(loaded, dict):
-            raise ConfigError(f"invalid validation waivers file: {path}")
-        value = loaded
+    waiver_set = runs.load_waiver_set(topic_id)
+    if waiver_set is None:
+        value = {"schema_version": 1, "guide_sha256": report_hash, "waivers": []}
+    else:
+        value = {
+            "schema_version": waiver_set.schema_version,
+            "guide_sha256": waiver_set.guide_sha256,
+            "waivers": [
+                {"finding_id": w.finding_id, "reason": w.reason} for w in waiver_set.waivers
+            ],
+        }
     state = validation["state"]
     if value.get("guide_sha256") != report_hash:
         state = "stale"

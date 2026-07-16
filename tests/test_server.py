@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import test_runs
 from education_pipeline import (
     STAGE_ORDER,
     ContentContract,
@@ -48,10 +49,18 @@ def _start_server(tmp_path, monkeypatch, web_dist=None, catalog=None, plan=None)
     p = runs.stage_paths("t", "draft").prompt_path
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("PROMPT", encoding="utf-8")
+    # A guide-contract topic alongside the legacy one, for validation/waiver tests.
+    runs.create_run("g", content_contract=ContentContract.interactive_guide_v1())
+    gp = runs.stage_paths("g", "draft").prompt_path
+    gp.parent.mkdir(parents=True, exist_ok=True)
+    gp.write_text("PROMPT", encoding="utf-8")
     topics_dir = tmp_path / "topics"
     topics_dir.mkdir(parents=True, exist_ok=True)
     (topics_dir / "t.toml").write_text(
         'schema_version = 1\nid = "t"\ntitle = "Test Topic"\n', encoding="utf-8"
+    )
+    (topics_dir / "g.toml").write_text(
+        'schema_version = 1\nid = "g"\ntitle = "Guide Topic"\n', encoding="utf-8"
     )
     profiles_dir = tmp_path / "profiles"
     profiles_dir.mkdir(parents=True, exist_ok=True)
@@ -83,13 +92,25 @@ def _start_server(tmp_path, monkeypatch, web_dist=None, catalog=None, plan=None)
 
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     worker.start()
-    return srv, worker
+    return srv, worker, context
 
 
 @pytest.fixture
 def server(tmp_path, monkeypatch):
-    srv, worker = _start_server(tmp_path, monkeypatch)
+    srv, worker, _context = _start_server(tmp_path, monkeypatch)
     yield srv.server_port
+    worker.stop()
+    srv.shutdown()
+
+
+@pytest.fixture
+def server_with_context(tmp_path, monkeypatch):
+    """Like ``server``, but also exposes the live DaemonContext so a test can
+    mutate its fields (e.g. corrupt ``token`` to force a serialization
+    failure in a specific route) without reaching into private handler
+    internals."""
+    srv, worker, context = _start_server(tmp_path, monkeypatch)
+    yield srv.server_port, context
     worker.stop()
     srv.shutdown()
 
@@ -121,7 +142,7 @@ def config_server(tmp_path, monkeypatch):
         },
         catalog,
     )
-    srv, worker = _start_server(tmp_path, monkeypatch, catalog=catalog, plan=plan)
+    srv, worker, _context = _start_server(tmp_path, monkeypatch, catalog=catalog, plan=plan)
     yield srv.server_port
     worker.stop()
     srv.shutdown()
@@ -133,7 +154,7 @@ def ui_server(tmp_path, monkeypatch):
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text("<html>cockpit</html>", encoding="utf-8")
     (dist / "assets" / "app-abc.js").write_text("js", encoding="utf-8")
-    srv, worker = _start_server(tmp_path, monkeypatch, web_dist=dist)
+    srv, worker, _context = _start_server(tmp_path, monkeypatch, web_dist=dist)
     yield srv.server_port
     worker.stop()
     srv.shutdown()
@@ -276,7 +297,11 @@ def test_api_get_still_requires_token(server):
 def test_topics_list_includes_title_and_run(server):
     status, body = _req(server, "GET", "/v1/topics")
     assert status == 200
-    (entry,) = body["topics"]
+    # cardinality/shape: exactly the two fixture topics, each listed once —
+    # this is the only assertion anywhere on GET /v1/topics's shape.
+    assert {i["id"] for i in body["topics"]} == {"g", "t"}
+    assert len(body["topics"]) == 2
+    entry = next(item for item in body["topics"] if item["id"] == "t")
     assert entry["id"] == "t"
     assert entry["title"] == "Test Topic"
     assert entry["error"] is None
@@ -318,7 +343,9 @@ def test_profiles_list_and_get(server):
 def test_runs_list(server):
     status, body = _req(server, "GET", "/v1/runs")
     assert status == 200
-    assert body["runs"] == ["t"]
+    # RunStore.list_run_ids returns tuple(sorted(ids)); assert the exact
+    # ordering the API promises, not just the set of ids.
+    assert body["runs"] == ["g", "t"]
 
 
 def test_run_status_endpoint(server):
@@ -334,6 +361,238 @@ def test_run_status_endpoint(server):
 def test_run_status_unknown_topic_is_404(server):
     status, body = _req(server, "GET", "/v1/runs/nope")
     assert status == 404
+
+
+def test_run_status_reports_findings_by_stage(server, tmp_path):
+    """The draft validations summary breaks blocking-or-error findings down
+    by the stage responsible for fixing them (Task 2.1's Finding.stage),
+    so the cockpit can badge/link each stage with actionable work."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report_path = runs.validate_run("g", "draft")
+    report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    finding = next(
+        item for item in report_payload["findings"] if item["blocking"] or item["severity"] == "error"
+    )
+
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    summary = body["validations"]["draft"]
+    assert "findings_by_stage" in summary
+    assert all(isinstance(v, int) for v in summary["findings_by_stage"].values())
+    assert summary["findings_by_stage"].get(finding["stage"], 0) >= 1
+
+
+def test_run_status_reports_effective_blocking_after_waivers(server, tmp_path):
+    """A run whose every blocker carries an accepted waiver has an open gate
+    and no actionable work left, but ``_validation_summary`` used to report
+    the raw on-disk blocking count -- waiver-blind -- so the cockpit badge
+    and re-run button stayed lit even though there was nothing left to do.
+    ``effective_blocking`` must reflect the post-waiver reality while the
+    raw ``blocking`` count (and the stage breakdown) still shows the true
+    on-disk finding so the panel can keep listing it as waived."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report_path = runs.validate_run("g", "draft")
+    report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    finding = next(item for item in report_payload["findings"] if item["waivable"])
+
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/runs/g/validation/draft/waivers",
+        body={
+            "finding_id": finding["id"],
+            "guide_sha256": report_payload["guide_sha256"],
+            "reason": "accepted",
+        },
+    )
+    assert status == 200
+
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    summary = body["validations"]["draft"]
+    assert summary["blocking"] > 0
+    assert summary["effective_blocking"] == 0
+    # The stage responsible for the now-waived blocker must net out of the
+    # badge breakdown too -- a fully-waived stage has no actionable work
+    # left, so findings_by_stage should agree with effective_blocking == 0
+    # instead of still showing the raw pre-waiver count.
+    assert summary["findings_by_stage"] == {}
+
+
+def test_run_status_effective_blocking_falls_back_when_report_is_stale(server, tmp_path):
+    """``_validation_summary`` (read_api.py) only trusts a recomputed
+    ``gate_result`` when ``report_state`` says the on-disk report is
+    "current" -- otherwise it would pair a stale on-disk report body with a
+    freshly recomputed gate, and the two could disagree (the exact trap
+    Task 3.1's review caught in the CLI's ``_cmd_report``).
+
+    This isolates that guard from the (separate) hash-bound staleness that
+    ``apply_waivers`` already provides for free: the approved draft source
+    is left untouched here -- only the on-disk report's recorded
+    ``guide_sha256`` is corrupted after waiving, so ``report_state`` flips
+    to "stale" while a freshly recomputed ``gate_result`` (which reads the
+    approved source, not the report file) would still consider the waiver
+    valid and *not* stale. Without the ``state == "current"`` guard, the
+    recomputed gate would still be trusted and net the badge away even
+    though the on-disk report -- the thing the ``blocking``/
+    ``findings_by_stage`` counts above are drawn from -- no longer agrees
+    with it."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report_path = runs.validate_run("g", "draft")
+    report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    finding = next(item for item in report_payload["findings"] if item["waivable"])
+    assert finding["blocking"] or finding["severity"] == "error"
+
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/runs/g/validation/draft/waivers",
+        body={
+            "finding_id": finding["id"],
+            "guide_sha256": report_payload["guide_sha256"],
+            "reason": "accepted",
+        },
+    )
+    assert status == 200
+
+    # Corrupt only the on-disk report's recorded hash -- not the approved
+    # source. report_state now reads "stale" (recorded hash mismatch), but
+    # a fresh gate_result recompute (from the unchanged approved source)
+    # would still match the waiver's guide_sha256 and report not-stale.
+    corrupted = dict(report_payload)
+    corrupted["guide_sha256"] = "0" * 64
+    report_path.write_text(json.dumps(corrupted), encoding="utf-8")
+
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    summary = body["validations"]["draft"]
+    assert summary["state"] == "stale"
+    assert summary["blocking"] > 0
+    assert summary["effective_blocking"] == summary["blocking"]
+    assert summary["findings_by_stage"].get(finding["stage"], 0) >= 1
+
+
+def test_run_status_effective_blocking_matches_blocking_without_waivers(server, tmp_path):
+    """Perf fix: ``_validation_summary`` skips the ``gate_result`` recompute
+    (a full parse + normalize + static-checks pass, doubled again for
+    ``final``) when the topic has no waiver set at all -- overwhelmingly the
+    common case, since ``apply_waivers`` with ``waiver_set=None`` always
+    returns ``effective_blocking = len(blocking findings)``, exactly
+    ``counts["blocking"]`` for a "current" report. This pins that the
+    short-circuit is semantically a no-op: with no waivers recorded,
+    ``effective_blocking`` must still equal the raw ``blocking`` count."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    runs.validate_run("g", "draft")
+
+    assert runs.load_waiver_set("g") is None
+
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    summary = body["validations"]["draft"]
+    assert summary["state"] == "current"
+    assert summary["blocking"] > 0
+    assert summary["effective_blocking"] == summary["blocking"]
+
+
+def test_run_status_degrades_gracefully_when_waivers_file_is_malformed(server, tmp_path):
+    """``RunStore._load_waiver_set`` (runs.py) raises ``ConfigError`` on a
+    malformed waivers file -- it only returns ``None`` to mean "no file
+    exists". ``_validation_summary`` (read_api.py) calls
+    ``runs.load_waiver_set(topic_id)`` to decide whether the ``gate_result``
+    recompute is worth paying for, and that call must stay inside the same
+    ``try/except ConfigError`` guard as the recompute itself: otherwise a
+    single corrupt waivers file turns a graceful degrade-to-raw-counts (the
+    behavior before the short-circuit) into a 400 that takes down
+    ``GET /v1/runs/{topic}`` -- the endpoint the cockpit polls every 5s."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    runs.validate_run("g", "draft")
+
+    # Hand-corrupt the waivers file directly, bypassing the write API that
+    # would normally validate it -- this is what a malformed/partially
+    # written file on disk looks like.
+    runs.waivers_path("g").write_text(
+        json.dumps({"schema_version": 99, "guide_sha256": "x", "waivers": []}),
+        encoding="utf-8",
+    )
+
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    summary = body["validations"]["draft"]
+    assert summary["effective_blocking"] == summary["blocking"]
+
+
+def test_run_status_degrades_gracefully_when_waivers_file_is_malformed_at_finalize_ready(
+    server, tmp_path
+):
+    """The test above only reaches ``_validation_summary``'s guard -- a
+    draft-only fixture can never reach ``run_status`` -> ``_next_action_guide_v1``
+    (runs.py), which requires an approved repair *and* a current final
+    report before its own, previously-unguarded
+    ``self._load_waiver_set(topic_id)`` call at runs.py:565. Commit 18804c0
+    claimed to fix "malformed waivers file in run status" but only guarded
+    the summary path, leaving this one to raise ``ConfigError`` -> 400
+    straight out of ``GET /v1/runs/{topic}``. Drive "g" all the way to
+    finalize-ready so this test actually exercises that call."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    guide_text = json.dumps(guide)
+    # ``_next_action_guide_v1`` derives the next action from manifest-recorded
+    # stage status (spec/outline/draft/qa/repair approval events), not just
+    # from approved_path's existence on disk -- so this must drive the real
+    # prompt/response/approve flow through every stage, not just drop files
+    # into approved_path. The server fixture pre-seeds "g" with a stub draft
+    # prompt (for the file's other, draft-only tests); remove it first so
+    # ``_drive_guide_to_finalize_ready``'s own ``write_draft_prompt`` call
+    # doesn't collide with it.
+    runs.stage_paths("g", "draft").prompt_path.unlink()
+    test_runs._drive_guide_to_finalize_ready(
+        runs, "g", draft_body=guide_text, repair_body=guide_text
+    )
+    report = json.loads(runs.final_report_path("g").read_text(encoding="utf-8"))
+    assert report["summary"]["blocking"] > 0
+
+    # Hand-corrupt the waivers file directly, bypassing the write API that
+    # would normally validate it -- this is what a malformed/partially
+    # written file on disk looks like.
+    runs.waivers_path("g").write_text(
+        json.dumps({"schema_version": 99, "guide_sha256": "x", "waivers": []}),
+        encoding="utf-8",
+    )
+
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    # A malformed waivers file must degrade to the raw (un-waived) gate --
+    # not 400 -- so next_action still reflects real gate state (a real
+    # blocking finding remains, so the run cannot finalize).
+    assert body["next_action"]["stage"] == "repair"
+    assert body["next_action"]["action"] == "resolve_findings"
+
+    # The one-run corruption must not take down the topics list either --
+    # /v1/topics calls run_status_payload for every topic, unguarded.
+    status, body = _req(server, "GET", "/v1/topics")
+    assert status == 200
+    assert {i["id"] for i in body["topics"]} == {"g", "t"}
 
 
 def test_stage_content_returns_prompt_and_nulls(server):
@@ -436,6 +695,200 @@ def test_asset_response_has_no_csp_header(ui_server):
     status, _, headers = _raw_get(ui_server, "/assets/app-abc.js")
     assert status == 200
     assert "Content-Security-Policy" not in headers
+
+
+def test_static_get_race_returns_500_not_dropped_connection(ui_server, tmp_path):
+    """Regression test for the defect class the do_GET catch-all was meant to
+    close: previously only ``_api_get()`` was wrapped, so a static file that
+    vanishes between ``resolve_static`` and ``read_bytes`` (the ordinary
+    "npm run build while the page is open" race) raised FileNotFoundError
+    straight through do_GET and dropped the connection with no status line
+    at all. Simulate the race by having resolve_static point at a file that
+    no longer exists.
+
+    Uses a nested ``pytest.MonkeyPatch.context()`` rather than the function-
+    scoped ``monkeypatch`` fixture: ``ui_server`` is built by ``_start_server``,
+    which patches env vars (e.g. FAKE_STDOUT) through that SAME fixture
+    instance, so calling ``monkeypatch.undo()`` here to restore
+    ``resolve_static`` mid-test would also unwind the fixture's own setup --
+    harmless today, but a landmine the moment a later assertion in this test
+    depends on that env patch still being in place.
+    """
+    from education_pipeline.daemon import server as server_mod
+    from education_pipeline.daemon.static import StaticFile
+
+    missing = tmp_path / "gone.js"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            server_mod,
+            "resolve_static",
+            lambda dist, path: StaticFile(
+                path=missing,
+                content_type="text/javascript; charset=utf-8",
+                cache_control="no-store",
+            ),
+        )
+        status, body, _ = _raw_get(ui_server, "/assets/app-abc.js")
+        body = json.loads(body or b"{}")
+        assert status == 500
+        assert body["error"]["code"] == "internal"
+    # the context manager exit restores resolve_static (and only that); the
+    # connection/server survives: a subsequent request still succeeds
+    status, body, _ = _raw_get(ui_server, "/assets/app-abc.js")
+    assert status == 200
+
+
+def test_session_endpoint_survives_unexpected_exception(server_with_context):
+    """/v1/session is handled entirely outside _api_get(); it must still be
+    covered by the last-resort catch-all so an unexpected failure comes back
+    as a diagnosable 500 rather than a dropped connection. Force the failure
+    locally (an unserializable token breaks json.dumps inside _send for this
+    route only) rather than patching the global json module, which would
+    affect unrelated background threads (e.g. the job worker) too.
+
+    Uses a nested ``pytest.MonkeyPatch.context()`` rather than the function-
+    scoped ``monkeypatch`` fixture: ``server_with_context`` is built by
+    ``_start_server``, which patches env vars through that SAME fixture
+    instance, so ``monkeypatch.undo()`` here would also unwind the fixture's
+    own setup, not just the ``token`` patch -- harmless today, but a landmine
+    the moment a later assertion needs that env patch still in place.
+    """
+    port, context = server_with_context
+
+    class _Unserializable:
+        pass
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(context, "token", _Unserializable())
+        status, body = _req(port, "GET", "/v1/session", token=None)
+        assert status == 500
+        assert body["error"]["code"] == "internal"
+    # the context manager exit restores context.token (and only that); the
+    # connection/server survives: a subsequent request still succeeds
+    status, body = _req(port, "GET", "/v1/session", token=None)
+    assert status == 200
+    assert body["token"] == "secret-token"
+
+
+def test_do_put_unprocessable_error_returns_422_not_500(server, monkeypatch):
+    """do_POST already maps write_api.UnprocessableError -> 422, but do_PUT
+    had no matching arm and fell through to the last-resort 500 handler.
+    Nothing raises UnprocessableError on PUT today, so force it via
+    monkeypatch on a real PUT route (edit_response) to pin the status for
+    whenever a future PUT path does raise it."""
+    from education_pipeline.daemon import server as server_mod
+
+    def _raise(*args, **kwargs):
+        raise server_mod.write_api.UnprocessableError("some_code", "not processable")
+
+    monkeypatch.setattr(server_mod.write_api, "edit_response", _raise)
+    status, body = _req(
+        server,
+        "PUT",
+        "/v1/runs/t/stages/draft/response",
+        body={"text": "x", "base_sha256": "0" * 64},
+    )
+    assert status == 422
+    assert body["error"]["code"] == "some_code"
+
+
+def test_do_post_guide_document_error_from_finalize_returns_422_not_500(server, monkeypatch):
+    """finalize_run/export_run call normalize_guide/assemble_guide_document,
+    which can raise GuideDocumentError or ContractError -- both ValueError
+    subclasses, neither a ConfigError. Before this fix that fault escaped the
+    do_POST except chain entirely and became a plausible 500 internal; it
+    must map to the same 422 guide_not_renderable used at /v1/guide-preview."""
+    from education_pipeline.daemon import server as server_mod
+    from education_pipeline.guides import GuideDocumentError
+
+    def _raise(*args, **kwargs):
+        raise GuideDocumentError("guide cannot be rendered")
+
+    monkeypatch.setattr(server_mod.write_api, "finalize_run", _raise)
+    status, body = _req(server, "POST", "/v1/runs/t/finalize", body={})
+    assert status == 422
+    assert body["error"]["code"] == "guide_not_renderable"
+
+
+def test_do_post_contract_error_from_export_returns_422_not_500(server, monkeypatch):
+    """Same fault class as above via ContractError (also raised from the
+    normalize/assemble path), exercised on a different POST route
+    (export_run) to confirm the mapping isn't route-specific."""
+    from education_pipeline.daemon import server as server_mod
+    from education_pipeline.guides import ContractError
+
+    def _raise(*args, **kwargs):
+        raise ContractError("guide contract mismatch")
+
+    monkeypatch.setattr(server_mod.write_api, "export_run", _raise)
+    status, body = _req(server, "POST", "/v1/runs/t/export", body={})
+    assert status == 422
+    assert body["error"]["code"] == "guide_not_renderable"
+
+
+def test_do_post_guide_parse_error_from_finalize_returns_422_not_500(server, monkeypatch):
+    """normalize_guide -- the very function named in the comment above the
+    do_POST (GuideDocumentError, ContractError) except arm -- actually raises
+    GuideParseError, not those two. Before this fix GuideParseError was
+    missing from that tuple, so it fell through to a plausible-looking 500
+    internal exactly like the faults the tuple was added to catch."""
+    from education_pipeline.daemon import server as server_mod
+    from education_pipeline.guides import GuideParseError
+    from education_pipeline.guides.parse import ParseDiagnostic
+
+    def _raise(*args, **kwargs):
+        raise GuideParseError(
+            (ParseDiagnostic(code="bad_shape", path="$", message="guide cannot be parsed"),)
+        )
+
+    monkeypatch.setattr(server_mod.write_api, "finalize_run", _raise)
+    status, body = _req(server, "POST", "/v1/runs/t/finalize", body={})
+    assert status == 422
+    assert body["error"]["code"] == "guide_not_renderable"
+
+
+def test_do_put_guide_document_error_returns_422_not_500(server, monkeypatch):
+    """Same coherent-taxonomy requirement on the PUT verb: a GuideDocumentError
+    escaping a PUT route (e.g. a future update_run_plan-adjacent path) must
+    not fall through do_PUT's except chain into the last-resort 500."""
+    from education_pipeline.daemon import server as server_mod
+    from education_pipeline.guides import GuideDocumentError
+
+    def _raise(*args, **kwargs):
+        raise GuideDocumentError("guide cannot be rendered")
+
+    monkeypatch.setattr(server_mod.write_api, "edit_response", _raise)
+    status, body = _req(
+        server,
+        "PUT",
+        "/v1/runs/t/stages/draft/response",
+        body={"text": "x", "base_sha256": "0" * 64},
+    )
+    assert status == 422
+    assert body["error"]["code"] == "guide_not_renderable"
+
+
+def test_do_put_guide_parse_error_returns_422_not_500(server, monkeypatch):
+    """Same GuideParseError coherent-taxonomy requirement on the PUT verb,
+    mirroring test_do_post_guide_parse_error_from_finalize_returns_422_not_500."""
+    from education_pipeline.daemon import server as server_mod
+    from education_pipeline.guides import GuideParseError
+    from education_pipeline.guides.parse import ParseDiagnostic
+
+    def _raise(*args, **kwargs):
+        raise GuideParseError(
+            (ParseDiagnostic(code="bad_shape", path="$", message="guide cannot be parsed"),)
+        )
+
+    monkeypatch.setattr(server_mod.write_api, "edit_response", _raise)
+    status, body = _req(
+        server,
+        "PUT",
+        "/v1/runs/t/stages/draft/response",
+        body={"text": "x", "base_sha256": "0" * 64},
+    )
+    assert status == 422
+    assert body["error"]["code"] == "guide_not_renderable"
 
 
 def test_json_api_response_has_no_csp_header(server):
@@ -930,6 +1383,154 @@ def test_guide_preview_error_semantics(server):
     assert status == 422 and body["error"]["code"] == "guide_not_renderable"
 
 
+def test_create_waiver_over_http_with_corrupt_element_returns_400_not_dropped_connection(
+    server, tmp_path
+):
+    """Regression test for the crash the daemon must never surface as a
+    dropped connection: a validation-waivers.json whose root is a valid JSON
+    object but whose ``waivers`` list has a corrupt element must come back as
+    a genuine HTTP 400 with the standard error envelope."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = runs.validate_run("g", "draft")
+    report_payload = json.loads(report.read_text(encoding="utf-8"))
+    finding = next(item for item in report_payload["findings"] if item["waivable"])
+
+    waivers_path = runs.waivers_path("g")
+    waivers_path.parent.mkdir(parents=True, exist_ok=True)
+    waivers_path.write_text(
+        json.dumps(
+            {
+                "guide_sha256": report_payload["guide_sha256"],
+                "waivers": [1, 2, 3],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/runs/g/validation/draft/waivers",
+        body={
+            "finding_id": finding["id"],
+            "guide_sha256": report_payload["guide_sha256"],
+            "reason": "accepted",
+        },
+    )
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+    # the corrupt file on disk is untouched: no orphaned mkstemp temp file
+    # (``.tmp-<random>.json``, per ``_write_bytes_atomic``), no partial write
+    assert not list(waivers_path.parent.glob(f".tmp-*{waivers_path.suffix}"))
+    assert json.loads(waivers_path.read_text(encoding="utf-8"))["waivers"] == [1, 2, 3]
+
+
+def test_create_waiver_never_persists_a_file_its_own_loader_rejects(server, tmp_path):
+    """create_waiver's guard on a pre-existing waiver element only checked
+    that ``finding_id`` was a string. RunStore's loader also requires
+    ``reason`` to be a string (and schema_version == 1). An element like
+    {"finding_id": "other", "reason": {"nested": True}} passed the write
+    guard, got copied verbatim into the newly written file, and the endpoint
+    returned 200 — after which every future load of the run's waivers raises
+    ConfigError, bricking the run. Whatever the endpoint chooses to do
+    (reject, or normalize), a file it accepts and writes must always load
+    cleanly via RunStore's own loader."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = runs.validate_run("g", "draft")
+    report_payload = json.loads(report.read_text(encoding="utf-8"))
+    finding = next(item for item in report_payload["findings"] if item["waivable"])
+
+    waivers_path = runs.waivers_path("g")
+    waivers_path.parent.mkdir(parents=True, exist_ok=True)
+    before = json.dumps(
+        {
+            "schema_version": 1,
+            "guide_sha256": report_payload["guide_sha256"],
+            # finding_id is a string (passes the old write-path guard) but
+            # reason is not — the loader rejects this, the old guard did not.
+            "waivers": [{"finding_id": "some-other-finding", "reason": {"nested": True}}],
+        }
+    )
+    waivers_path.write_text(before, encoding="utf-8")
+
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/runs/g/validation/draft/waivers",
+        body={
+            "finding_id": finding["id"],
+            "guide_sha256": report_payload["guide_sha256"],
+            "reason": "accepted",
+        },
+    )
+    if status == 200:
+        # The endpoint accepted the request; the file it wrote MUST load
+        # cleanly through RunStore's own loader — no divergent schema logic.
+        loaded = RunStore(tmp_path).load_waiver_set("g")
+        assert loaded is not None
+        assert {w.finding_id for w in loaded.waivers} >= {finding["id"]}
+    else:
+        # The endpoint refused instead: the pre-existing file must be left
+        # untouched (no partial write, no orphaned mkstemp temp file, per
+        # ``_write_bytes_atomic``'s ``.tmp-<random>.json`` naming).
+        assert status == 400
+        assert waivers_path.read_text(encoding="utf-8") == before
+        assert not list(waivers_path.parent.glob(f".tmp-*{waivers_path.suffix}"))
+
+
+def test_get_waivers_over_http_with_corrupt_file_returns_400_not_200(server, tmp_path):
+    """The GET waivers route used to keep its own, weaker copy of the waivers
+    schema check (root-is-a-dict only) and echoed a corrupt file back
+    verbatim with ``"state": "current"`` -- telling the cockpit the run is
+    healthy while POST .../waivers and RunStore.load_waiver_set both refuse
+    the same file with ConfigError. All three surfaces must agree."""
+    runs = RunStore(tmp_path)
+    guide = json.loads(GUIDE_FIXTURE.read_text(encoding="utf-8"))
+    guide["modules"][0]["sections"][0]["blocks"][0]["markdown"] += " TODO"
+    draft = runs.stage_paths("g", "draft")
+    draft.approved_path.write_text(json.dumps(guide), encoding="utf-8")
+    report = runs.validate_run("g", "draft")
+    report_payload = json.loads(report.read_text(encoding="utf-8"))
+
+    waivers_path = runs.waivers_path("g")
+    waivers_path.parent.mkdir(parents=True, exist_ok=True)
+    waivers_path.write_text(
+        json.dumps(
+            {
+                "guide_sha256": report_payload["guide_sha256"],
+                "waivers": [1, 2, 3],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status, body = _req(server, "GET", "/v1/runs/g/validation/draft/waivers")
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
+def test_unhandled_exception_returns_500_envelope_not_dropped_connection(server, monkeypatch):
+    """The daemon's last-resort handler must convert any unexpected exception
+    into a diagnosable 500, never a dropped connection."""
+    from education_pipeline.daemon import write_api
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(write_api, "advance_run", _boom)
+    status, body = _req(server, "POST", "/v1/runs/t/advance")
+    assert status == 500
+    assert body["error"]["code"] == "internal"
+
+
 def test_config_providers_reports_availability(config_server):
     status, payload = _req(config_server, "GET", "/v1/config/providers")
     assert status == 200
@@ -1000,6 +1601,33 @@ def test_put_config_plan_with_stale_sha_returns_409(config_server):
     )
     assert status == 409
     assert body["error"]["code"] == "stale_content"
+
+
+def test_put_config_plan_unknown_stage_key_returns_400_over_http(config_server):
+    """A misspelled stage-override key ('modle' instead of 'model') must be
+    rejected with 400 over real HTTP, not silently swallowed with a 200 that
+    discards the key."""
+
+    status, payload = _req(config_server, "GET", "/v1/config/plan")
+    assert status == 200
+    base_sha256 = payload["plan_sha256"]
+
+    status, body = _req(
+        config_server,
+        "PUT",
+        "/v1/config/plan",
+        body={
+            "base_sha256": base_sha256,
+            "provider": "fake",
+            "stages": {"draft": {"modle": "opus"}},
+        },
+    )
+    assert status == 400
+    assert "unknown stage-override key" in body["error"]["message"]
+
+    # nothing was written: the plan sha is unchanged
+    status, reread = _req(config_server, "GET", "/v1/config/plan")
+    assert reread["plan_sha256"] == base_sha256
 
 
 def test_put_config_plan_unknown_model_returns_400_and_writes_nothing(tmp_path, monkeypatch):
@@ -1210,7 +1838,7 @@ def run_plan_server(tmp_path, monkeypatch):
         },
         catalog,
     )
-    srv, worker = _start_server(tmp_path, monkeypatch, catalog=catalog, plan=plan)
+    srv, worker, _context = _start_server(tmp_path, monkeypatch, catalog=catalog, plan=plan)
     yield srv.server_port
     worker.stop()
     srv.shutdown()
@@ -1267,6 +1895,20 @@ def test_put_run_plan_sets_override_then_clears_it(run_plan_server):
     stages = {s["stage"]: s for s in cleared["stages"]}
     assert stages["draft"]["source"] == "default"
     assert stages["draft"]["command"] is not None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"overrides": "not-a-dict"},
+        {"overrides": {"draft": "opus"}},
+        {"overrides": {"draft": {"model": 5}}},
+    ],
+)
+def test_put_run_plan_wrong_shape_nested_value_is_400_not_500(run_plan_server, body):
+    status, payload = _req(run_plan_server, "PUT", "/v1/runs/t/plan", body=body)
+    assert status == 400
+    assert payload["error"]["code"] == "bad_request"
 
 
 def test_put_run_plan_invalid_model_is_400_and_overrides_unchanged(run_plan_server):

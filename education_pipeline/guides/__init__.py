@@ -19,6 +19,7 @@ from .parse import (
     parse_guide,
 )
 from .projection import project_guide_markdown
+from .quality_report import QUALITY_REPORT_SCHEMA_VERSION, quality_report_bytes
 from .document import (
     DocumentMode,
     GuideDocumentError,
@@ -26,18 +27,22 @@ from .document import (
     render_guide_markdown,
 )
 from .reports import Finding, ValidationReport, ValidationSummary, canonical_report_bytes
-from .validation import ValidationContext, validate_guide
+from .static_checks import StaticCheckResult, compute_static_checks
+from .validation import MAX_GUIDE_SOURCE_BYTES, ValidationContext, validate_guide
 from .waivers import Waiver, WaiverResult, WaiverSet, apply_waivers
 
 __all__ = [
     "Guide",
     "ContractError",
+    "MAX_GUIDE_SOURCE_BYTES",
     "DocumentMode",
     "Finding",
     "GuideDocumentError",
     "GuideParseError",
     "ParseDiagnostic",
     "ParseResult",
+    "QUALITY_REPORT_SCHEMA_VERSION",
+    "StaticCheckResult",
     "ValidationReport",
     "ValidationSummary",
     "ValidationContext",
@@ -50,12 +55,14 @@ __all__ = [
     "canonical_guide_bytes",
     "canonical_report_bytes",
     "check_contract_conflict",
+    "compute_static_checks",
     "extract_outline_contract",
     "extract_spec_contract",
     "guide_sha256",
     "normalize_guide",
     "parse_guide",
     "project_guide_markdown",
+    "quality_report_bytes",
     "render_guide_markdown",
     "validate_guide",
     "validate_outline_contract",

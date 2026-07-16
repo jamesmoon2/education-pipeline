@@ -7,6 +7,7 @@ import json
 
 
 SEVERITY_RANK = {"blocker": 0, "error": 1, "warning": 2, "info": 3}
+STAGES = {"spec", "outline", "draft", "qa", "repair"}
 
 
 @dataclass(frozen=True)
@@ -20,10 +21,13 @@ class Finding:
     message: str
     remediation: str
     related_ids: tuple[str, ...] = ()
+    stage: str = "draft"
 
     def __post_init__(self) -> None:
         if self.severity not in SEVERITY_RANK:
             raise ValueError(f"invalid finding severity: {self.severity}")
+        if self.stage not in STAGES:
+            raise ValueError(f"invalid finding stage: {self.stage}")
 
     def to_dict(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -35,6 +39,7 @@ class Finding:
             "path": self.path,
             "message": self.message,
             "remediation": self.remediation,
+            "stage": self.stage,
         }
         if self.related_ids:
             result["related_ids"] = list(self.related_ids)
@@ -76,7 +81,7 @@ class ValidationReport:
     phase: str
     guide_sha256: str
     findings: tuple[Finding, ...]
-    report_schema_version: int = 1
+    report_schema_version: int = 2
     validator_version: str = "1"
 
     def __post_init__(self) -> None:

@@ -104,6 +104,66 @@ See [`docs/interactive-guides.md`](docs/interactive-guides.md) for the guide
 workflow, artifact layout, validation findings and waivers, preview isolation,
 progress storage, and export/privacy boundaries.
 
+### Release gates
+
+Export refuses (with a `ConfigError`) while blocking findings remain in the
+final-phase validation report. Findings come from the guide validator plus
+computed static checks derived from the exact assembled export document
+(render success, packaged-runtime asset match, control labeling, heading
+order) and privacy screening against the attached profile's private values.
+Validation is deterministic: identical inputs always produce identical
+report bytes, and `validate`/`finalize`/`export` never call a model.
+
+Every export also writes a sidecar quality report, `guide.report.json`, next
+to `guide.html` — canonical, timestamp-free JSON that is byte-identical on
+re-export of unchanged content. It carries `quality_report_schema_version`,
+the `gate` decision (`open`, `effective_blocking`), the full `report`, the
+`waivers` actually applied (plus rejected/orphaned and staleness), and
+`export` fingerprints (file hash, runtime version, runtime asset hashes).
+Its hash is recorded in the run manifest's `exported` event.
+
+Five CLI commands manage the gate:
+
+```bash
+education-pipeline -C ./workspace validate systems-thinking --phase final
+education-pipeline -C ./workspace findings systems-thinking --phase final --blocking
+education-pipeline -C ./workspace report systems-thinking
+education-pipeline -C ./workspace waive systems-thinking <finding-id> --reason "..."
+education-pipeline -C ./workspace unwaive systems-thinking <finding-id>
+```
+
+All five commands share one exit-code contract: `0` = open/success, `1` =
+gate blocked, `2` = usage/config error (nonexistent run, bad `--phase`, no
+report on disk yet) — so a script can always tell "no such run" apart from
+"gate blocked" by exit code alone.
+
+- `validate <topic> [--phase draft|final]` runs deterministic validation and
+  reports the gate (exit 0 if open, 1 if blocked, 2 on a usage/config error
+  such as a nonexistent run).
+- `findings <topic> [--phase] [--blocking]` lists a validation report's
+  findings as tab-separated `severity  rule_id  stage  path  message` (exit 0
+  on success — listing is not a gate; exits 2 if no report exists yet — run
+  `validate` first — or the run doesn't exist).
+- `report <topic>` prints the export sidecar quality report verbatim if one
+  exists, otherwise the final validation report; its exit code tracks
+  `gate.open` (0 open, 1 blocked), or 2 on a usage/config error (nonexistent
+  run, or no final report exists yet).
+- `waive <topic> <finding-id> --reason "..." [--phase]` and
+  `unwaive <topic> <finding-id> [--phase]` record or remove a waiver. Usage
+  errors (bad finding id, non-waivable rule, empty reason) exit 2, distinct
+  from the gate's blocked exit 1.
+
+Waivers are hash-bound to the validated content's `guide_sha256` and require
+a recorded reason; only rules marked waivable can be waived. If the content
+changes after waiving, the waiver set goes stale and is dropped — a stale
+waiver can only close a gate, never open one — and removing the last waiver
+deletes the waivers file.
+
+`report` reflects the **export-time** gate state frozen in the sidecar, while
+`validate` recomputes the **current** state; the two can disagree after
+content changes without a re-export. `findings` and `report` warn on stderr
+when the on-disk report is stale.
+
 ## Repository Boundary
 
 Generated runs, private topics, tuned prompt libraries, and real learner

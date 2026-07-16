@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -167,6 +167,107 @@ describe("RunBoardPage", () => {
     const advance = await screen.findByRole("button", { name: "Advance" });
     await userEvent.click(advance);
     expect(postAdvance).toHaveBeenCalledWith("t");
+  });
+
+  it("shows per-stage findings-count badges combining current draft and final reports", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      ...status,
+      validations: {
+        draft: {
+          state: "current",
+          blocking: 2,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { outline: 2 },
+        },
+        final: {
+          state: "current",
+          blocking: 1,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { outline: 1, repair: 3 },
+        },
+      },
+    });
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    // outline: 2 (draft) + 1 (final) summed; repair: 3 from the final report only.
+    const repairRow = await screen.findByRole("row", { name: /repair/ });
+    expect(within(repairRow).getByRole("status", { name: "3 findings" })).toBeInTheDocument();
+    const outlineRow = screen.getByRole("row", { name: /outline/ });
+    expect(within(outlineRow).getByRole("status", { name: "3 findings" })).toBeInTheDocument();
+  });
+
+  it("ignores findings_by_stage from a phase whose report is not current", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      ...status,
+      validations: {
+        // Stale draft counts describe superseded content and must not badge.
+        draft: {
+          state: "stale",
+          blocking: 5,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { outline: 5 },
+        },
+        final: {
+          state: "current",
+          blocking: 1,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { repair: 1 },
+        },
+      },
+    });
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    const repairRow = await screen.findByRole("row", { name: /repair/ });
+    expect(within(repairRow).getByRole("status", { name: "1 finding" })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "5 findings" })).not.toBeInTheDocument();
+  });
+
+  it("shows no badge for a phase whose every blocker is waived (server-netted findings_by_stage)", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      ...status,
+      validations: {
+        // Every blocker in draft carries an accepted waiver: the server
+        // (_validation_summary, read_api.py) nets waived findings out of
+        // findings_by_stage itself, so a fully-waived stage arrives here as
+        // {} -- not as a raw pre-waiver count paired with effective_blocking
+        // 0. (findings_by_stage: { outline: 1 } alongside effective_blocking:
+        // 0 is a payload the server can never emit: findings_by_stage counts
+        // blocking OR severity === "error", while effective_blocking counts
+        // blocking only, and the server nets both from the same waived-id
+        // set, so a fully-waived blocking finding always empties out of
+        // both.)
+        draft: {
+          state: "current",
+          blocking: 1,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: {},
+          effective_blocking: 0,
+        },
+        // final still has a real, unwaived blocker: its badge must survive.
+        final: {
+          state: "current",
+          blocking: 1,
+          errors: 0,
+          warnings: 0,
+          findings_by_stage: { repair: 1 },
+          effective_blocking: 1,
+        },
+      },
+    });
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    const repairRow = await screen.findByRole("row", { name: /repair/ });
+    expect(within(repairRow).getByRole("status", { name: "1 finding" })).toBeInTheDocument();
+    const outlineRow = screen.getByRole("row", { name: /outline/ });
+    expect(within(outlineRow).queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("shows a provenance line for a stage present in stage_provenance", async () => {

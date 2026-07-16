@@ -14,7 +14,6 @@ carry a precise conflict code; the store call remains the authority and its
 from __future__ import annotations
 
 import hashlib
-import json
 import tomllib
 from pathlib import Path
 
@@ -103,7 +102,7 @@ def create_waiver(
     report = payload["report"]
     if report.get("guide_sha256") != guide_sha256:
         raise ConflictError("stale_validation", "guide hash does not match the current report")
-    if not reason.strip():
+    if not isinstance(reason, str) or not reason.strip():
         raise ConfigError("waiver reason must not be empty")
     finding = next(
         (item for item in report.get("findings", []) if item.get("id") == finding_id),
@@ -114,22 +113,43 @@ def create_waiver(
     if not finding.get("waivable"):
         raise UnprocessableError("finding_not_waivable", f"finding {finding_id!r} is not waivable")
 
-    path = runs.waivers_path(topic_id)
-    existing: list[dict] = []
-    if path.is_file():
-        try:
-            old = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ConfigError(f"invalid validation waivers file: {path}") from exc
-        if old.get("guide_sha256") == guide_sha256 and isinstance(old.get("waivers"), list):
-            existing = [item for item in old["waivers"] if item.get("finding_id") != finding_id]
-    existing.append({"finding_id": finding_id, "reason": reason.strip()})
-    existing.sort(key=lambda item: item["finding_id"])
-    value = {"schema_version": 1, "guide_sha256": guide_sha256, "waivers": existing}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp.replace(path)
+    # Delegate the read-modify-write to RunStore.record_waiver rather than
+    # hand-rolling a second locking/temp-file scheme here: on a
+    # ThreadingHTTPServer, two concurrent POSTs to this endpoint for the same
+    # run raced on an unserialized load-mutate-write with a shared hardcoded
+    # temp filename, producing both lost updates and FileNotFoundError from a
+    # colliding ``.tmp`` rename. ``record_waiver`` uses RunStore's per-topic
+    # ``_manifest_write_lock`` (serialization) and ``_write_bytes_atomic``
+    # (collision-free ``mkstemp`` temp names) -- the same tools that already
+    # protect manifest read-modify-write cycles -- so this is a single,
+    # reused critical section rather than a divergent one. It also reuses
+    # ``load_waiver_set`` internally, so the schema-validation guarantee
+    # described below still holds: a malformed persisted waivers file is
+    # never silently propagated into the new file.
+    #
+    # record_waiver now hash-binds to a fresh recompute of the current
+    # report itself and returns a WaiverResult (gate outcome); the
+    # preconditions above (current hash, non-empty reason, finding exists
+    # and is waivable) already hold by this point, so record_waiver's own
+    # equivalent checks are a formality on this path -- they matter for its
+    # other caller, the CLI's `waive` command, which has no
+    # read_api.validation_payload precondition of its own.
+    #
+    # Use the private `_record_waiver`, which also returns the WaiverSet
+    # that was written *inside* the locked critical section, instead of
+    # taking a second, unlocked `load_waiver_set` snapshot afterward: that
+    # extra read would be racy (a concurrent writer bound to a different
+    # guide_sha256 could land between the two calls and cause this
+    # response to silently drop the waiver just recorded) and would
+    # dereference `load_waiver_set`'s Optional return without a guard.
+    _, waiver_set = runs._record_waiver(topic_id, phase, finding_id, reason.strip())
+    value = {
+        "schema_version": waiver_set.schema_version,
+        "guide_sha256": waiver_set.guide_sha256,
+        "waivers": [
+            {"finding_id": w.finding_id, "reason": w.reason} for w in waiver_set.waivers
+        ],
+    }
     return {"waivers": value, **read_api.validation_payload(runs, topic_id, phase)}
 
 
@@ -372,6 +392,10 @@ def update_global_plan(config, body: dict) -> dict:
     plan = parse_model_plan(
         {"provider": body.get("provider"), "stages": body.get("stages", {})},
         catalog=catalog,
+        # Strict at write, lenient on disk (owner's decision): reject an
+        # unknown/misspelled stage key here rather than silently discarding
+        # it, without tightening load_model_plan's disk loader.
+        strict_keys=True,
     )
     config.write_plan(emit_model_plan_toml(plan))
     return read_api.plan_payload(catalog, plan, config.plan_sha256())

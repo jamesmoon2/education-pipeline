@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiRequestError, getRunStatus, postAdvance } from "../api/client";
-import type { StageProvenance } from "../api/types";
+import type { RunStatus, StageProvenance } from "../api/types";
 import JobsPanel from "../components/JobsPanel";
 import PrimaryAction from "../components/PrimaryAction";
 import RunPlanPanel from "../components/RunPlanPanel";
@@ -26,6 +26,37 @@ function formatProvenance(entry: StageProvenance): string {
   const model = entry.model ? ` / ${entry.model}` : "";
   const effort = entry.effort ? ` / ${entry.effort}` : "";
   return `ran on ${entry.provider}${model}${effort} (${entry.source})`;
+}
+
+// Blocking-or-error findings by stage, combined across the draft and final
+// validation reports, so a stage badges up if either phase flagged it.
+// Only "current" reports contribute: stale or missing reports describe
+// superseded content and would misrepresent actionable work.
+//
+// No client-side effective_blocking check here: the server
+// (_validation_summary, read_api.py) already nets waived findings out of
+// findings_by_stage itself, so a fully-waived stage arrives as {} and needs
+// no extra suppression. An earlier version additionally skipped a phase
+// whenever effective_blocking === 0, reasoning that would guard against the
+// server "under-netting" a stray non-blocking severity: "error" finding --
+// but findings_by_stage counts blocking OR severity === "error" while
+// effective_blocking counts blocking only, so that skip would have done the
+// opposite: dropped a real, un-waived error-severity badge whenever it
+// wasn't also blocking. It was inert only because every error-severity rule
+// today also sets blocking=True (guides/validation.py). Trust the server's
+// netting instead of re-deriving (and getting backwards) a second copy of
+// it here.
+function combinedFindingsByStage(status: RunStatus): Record<string, number> {
+  const merged: Record<string, number> = {};
+  for (const phase of ["draft", "final"] as const) {
+    const validation = status.validations[phase];
+    if (validation.state !== "current") continue;
+    const byStage: Record<string, number> = validation.findings_by_stage ?? {};
+    for (const [stage, count] of Object.entries(byStage)) {
+      merged[stage] = (merged[stage] ?? 0) + count;
+    }
+  }
+  return merged;
 }
 
 export default function RunBoardPage() {
@@ -58,6 +89,7 @@ export default function RunBoardPage() {
   if (!status) return <p>Loading…</p>;
 
   const provenanceByStage = latestProvenanceByStage(status.stage_provenance);
+  const findingsByStage = combinedFindingsByStage(status);
 
   return (
     <div>
@@ -87,6 +119,7 @@ export default function RunBoardPage() {
               topicId={status.topic_id}
               phase={phase}
               state={status.validations[phase].state}
+              effectiveBlocking={status.validations[phase].effective_blocking}
               onChanged={refresh}
             />
           ))}
@@ -97,18 +130,31 @@ export default function RunBoardPage() {
           <tr>
             <th>Stage</th>
             <th>State</th>
+            <th>Findings</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           {status.stages.map((s) => {
             const provenance = provenanceByStage.get(s.stage);
+            const findingsCount = findingsByStage[s.stage] ?? 0;
             return (
               <tr key={s.stage}>
                 <td>{s.stage}</td>
                 <td>
                   <span className={`state state-${s.state}`}>{s.state}</span>
                   {provenance && <p className="stage-provenance">{formatProvenance(provenance)}</p>}
+                </td>
+                <td>
+                  {findingsCount > 0 && (
+                    <span
+                      className="findings-badge"
+                      role="status"
+                      aria-label={`${findingsCount} ${findingsCount === 1 ? "finding" : "findings"}`}
+                    >
+                      {findingsCount}
+                    </span>
+                  )}
                 </td>
                 <td>
                   <Link to={`/topics/${status.topic_id}/stages/${s.stage}`}>view</Link>

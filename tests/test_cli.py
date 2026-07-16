@@ -1,7 +1,10 @@
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
 
+import test_runs
 from education_pipeline import ContentContract, RunStore
 from education_pipeline.cli import main
 
@@ -292,6 +295,389 @@ def test_create_command_conflicting_contract_exits_1(
     assert _run(ws, "create", "systems-thinking", "--legacy-markdown") == 1
     err = capsys.readouterr().err
     assert "immutable content contract" in err
+
+
+@pytest.fixture
+def guide_v1_workspace(tmp_path: Path):
+    """A guide-v1 run driven to an approved repair with a current, open final report."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    test_runs._drive_guide_to_finalize_ready(runs, topic_id)
+    return root, topic_id
+
+
+@pytest.fixture
+def workspace_with_blockers(tmp_path: Path):
+    """A guide-v1 run with an approved, validated draft carrying blocking findings."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    leak_json = test_runs._prompt_leak_guide_json()
+    test_runs._drive_guide_to_draft_approved(runs, topic_id, draft_body=leak_json)
+    runs.validate_run(topic_id, "draft")
+    return root, topic_id
+
+
+@pytest.fixture
+def exported_guide_workspace(tmp_path: Path):
+    """A guide-v1 run finalized and exported to HTML, with its sidecar report."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    test_runs._drive_guide_to_finalize_ready(runs, topic_id)
+    runs.finalize_run(topic_id)
+    runs.export_run(topic_id, format="html")
+    return root, topic_id
+
+
+def _mismatched_minutes_guide_json(base: str) -> str:
+    """Mutate a guide-fixture JSON body so course/module minutes disagree.
+
+    Produces a ``time.module_total_mismatch`` finding, whose rule maps to the
+    "outline" stage -- distinct from both the draft-phase default stage
+    ("draft") and the finding-stage default ("draft"), so tests built on it
+    can only pass if real rule-to-stage attribution is flowing end to end.
+    """
+
+    data = json.loads(base)
+    data["course"]["estimated_minutes"] += 5
+    return json.dumps(data)
+
+
+@pytest.fixture
+def workspace_with_mixed_findings(tmp_path: Path):
+    """A validated draft carrying both a blocking (draft-stage) finding and a
+    non-blocking (outline-stage) finding -- lets tests assert real stage
+    attribution and real --blocking filtering, not fixture coincidence."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    body = _mismatched_minutes_guide_json(test_runs._prompt_leak_guide_json())
+    test_runs._drive_guide_to_draft_approved(runs, topic_id, draft_body=body)
+    runs.validate_run(topic_id, "draft")
+    return root, topic_id
+
+
+@pytest.fixture
+def workspace_with_stale_draft_report(tmp_path: Path):
+    """A draft validated once, then edited without revalidating -- the
+    on-disk draft report is now stale relative to the approved draft."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    test_runs._drive_guide_to_draft_approved(runs, topic_id)
+    runs.validate_run(topic_id, "draft")
+
+    draft_paths = runs.stage_paths(topic_id, "draft")
+    base_sha = hashlib.sha256(draft_paths.response_path.read_bytes()).hexdigest()
+    edited = test_runs._edit_course_description(
+        draft_paths.response_path.read_text(encoding="utf-8"),
+        "Edited after validation so the draft report goes stale.",
+    )
+    runs.edit_response(topic_id, "draft", edited, base_sha256=base_sha)
+    runs.approve_stage(topic_id, "draft", overwrite=True)
+    assert runs.report_state(topic_id, "draft") == "stale"
+    return root, topic_id
+
+
+@pytest.fixture
+def workspace_with_stale_final_report(tmp_path: Path):
+    """A repair validated once, then edited without revalidating -- the
+    on-disk final report is now stale relative to the approved repair."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    test_runs._drive_guide_to_finalize_ready(runs, topic_id)
+
+    repair_paths = runs.stage_paths(topic_id, "repair")
+    base_sha = hashlib.sha256(repair_paths.response_path.read_bytes()).hexdigest()
+    edited = test_runs._edit_course_description(
+        repair_paths.response_path.read_text(encoding="utf-8"),
+        "Edited after final validation so the final report goes stale.",
+    )
+    runs.edit_response(topic_id, "repair", edited, base_sha256=base_sha)
+    runs.approve_stage(topic_id, "repair", overwrite=True)
+    assert runs.report_state(topic_id, "final") == "stale"
+    return root, topic_id
+
+
+def test_validate_command_exit_codes_track_the_gate(guide_v1_workspace, capsys):
+    root, topic_id = guide_v1_workspace
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "final"]) == 0
+
+
+def test_validate_command_exit_code_is_1_when_gate_is_blocked(workspace_with_blockers, capsys):
+    root, topic_id = workspace_with_blockers
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "draft"]) == 1
+    out = capsys.readouterr().out
+    assert "gate blocked" in out
+
+
+def test_validate_command_nonexistent_topic_exits_2(tmp_path: Path, capsys) -> None:
+    """A typo'd/nonexistent topic id is a usage/config error (exit 2), not a
+    blocked gate (exit 1) -- scripts must be able to tell "no such run" apart
+    from "gate blocked" by exit code alone."""
+
+    root = tmp_path / "ws"
+    exit_code = main(["--workspace", str(root), "validate", "no-such-topic", "--phase", "draft"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "error:" in err
+
+
+def test_findings_command_lists_stage_attributed_findings(workspace_with_mixed_findings, capsys):
+    root, topic_id = workspace_with_mixed_findings
+    assert main(["--workspace", str(root), "findings", topic_id, "--phase", "draft"]) == 0
+    out = capsys.readouterr().out
+    # The rule->stage map attributes time.module_total_mismatch to "outline",
+    # not the draft-phase default ("draft"); this line can only appear if the
+    # CLI is threading the finding's real stage through, not the fallback.
+    assert "\toutline\t" in out
+    assert "time.module_total_mismatch" in out
+
+
+def test_findings_command_blocking_filter(workspace_with_mixed_findings, capsys):
+    root, topic_id = workspace_with_mixed_findings
+    assert main(["--workspace", str(root), "findings", topic_id, "--phase", "draft"]) == 0
+    unfiltered = capsys.readouterr().out.strip().splitlines()
+
+    assert (
+        main(["--workspace", str(root), "findings", topic_id, "--phase", "draft", "--blocking"])
+        == 0
+    )
+    filtered = capsys.readouterr().out.strip().splitlines()
+
+    assert len(filtered) < len(unfiltered)
+    assert all("content.prompt_leak" in line for line in filtered)
+    assert not any("time.module_total_mismatch" in line for line in filtered)
+
+
+def test_findings_command_warns_on_stale_report(workspace_with_stale_draft_report, capsys):
+    root, topic_id = workspace_with_stale_draft_report
+    assert main(["--workspace", str(root), "findings", topic_id, "--phase", "draft"]) == 0
+    err = capsys.readouterr().err
+    assert "stale" in err.lower()
+
+
+def test_findings_command_falls_back_to_repair_stage_for_pre_v2_finding(
+    guide_v1_workspace, capsys
+):
+    """A pre-v2 report on disk has no ``stage`` key on its findings (that field
+    was added later). The CLI must fall back to the phase-derived stage
+    ("final" phase -> "repair", matching the web's findingHref convention in
+    d0a291f) rather than a hardcoded "draft" -- reverting to a hardcoded
+    fallback would make this test fail while every other findings test (whose
+    fixtures always carry ``stage`` on disk) stays green."""
+
+    root, topic_id = guide_v1_workspace
+    runs = RunStore(root)
+    report_path = runs.final_report_path(topic_id)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    stage_less_finding = {
+        "id": "pre-v2-finding",
+        "rule_id": "content.pre_v2_example",
+        "severity": "warning",
+        "blocking": False,
+        "waivable": True,
+        "path": "modules[0]",
+        "message": "pre-v2 report with no stage on this finding",
+        "remediation": "n/a",
+        # no "stage" key -- this is what a pre-v2 report looks like on disk.
+    }
+    report["findings"] = [stage_less_finding]
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    assert main(["--workspace", str(root), "findings", topic_id, "--phase", "final"]) == 0
+    out = capsys.readouterr().out
+    assert "\trepair\t" in out
+    assert "\tdraft\t" not in out
+
+
+def test_findings_command_no_report_exits_2(tmp_path: Path, capsys) -> None:
+    """No validation report has been written yet: this is a usage/config
+    error (exit 2), not a blocked gate (exit 1)."""
+
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    test_runs._create_guide_run(root, topic_id)
+
+    exit_code = main(["--workspace", str(root), "findings", topic_id, "--phase", "draft"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "error:" in err
+
+
+def test_report_command_prints_sidecar_after_export(exported_guide_workspace, capsys):
+    root, topic_id = exported_guide_workspace
+    assert main(["--workspace", str(root), "report", topic_id]) == 0
+    assert '"quality_report_schema_version"' in capsys.readouterr().out
+
+
+def test_report_command_prints_final_report_when_not_exported(guide_v1_workspace, capsys):
+    """No export sidecar exists yet -- falls back to the raw final validation report."""
+
+    root, topic_id = guide_v1_workspace
+    assert main(["--workspace", str(root), "report", topic_id]) == 0
+    out = capsys.readouterr().out
+    assert '"phase": "final"' in out
+    assert '"quality_report_schema_version"' not in out
+
+
+def test_report_command_warns_on_stale_report(workspace_with_stale_final_report, capsys):
+    root, topic_id = workspace_with_stale_final_report
+    main(["--workspace", str(root), "report", topic_id])
+    err = capsys.readouterr().err
+    assert "stale" in err.lower()
+
+
+def test_report_command_nonexistent_topic_exits_2(tmp_path: Path, capsys) -> None:
+    """A typo'd/nonexistent topic id is a usage/config error (exit 2), not a
+    blocked gate (exit 1)."""
+
+    root = tmp_path / "ws"
+    exit_code = main(["--workspace", str(root), "report", "no-such-topic"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "error:" in err
+
+
+def _blocking_finding_id(root, topic_id, phase="draft"):
+    report = json.loads(
+        RunStore(root).draft_report_path(topic_id).read_text(encoding="utf-8")
+        if phase == "draft"
+        else RunStore(root).final_report_path(topic_id).read_text(encoding="utf-8")
+    )
+    return next(f["id"] for f in report["findings"] if f["blocking"] and f["waivable"])
+
+
+def test_waive_command_opens_the_gate(workspace_with_blockers, capsys):
+    """The waive command's whole point is flipping a blocked gate open --
+    not just writing a waivers file. Assert the gate transition via a
+    follow-up `validate` run, not just the waive command's own exit code,
+    so this test fails if the gate math regresses even though `waive`
+    itself still exits 0."""
+
+    root, topic_id = workspace_with_blockers
+    finding_id = _blocking_finding_id(root, topic_id)
+
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "draft"]) == 1
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                "--workspace",
+                str(root),
+                "waive",
+                topic_id,
+                finding_id,
+                "--reason",
+                "Intentional example text.",
+                "--phase",
+                "draft",
+            ]
+        )
+        == 0
+    )
+
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "draft"]) == 0
+
+
+def test_waive_command_empty_reason_exits_2(workspace_with_blockers, capsys):
+    root, topic_id = workspace_with_blockers
+    finding_id = _blocking_finding_id(root, topic_id)
+
+    exit_code = main(
+        [
+            "--workspace",
+            str(root),
+            "waive",
+            topic_id,
+            finding_id,
+            "--reason",
+            "   ",
+            "--phase",
+            "draft",
+        ]
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "error:" in err
+
+    # The gate must remain blocked: no waiver should have been recorded.
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "draft"]) == 1
+
+
+def test_waive_command_non_waivable_finding_exits_2(tmp_path, capsys):
+    root = tmp_path / "ws"
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(root, topic_id)
+    bad = json.loads(test_runs.GUIDE_FIXTURE)
+    bad["schema_version"] = "2.0"
+    test_runs._drive_guide_to_draft_approved(runs, topic_id, draft_body=json.dumps(bad))
+    runs.validate_run(topic_id, "draft")
+    report = json.loads(runs.draft_report_path(topic_id).read_text(encoding="utf-8"))
+    finding = next(f for f in report["findings"] if f["blocking"] and not f["waivable"])
+
+    exit_code = main(
+        [
+            "--workspace",
+            str(root),
+            "waive",
+            topic_id,
+            finding["id"],
+            "--reason",
+            "Please let this through.",
+            "--phase",
+            "draft",
+        ]
+    )
+    assert exit_code == 2
+
+
+def test_unwaive_command_closes_the_gate_again(workspace_with_blockers, capsys):
+    """The inverse contract: unwaive must flip a previously-opened gate back
+    closed. Only checking unwaive's own exit code (which is 0 either way in
+    a no-waiver-existed case) would not prove the removal actually mutated
+    the waiver set, so this asserts the gate via a follow-up `validate`."""
+
+    root, topic_id = workspace_with_blockers
+    finding_id = _blocking_finding_id(root, topic_id)
+
+    assert (
+        main(
+            [
+                "--workspace",
+                str(root),
+                "waive",
+                topic_id,
+                finding_id,
+                "--reason",
+                "Intentional example text.",
+                "--phase",
+                "draft",
+            ]
+        )
+        == 0
+    )
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "draft"]) == 0
+    capsys.readouterr()
+
+    assert (
+        main(
+            ["--workspace", str(root), "unwaive", topic_id, finding_id, "--phase", "draft"]
+        )
+        == 0
+    )
+
+    assert main(["--workspace", str(root), "validate", topic_id, "--phase", "draft"]) == 1
 
 
 def test_daemon_status_prints_cockpit_url(tmp_path, capsys, monkeypatch):

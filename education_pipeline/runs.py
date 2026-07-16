@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import ClassVar
 import hashlib
 import json
 import re
+import threading
 
 from education_pipeline.config import ConfigError
 from education_pipeline.export import (
@@ -17,6 +19,8 @@ from education_pipeline.export import (
 )
 from education_pipeline.guides import (
     ContractError,
+    Guide,
+    MAX_GUIDE_SOURCE_BYTES,
     Waiver,
     WaiverSet,
     apply_waivers,
@@ -24,14 +28,17 @@ from education_pipeline.guides import (
     canonical_guide_bytes,
     canonical_report_bytes,
     check_contract_conflict,
+    compute_static_checks,
     extract_outline_contract,
     extract_spec_contract,
     guide_sha256,
     normalize_guide,
     parse_guide,
     project_guide_markdown,
+    quality_report_bytes,
     validate_guide,
-    assemble_guide_document,
+    ValidationReport,
+    WaiverResult,
 )
 from education_pipeline.guide_runtime import load_runtime_assets
 from education_pipeline.prompts import (
@@ -186,9 +193,58 @@ class RunStore:
     """Create run directories and write stage prompt/response artifacts."""
 
     root: Path
+    # Per-instance runtime state, not dataclass fields: assigned in __init__ via
+    # object.__setattr__ because the dataclass is frozen. Annotated as ClassVar
+    # so the dataclass machinery does not treat them as fields (which would
+    # pull them into __init__/__repr__/__eq__ and require defaults).
+    _manifest_locks: ClassVar[dict[str, threading.Lock]]
+    _manifest_locks_guard: ClassVar[threading.Lock]
 
     def __init__(self, root: str | Path) -> None:
         object.__setattr__(self, "root", Path(root))
+        object.__setattr__(self, "_manifest_locks", {})
+        object.__setattr__(self, "_manifest_locks_guard", threading.Lock())
+
+    def _manifest_write_lock(self, topic_id: str) -> threading.Lock:
+        """Return the per-topic lock serializing writes to this run's manifest
+        and waivers file.
+
+        Serialization is scoped to this ``RunStore`` instance only: it
+        protects concurrent threads (e.g. daemon workers) sharing one
+        ``RunStore`` over the same workspace from racing on the same run's
+        manifest or waivers file. Two ``RunStore`` instances over the same
+        workspace share no locks, and cross-process concurrency (e.g.
+        concurrent CLI invocations) is out of scope here. Callers must share
+        a single ``RunStore`` per workspace to get this guarantee.
+
+        This is a plain, non-reentrant ``threading.Lock``, deliberately: the
+        invariant is exactly one manifest (or waivers) read-modify-write
+        cycle per critical section. Reentrancy would let a method take this
+        lock, call another lock-taking method on the same thread, and have
+        that inner call perform its own read-modify-write and write the file
+        -- only for the outer method to then overwrite the file again from
+        its now-stale in-memory snapshot, silently discarding the inner
+        call's update. A plain lock instead makes any such nesting deadlock
+        immediately and loudly, which is far preferable to a silent lost
+        update.
+
+        To compose two writes into a single critical section, do NOT call a
+        public lock-taking method (e.g. :meth:`append_manifest_event`,
+        :meth:`record_stage_provenance`) from inside another one -- that is
+        exactly the nested-acquire hazard above, and will deadlock by
+        design. Instead take this lock once and call the unlocked
+        ``_locked`` primitive(s) directly (e.g.
+        :meth:`_append_manifest_event_locked`,
+        :meth:`_record_stage_provenance_locked`), which assume the caller
+        already holds the lock and perform a single read-modify-write.
+        """
+
+        with self._manifest_locks_guard:
+            existing = self._manifest_locks.get(topic_id)
+            if existing is None:
+                existing = threading.Lock()
+                self._manifest_locks[topic_id] = existing
+            return existing
 
     @property
     def runs_dir(self) -> Path:
@@ -289,27 +345,28 @@ class RunStore:
             (run / subdir).mkdir(parents=True, exist_ok=True)
 
         manifest_path = run / "manifest.json"
-        if not manifest_path.exists():
-            requested = (
-                content_contract
-                if content_contract is not None
-                else ContentContract.interactive_guide_v1()
-            )
-            _validate_content_contract(requested)
-            manifest = {
-                "schema_version": MANIFEST_SCHEMA_VERSION,
-                "topic_id": run.name,
-                "events": [],
-                "content_contract": requested.to_manifest(),
-            }
-            _write_manifest(manifest_path, manifest)
-        elif content_contract is not None:
-            _validate_content_contract(content_contract)
-            if self.content_contract(run.name) != content_contract:
-                raise ConfigError(
-                    f"run {run.name!r} already has immutable content contract "
-                    f"{self.content_contract(run.name)!r}; requested {content_contract!r}"
+        with self._manifest_write_lock(run.name):
+            if not manifest_path.exists():
+                requested = (
+                    content_contract
+                    if content_contract is not None
+                    else ContentContract.interactive_guide_v1()
                 )
+                _validate_content_contract(requested)
+                manifest = {
+                    "schema_version": MANIFEST_SCHEMA_VERSION,
+                    "topic_id": run.name,
+                    "events": [],
+                    "content_contract": requested.to_manifest(),
+                }
+                _write_manifest(manifest_path, manifest)
+            elif content_contract is not None:
+                _validate_content_contract(content_contract)
+                if self.content_contract(run.name) != content_contract:
+                    raise ConfigError(
+                        f"run {run.name!r} already has immutable content contract "
+                        f"{self.content_contract(run.name)!r}; requested {content_contract!r}"
+                    )
         return run
 
     def list_run_ids(self) -> tuple[str, ...]:
@@ -504,8 +561,16 @@ class RunStore:
             )
 
         source_text = self.read_approved(topic_id, "repair")
-        report = validate_guide(source_text, phase="final")
-        waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
+        report, _, _ = self._validated_final(topic_id, source_text)
+        try:
+            waiver_set = self._load_waiver_set(topic_id)
+        except ConfigError:
+            # Degrade gracefully on a malformed waivers file: fall back to
+            # the raw (un-waived) gate rather than 400ing the whole run
+            # status -- and, transitively, the /v1/topics list -- the same
+            # degradation _validation_summary already applies.
+            waiver_set = None
+        waiver_result = apply_waivers(report, waiver_set)
         if not waiver_result.gate_open:
             return NextAction(
                 topic_id=topic_id,
@@ -726,7 +791,27 @@ class RunStore:
         return paths.response_path
 
     def append_manifest_event(self, topic_id: str, event: dict) -> None:
-        """Append an arbitrary event (with ``recorded_at``) to the run manifest."""
+        """Append an arbitrary event (with ``recorded_at``) to the run manifest.
+
+        Thin lock-taking wrapper around :meth:`_append_manifest_event_locked`.
+        Do not call this from inside another ``_manifest_write_lock``-holding
+        method on the same thread -- that will deadlock by design (the lock
+        is not reentrant). Compose by calling
+        :meth:`_append_manifest_event_locked` directly instead.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        with self._manifest_write_lock(safe_id):
+            self._append_manifest_event_locked(safe_id, event)
+
+    def _append_manifest_event_locked(self, topic_id: str, event: dict) -> None:
+        """Unlocked read-modify-write of one manifest event.
+
+        Caller must already hold ``_manifest_write_lock(topic_id)``. Exists
+        so callers that need to compose this write with another manifest
+        mutation in a single critical section can do so without re-entering
+        the lock.
+        """
 
         safe_id = _artifact_id(topic_id, "topic id")
         run = self.run_dir(safe_id)
@@ -749,7 +834,45 @@ class RunStore:
     ) -> None:
         """Append the effective provider/model/effort that ran a stage to
         manifest["stage_provenance"] (created as [] when missing). Append-only;
-        re-running a stage appends a new entry rather than replacing the last."""
+        re-running a stage appends a new entry rather than replacing the last.
+
+        Thin lock-taking wrapper around
+        :meth:`_record_stage_provenance_locked`. Do not call this from
+        inside another ``_manifest_write_lock``-holding method on the same
+        thread -- that will deadlock by design. Compose by calling
+        :meth:`_record_stage_provenance_locked` directly instead.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        with self._manifest_write_lock(safe_id):
+            self._record_stage_provenance_locked(
+                safe_id,
+                stage,
+                provider=provider,
+                model=model,
+                effort=effort,
+                source=source,
+                job_id=job_id,
+            )
+
+    def _record_stage_provenance_locked(
+        self,
+        topic_id: str,
+        stage: str,
+        *,
+        provider: str,
+        model: str | None,
+        effort: str | None,
+        source: str,
+        job_id: str | None = None,
+    ) -> None:
+        """Unlocked read-modify-write appending one stage-provenance entry.
+
+        Caller must already hold ``_manifest_write_lock(topic_id)``. Exists
+        so callers that need to compose this write with another manifest
+        mutation in a single critical section can do so without re-entering
+        the lock.
+        """
 
         safe_id = _artifact_id(topic_id, "topic id")
         run = self.run_dir(safe_id)
@@ -799,6 +922,16 @@ class RunStore:
         name = "guide.bundle.md" if format == "markdown" else "guide.html"
         return self.final_path(topic_id).with_name(name)
 
+    def export_report_path(self, topic_id: str) -> Path:
+        """Path of the sidecar quality report for the HTML export.
+
+        The HTML export path with a ``.report.json`` suffix appended to its
+        stem, in the same directory (``guide.html`` -> ``guide.report.json``).
+        """
+
+        export_path = self.export_path(topic_id, "html")
+        return export_path.with_name(export_path.stem + ".report.json")
+
     def export_run(
         self,
         topic_id: str,
@@ -846,40 +979,69 @@ class RunStore:
             raise ConfigError("final validation is missing or stale; revalidate before export")
 
         source_text = final_json.read_text(encoding="utf-8")
-        report = validate_guide(source_text, phase="final")
-        waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
+        waiver_set = self._load_waiver_set(topic_id)
+        report, document, guide = self._validated_final(topic_id, source_text)
+        waiver_result = apply_waivers(report, waiver_set)
         if not waiver_result.gate_open:
             raise ConfigError(
                 f"cannot export {topic_id!r}: "
                 f"{waiver_result.effective_blocking} blocking finding(s) remain"
             )
-        parsed = parse_guide(source_text)
-        if not parsed.ok:
-            raise ConfigError("final/guide.json is not a renderable guide")
-        guide = normalize_guide(parsed)
+        if document is None or guide is None:
+            # An open waiver gate guarantees no render_failed blocker, so the
+            # checked document and its guide are present. Guard defensively
+            # against a None write, keeping the failure on the 400-mapped
+            # ConfigError path (any mapped status is fine; the last-resort 500
+            # handler is not).
+            raise ConfigError(
+                f"cannot export {topic_id!r}: the checked guide document is unavailable"
+            )
         assets = load_runtime_assets()
-        content = assemble_guide_document(guide, assets=assets, mode="export")
+        content = document
         export_path = self.export_path(topic_id, "html")
         if export_path.exists() and not overwrite:
             raise ConfigError(f"refusing to overwrite existing file: {export_path}")
         _write_text_atomic(export_path, content)
-        self._append_event(
-            topic_id,
-            stage="export",
-            action="exported",
-            files={
-                "export_file": export_path,
-                "source_file": final_json,
-                "report_file": self.final_report_path(topic_id),
-            },
-            extra={
-                "guide_schema_version": guide.schema_version,
-                "runtime_version": assets.version,
-                "runtime_css_sha256": hashlib.sha256(assets.css.encode("utf-8")).hexdigest(),
-                "runtime_js_sha256": hashlib.sha256(assets.javascript.encode("utf-8")).hexdigest(),
-                "model_stage_provenance": self._model_stage_provenance(topic_id),
-            },
+
+        export_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        runtime_css_sha256 = hashlib.sha256(assets.css.encode("utf-8")).hexdigest()
+        runtime_js_sha256 = hashlib.sha256(assets.javascript.encode("utf-8")).hexdigest()
+        sidecar_bytes = quality_report_bytes(
+            report,
+            waiver_result,
+            waiver_set,
+            export_sha256=export_sha256,
+            runtime_css_sha256=runtime_css_sha256,
+            runtime_js_sha256=runtime_js_sha256,
+            runtime_version=assets.version,
         )
+        report_path = self.export_report_path(topic_id)
+        _write_bytes_atomic(report_path, sidecar_bytes)
+
+        # Build the event payload before entering the (non-reentrant) manifest
+        # lock; ``_model_stage_provenance`` reads the manifest.
+        model_stage_provenance = self._model_stage_provenance(topic_id)
+        safe_id = _artifact_id(topic_id, "topic id")
+        with self._manifest_write_lock(safe_id):
+            self._append_event_locked(
+                safe_id,
+                stage="export",
+                action="exported",
+                files={
+                    "export_file": export_path,
+                    "source_file": final_json,
+                    "report_file": self.final_report_path(topic_id),
+                    "quality_report_file": report_path,
+                },
+                extra={
+                    "guide_schema_version": guide.schema_version,
+                    "runtime_version": assets.version,
+                    "runtime_css_sha256": runtime_css_sha256,
+                    "runtime_js_sha256": runtime_js_sha256,
+                    "quality_report_sha256": hashlib.sha256(sidecar_bytes).hexdigest(),
+                    "model_stage_provenance": model_stage_provenance,
+                },
+            )
         return export_path
 
     def _model_stage_provenance(self, topic_id: str) -> dict[str, dict[str, str | None]]:
@@ -999,7 +1161,7 @@ class RunStore:
                 "run final validation before finalizing"
             )
 
-        report = validate_guide(source_text, phase="final")
+        report, _, _ = self._validated_final(topic_id, source_text)
         waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
         if not waiver_result.gate_open:
             parts = [
@@ -1088,8 +1250,75 @@ class RunStore:
             return "current"
         return "stale"
 
-    def validate_run(self, topic_id: str, phase: str) -> Path:
-        """Run deterministic validation and write the phase report atomically."""
+    def _validated_final(
+        self, topic_id: str, source_text: str
+    ) -> tuple[ValidationReport, str | None, Guide | None]:
+        """Validate final-phase content with computed static checks.
+
+        Returns ``(report, assembled_document, guide)``. Both ``document`` and
+        ``guide`` are ``None`` when the source does not parse (schema blockers
+        already in the report) or exceeds ``MAX_GUIDE_SOURCE_BYTES``. When the
+        source parses but assembly failed, ``document`` is ``None`` while
+        ``guide`` is the normalized guide. Surfacing ``guide`` lets callers
+        reuse the single parse instead of re-parsing the source.
+        """
+
+        private_values = self._private_profile_values(topic_id)
+        if len(source_text.encode("utf-8")) > MAX_GUIDE_SOURCE_BYTES:
+            # The raw str path applies the size cap before parsing and records
+            # the raw-source sha as the report digest, matching
+            # ``_guide_source_sha`` so report_state stays "current".
+            return validate_guide(source_text, phase="final", private_values=private_values), None, None
+        parsed = parse_guide(source_text)
+        if not parsed.ok:
+            return validate_guide(source_text, phase="final", private_values=private_values), None, None
+        guide = normalize_guide(parsed)
+        result = compute_static_checks(guide)
+        report = validate_guide(
+            guide, phase="final", context=result.context, private_values=private_values
+        )
+        return report, result.document, guide
+
+    def _private_profile_values(self, topic_id: str) -> tuple[str, ...]:
+        """Free-text, potentially-identifying fields from the topic's attached
+        learner profile, used as the ``privacy.exact_private_value`` denylist
+        so drafted or repaired guide content that leaks a learner's private
+        context verbatim is caught by validation.
+
+        Only free-text fields that could carry a name, cohort, institution, or
+        other identifying detail are included; categorical/enumerated
+        preference fields (reading level, pace, tone, ...) are excluded since
+        they are not personally identifying. Returns ``()`` when no profile is
+        attached to this run.
+        """
+
+        profile = self._load_attached_profile(topic_id)
+        if profile is None:
+            return ()
+        values: list[str] = [profile.target_learner]
+        for value in (
+            profile.prior_education,
+            profile.prior_experience,
+            profile.professional_experience,
+            profile.current_skill_level,
+        ):
+            if value:
+                values.append(value)
+        values.extend(profile.sensitive_areas)
+        values.extend(profile.accessibility_constraints)
+        return tuple(values)
+
+    def _compute_phase_report(
+        self, topic_id: str, phase: str
+    ) -> tuple[str, str, Path, Path, ValidationReport]:
+        """Shared validation core for ``validate_run``, ``gate_result``, and
+        ``validate_and_gate``: read the approved phase source and compute its
+        report, without writing anything.
+
+        Returns ``(safe_id, source_stage, source_path, report_path, report)``.
+        Raises ``ConfigError`` when there is no approved source for the phase
+        yet (nothing to validate).
+        """
 
         safe_id = _artifact_id(topic_id, "topic id")
         if not self._is_guide_v1(safe_id):
@@ -1104,9 +1333,65 @@ class RunStore:
                 f"approved {source_stage} response not found: {source_path}"
             )
         source_text = source_path.read_text(encoding="utf-8")
-        report = validate_guide(source_text, phase=phase)
+        if phase == "final":
+            report, _, _ = self._validated_final(safe_id, source_text)
+        else:
+            report = validate_guide(
+                source_text, phase=phase, private_values=self._private_profile_values(safe_id)
+            )
         report_path = (
             self.draft_report_path(safe_id) if phase == "draft" else self.final_report_path(safe_id)
+        )
+        return safe_id, source_stage, source_path, report_path, report
+
+    def validate_run(self, topic_id: str, phase: str) -> Path:
+        """Run deterministic validation and write the phase report atomically.
+
+        Delegates to :meth:`validate_and_gate` for the persist step (compute,
+        write, provenance) and discards the gate result -- keeping the
+        "validated" event's provenance identical regardless of which method a
+        caller uses.
+        """
+
+        self.validate_and_gate(topic_id, phase)
+        safe_id = _artifact_id(topic_id, "topic id")
+        report_path = (
+            self.draft_report_path(safe_id) if phase == "draft" else self.final_report_path(safe_id)
+        )
+        return report_path
+
+    def gate_result(self, topic_id: str, phase: str) -> WaiverResult:
+        """Compute the effective waiver gate for a phase, without writing anything.
+
+        Recomputes the validation report fresh from the approved source (the
+        same computation ``validate_run`` performs) rather than trusting a
+        possibly-stale persisted report file, then applies the topic's waiver
+        set via :func:`apply_waivers`. This mirrors the recompute-then-gate
+        pattern already used internally (e.g. ``run_status``'s next-action
+        check and ``_export_guide_v1``), so callers never touch
+        ``_load_waiver_set`` directly.
+
+        Raises ``ConfigError`` when there is no approved source for the phase
+        yet (nothing to validate) -- the same precondition ``validate_run``
+        enforces -- so CLI/daemon callers can print a clean error instead of
+        a traceback.
+        """
+
+        safe_id, _, _, _, report = self._compute_phase_report(topic_id, phase)
+        return apply_waivers(report, self._load_waiver_set(safe_id))
+
+    def validate_and_gate(self, topic_id: str, phase: str) -> WaiverResult:
+        """Validate a phase, persist the report, and return the resulting gate.
+
+        Equivalent to calling ``validate_run`` followed by ``gate_result``,
+        but computes the (expensive, parse+normalize+static-checks) report
+        exactly once instead of twice. Intended for callers -- like the CLI's
+        ``validate`` command -- that need both the persisted-report side
+        effect and the gate outcome from a single invocation.
+        """
+
+        safe_id, source_stage, source_path, report_path, report = self._compute_phase_report(
+            topic_id, phase
         )
         self.create_run(safe_id)
         _write_bytes_atomic(report_path, canonical_report_bytes(report))
@@ -1117,7 +1402,7 @@ class RunStore:
             files={"report_file": report_path, "source_file": source_path},
             extra={"phase": phase},
         )
-        return report_path
+        return apply_waivers(report, self._load_waiver_set(safe_id))
 
     def write_spec_prompt(
         self,
@@ -1481,6 +1766,182 @@ class RunStore:
             return None
         return ProfileStore(self.root).load_topic_profile_snapshot(topic_id)
 
+    def load_waiver_set(self, topic_id: str) -> WaiverSet | None:
+        """Load and validate this topic's on-disk waivers file, if any.
+
+        Public so callers that need to read or rebuild the waivers file
+        (e.g. the daemon's create_waiver endpoint) validate against exactly
+        the same shape rules this loader enforces elsewhere — a single
+        source of truth for what counts as a loadable waivers file, instead
+        of a second, divergent copy of the schema checks.
+        """
+        return self._load_waiver_set(topic_id)
+
+    def record_waiver(
+        self, topic_id: str, phase: str, finding_id: str, reason: str
+    ) -> WaiverResult:
+        """Waive one finding for ``phase`` and return the resulting gate.
+
+        Thin public wrapper around :meth:`_record_waiver`, which also
+        surfaces the freshly-written :class:`WaiverSet` for callers (e.g.
+        the daemon's ``create_waiver`` endpoint) that need to echo it back
+        without a second, unlocked re-read.
+        """
+
+        result, _ = self._record_waiver(topic_id, phase, finding_id, reason)
+        return result
+
+    def _record_waiver(
+        self, topic_id: str, phase: str, finding_id: str, reason: str
+    ) -> tuple[WaiverResult, WaiverSet]:
+        """Waive one finding for ``phase``, returning both the resulting gate
+        and the ``WaiverSet`` that was just written to disk.
+
+        Hash-bound to the current report's ``guide_sha256``: rather than
+        trusting a caller-supplied hash, this recomputes the phase report
+        fresh from the approved source (the same computation
+        :meth:`gate_result` performs) and binds the waiver to that hash, so
+        a waiver can never be recorded against stale content by accident.
+
+        Validates the reason is non-empty and the finding both exists in
+        the current report and is waivable, raising ``ConfigError``
+        otherwise -- so CLI callers get a clean, typed error instead of
+        silently persisting a waiver :func:`apply_waivers` would just
+        reject later.
+
+        Read-modify-write of the waivers file is a critical section: the
+        daemon's ``create_waiver`` endpoint runs on a ``ThreadingHTTPServer``,
+        so two concurrent requests waiving different findings on the same run
+        must not race on load-mutate-write, and the write itself must not
+        collide with a second writer's temp file. This uses
+        :meth:`_manifest_write_lock` (per-topic serialization, shared with the
+        manifest read-modify-write helpers) and :func:`_write_bytes_atomic`
+        (collision-free ``mkstemp`` temp names) rather than a second,
+        hand-rolled locking/temp-file scheme.
+
+        Pre-existing waivers survive only when they were recorded against the
+        same ``guide_sha256``; a stale waiver set (recorded against a
+        different guide hash) is discarded rather than carried forward.
+
+        Returning the written ``WaiverSet`` lets ``write_api.create_waiver``
+        build its HTTP response from exactly what was persisted *inside*
+        this critical section, instead of taking a second, unlocked
+        ``load_waiver_set`` snapshot afterward -- which could race a
+        concurrent writer and echo back a set that no longer contains the
+        waiver this call just recorded.
+        """
+
+        safe_id, _, _, _, report = self._compute_phase_report(topic_id, phase)
+        if not isinstance(reason, str) or not reason.strip():
+            raise ConfigError("waiver reason must not be empty")
+        reason = reason.strip()
+        finding = next((item for item in report.findings if item.id == finding_id), None)
+        if finding is None:
+            raise ConfigError(f"no finding {finding_id!r} in the current {phase} report")
+        if not finding.waivable:
+            raise ConfigError(f"finding {finding_id!r} is not waivable")
+
+        guide_sha256 = report.guide_sha256
+        with self._manifest_write_lock(safe_id):
+            items = self._current_waiver_items_locked(safe_id, guide_sha256)
+            items = [item for item in items if item["finding_id"] != finding_id]
+            items.append({"finding_id": finding_id, "reason": reason})
+            new_set = self._write_waiver_set_locked(safe_id, guide_sha256, items)
+        return apply_waivers(report, new_set), new_set
+
+    def remove_waiver(self, topic_id: str, phase: str, finding_id: str) -> WaiverResult:
+        """Remove one finding's waiver for ``phase`` and return the resulting gate.
+
+        Symmetric with :meth:`record_waiver`: hash-bound to a fresh
+        recompute of the current report, same locking discipline, same
+        atomic write. Removing a waiver that was never recorded (or
+        belonged to a stale hash, which is discarded rather than carried
+        forward) is a no-op -- the desired end state (no waiver for this
+        finding) already holds.
+
+        Unlike :meth:`record_waiver`, this skips the write entirely when the
+        resulting items are unchanged from what was read: removing an id
+        that was never waived (including the common case of no waivers file
+        existing at all) must not create or rewrite the waivers file. This
+        matters for two reasons -- the daemon's validation poll
+        (``read_api.py``) skips its expensive ``gate_result`` recompute only
+        when ``load_waiver_set(...) is None``, so writing an empty file here
+        would silently and permanently defeat that optimization; and an
+        existing waivers file bound to a *stale* hash would otherwise be
+        clobbered by an unrelated no-op removal instead of surviving on disk.
+        """
+
+        safe_id, _, _, _, report = self._compute_phase_report(topic_id, phase)
+        guide_sha256 = report.guide_sha256
+        with self._manifest_write_lock(safe_id):
+            items = self._current_waiver_items_locked(safe_id, guide_sha256)
+            filtered = [item for item in items if item["finding_id"] != finding_id]
+            if filtered == items:
+                new_set = self._build_waiver_set(guide_sha256, items)
+            elif filtered:
+                new_set = self._write_waiver_set_locked(safe_id, guide_sha256, filtered)
+            else:
+                self.waivers_path(safe_id).unlink(missing_ok=True)
+                new_set = self._build_waiver_set(guide_sha256, [])
+        return apply_waivers(report, new_set)
+
+    def _current_waiver_items_locked(self, topic_id: str, guide_sha256: str) -> list[dict]:
+        """Read the persisted waiver set as plain dicts, dropping it if stale.
+
+        Caller must already hold ``_manifest_write_lock(topic_id)``. Exists
+        so :meth:`record_waiver` and :meth:`remove_waiver` share one
+        read-side of the read-modify-write cycle instead of two divergent
+        copies.
+        """
+
+        existing_set = self._load_waiver_set(topic_id)
+        if existing_set is None or existing_set.guide_sha256 != guide_sha256:
+            return []
+        return [{"finding_id": w.finding_id, "reason": w.reason} for w in existing_set.waivers]
+
+    def _build_waiver_set(self, guide_sha256: str, items: list[dict]) -> WaiverSet:
+        """Build the in-memory :class:`WaiverSet` for ``items`` without any I/O.
+
+        Pure factoring shared by :meth:`_write_waiver_set_locked` (which
+        also persists the result) and :meth:`remove_waiver`'s no-op path
+        (which must return an equivalent ``WaiverSet`` without touching
+        disk) -- one canonical shape instead of two divergent copies.
+        """
+
+        items = sorted(items, key=lambda item: item["finding_id"])
+        return WaiverSet(
+            guide_sha256=guide_sha256,
+            waivers=tuple(
+                Waiver(finding_id=item["finding_id"], reason=item["reason"]) for item in items
+            ),
+            schema_version=1,
+        )
+
+    def _write_waiver_set_locked(
+        self, topic_id: str, guide_sha256: str, items: list[dict]
+    ) -> WaiverSet:
+        """Atomically write ``items`` as this topic's waivers file.
+
+        Caller must already hold ``_manifest_write_lock(topic_id)``. Exists
+        so :meth:`record_waiver` and :meth:`remove_waiver` share one
+        write-side of the read-modify-write cycle instead of two divergent
+        copies.
+        """
+
+        new_set = self._build_waiver_set(guide_sha256, items)
+        path = self.waivers_path(topic_id)
+        value = {
+            "schema_version": new_set.schema_version,
+            "guide_sha256": new_set.guide_sha256,
+            "waivers": [
+                {"finding_id": w.finding_id, "reason": w.reason} for w in new_set.waivers
+            ],
+        }
+        _write_bytes_atomic(
+            path, (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        )
+        return new_set
+
     def _load_waiver_set(self, topic_id: str) -> WaiverSet | None:
         path = self.waivers_path(topic_id)
         if not path.is_file():
@@ -1560,8 +2021,40 @@ class RunStore:
         files: dict[str, Path],
         extra: dict[str, object] | None = None,
     ) -> None:
-        run = self.run_dir(topic_id)
-        manifest = self.read_manifest(topic_id)
+        """Append one structured stage event to the manifest.
+
+        Thin lock-taking wrapper around :meth:`_append_event_locked`. Do not
+        call this from inside another ``_manifest_write_lock``-holding method
+        on the same thread -- the lock is not reentrant, so that deadlocks by
+        design. Compose by calling :meth:`_append_event_locked` directly
+        instead.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        with self._manifest_write_lock(safe_id):
+            self._append_event_locked(
+                safe_id, stage=stage, action=action, files=files, extra=extra
+            )
+
+    def _append_event_locked(
+        self,
+        topic_id: str,
+        *,
+        stage: str,
+        action: str,
+        files: dict[str, Path],
+        extra: dict[str, object] | None = None,
+    ) -> None:
+        """Unlocked read-modify-write of one structured stage event.
+
+        Caller must already hold ``_manifest_write_lock(topic_id)``. Exists so
+        callers that need to compose this write with another manifest mutation
+        in a single critical section can do so without re-entering the lock.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        run = self.run_dir(safe_id)
+        manifest = self.read_manifest(safe_id)
         event: dict[str, str] = {"stage": stage, "action": action}
         for label, path in files.items():
             event[label] = _relative_to(path, run)
@@ -1578,7 +2071,7 @@ def _guide_source_sha(text: str) -> str:
     """Hash the guide source the same way ``validate_guide`` records ``guide_sha256``."""
 
     raw = text.encode("utf-8")
-    if len(raw) > 2_000_000:
+    if len(raw) > MAX_GUIDE_SOURCE_BYTES:
         return hashlib.sha256(raw).hexdigest()
     parsed = parse_guide(text)
     if not parsed.ok:
@@ -1605,8 +2098,7 @@ def _relative_to(path: Path, run: Path) -> str:
 
 
 def _write_manifest(path: Path, manifest: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    _write_bytes_atomic(path, (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
 
 
 def _write_text(path: Path, text: str, *, overwrite: bool) -> None:

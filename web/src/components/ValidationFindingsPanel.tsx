@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ApiRequestError, getValidation, getWaivers, postWaiver } from "../api/client";
+import { ApiRequestError, getValidation, getWaivers, postValidate, postWaiver } from "../api/client";
 import type {
   ValidationFinding,
   ValidationReport,
@@ -17,10 +17,12 @@ function feedbackFor(error: unknown): string {
 }
 
 function findingHref(topicId: string, phase: Phase, finding: ValidationFinding): string {
-  const stage = phase === "draft" ? "draft" : "repair";
   const params = new URLSearchParams({ json_path: finding.path });
   const relatedId = finding.related_ids?.[0];
   if (relatedId) params.set("related_id", relatedId);
+  // Pre-v2 reports (written before findings carried a stage) have no
+  // finding.stage; fall back to the phase-derived stage the old links used.
+  const stage = finding.stage ?? (phase === "draft" ? "draft" : "repair");
   return `/topics/${encodeURIComponent(topicId)}/stages/${stage}?${params.toString()}`;
 }
 
@@ -28,11 +30,17 @@ export default function ValidationFindingsPanel({
   topicId,
   phase,
   state,
+  effectiveBlocking,
   onChanged,
 }: {
   topicId: string;
   phase: Phase;
   state: ValidationState;
+  // Post-waiver blocking count for this phase (RunStatus.validations[phase]
+  // .effective_blocking). Optional: callers on older payloads/fixtures that
+  // don't carry it fall back to the raw report.summary.blocking count, same
+  // as before this field existed.
+  effectiveBlocking?: number;
   onChanged: () => void;
 }) {
   const [report, setReport] = useState<ValidationReport | null>(null);
@@ -45,6 +53,7 @@ export default function ValidationFindingsPanel({
   const [waiverFinding, setWaiverFinding] = useState<ValidationFinding | null>(null);
   const [reason, setReason] = useState("");
   const [waiving, setWaiving] = useState(false);
+  const [rerunning, setRerunning] = useState(false);
 
   useEffect(() => {
     setReport(null);
@@ -115,9 +124,35 @@ export default function ValidationFindingsPanel({
     }
   };
 
+  const rerunValidation = async () => {
+    if (rerunning) return;
+    setRerunning(true);
+    setFeedback(null);
+    try {
+      const result = await postValidate(topicId, phase);
+      setReport(result.report);
+      onChanged();
+    } catch (error) {
+      setFeedback(feedbackFor(error));
+    } finally {
+      setRerunning(false);
+    }
+  };
+
   if (state === "missing") {
     return <section aria-label={`${phase} validation findings`}><p>No {phase} validation report yet.</p></section>;
   }
+
+  // A stale report always offers re-run (its waivers are void by definition
+  // -- see report_state). Otherwise, prefer the post-waiver
+  // effective_blocking count when the caller has it: a report whose every
+  // blocker is waived has an open gate and nothing left to re-run for, even
+  // though report.summary.blocking (the raw, pre-waiver count) is still
+  // positive. Fall back to the raw count when effectiveBlocking is absent.
+  const canRerun =
+    state === "stale" ||
+    (report !== null &&
+      (effectiveBlocking !== undefined ? effectiveBlocking > 0 : report.summary.blocking > 0));
 
   return (
     <section className="validation-findings" aria-label={`${phase} validation findings`}>
@@ -126,6 +161,11 @@ export default function ValidationFindingsPanel({
           ? `The ${phase} validation report is stale. Findings may not match the current guide.`
           : `The ${phase} validation report is current.`}
       </p>
+      {canRerun && (
+        <button type="button" disabled={rerunning} onClick={() => void rerunValidation()}>
+          {rerunning ? "Re-running validation…" : "Re-run validation"}
+        </button>
+      )}
       {loading && <p>Loading findings…</p>}
       {waiverState === "stale" && (
         <p className="error">Saved waivers are stale and do not apply to this guide hash.</p>

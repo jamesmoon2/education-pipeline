@@ -141,3 +141,19 @@ def test_parser_diagnostics_map_to_catalog_specific_rule_ids() -> None:
     rich["markdown"] = "[unsafe](javascript:alert(1))"
     ids = {x.rule_id for x in validate_guide(json.dumps(data)).findings}
     assert {"worked_reveal.too_few_steps", "link.unsafe_scheme"} <= ids
+
+
+def test_every_rule_declares_a_responsible_stage():
+    from education_pipeline.guides.validation import RULES
+
+    assert all(rule.stage in {"spec", "outline", "draft", "qa", "repair"} for rule in RULES.values())
+    assert RULES["outcome.untaught"].stage == "outline"
+    assert RULES["a11y.heading_order"].stage == "repair"
+    assert RULES["privacy.exact_private_value"].stage == "draft"
+
+
+def test_findings_carry_stage_and_report_schema_bumped():
+    report = validate_guide('{"schema_version": "1.0"}', phase="draft")
+    payload = report.to_dict()
+    assert payload["report_schema_version"] == 2
+    assert all("stage" in f for f in payload["findings"])

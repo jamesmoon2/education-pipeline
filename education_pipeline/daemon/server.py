@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
+import traceback
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,7 +27,9 @@ from education_pipeline.daemon.jobs import Job, JobStore, Worker
 from education_pipeline.daemon.static import resolve_static
 from education_pipeline.export import render_html_body
 from education_pipeline.guides import (
+    ContractError,
     GuideDocumentError,
+    GuideParseError,
     assemble_guide_document,
     normalize_guide,
     parse_guide,
@@ -124,6 +127,12 @@ def _make_handler(context: DaemonContext):
         def log_message(self, *args):  # silence default stderr logging
             pass
 
+        def send_response(self, code, message=None):
+            # Track whether a status line has gone out on this request so
+            # _last_resort can tell whether it is safe to send a second one.
+            self._response_started = True
+            super().send_response(code, message)
+
         def _host_ok(self) -> bool:
             host = (self.headers.get("Host") or "").split(":")[0]
             return host in _ALLOWED_HOSTS
@@ -154,6 +163,34 @@ def _make_handler(context: DaemonContext):
             if details is not None:
                 error["details"] = details
             self._send(status, {"error": error})
+
+        def _last_resort(self, exc: Exception) -> None:
+            # Any exception not mapped by a typed handler must never escape to
+            # socketserver, which would silently drop the connection with no
+            # status line at all. Convert it to a diagnosable 500 and log the
+            # traceback to stderr; never let this handler itself raise.
+            traceback.print_exc()
+            if getattr(self, "_response_started", False):
+                # A status line (and possibly a partial body) already went
+                # out on this connection — appending a second status line
+                # would corrupt an in-flight keep-alive response, so there is
+                # nothing safe left to send. This flag is set inside
+                # send_response(), before send_header/end_headers/wfile.write
+                # run, so ANY route can land here: the ordinary case is a
+                # client disconnecting mid-response (e.g. BrokenPipeError from
+                # self.wfile.write on a plain /v1/health call), not something
+                # specific to /v1/shutdown. The best available response is to
+                # log the traceback (above) and give up on this connection.
+                return
+            try:
+                # The message echoes str(exc), which can include filesystem
+                # paths. Deliberately acceptable here: this socket is
+                # loopback-only and token-gated (see module docstring), and
+                # existing ConfigError responses already surface raw
+                # exception text the same way.
+                self._error(500, "internal", f"internal server error: {exc}")
+            except Exception:
+                traceback.print_exc()
 
         def _guard(self) -> bool:
             if not self._host_ok():
@@ -186,6 +223,21 @@ def _make_handler(context: DaemonContext):
             return value
 
         def do_GET(self):
+            # Wrap the entire verb, not just the /v1/* API dispatch: no code
+            # path (session bootstrap, static file serving, or the API
+            # routes) may escape to socketserver, which would silently drop
+            # the connection with no status line at all.
+            self._response_started = False
+            try:
+                return self._do_get_dispatch()
+            except read_api.NotFoundError as exc:
+                return self._error(404, "not_found", str(exc))
+            except ConfigError as exc:
+                return self._error(400, "bad_request", str(exc))
+            except Exception as exc:  # last resort: never drop the connection
+                return self._last_resort(exc)
+
+        def _do_get_dispatch(self):
             if not self._host_ok():
                 return self._error(400, "bad_host", "host not allowed")
             path = self.path.split("?", 1)[0]
@@ -199,7 +251,7 @@ def _make_handler(context: DaemonContext):
             if path.startswith("/v1/"):
                 if not self._authed():
                     return self._error(401, "unauthorized", "missing or invalid token")
-                return self._api_get()
+                return self._api_get_routes()
             return self._static_get()
 
         def _static_get(self):
@@ -228,14 +280,6 @@ def _make_handler(context: DaemonContext):
                 )
             self.end_headers()
             self.wfile.write(body)
-
-        def _api_get(self):
-            try:
-                return self._api_get_routes()
-            except read_api.NotFoundError as exc:
-                return self._error(404, "not_found", str(exc))
-            except ConfigError as exc:
-                return self._error(400, "bad_request", str(exc))
 
         def _api_get_routes(self):
             if self.path.startswith("/v1/health"):
@@ -350,9 +394,12 @@ def _make_handler(context: DaemonContext):
             self._error(404, "not_found", "unknown path")
 
         def do_POST(self):
-            if not self._guard():
-                return
+            # Wrap the whole verb, including the pre-route _guard() check,
+            # so nothing on this path can escape to socketserver.
+            self._response_started = False
             try:
+                if not self._guard():
+                    return
                 return self._api_post_routes()
             except read_api.NotFoundError as exc:
                 return self._error(404, "not_found", str(exc))
@@ -360,8 +407,18 @@ def _make_handler(context: DaemonContext):
                 return self._error(409, exc.code, str(exc))
             except write_api.UnprocessableError as exc:
                 return self._error(422, exc.code, str(exc), exc.details)
+            except (GuideDocumentError, ContractError, GuideParseError) as exc:
+                # Same fault class as the /v1/guide-preview 422 below (both
+                # are raised by normalize_guide/assemble_guide_document, e.g.
+                # from finalize_run/export_run): a guide that is safe input
+                # but not renderable under the guide contract must map to the
+                # same 422 guide_not_renderable everywhere it can surface,
+                # not fall through to a plausible-looking 500.
+                return self._error(422, "guide_not_renderable", str(exc))
             except ConfigError as exc:
                 return self._error(400, "bad_request", str(exc))
+            except Exception as exc:  # last resort: never drop the connection
+                return self._last_resort(exc)
 
         def _api_post_routes(self):
             if self.path == "/v1/preview":
@@ -543,16 +600,28 @@ def _make_handler(context: DaemonContext):
             self._error(404, "not_found", "unknown path")
 
         def do_PUT(self):
-            if not self._guard():
-                return
+            # Wrap the whole verb, including the pre-route _guard() check,
+            # so nothing on this path can escape to socketserver.
+            self._response_started = False
             try:
+                if not self._guard():
+                    return
                 return self._api_put_routes()
             except read_api.NotFoundError as exc:
                 return self._error(404, "not_found", str(exc))
             except write_api.ConflictError as exc:
                 return self._error(409, exc.code, str(exc))
+            except write_api.UnprocessableError as exc:
+                return self._error(422, exc.code, str(exc), exc.details)
+            except (GuideDocumentError, ContractError, GuideParseError) as exc:
+                # Keep the error taxonomy coherent across verbs: see the
+                # matching arm in do_POST for why this maps to 422
+                # guide_not_renderable rather than a bare 500.
+                return self._error(422, "guide_not_renderable", str(exc))
             except ConfigError as exc:
                 return self._error(400, "bad_request", str(exc))
+            except Exception as exc:  # last resort: never drop the connection
+                return self._last_resort(exc)
 
         def _api_put_routes(self):
             if self.path == "/v1/config/plan":
