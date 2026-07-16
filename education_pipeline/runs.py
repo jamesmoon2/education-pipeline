@@ -2588,6 +2588,7 @@ class RunStore:
             artifact = compile_guide_v1_spec_prompt(
                 spec_input,
                 guide_schema_version=self.content_contract(safe_id).schema_version or "1.0",
+                blueprint=self.run_blueprint(safe_id),
             )
         else:
             artifact = compile_spec_prompt(spec_input)
@@ -2621,6 +2622,7 @@ class RunStore:
                     profile=profile,
                 ),
                 guide_schema_version=self.content_contract(safe_id).schema_version or "1.0",
+                blueprint=self.run_blueprint(safe_id),
             )
         else:
             artifact = compile_topic_spec_prompt(topic, profile)
@@ -2650,6 +2652,7 @@ class RunStore:
                 approved_spec,
                 profile,
                 guide_schema_version=self.content_contract(safe_id).schema_version or "1.0",
+                blueprint=self.run_blueprint(safe_id),
             )
             extra_files = {
                 "source_spec_file": self.stage_paths(safe_id, "spec").approved_path,
@@ -2681,7 +2684,11 @@ class RunStore:
             self.create_run(safe_id)
             contract_bytes = self._write_guide_contract(safe_id, profile=profile, overwrite=overwrite)
             artifact = compile_guide_v1_draft_prompt(
-                topic, approved_outline, contract_bytes, profile
+                topic,
+                approved_outline,
+                contract_bytes,
+                profile,
+                blueprint=self.run_blueprint(safe_id),
             )
             extra_files = {
                 "source_outline_file": self.stage_paths(safe_id, "outline").approved_path,
@@ -2739,6 +2746,7 @@ class RunStore:
                 draft_guide_json=draft_guide_json,
                 draft_findings_json=draft_findings_json,
                 profile=profile,
+                blueprint=self.run_blueprint(safe_id),
             )
             extra_files = {
                 "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
@@ -2806,6 +2814,7 @@ class RunStore:
                 draft_findings_json=draft_findings_json,
                 guide_contract=contract_path.read_bytes(),
                 profile=profile,
+                blueprint=self.run_blueprint(safe_id),
             )
             extra_files = {
                 "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
@@ -2870,7 +2879,10 @@ class RunStore:
 
         try:
             if stage == "spec":
-                spec_contract = extract_spec_contract(response_text)
+                spec_contract = extract_spec_contract(
+                    response_text,
+                    expected_blueprint=self.run_blueprint(topic_id),
+                )
                 expected_version = self.content_contract(topic_id).schema_version
                 if spec_contract["guide_schema_version"] != expected_version:
                     raise ContractError(

@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, replace
 
 from education_pipeline.config import ConfigError
+from education_pipeline.guides.blueprints import Blueprint
 from education_pipeline.guides.personalization import (
     active_personalization_facets,
     authoritative_goals,
@@ -494,6 +495,59 @@ _GUIDE_REPAIR_OUTPUT_AND_QUALITY_LINES = (
     "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in the JSON.",
 )
 
+def _blueprint_contract_lines(
+    blueprint: Blueprint | None, stage_lines_name: str
+) -> tuple[str, ...]:
+    """The binding ``## Blueprint Contract`` section for authoring stages.
+
+    Empty when no blueprint is configured, so legacy prompts stay
+    byte-identical.
+    """
+
+    if blueprint is None:
+        return ()
+    stage_lines: tuple[str, ...] = getattr(blueprint, stage_lines_name)
+    minimums = ", ".join(f"`{name}`" for name in sorted(blueprint.required_interactions))
+    return (
+        "## Blueprint Contract",
+        f"This course follows the {blueprint.title} blueprint. The requirements in "
+        "this section are binding: they rank with the authoring contract, above "
+        "topic requirements and learner profile context.",
+        *(f"- {line}" for line in stage_lines),
+        f"- Minimum required interaction types (binding): {minimums}.",
+        f"- Default source policy: {blueprint.source_policy}",
+    )
+
+
+def _blueprint_rubric_lines(blueprint: Blueprint | None) -> tuple[str, ...]:
+    """The ``## Blueprint Rubric`` section for the QA stage."""
+
+    if blueprint is None:
+        return ()
+    return (
+        "## Blueprint Rubric",
+        f"This course follows the {blueprint.title} blueprint. Evaluate the draft "
+        "against each rubric item below in addition to the specification and "
+        "outline. Record a finding for each rubric item the draft does not meet.",
+        *(f"- {line}" for line in blueprint.qa_rubric_lines),
+    )
+
+
+def _blueprint_spec_contract_requirement_lines(
+    blueprint: Blueprint | None,
+) -> tuple[str, ...]:
+    """Extra contract-block instructions stating the configured values."""
+
+    if blueprint is None:
+        return ()
+    minimums = json.dumps(sorted(blueprint.required_interactions))
+    return (
+        f'The `blueprint` value must be exactly "{blueprint.id}".',
+        f"The `required_interactions` list must include at least {minimums}; "
+        "add further interaction types only when the course needs them.",
+    )
+
+
 _SUPPORTED_GUIDE_SCHEMA_VERSIONS = frozenset({"1.0", "1.1"})
 _ACTIVE_FACET_PROMPT_INSTRUCTIONS = {
     "prior_knowledge": "Calibrate prerequisites and remediation to the learner's existing knowledge.",
@@ -628,12 +682,17 @@ def compile_guide_v1_spec_prompt(
     spec_input: SpecPromptInput,
     *,
     guide_schema_version: str = "1.0",
+    blueprint: Blueprint | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 spec-stage prompt.
 
     Keeps the existing Markdown response format and additionally requires
     exactly one fenced ``education-pipeline-contract+json`` block at the end
-    of the response containing the machine-readable course contract.
+    of the response containing the machine-readable course contract. With a
+    configured ``blueprint``, the prompt gains a binding blueprint-contract
+    section and the contract-block instructions state the required
+    ``blueprint`` and minimum ``required_interactions`` values; with ``None``
+    the output is byte-identical to the blueprint-free prompt.
     """
 
     guide_schema_version = _guide_schema_version(guide_schema_version)
@@ -648,6 +707,8 @@ def compile_guide_v1_spec_prompt(
     if spec_input.topic_brief is not None:
         topic_lines.append(f"- Topic brief: {_required_text(spec_input.topic_brief, 'topic_brief')}")
 
+    blueprint_lines = _blueprint_contract_lines(blueprint, "spec_lines")
+    blueprint_prefix = (*blueprint_lines, "") if blueprint_lines else ()
     personalization_lines = _private_personalization_lines(
         spec_input.profile, guide_schema_version
     )
@@ -657,11 +718,13 @@ def compile_guide_v1_spec_prompt(
     lines = [
         *_SPEC_HEADER_LINES,
         "",
+        *blueprint_prefix,
         *topic_lines,
         "",
         *_SPEC_OUTPUT_AND_QUALITY_LINES,
         "",
         *_guide_spec_contract_lines(guide_schema_version),
+        *_blueprint_spec_contract_requirement_lines(blueprint),
         *personalization_suffix,
     ]
     return _finalize(
@@ -680,6 +743,7 @@ def compile_guide_v1_outline_prompt(
     profile: LearnerProfile | None = None,
     *,
     guide_schema_version: str = "1.0",
+    blueprint: Blueprint | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 outline-stage prompt.
 
@@ -698,6 +762,7 @@ def compile_guide_v1_outline_prompt(
     )
     return _compile_upstream_prompt(
         stage="outline",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "outline_lines"),
         header_lines=_OUTLINE_HEADER_LINES,
         upstream_heading="## Approved Specification",
         upstream_note="The following specification was approved upstream. Treat it as the binding contract for scope and outcomes.",
@@ -719,6 +784,8 @@ def compile_guide_v1_draft_prompt(
     approved_outline: str,
     guide_contract: bytes,
     profile: LearnerProfile | None = None,
+    *,
+    blueprint: Blueprint | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 draft-stage prompt requesting complete guide JSON only.
 
@@ -736,6 +803,7 @@ def compile_guide_v1_draft_prompt(
     )
     return _compile_stage_prompt(
         stage="draft",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "draft_lines"),
         header_lines=_DRAFT_HEADER_LINES,
         sections=(
             (
@@ -770,6 +838,7 @@ def compile_guide_v1_qa_prompt(
     draft_guide_json: str,
     draft_findings_json: str,
     profile: LearnerProfile | None = None,
+    blueprint: Blueprint | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 QA-stage prompt.
 
@@ -783,6 +852,7 @@ def compile_guide_v1_qa_prompt(
     _required_block(draft_findings_json, "draft findings")
     return _compile_stage_prompt(
         stage="qa",
+        pre_topic_lines=_blueprint_rubric_lines(blueprint),
         header_lines=_QA_HEADER_LINES,
         sections=(
             (
@@ -824,6 +894,7 @@ def compile_guide_v1_repair_prompt(
     draft_findings_json: str,
     guide_contract: bytes,
     profile: LearnerProfile | None = None,
+    blueprint: Blueprint | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 repair-stage prompt.
 
@@ -849,6 +920,7 @@ def compile_guide_v1_repair_prompt(
     )
     return _compile_stage_prompt(
         stage="repair",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "repair_lines"),
         header_lines=_REPAIR_HEADER_LINES,
         sections=(
             (
@@ -985,6 +1057,7 @@ def _compile_upstream_prompt(
     output_and_quality_lines: tuple[str, ...],
     topic: Topic,
     profile: LearnerProfile | None,
+    pre_topic_lines: tuple[str, ...] = (),
 ) -> PromptArtifact:
     """Build a stage prompt that embeds one approved upstream artifact."""
 
@@ -995,6 +1068,7 @@ def _compile_upstream_prompt(
         output_and_quality_lines=output_and_quality_lines,
         topic=topic,
         profile=profile,
+        pre_topic_lines=pre_topic_lines,
     )
 
 
@@ -1006,15 +1080,21 @@ def _compile_stage_prompt(
     output_and_quality_lines: tuple[str, ...],
     topic: Topic,
     profile: LearnerProfile | None,
+    pre_topic_lines: tuple[str, ...] = (),
 ) -> PromptArtifact:
     """Build a stage prompt that embeds one or more approved artifacts.
 
     Each section is ``(heading, note, label, text)``; ``label`` names the
-    artifact in validation errors.
+    artifact in validation errors. ``pre_topic_lines`` (e.g. the blueprint
+    contract) sit with the authoring contract, directly after the header and
+    above topic requirements; empty means byte-identical legacy output.
     """
 
     topic_id, topic_lines = _topic_section_lines(topic)
-    lines = [*header_lines, "", *topic_lines]
+    lines = [*header_lines, ""]
+    if pre_topic_lines:
+        lines.extend([*pre_topic_lines, ""])
+    lines.extend(topic_lines)
     for heading, note, label, text in sections:
         body = _required_block(text, f"approved {label}")
         lines.extend(["", heading, note, "", body.rstrip()])

@@ -345,6 +345,12 @@ def _make_handler(context: DaemonContext):
                 )
             if self.path == "/v1/runs":
                 return self._send(200, read_api.list_runs(context.runs))
+            m = re.match(r"^/v1/blueprints(?:\?topic=([^&]+))?$", self.path)
+            if m:
+                return self._send(
+                    200,
+                    read_api.blueprints_payload(context.topics, m.group(1)),
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/manifest$", self.path)
             if m:
                 return self._send(
@@ -566,9 +572,27 @@ def _make_handler(context: DaemonContext):
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/advance$", self.path)
             if m:
-                self._read_body()  # enforce the JSON/size rules even for an empty body
+                body = self._read_body()
+                unknown = sorted(set(body) - {"blueprint"})
+                if unknown:
+                    raise ConfigError(
+                        "unknown advance field(s): " + ", ".join(unknown)
+                    )
+                blueprint = body.get("blueprint")
+                if blueprint is not None and (
+                    not isinstance(blueprint, str) or not blueprint.strip()
+                ):
+                    raise ConfigError(
+                        "body field 'blueprint' must be a non-empty string when set"
+                    )
                 return self._send(
-                    200, write_api.advance_run(context.runs, context.store, m.group(1))
+                    200,
+                    write_api.advance_run(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        blueprint=blueprint,
+                    ),
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/audit$", self.path)
             if m:

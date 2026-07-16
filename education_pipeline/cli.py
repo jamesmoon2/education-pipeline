@@ -123,7 +123,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="create a legacy Markdown run instead of interactive_guide 1.0",
     )
+    p.add_argument(
+        "--blueprint",
+        default=None,
+        help="pedagogical blueprint id (default: the topic's blueprint, else the recommendation)",
+    )
     p.set_defaults(func=_cmd_create)
+
+    sub.add_parser(
+        "blueprints", help="list the registered pedagogical blueprints"
+    ).set_defaults(func=_cmd_blueprints)
 
     p = sub.add_parser("status", help="show a run's progress and next step")
     p.add_argument("topic_id")
@@ -310,14 +319,32 @@ def _cmd_profile_attach(args: argparse.Namespace) -> int:
 def _cmd_create(args: argparse.Namespace) -> int:
     store = RunStore(_root(args))
     if args.legacy_markdown:
+        if args.blueprint is not None:
+            raise ConfigError("legacy Markdown runs do not support blueprints")
         run = store.create_run(
             args.topic_id, content_contract=ContentContract.legacy_markdown()
         )
         print(f"created run {args.topic_id} (legacy_markdown)")
     else:
-        run = store.create_run(args.topic_id)
+        run = store.create_run(args.topic_id, blueprint=args.blueprint)
         print(f"created run {args.topic_id} (interactive_guide 1.0)")
+        config = store.blueprint_config(args.topic_id)
+        if config is not None:
+            line = f"blueprint: {config['id']} ({config['source']})"
+            if config.get("rationale"):
+                line += f" - {config['rationale']}"
+            print(line)
     print(run)
+    return 0
+
+
+def _cmd_blueprints(args: argparse.Namespace) -> int:
+    from education_pipeline.guides.blueprints import list_blueprints
+
+    for blueprint in list_blueprints():
+        print(f"{blueprint.id}: {blueprint.title}")
+        print(f"  {blueprint.summary}")
+        print(f"  {blueprint.when_to_use}")
     return 0
 
 

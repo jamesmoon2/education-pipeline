@@ -548,6 +548,84 @@ def test_create_run_tolerates_malformed_stored_topic(tmp_path: Path) -> None:
     assert runs.blueprint_config("broken-topic") is None
 
 
+def test_blueprint_run_prompts_carry_the_blueprint_contract(tmp_path: Path) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "procedural-skill"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+
+    prompt = runs.write_topic_spec_prompt("systems-thinking")
+
+    assert "## Blueprint Contract" in prompt.artifact.text
+    assert "Procedural skill" in prompt.artifact.text
+
+
+def test_runs_without_blueprint_record_produce_unchanged_prompts(tmp_path: Path) -> None:
+    """Old workspaces (no manifest blueprint) keep byte-identical prompts."""
+
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking", content_contract=ContentContract.interactive_guide_v1())
+    # Simulate a pre-blueprint workspace: strip the recorded blueprint.
+    manifest_path = runs.manifest_path("systems-thinking")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("blueprint", None)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    prompt = runs.write_topic_spec_prompt("systems-thinking")
+
+    assert "## Blueprint Contract" not in prompt.artifact.text
+
+
+def test_spec_approval_rejects_wrong_blueprint_echo(tmp_path: Path) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "procedural-skill"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+    prompt = runs.write_topic_spec_prompt("systems-thinking")
+    prompt.response_path.write_text(_guide_spec_response(), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="must echo the configured blueprint"):
+        runs.approve_stage("systems-thinking", "spec")
+
+
+def test_spec_approval_rejects_missing_blueprint_minimum_interactions(
+    tmp_path: Path,
+) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "casebook"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+    prompt = runs.write_topic_spec_prompt("systems-thinking")
+    contract = dict(
+        VALID_SPEC_CONTRACT,
+        blueprint="casebook",
+        required_interactions=["scenario", "knowledge_check"],
+    )
+    prompt.response_path.write_text(_guide_spec_response(contract), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="superset"):
+        runs.approve_stage("systems-thinking", "spec")
+
+
+def test_spec_approval_accepts_matching_blueprint_echo(tmp_path: Path) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "casebook"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+    prompt = runs.write_topic_spec_prompt("systems-thinking")
+    contract = dict(
+        VALID_SPEC_CONTRACT,
+        blueprint="casebook",
+        required_interactions=["scenario", "reflection", "knowledge_check"],
+    )
+    prompt.response_path.write_text(_guide_spec_response(contract), encoding="utf-8")
+
+    runs.approve_stage("systems-thinking", "spec")
+
+    assert runs.stage_status("systems-thinking", "spec").approved
+
+
 def test_run_store_creates_run_directories(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
 

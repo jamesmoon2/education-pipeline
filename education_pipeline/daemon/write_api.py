@@ -94,9 +94,20 @@ def unarchive_run(runs: RunStore, topic_id: str) -> dict:
     return {"topic_id": topic_id, "archived": False}
 
 
-def advance_run(runs: RunStore, jobs: JobStore, topic_id: str) -> dict:
+def advance_run(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    *,
+    blueprint: str | None = None,
+) -> dict:
     _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
+    if blueprint is not None:
+        # An explicit user selection (e.g. the New Run wizard's blueprint
+        # step) is recorded before the advance step runs, so the spec prompt
+        # it writes already carries the blueprint contract.
+        runs.create_run(topic_id, blueprint=blueprint)
     result = runs.advance(topic_id)
     return {
         "performed": result.performed,

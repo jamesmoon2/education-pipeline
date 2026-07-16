@@ -556,6 +556,124 @@ GUIDE_DRAFT_JSON = (
 GUIDE_DRAFT_FINDINGS_JSON = '{"report_schema_version": 1, "findings": []}'
 
 
+# Pinned output of every guide-v1 compile function with no blueprint,
+# computed from the pre-blueprint code. The frozen prompt surface only
+# changes where explicitly authorized: `blueprint=None` (legacy runs, old
+# workspaces, direct library use) must stay byte-identical forever.
+_GUIDE_V1_NO_BLUEPRINT_PROMPT_TEXT_SHA256 = {
+    "spec": "8bda2c7da9c54a659d7ec6125dda3f04ee3783581c31a6e4ace97b2987cb8b92",
+    "outline": "6c6a7b251879bc454eb34a2285a77a003cbc566122ace26d93463973da630b7b",
+    "draft": "e8886ffad44f2b0a0728d839940011f5cd1db170430be1f70efc0192381f064c",
+    "qa": "99f98dd7a9bb931630c87e483834b2361c1cfaffa7183a9c320d17d86f62b857",
+    "repair": "da669344e07242f7950de75115bff9c6981832f54b56c01565d7a2e33171f76b",
+}
+
+
+def _compile_guide_v1_prompts(blueprint=None) -> dict[str, str]:
+    topic = Topic(id="systems-thinking", title="Systems Thinking", brief="A brief.")
+    contract = build_guide_contract(GUIDE_SPEC_CONTRACT, GUIDE_OUTLINE_CONTRACT)
+    kwargs = {} if blueprint is None else {"blueprint": blueprint}
+    return {
+        "spec": compile_guide_v1_spec_prompt(
+            SpecPromptInput(
+                topic_id="systems-thinking",
+                title="Systems Thinking",
+                topic_brief="A brief.",
+            ),
+            **kwargs,
+        ).text,
+        "outline": compile_guide_v1_outline_prompt(topic, APPROVED_SPEC, **kwargs).text,
+        "draft": compile_guide_v1_draft_prompt(
+            topic, APPROVED_OUTLINE, contract, **kwargs
+        ).text,
+        "qa": compile_guide_v1_qa_prompt(
+            topic,
+            approved_spec=APPROVED_SPEC,
+            approved_outline=APPROVED_OUTLINE,
+            draft_guide_json=GUIDE_DRAFT_JSON,
+            draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
+            **kwargs,
+        ).text,
+        "repair": compile_guide_v1_repair_prompt(
+            topic,
+            draft_guide_json=GUIDE_DRAFT_JSON,
+            qa_findings_markdown="# QA Report: Systems Thinking\n\n## Verdict\nrevise\n",
+            draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
+            guide_contract=build_guide_contract(GUIDE_SPEC_CONTRACT, GUIDE_OUTLINE_CONTRACT),
+            **kwargs,
+        ).text,
+    }
+
+
+def test_guide_v1_prompts_without_blueprint_are_byte_identical_to_accepted_base() -> None:
+    """The required `blueprint is None` byte-identity regression.
+
+    These hashes were computed from the unmodified pre-blueprint compilers
+    and must never change: prompts only differ when a blueprint is
+    explicitly configured.
+    """
+
+    texts = _compile_guide_v1_prompts()
+    for stage, expected in _GUIDE_V1_NO_BLUEPRINT_PROMPT_TEXT_SHA256.items():
+        assert _sha256_text(texts[stage]) == expected, stage
+
+
+def test_blueprint_prompts_add_contract_sections_and_rubric() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+
+    blueprint = get_blueprint("procedural-skill")
+    texts = _compile_guide_v1_prompts(blueprint)
+
+    for stage in ("spec", "outline", "draft", "repair"):
+        text = texts[stage]
+        assert "## Blueprint Contract" in text, stage
+        assert "Procedural skill" in text, stage
+        assert "worked_reveal" in text and "knowledge_check" in text, stage
+        assert blueprint.source_policy in text, stage
+        # The blueprint contract belongs with the authoring contract, above
+        # topic requirements.
+        assert text.index("## Blueprint Contract") < text.index("## Topic"), stage
+    for line in blueprint.spec_lines:
+        assert line in texts["spec"]
+    for line in blueprint.outline_lines:
+        assert line in texts["outline"]
+    for line in blueprint.draft_lines:
+        assert line in texts["draft"]
+    for line in blueprint.repair_lines:
+        assert line in texts["repair"]
+
+    qa_text = texts["qa"]
+    assert "## Blueprint Rubric" in qa_text
+    assert "## Blueprint Contract" not in qa_text
+    for line in blueprint.qa_rubric_lines:
+        assert line in qa_text
+    assert "Record a finding for each rubric item the draft does not meet." in qa_text
+
+
+def test_two_blueprints_produce_visibly_different_prompts() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+
+    casebook = _compile_guide_v1_prompts(get_blueprint("casebook"))
+    quantitative = _compile_guide_v1_prompts(get_blueprint("quantitative-scientific"))
+
+    for stage in ("spec", "outline", "draft", "qa", "repair"):
+        assert casebook[stage] != quantitative[stage], stage
+
+
+def test_blueprint_spec_prompt_states_required_contract_values() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+
+    blueprint = get_blueprint("casebook")
+    text = _compile_guide_v1_prompts(blueprint)["spec"]
+    contract_section = text[text.index("## Machine-Readable Course Contract") :]
+
+    assert '"casebook"' in contract_section
+    # The minimum required interactions are stated as binding values, in
+    # sorted order, rather than left to the model's judgment.
+    assert '"reflection"' in contract_section
+    assert '"scenario"' in contract_section
+
+
 def _compile_personalized_1_1_prompts(tmp_path: Path, profile_toml: str) -> dict[str, str]:
     profile = ProfileStore(tmp_path).save_profile_toml(
         "adversarial-goal-profile", profile_toml

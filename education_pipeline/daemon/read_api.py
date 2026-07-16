@@ -210,6 +210,47 @@ def _profile_warnings_payload(profile) -> list[dict]:
     ]
 
 
+def blueprints_payload(
+    topics: TopicStore, topic_id: str | None = None
+) -> dict:
+    """List the registered blueprints, plus a per-topic recommendation.
+
+    With ``topic_id`` naming a stored topic, ``recommendation`` carries the
+    deterministic recommendation and rationale and ``topic_blueprint`` the
+    topic's own declared blueprint (when set). Without it both are ``None``.
+    """
+
+    from education_pipeline.guides.blueprints import (
+        list_blueprints,
+        recommend_blueprint,
+    )
+
+    recommendation = None
+    topic_blueprint = None
+    if topic_id is not None:
+        if not topics.topic_path(topic_id).is_file():
+            raise NotFoundError("no such topic")
+        topic = topics.load_topic(topic_id)
+        blueprint_id, rationale = recommend_blueprint(topic)
+        recommendation = {"id": blueprint_id, "rationale": rationale}
+        topic_blueprint = topic.blueprint
+    return {
+        "blueprints": [
+            {
+                "id": blueprint.id,
+                "title": blueprint.title,
+                "summary": blueprint.summary,
+                "when_to_use": blueprint.when_to_use,
+                "required_interactions": sorted(blueprint.required_interactions),
+                "default_difficulty": blueprint.default_difficulty,
+            }
+            for blueprint in list_blueprints()
+        ],
+        "recommendation": recommendation,
+        "topic_blueprint": topic_blueprint,
+    }
+
+
 def run_status_payload(runs: RunStore, topic_id: str) -> dict:
     require_run(runs, topic_id)
     status = runs.run_status(topic_id)
@@ -223,6 +264,7 @@ def run_status_payload(runs: RunStore, topic_id: str) -> dict:
         "topic_id": status.topic_id,
         "finalized": status.finalized,
         "content_contract": contract.to_manifest(),
+        "blueprint": runs.blueprint_config(topic_id),
         "stage_provenance": manifest.get("stage_provenance", []),
         "validations": validations,
         "stages": [

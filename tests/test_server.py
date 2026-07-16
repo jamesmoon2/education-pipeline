@@ -934,6 +934,66 @@ def test_advance_writes_spec_prompt_and_returns_status(server):
     assert body["status"]["next_action"]["stage"] == "spec"
 
 
+def test_blueprints_endpoint_lists_registry(server):
+    status, body = _req(server, "GET", "/v1/blueprints")
+    assert status == 200
+    ids = [entry["id"] for entry in body["blueprints"]]
+    assert ids == [
+        "conceptual-foundations",
+        "procedural-skill",
+        "casebook",
+        "quantitative-scientific",
+        "exam-preparation",
+        "project-based",
+    ]
+    first = body["blueprints"][0]
+    assert set(first) == {
+        "id",
+        "title",
+        "summary",
+        "when_to_use",
+        "required_interactions",
+        "default_difficulty",
+    }
+    assert body["recommendation"] is None
+    assert body["topic_blueprint"] is None
+
+
+def test_blueprints_endpoint_recommends_for_topic(server):
+    status, body = _req(server, "GET", "/v1/blueprints?topic=g")
+    assert status == 200
+    assert body["recommendation"]["id"] == "conceptual-foundations"
+    assert body["recommendation"]["rationale"].strip()
+    assert body["topic_blueprint"] is None
+
+
+def test_blueprints_endpoint_unknown_topic_is_404(server):
+    status, _ = _req(server, "GET", "/v1/blueprints?topic=missing-topic")
+    assert status == 404
+
+
+def test_run_status_payload_includes_blueprint(server):
+    # Run "g" was created before its topic existed, so it has no record.
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    assert body["blueprint"] is None
+
+    # An explicit choice via the advance body records the blueprint.
+    status, body = _req(
+        server, "POST", "/v1/runs/g/advance", body={"blueprint": "casebook"}
+    )
+    assert status == 200
+    assert body["status"]["blueprint"] == {"id": "casebook", "source": "user"}
+
+
+def test_advance_rejects_unknown_blueprint(server):
+    status, body = _req(
+        server, "POST", "/v1/runs/g/advance", body={"blueprint": "socratic-method"}
+    )
+    assert status == 400
+    assert "unregistered blueprint" in body["error"]["message"]
+
+
 def _ready_audit_http_run(context, topic_id="audit-topic"):
     topic_toml = test_runs.TOPIC_TOML.replace(
         'id = "systems-thinking"', f'id = "{topic_id}"'

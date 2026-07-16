@@ -569,6 +569,72 @@ def test_create_command_legacy_markdown(
     }
 
 
+def test_blueprints_command_lists_registry_without_workspace(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _run(tmp_path / "nonexistent-ws", "blueprints") == 0
+    out = capsys.readouterr().out
+    for blueprint_id in (
+        "conceptual-foundations",
+        "procedural-skill",
+        "casebook",
+        "quantitative-scientific",
+        "exam-preparation",
+        "project-based",
+    ):
+        assert blueprint_id in out
+    assert "Choose when" in out
+    assert not (tmp_path / "nonexistent-ws").exists()
+
+
+def test_create_command_with_blueprint_records_user_choice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    _run(ws, "topic", "import", str(_write(tmp_path / "topic.toml", TOPIC_TOML)))
+    capsys.readouterr()
+
+    assert _run(ws, "create", "systems-thinking", "--blueprint", "casebook") == 0
+    out = capsys.readouterr().out
+    assert "blueprint: casebook (user)" in out
+    assert RunStore(ws).blueprint_config("systems-thinking") == {
+        "id": "casebook",
+        "source": "user",
+    }
+
+
+def test_create_command_prints_recommended_blueprint_and_rationale(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    _run(ws, "topic", "import", str(_write(tmp_path / "topic.toml", TOPIC_TOML)))
+    capsys.readouterr()
+
+    assert _run(ws, "create", "systems-thinking") == 0
+    out = capsys.readouterr().out
+    assert "blueprint: conceptual-foundations (recommended)" in out
+    assert "general conceptual topic" in out
+
+
+def test_create_command_rejects_unknown_blueprint(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    assert _run(ws, "create", "systems-thinking", "--blueprint", "socratic-method") == 1
+    assert "unregistered blueprint" in capsys.readouterr().err
+
+
+def test_create_command_rejects_blueprint_with_legacy_markdown(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    exit_code = _run(
+        ws, "create", "systems-thinking", "--legacy-markdown", "--blueprint", "casebook"
+    )
+    assert exit_code == 1
+    assert "legacy" in capsys.readouterr().err
+
+
 def test_create_command_conflicting_contract_exits_1(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

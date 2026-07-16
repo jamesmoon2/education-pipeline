@@ -269,25 +269,25 @@ blueprint on new guide runs.
 and superset enforcement at approval; blueprint threading through `runs.py`;
 CLI and daemon read surfaces.
 
-- [ ] RED (**lands before any prompt change**): `tests/test_prompts.py` —
+- [x] RED (**lands before any prompt change**): `tests/test_prompts.py` —
   byte-identity of every `compile_guide_v1_*` output with `blueprint=None`
   against captured current bytes; `## Blueprint Contract` sections for
   spec/outline/draft/repair with two contrasting blueprints producing
   different prompts; `## Blueprint Rubric` in QA; spec contract-block
   instructions naming the configured id and minimum interactions.
-- [ ] RED: `tests/test_guide_contract.py` — echo mismatch, superset violation,
+- [x] RED: `tests/test_guide_contract.py` — echo mismatch, superset violation,
   passing echo+superset, unchanged behavior without `expected_blueprint`.
-- [ ] RED: `tests/test_runs.py` — spec approval rejects wrong echoed blueprint;
+- [x] RED: `tests/test_runs.py` — spec approval rejects wrong echoed blueprint;
   prompts written by a blueprint-configured run contain the contract section;
   runs without a record produce byte-identical prompts to today.
-- [ ] RED: `tests/test_cli.py` — `blueprints` listing, `create --blueprint`
+- [x] RED: `tests/test_cli.py` — `blueprints` listing, `create --blueprint`
   (prints resolution; unknown id exit 1; refused with `--legacy-markdown`).
-- [ ] RED: `tests/test_server.py`/`tests/test_write_api.py` —
+- [x] RED: `tests/test_server.py`/`tests/test_write_api.py` —
   `GET /v1/blueprints` (+ per-topic recommendation), run status `blueprint`
   payload, advance body `blueprint` recording.
-- [ ] GREEN: implement prompts, contract echo, `runs.py` threading, CLI,
+- [x] GREEN: implement prompts, contract echo, `runs.py` threading, CLI,
   daemon routes.
-- [ ] Focused suites green; commit
+- [x] Focused suites green; commit
   `feat(blueprints): parameterize prompts and enforce the contract echo`.
 
 # Wave 2 — Deterministic calibration rules
@@ -385,7 +385,7 @@ PRD entry moved to Delivered, post-milestone audit ledger.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Baseline | **recorded** | branch base `28bf6aa` + spec cherry-pick `6e291f5` | 973 (prior gate) | 210 (prior gate) | 53 (prior gate) | clean (prior gate) | Baseline counts are the personalization Wave 4 closeout gate recorded on the same code HEAD (`docs/superpowers/plans/2026-07-13-personalization.md`); the cherry-pick is docs-only. |
 | 0 — Registry + topic fields | **complete** | `2808a84` | 1009 | — | — | — | Registry/recommender/topic fields/manifest record frozen as planned. Recommender matches whole words only ("example" never triggers "exam"); scanned fields are title/brief/goals/key_questions/constraints. `create_run` records a blueprint only for interactive-guide manifests and degrades silently on a missing/malformed stored topic; unregistered explicit or topic-declared ids raise at run creation. Existing guide-run test helpers now produce runs recorded as recommended `conceptual-foundations`, matching their spec-contract echoes. |
-| 1 — Prompts + echo | pending | | | | | | |
+| 1 — Prompts + echo | **complete** | see log | 1031 | — | — | — | `blueprint=None` byte-identity pinned first (`_GUIDE_V1_NO_BLUEPRINT_PROMPT_TEXT_SHA256`, hashes captured from pre-change compilers). Blueprint Contract sits between the header priority block and `## Topic`; QA rubric instructs one finding per unmet item. Echo/superset live in `extract_spec_contract(expected_blueprint=...)` and fire at spec approval via `run_blueprint()`. Daemon advance body accepts optional `blueprint` (recorded source `user` before advancing); `GET /v1/blueprints?topic=` 404s for unknown topics. |
 | 2 — Calibration | pending | | | | | | |
 | 3 — Scoped repair | pending | | | | | | |
 | 4 — Cockpit | pending | | | | | | |
