@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
+import json
 import tomllib
 
 from education_pipeline.config import ConfigError
@@ -103,6 +104,52 @@ def parse_topic(data: Mapping[str, Any]) -> Topic:
         notes=_optional_string(data, "notes", "topic"),
         metadata=MappingProxyType(dict(metadata)),
     )
+
+
+def emit_topic_toml(topic: Topic) -> str:
+    """Serialize a Topic to TOML. String fields via json.dumps (valid TOML
+    basic strings); tuple fields as TOML arrays of quoted strings; omit
+    None/empty fields; always emit id, title, schema_version."""
+
+    def q(value: str) -> str:
+        return json.dumps(value)
+
+    lines = [
+        f"id = {q(topic.id)}",
+        f"title = {q(topic.title)}",
+        f"schema_version = {topic.schema_version}",
+    ]
+    if topic.brief:
+        lines.append(f"brief = {q(topic.brief)}")
+    if topic.audience:
+        lines.append(f"audience = {q(topic.audience)}")
+
+    def array(key: str, values: tuple[str, ...]) -> None:
+        if values:
+            items = ", ".join(q(v) for v in values)
+            lines.append(f"{key} = [{items}]")
+
+    array("goals", topic.goals)
+    array("scope_includes", topic.scope_includes)
+    array("scope_excludes", topic.scope_excludes)
+    array("key_questions", topic.key_questions)
+    array("prerequisites", topic.prerequisites)
+    array("constraints", topic.constraints)
+    array("tags", topic.tags)
+
+    if topic.notes:
+        lines.append(f"notes = {q(topic.notes)}")
+
+    if topic.metadata:
+        lines.append("")
+        lines.append("[metadata]")
+        for key, value in topic.metadata.items():
+            if isinstance(value, str):
+                lines.append(f"{key} = {q(value)}")
+            else:
+                lines.append(f"{key} = {json.dumps(value)}")
+
+    return "\n".join(lines) + "\n"
 
 
 def _required_string(data: Mapping[str, Any], key: str, context: str) -> str:

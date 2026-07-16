@@ -36,6 +36,16 @@ class UnavailableRunner(FakeRunner):
         return False
 
 
+class SecondFakeRunner(FakeRunner):
+    provider_id = "fake2"
+
+    def build_invocation(self, model, plan, prompt_path):
+        return Invocation(
+            argv=[sys.executable, str(FAKE)],
+            env={"FAKE_STDOUT": f"FROM-FAKE2:{model.id}\n"},
+        )
+
+
 def _setup(tmp_path, provider="fake"):
     register_runner(FakeRunner())
     register_runner(UnavailableRunner())
@@ -64,6 +74,16 @@ def test_execute_success_ingests_response(tmp_path, monkeypatch):
     # manifest carries a job event
     actions = [e["action"] for e in runs.read_manifest("t")["events"]]
     assert "job" in actions
+    # manifest carries a stage-provenance entry for this job
+    provenance = runs.read_manifest("t")["stage_provenance"]
+    assert len(provenance) == 1
+    entry = provenance[0]
+    assert entry["job_id"] == job.id
+    assert entry["stage"] == "draft"
+    assert entry["provider"] == "fake"
+    assert entry["model"] == "m"
+    assert entry["source"] == "default"
+    assert "recorded_at" in entry
 
 
 def test_execute_nonzero_exit_fails_without_response(tmp_path, monkeypatch):
@@ -166,6 +186,52 @@ def test_execute_survives_manifest_event_append_failure(tmp_path, monkeypatch):
     assert done.status == "succeeded"
     assert runs.response_path("t", "draft").read_text(encoding="utf-8") == "GENERATED\n"
     assert "manifest disk full" in str(done.metadata.get("manifest_event_error", ""))
+
+
+def test_execute_resolves_provider_model_from_plan_not_frozen_job_fields(tmp_path, monkeypatch):
+    """The runner's (re-resolved) plan wins over the enqueue-time Job fields.
+
+    The daemon rebuilds the effective plan when the worker picks a job up; a
+    run override edited while the job sat queued must therefore change which
+    provider/model actually execute, not just what the record displayed.
+    """
+
+    monkeypatch.setenv("FAKE_STDOUT", "FROM-FAKE\n")
+    register_runner(FakeRunner())
+    register_runner(SecondFakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    runs.stage_paths("t", "draft").prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    runs.stage_paths("t", "draft").prompt_path.write_text("PROMPT", encoding="utf-8")
+    catalog = parse_model_catalog(
+        {
+            "providers": [
+                {"id": "fake", "models": [{"id": "m"}]},
+                {"id": "fake2", "models": [{"id": "m2"}]},
+            ]
+        }
+    )
+    # The effective plan (as re-resolved at execution time) pins draft to fake2/m2.
+    plan = parse_model_plan(
+        {
+            "provider": "fake",
+            "stages": {"draft": {"provider": "fake2", "model": "m2", "effort": "high"}},
+        },
+        catalog,
+    )
+    store = JobStore(tmp_path)
+    # The job record was frozen at enqueue time under the old plan: fake/m.
+    job = store.create("t", "draft", "fake", "m", None)
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, threading.Event())
+
+    assert done.status == "succeeded"
+    # Execution must have gone through fake2 with model m2, not the frozen fields.
+    assert runs.response_path("t", "draft").read_text(encoding="utf-8") == "FROM-FAKE2:m2\n"
+    # The record reflects what actually ran.
+    assert done.provider == "fake2"
+    assert done.model == "m2"
+    assert done.effort == "high"
 
 
 def test_execute_cancel_marks_canceled_without_response(tmp_path, monkeypatch):

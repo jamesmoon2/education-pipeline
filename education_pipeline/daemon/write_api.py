@@ -18,11 +18,17 @@ import json
 import tomllib
 from pathlib import Path
 
-from education_pipeline.config import ConfigError
+from education_pipeline.config import (
+    ConfigError,
+    apply_overrides_lenient,
+    emit_model_plan_toml,
+    parse_model_plan,
+)
 from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
 from education_pipeline.runs import RunStore, StaleContentError
+from education_pipeline.topics import Topic, emit_topic_toml
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 
@@ -146,6 +152,9 @@ def ingest_response(
             "retry with force to replace it",
         )
     path = runs.ingest_response(topic_id, stage, text, force=force)
+    runs.record_stage_provenance(
+        topic_id, stage, provider="manual", model=None, effort=None, source="manual"
+    )
     return {
         "topic_id": paths.topic_id,
         "stage": paths.stage,
@@ -280,6 +289,66 @@ def import_topic(topics: TopicStore, toml_text: str, *, overwrite: bool = False)
     return {"id": topic.id, "title": topic.title}
 
 
+def _require_body_string(body: dict, key: str) -> str:
+    value = body.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"body must define non-empty string {key!r}")
+    return value
+
+
+def _optional_body_string(body: dict, key: str) -> str | None:
+    if key not in body:
+        return None
+    value = body[key]
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"body field {key!r} must be a non-empty string when set")
+    return value
+
+
+def _optional_body_string_tuple(body: dict, key: str) -> tuple[str, ...]:
+    if key not in body:
+        return ()
+    value = body[key]
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConfigError(f"body field {key!r} must be a list of strings")
+    strings: list[str] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigError(f"body field {key!r} item #{index} must be a non-empty string")
+        strings.append(item)
+    return tuple(strings)
+
+
+def create_topic(topics: TopicStore, body: dict, *, overwrite: bool = False) -> dict:
+    topic_id = _require_body_string(body, "id")
+    title = _require_body_string(body, "title")
+    topic = Topic(
+        id=topic_id,
+        title=title,
+        brief=_optional_body_string(body, "brief"),
+        audience=_optional_body_string(body, "audience"),
+        goals=_optional_body_string_tuple(body, "goals"),
+        scope_includes=_optional_body_string_tuple(body, "scope_includes"),
+        scope_excludes=_optional_body_string_tuple(body, "scope_excludes"),
+        key_questions=_optional_body_string_tuple(body, "key_questions"),
+        prerequisites=_optional_body_string_tuple(body, "prerequisites"),
+        constraints=_optional_body_string_tuple(body, "constraints"),
+        tags=_optional_body_string_tuple(body, "tags"),
+        notes=_optional_body_string(body, "notes"),
+    )
+    if topics.topic_path(topic_id).is_file() and not overwrite:
+        raise ConflictError(
+            "already_exists",
+            f"topic {topic_id!r} already exists; retry with overwrite to replace it",
+        )
+    saved = topics.save_topic_toml(topic_id, emit_topic_toml(topic), overwrite=overwrite)
+    return {"id": saved.id, "title": saved.title}
+
+
 def import_profile(profiles: ProfileStore, toml_text: str, *, overwrite: bool = False) -> dict:
     profile_id = _parse_toml_id(toml_text, "profile")
     if profiles.profile_path(profile_id).is_file() and not overwrite:
@@ -289,6 +358,65 @@ def import_profile(profiles: ProfileStore, toml_text: str, *, overwrite: bool = 
         )
     profile = profiles.save_profile_toml(profile_id, toml_text, overwrite=overwrite)
     return {"id": profile.id}
+
+
+def update_global_plan(config, body: dict) -> dict:
+    base_sha256 = body.get("base_sha256")
+    if not isinstance(base_sha256, str):
+        raise ConfigError("body field 'base_sha256' must be a string")
+    if base_sha256 != config.plan_sha256():
+        raise ConflictError(
+            "stale_content", "the model plan changed on disk; reload settings"
+        )
+    catalog, _ = config.load()
+    plan = parse_model_plan(
+        {"provider": body.get("provider"), "stages": body.get("stages", {})},
+        catalog=catalog,
+    )
+    config.write_plan(emit_model_plan_toml(plan))
+    return read_api.plan_payload(catalog, plan, config.plan_sha256())
+
+
+def update_run_plan(runs: RunStore, config, topic_id: str, body: dict) -> dict:
+    read_api.require_run(runs, topic_id)
+    overrides_body = body.get("overrides")
+    if not isinstance(overrides_body, dict):
+        raise ConfigError("body field 'overrides' must be a table")
+
+    catalog, plan = config.load()
+    stored = runs.read_plan_overrides(topic_id)
+    stored_stages = stored.get("stages", {})
+    if not isinstance(stored_stages, dict):
+        stored_stages = {}
+    merged_stages = dict(stored_stages)
+    for stage_name, stage_override in overrides_body.items():
+        if stage_override is None:
+            merged_stages.pop(stage_name, None)
+        elif isinstance(stage_override, dict):
+            merged_stages[stage_name] = stage_override
+        else:
+            raise ConfigError(
+                f"override for stage {stage_name!r} must be a table or null"
+            )
+    merged = {"stages": merged_stages}
+
+    # Validate leniently: reject only when a stage THIS REQUEST touches ends
+    # up invalid after merge. A different stage's stored override may already
+    # be broken (the global plan/catalog changed underneath it) -- that must
+    # not block clearing or editing an unrelated stage, or the only way to
+    # recover would be hand-editing the overrides file.
+    _, errors = apply_overrides_lenient(plan, merged, catalog)
+    touched_errors = {
+        stage_name: message
+        for stage_name, message in errors.items()
+        if stage_name in overrides_body
+    }
+    if touched_errors:
+        stage_name, message = next(iter(touched_errors.items()))
+        raise ConfigError(f"override for stage {stage_name!r} is invalid: {message}")
+
+    runs.write_plan_overrides(topic_id, merged)
+    return read_api.run_plan_payload(catalog, plan, config.plan_sha256(), runs, topic_id)
 
 
 def attach_profile(

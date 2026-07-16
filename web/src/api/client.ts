@@ -2,6 +2,7 @@ import type {
   AdvanceResult,
   ApproveResult,
   AttachProfileResult,
+  CatalogProvider,
   EditResponseResult,
   ExportFormat,
   ExportResult,
@@ -11,11 +12,14 @@ import type {
   Job,
   GuidePreviewResult,
   LogChunk,
+  PlanPayload,
   PreviewResult,
+  ProviderAvailability,
   ResponseResult,
   RunStatus,
   Session,
   StageContent,
+  StageOverride,
   TopicDetail,
   TopicSummary,
   ValidateResult,
@@ -214,6 +218,10 @@ export const postExport = (topicId: string, format: ExportFormat, overwrite = fa
   });
 export const importTopic = (toml: string, overwrite = false) =>
   apiPost<ImportTopicResult>("/v1/topics", { toml, overwrite });
+export const createTopic = (
+  fields: { id: string; title: string; brief?: string; audience?: string; goals?: string[] },
+  overwrite = false,
+) => apiPost<{ id: string; title: string }>("/v1/topics", { ...fields, overwrite });
 export const importProfile = (toml: string, overwrite = false) =>
   apiPost<ImportProfileResult>("/v1/profiles", { toml, overwrite });
 export const attachProfile = (topicId: string, profileId: string) =>
@@ -237,3 +245,26 @@ export const downloadExport = (topicId: string, format: ExportFormat) =>
     `/v1/runs/${encodeURIComponent(topicId)}/exports/${format}/download`,
     format === "html" ? `${topicId}-guide.html` : `${topicId}-guide.bundle.md`,
   );
+
+export const getConfigProviders = () =>
+  api<{ providers: ProviderAvailability[] }>("/v1/config/providers");
+export const getConfigCatalog = () =>
+  api<{ providers: CatalogProvider[] }>("/v1/config/catalog");
+export const getConfigPlan = () => api<PlanPayload>("/v1/config/plan");
+export const putConfigPlan = (
+  baseSha256: string,
+  provider: string,
+  stages: Record<string, StageOverride>,
+) =>
+  apiPut<PlanPayload>("/v1/config/plan", {
+    base_sha256: baseSha256,
+    provider,
+    stages,
+  });
+export const getRunPlan = (topicId: string) =>
+  api<PlanPayload>(`/v1/runs/${encodeURIComponent(topicId)}/plan`);
+export const putRunPlan = (
+  topicId: string,
+  overrides: Record<string, StageOverride | null>,
+) =>
+  apiPut<PlanPayload>(`/v1/runs/${encodeURIComponent(topicId)}/plan`, { overrides });

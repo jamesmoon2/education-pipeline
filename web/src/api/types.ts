@@ -49,10 +49,21 @@ export interface StageStatus {
   approved: boolean;
 }
 
+export interface StageProvenance {
+  stage: string;
+  provider: string;
+  model: string | null;
+  effort: string | null;
+  source: string;
+  job_id: string | null;
+  recorded_at: string;
+}
+
 export interface RunStatus {
   topic_id: string;
   finalized: boolean;
   content_contract: ContentContract;
+  stage_provenance: StageProvenance[];
   validations: { draft: ValidationStatus; final: ValidationStatus };
   stages: StageStatus[];
   next_action: NextAction;
@@ -217,4 +228,52 @@ export interface GuidePreviewResult {
   html: string;
   content_sha256: string;
   validation: ValidationCounts;
+}
+
+export interface ProviderAvailability {
+  id: string;
+  label: string;
+  description: string;
+  executable: boolean;
+  available: boolean;
+  reason: string | null;
+}
+
+export interface CatalogModel {
+  id: string;
+  label: string;
+  description: string;
+  quality: string | null;
+  default_effort: string | null;
+}
+
+export interface CatalogProvider {
+  id: string;
+  label: string;
+  description: string;
+  models: CatalogModel[];
+}
+
+export interface PlanStage {
+  stage: string;
+  provider: string | null;
+  model: string | null;
+  effort: string | null;
+  recommendation: string;
+  warning: string | null;
+  source?: "default" | "override";
+  override_error?: string | null;
+  command?: string[] | null;
+}
+
+export interface PlanPayload {
+  provider: string;
+  plan_sha256: string;
+  stages: PlanStage[];
+}
+
+export interface StageOverride {
+  provider?: string;
+  model?: string;
+  effort?: string;
 }

@@ -41,6 +41,7 @@ function makeStatus(action: NextAction["action"], stage: string | null): RunStat
     topic_id: "t",
     finalized: action === "done",
     content_contract: { kind: "legacy_markdown" },
+    stage_provenance: [],
     validations: {
       draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
       final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },

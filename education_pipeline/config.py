@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
+import json
 import tomllib
 
 
@@ -198,6 +199,125 @@ def parse_model_plan(
         )
 
     return ModelPlan(provider=provider_id, stages=stages)
+
+
+def emit_model_plan_toml(plan: ModelPlan) -> str:
+    """Serialize a ModelPlan back to model-plan.toml. Narrow by design: this
+    schema only ever holds strings, so JSON string escaping (valid TOML
+    basic-string syntax) covers every value."""
+
+    def q(value: str) -> str:
+        return json.dumps(value)
+
+    lines = [f"provider = {q(plan.provider)}", ""]
+    for stage_name in STAGE_ORDER:
+        stage = plan.stages[stage_name]
+        body: list[str] = []
+        if stage.provider is not None and stage.provider != plan.provider:
+            body.append(f"provider = {q(stage.provider)}")
+        if stage.model is not None:
+            body.append(f"model = {q(stage.model)}")
+        if stage.effort is not None:
+            body.append(f"effort = {q(stage.effort)}")
+        if stage.recommendation != DEFAULT_STAGE_RECOMMENDATIONS[stage_name]:
+            body.append(f"recommendation = {q(stage.recommendation)}")
+        if body:
+            lines.append(f"[stages.{stage_name}]")
+            lines.extend(body)
+            lines.append("")
+    return "\n".join(lines)
+
+
+def apply_overrides(
+    plan: ModelPlan,
+    overrides: Mapping[str, Any],
+    catalog: ModelCatalog | None = None,
+) -> ModelPlan:
+    """Overlay sparse per-run overrides onto a plan. Implementation: rebuild the
+    raw mapping (provider + per-stage dicts from `plan`), deep-merge
+    overrides["stages"], and re-run parse_model_plan(..., catalog=catalog) so
+    every existing validation rule applies to the merged result."""
+
+    raw: dict[str, Any] = {"provider": plan.provider, "stages": {}}
+    for stage_name in STAGE_ORDER:
+        stage = plan.stages[stage_name]
+        body: dict[str, Any] = {}
+        if stage.provider is not None and stage.provider != plan.provider:
+            body["provider"] = stage.provider
+        if stage.model is not None:
+            body["model"] = stage.model
+        if stage.effort is not None:
+            body["effort"] = stage.effort
+        if stage.recommendation != DEFAULT_STAGE_RECOMMENDATIONS[stage_name]:
+            body["recommendation"] = stage.recommendation
+        if body:
+            raw["stages"][stage_name] = body
+
+    override_stages = overrides.get("stages", {})
+    if not isinstance(override_stages, Mapping):
+        raise ConfigError("overrides['stages'] must be a table")
+
+    for stage_name, stage_override in override_stages.items():
+        if not isinstance(stage_override, Mapping):
+            raise ConfigError(f"override for stage {stage_name!r} must be a table")
+        merged_stage = dict(raw["stages"].get(stage_name, {}))
+        merged_stage.update(stage_override)
+        raw["stages"][stage_name] = merged_stage
+
+    return parse_model_plan(raw, catalog=catalog)
+
+
+def apply_overrides_lenient(
+    plan: ModelPlan,
+    overrides: Mapping[str, Any],
+    catalog: ModelCatalog | None = None,
+) -> tuple[ModelPlan, dict[str, str]]:
+    """Like :func:`apply_overrides`, but each stage override is validated
+    independently instead of all-or-nothing.
+
+    Applies overrides one stage at a time (same rebuild-raw + parse_model_plan
+    approach as ``apply_overrides``, scoped to a single stage per call).
+    Returns the effective plan with every VALID stage override applied, plus a
+    dict ``{stage: human-readable error}`` for each stage whose override
+    failed validation -- that stage keeps its default/global values in the
+    returned plan rather than blowing up the whole request.
+    """
+
+    override_stages = overrides.get("stages", {})
+    if not isinstance(override_stages, Mapping):
+        raise ConfigError("overrides['stages'] must be a table")
+
+    effective = plan
+    errors: dict[str, str] = {}
+    for stage_name, stage_override in override_stages.items():
+        try:
+            effective = apply_overrides(
+                effective, {"stages": {stage_name: stage_override}}, catalog=catalog
+            )
+        except ConfigError as exc:
+            errors[stage_name] = str(exc)
+    return effective, errors
+
+
+REASONING_STAGES = frozenset({"spec", "outline", "repair"})
+_QUALITY_RANK = {"fast": 0, "strong": 1, "premium": 2}
+
+
+def weak_stage_warning(catalog: ModelCatalog, stage_plan: StageModelPlan) -> str | None:
+    """A human-readable warning when a below-'strong' model is chosen for a reasoning-heavy stage."""
+
+    if stage_plan.stage not in REASONING_STAGES or stage_plan.provider is None or stage_plan.model is None:
+        return None
+    provider = catalog.providers.get(stage_plan.provider)
+    option = provider.models.get(stage_plan.model) if provider is not None else None
+    if option is None or option.quality is None:
+        return None
+    if _QUALITY_RANK.get(option.quality, _QUALITY_RANK["strong"]) < _QUALITY_RANK["strong"]:
+        return (
+            f"stage {stage_plan.stage!r} is reasoning-heavy; "
+            f"{option.label} is rated {option.quality!r} — consider a strong or premium model"
+        )
+    return None
 
 
 def _load_toml(path: str | Path) -> Mapping[str, Any]:

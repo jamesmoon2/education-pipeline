@@ -29,6 +29,7 @@ const summary: TopicSummary = {
     topic_id: "systems-thinking",
     finalized: false,
     content_contract: { kind: "legacy_markdown" },
+    stage_provenance: [],
     validations: {
       draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
       final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
@@ -67,6 +68,8 @@ describe("TopicListPage", () => {
       </MemoryRouter>,
     );
     expect(await screen.findByText(/No topics yet/)).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "Create your first course →" });
+    expect(link).toHaveAttribute("href", "/new");
   });
 
   it("imports a topic from pasted TOML", async () => {
@@ -88,7 +91,10 @@ describe("TopicListPage", () => {
   });
 
   it("imports a profile from pasted TOML", async () => {
-    vi.mocked(getTopics).mockResolvedValue({ topics: [] });
+    // Uses a non-empty topic list: the profile-import toolbar affordance
+    // lives on the non-empty branch (the empty state only offers topic
+    // import, demoted below the "/new" wizard link).
+    vi.mocked(getTopics).mockResolvedValue({ topics: [summary] });
     vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
     vi.mocked(importProfile).mockResolvedValue({ id: "p1" });
     render(

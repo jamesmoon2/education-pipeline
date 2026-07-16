@@ -938,6 +938,61 @@ def test_append_manifest_event_records_event(tmp_path):
     assert "recorded_at" in events[-1]
 
 
+def test_record_stage_provenance_appends_and_preserves_prior_entries(tmp_path):
+    runs = _create_legacy_run(tmp_path)
+    runs.record_stage_provenance(
+        "systems-thinking",
+        "draft",
+        provider="fake",
+        model="m",
+        effort="high",
+        source="override",
+        job_id="j1",
+    )
+    runs.record_stage_provenance(
+        "systems-thinking",
+        "draft",
+        provider="fake",
+        model="m2",
+        effort=None,
+        source="default",
+        job_id="j2",
+    )
+    entries = runs.read_manifest("systems-thinking")["stage_provenance"]
+    assert len(entries) == 2
+    first, second = entries
+    assert first == {
+        "stage": "draft",
+        "provider": "fake",
+        "model": "m",
+        "effort": "high",
+        "source": "override",
+        "job_id": "j1",
+        "recorded_at": first["recorded_at"],
+    }
+    assert "recorded_at" in first
+    assert second["model"] == "m2"
+    assert second["job_id"] == "j2"
+    # prior entry preserved, not overwritten
+    assert entries[0]["job_id"] == "j1"
+
+
+def test_record_stage_provenance_defaults_job_id_to_none(tmp_path):
+    runs = _create_legacy_run(tmp_path)
+    runs.record_stage_provenance(
+        "systems-thinking",
+        "spec",
+        provider="manual",
+        model=None,
+        effort=None,
+        source="manual",
+    )
+    entry = runs.read_manifest("systems-thinking")["stage_provenance"][0]
+    assert entry["job_id"] is None
+    assert entry["model"] is None
+    assert entry["effort"] is None
+
+
 def test_export_path_names_and_bad_format(tmp_path):
     from education_pipeline.config import ConfigError
     from education_pipeline.runs import RunStore
@@ -1735,3 +1790,78 @@ def test_mixed_workspace_legacy_and_guide_v1_progress_independently(tmp_path: Pa
     assert guide_status.next_action.stage == "spec"
     assert guide_status.finalized is False
     assert runs.is_finalized("legacy-topic") is True
+
+
+def test_read_plan_overrides_returns_empty_dict_for_fresh_run(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+
+    assert runs.read_plan_overrides("systems-thinking") == {}
+
+
+def test_plan_overrides_path_is_under_run_dir(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+
+    path = runs.plan_overrides_path("systems-thinking")
+
+    assert path == runs.run_dir("systems-thinking") / "model-plan-overrides.json"
+
+
+def test_write_plan_overrides_round_trips_through_a_fresh_run_store(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+    overrides = {"stages": {"qa": {"model": "opus", "effort": "low"}}}
+
+    runs.write_plan_overrides("systems-thinking", overrides)
+
+    # Simulate a daemon restart: a brand-new RunStore over the same root.
+    reloaded = RunStore(tmp_path)
+    assert reloaded.read_plan_overrides("systems-thinking") == overrides
+
+
+def test_write_plan_overrides_is_atomic_and_overwrites_prior_contents(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+
+    runs.write_plan_overrides("systems-thinking", {"stages": {"qa": {"model": "opus"}}})
+    runs.write_plan_overrides("systems-thinking", {"stages": {"draft": {"effort": "high"}}})
+
+    assert runs.read_plan_overrides("systems-thinking") == {
+        "stages": {"draft": {"effort": "high"}}
+    }
+    # No stray temp files left behind in the run directory.
+    leftovers = [p for p in runs.run_dir("systems-thinking").glob(".tmp-*")]
+    assert leftovers == []
+
+
+def test_read_plan_overrides_rejects_malformed_json(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+    path = runs.plan_overrides_path("systems-thinking")
+    path.write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="model-plan overrides"):
+        runs.read_plan_overrides("systems-thinking")
+
+
+def test_read_plan_overrides_rejects_json_array_top_level(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+    path = runs.plan_overrides_path("systems-thinking")
+    path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="model-plan overrides"):
+        runs.read_plan_overrides("systems-thinking")
+
+
+def test_read_plan_overrides_rejects_non_mapping_stages(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+    path = runs.plan_overrides_path("systems-thinking")
+    path.write_text('{"stages": []}', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="model-plan overrides"):
+        runs.read_plan_overrides("systems-thinking")
+
+
+def test_write_plan_overrides_empty_dict_writes_empty_overrides(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+
+    runs.write_plan_overrides("systems-thinking", {})
+
+    assert runs.plan_overrides_path("systems-thinking").exists()
+    assert runs.read_plan_overrides("systems-thinking") == {}

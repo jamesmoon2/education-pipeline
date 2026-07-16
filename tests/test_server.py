@@ -1,11 +1,21 @@
+import hashlib
 import http.client
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 
-from education_pipeline import ContentContract, RunStore, parse_model_catalog, parse_model_plan
+from education_pipeline import (
+    STAGE_ORDER,
+    ContentContract,
+    RunStore,
+    load_model_plan,
+    parse_model_catalog,
+    parse_model_plan,
+)
+from education_pipeline.daemon import StaticConfigSource, WorkspaceConfigSource
 from education_pipeline.daemon.jobs import JobRunner, JobStore, Worker
 from education_pipeline.daemon.server import DaemonContext, build_server
 from education_pipeline.providers import Invocation, ProviderResponse, register_runner
@@ -29,7 +39,7 @@ class FakeRunner:
         return ProviderResponse(text=stdout, metadata={})
 
 
-def _start_server(tmp_path, monkeypatch, web_dist=None):
+def _start_server(tmp_path, monkeypatch, web_dist=None, catalog=None, plan=None):
     monkeypatch.setenv("FAKE_STDOUT", "GENERATED\n")
     register_runner(FakeRunner())
     runs = RunStore(tmp_path)
@@ -49,8 +59,10 @@ def _start_server(tmp_path, monkeypatch, web_dist=None):
         'schema_version = 1\nid = "p"\ntarget_learner = "team cohort"\n',
         encoding="utf-8",
     )
-    catalog = parse_model_catalog({"providers": [{"id": "fake", "models": [{"id": "m"}]}]})
-    plan = parse_model_plan({"provider": "fake", "stages": {"draft": {"model": "m"}}}, catalog)
+    if catalog is None:
+        catalog = parse_model_catalog({"providers": [{"id": "fake", "models": [{"id": "m"}]}]})
+    if plan is None:
+        plan = parse_model_plan({"provider": "fake", "stages": {"draft": {"model": "m"}}}, catalog)
     store = JobStore(tmp_path)
     worker = Worker(store, lambda job: JobRunner(store, runs, catalog, plan, timeout=30))
     context = DaemonContext(
@@ -60,8 +72,7 @@ def _start_server(tmp_path, monkeypatch, web_dist=None):
         runs=runs,
         token="secret-token",
         version="0.1.0",
-        catalog=catalog,
-        plan=plan,
+        config=StaticConfigSource(catalog, plan),
         topics=TopicStore(tmp_path),
         profiles=ProfileStore(tmp_path),
         on_shutdown=lambda: None,
@@ -78,6 +89,39 @@ def _start_server(tmp_path, monkeypatch, web_dist=None):
 @pytest.fixture
 def server(tmp_path, monkeypatch):
     srv, worker = _start_server(tmp_path, monkeypatch)
+    yield srv.server_port
+    worker.stop()
+    srv.shutdown()
+
+
+@pytest.fixture
+def config_server(tmp_path, monkeypatch):
+    catalog = parse_model_catalog(
+        {
+            "providers": [
+                {"id": "manual"},
+                {
+                    "id": "fake",
+                    "models": [
+                        {"id": "m", "quality": "fast"},
+                        {"id": "strong-m", "quality": "strong"},
+                    ],
+                },
+                {"id": "nope"},
+            ]
+        }
+    )
+    plan = parse_model_plan(
+        {
+            "provider": "fake",
+            "stages": {
+                "outline": {"model": "m"},
+                "draft": {"model": "m"},
+            },
+        },
+        catalog,
+    )
+    srv, worker = _start_server(tmp_path, monkeypatch, catalog=catalog, plan=plan)
     yield srv.server_port
     worker.stop()
     srv.shutdown()
@@ -332,13 +376,15 @@ def test_manifest_endpoint(server):
     assert isinstance(body["events"], list)
 
 
-def _raw_get(port, path, host=None):
+def _raw_get(port, path, host=None, token=None):
     conn = http.client.HTTPConnection("127.0.0.1", port)
-    if host is None:
+    if host is None and token is None:
         conn.request("GET", path)
     else:
         conn.putrequest("GET", path, skip_host=True)
-        conn.putheader("Host", host)
+        conn.putheader("Host", host if host is not None else "127.0.0.1")
+        if token is not None:
+            conn.putheader("X-EP-Token", token)
         conn.endheaders()
     resp = conn.getresponse()
     body = resp.read()
@@ -376,6 +422,29 @@ def test_static_traversal_rejected(ui_server):
 def test_static_still_checks_host(ui_server):
     status, _, _ = _raw_get(ui_server, "/", host="evil.example.com")
     assert status == 400
+
+
+def test_cockpit_html_carries_csp_header(ui_server):
+    status, _, headers = _raw_get(ui_server, "/")
+    assert status == 200
+    csp = headers.get("Content-Security-Policy", "")
+    assert "default-src 'self'" in csp
+    assert "object-src 'none'" in csp
+
+
+def test_asset_response_has_no_csp_header(ui_server):
+    status, _, headers = _raw_get(ui_server, "/assets/app-abc.js")
+    assert status == 200
+    assert "Content-Security-Policy" not in headers
+
+
+def test_json_api_response_has_no_csp_header(server):
+    status, body = _req(server, "GET", "/v1/health")
+    assert status == 200
+    # confirm via the raw header-capturing helper too
+    status, _, headers = _raw_get(server, "/v1/health", token="secret-token")
+    assert status == 200
+    assert "Content-Security-Policy" not in headers
 
 
 def test_no_dist_returns_503(server):
@@ -512,6 +581,38 @@ def test_import_topic_rejects_invalid_input(server):
     status, _ = _req(server, "POST", "/v1/topics", body={"toml": 'schema_version = 1\ntitle = "No Id"\n'})
     assert status == 400
     status, _ = _req(server, "POST", "/v1/topics", body={"toml": 42})
+    assert status == 400
+
+
+def test_create_topic_structured_endpoint(server):
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/topics",
+        body={"id": "n4", "title": "New Four", "brief": "A brief.", "goals": ["explain X"]},
+    )
+    assert status == 200 and body == {"id": "n4", "title": "New Four"}
+
+    status, body = _req(server, "GET", "/v1/topics/n4")
+    assert status == 200 and body["title"] == "New Four"
+
+
+def test_create_topic_structured_duplicate_is_409(server):
+    body = {"id": "n5", "title": "New Five"}
+    status, _ = _req(server, "POST", "/v1/topics", body=body)
+    assert status == 200
+
+    status, body_resp = _req(server, "POST", "/v1/topics", body=body)
+    assert status == 409 and body_resp["error"]["code"] == "already_exists"
+
+    status, _ = _req(
+        server, "POST", "/v1/topics", body={"id": "n5", "title": "New Five Updated", "overwrite": True}
+    )
+    assert status == 200
+
+
+def test_create_topic_structured_missing_title_is_400(server):
+    status, _ = _req(server, "POST", "/v1/topics", body={"id": "n6"})
     assert status == 400
 
 
@@ -827,3 +928,529 @@ def test_guide_preview_error_semantics(server):
     assert status == 400 and body["error"]["code"] == "invalid_guide_json"
     status, body = _req(server, "POST", "/v1/guide-preview", body={"text": "{}"})
     assert status == 422 and body["error"]["code"] == "guide_not_renderable"
+
+
+def test_config_providers_reports_availability(config_server):
+    status, payload = _req(config_server, "GET", "/v1/config/providers")
+    assert status == 200
+    by_id = {p["id"]: p for p in payload["providers"]}
+    assert by_id["manual"]["available"] is True and by_id["manual"]["executable"] is False
+    assert by_id["manual"]["reason"] is None
+    assert by_id["fake"]["available"] is True and by_id["fake"]["executable"] is True
+    assert by_id["nope"]["available"] is False
+    assert "no runner registered" in by_id["nope"]["reason"]
+
+
+def test_config_catalog_lists_providers_and_models(config_server):
+    status, payload = _req(config_server, "GET", "/v1/config/catalog")
+    assert status == 200
+    by_id = {p["id"]: p for p in payload["providers"]}
+    fake_models = {m["id"]: m for m in by_id["fake"]["models"]}
+    assert fake_models["m"]["quality"] == "fast"
+    assert fake_models["strong-m"]["quality"] == "strong"
+
+
+def test_config_plan_includes_sha_and_warnings(config_server):
+    status, payload = _req(config_server, "GET", "/v1/config/plan")
+    assert status == 200
+    assert len(payload["plan_sha256"]) == 64
+    stages = {s["stage"]: s for s in payload["stages"]}
+    assert set(stages) == set(STAGE_ORDER)
+    assert isinstance(stages["outline"]["warning"], str) and stages["outline"]["warning"]
+    assert stages["finalize"]["recommendation"] == "local_only"
+    assert stages["export"]["recommendation"] == "local_only"
+
+
+def test_put_config_plan_with_correct_sha_updates_and_returns_new_sha(config_server):
+    status, payload = _req(config_server, "GET", "/v1/config/plan")
+    assert status == 200
+    base_sha256 = payload["plan_sha256"]
+
+    status, updated = _req(
+        config_server,
+        "PUT",
+        "/v1/config/plan",
+        body={
+            "base_sha256": base_sha256,
+            "provider": "fake",
+            "stages": {"draft": {"model": "strong-m"}},
+        },
+    )
+    assert status == 200
+    assert updated["provider"] == "fake"
+    assert updated["plan_sha256"] != base_sha256
+    stages = {s["stage"]: s for s in updated["stages"]}
+    assert stages["draft"]["model"] == "strong-m"
+
+    status, reread = _req(config_server, "GET", "/v1/config/plan")
+    assert status == 200
+    assert reread["plan_sha256"] == updated["plan_sha256"]
+
+
+def test_put_config_plan_with_stale_sha_returns_409(config_server):
+    status, body = _req(
+        config_server,
+        "PUT",
+        "/v1/config/plan",
+        body={
+            "base_sha256": "stale" * 16,
+            "provider": "fake",
+            "stages": {"draft": {"model": "m"}},
+        },
+    )
+    assert status == 409
+    assert body["error"]["code"] == "stale_content"
+
+
+def test_put_config_plan_unknown_model_returns_400_and_writes_nothing(tmp_path, monkeypatch):
+    # End-to-end over the HTTP layer against a REAL WorkspaceConfigSource: a
+    # failed PUT (unknown model) must return 400 and leave the workspace's
+    # model-plan.toml untouched (here: still absent, since reads fall back to
+    # the packaged example).
+    register_runner(FakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    config = WorkspaceConfigSource(tmp_path)
+    store = JobStore(tmp_path)
+    worker = Worker(store, lambda job: JobRunner(store, runs, *config.load(), timeout=30))
+    context = DaemonContext(
+        root=tmp_path,
+        store=store,
+        worker=worker,
+        runs=runs,
+        token="secret-token",
+        version="0.1.0",
+        config=config,
+        topics=TopicStore(tmp_path),
+        profiles=ProfileStore(tmp_path),
+        on_shutdown=lambda: None,
+    )
+    srv = build_server(context)
+    import threading
+
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    worker.start()
+    try:
+        plan_file = tmp_path / "config" / "model-plan.toml"
+        assert not plan_file.exists()  # setup uses the packaged fallback
+        base_sha256 = config.plan_sha256()
+
+        status, body = _req(
+            srv.server_port,
+            "PUT",
+            "/v1/config/plan",
+            body={
+                "base_sha256": base_sha256,
+                "provider": "claude-code",
+                "stages": {"draft": {"model": "does-not-exist"}},
+            },
+        )
+        assert status == 400
+        assert body["error"]["code"] == "bad_request"
+        # The failed PUT wrote nothing: no workspace plan file was created.
+        assert not plan_file.exists()
+        assert config.plan_sha256() == base_sha256
+    finally:
+        worker.stop()
+        srv.shutdown()
+
+
+def _start_workspace_config_server(tmp_path):
+    # Boots a server over a REAL WorkspaceConfigSource (not StaticConfigSource),
+    # matching test_put_config_plan_unknown_model_returns_400_and_writes_nothing
+    # above. Model ids are drawn from the packaged config/model-catalog.example.toml
+    # fallback that WorkspaceConfigSource reads when the workspace has no catalog.
+    register_runner(FakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    config = WorkspaceConfigSource(tmp_path)
+    store = JobStore(tmp_path)
+    worker = Worker(store, lambda job: JobRunner(store, runs, *config.load(), timeout=30))
+    context = DaemonContext(
+        root=tmp_path,
+        store=store,
+        worker=worker,
+        runs=runs,
+        token="secret-token",
+        version="0.1.0",
+        config=config,
+        topics=TopicStore(tmp_path),
+        profiles=ProfileStore(tmp_path),
+        on_shutdown=lambda: None,
+    )
+    srv = build_server(context)
+    import threading
+
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    worker.start()
+    return srv, worker, config
+
+
+def test_hand_edited_plan_toml_is_reflected_by_get_config_plan(tmp_path):
+    # Regression for the spec criterion "a hand edit to model-plan.toml takes
+    # effect": WorkspaceConfigSource re-reads config/model-plan.toml on every
+    # request, so a file written directly to the workspace (as an advanced
+    # user editing it in a text editor would) must show up verbatim over the
+    # HTTP API without any daemon restart.
+    plan_file = tmp_path / "config" / "model-plan.toml"
+    plan_file.parent.mkdir(parents=True, exist_ok=True)
+    plan_file.write_text(
+        '\n'.join(
+            [
+                'provider = "claude-code"',
+                "",
+                "[stages.draft]",
+                'model = "premium-reasoning"',
+                'effort = "high"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    expected_sha256 = hashlib.sha256(plan_file.read_bytes()).hexdigest()
+
+    srv, worker, config = _start_workspace_config_server(tmp_path)
+    try:
+        status, payload = _req(srv.server_port, "GET", "/v1/config/plan")
+        assert status == 200
+        assert payload["provider"] == "claude-code"
+        assert payload["plan_sha256"] == expected_sha256
+        stages = {s["stage"]: s for s in payload["stages"]}
+        assert stages["draft"]["provider"] == "claude-code"
+        assert stages["draft"]["model"] == "premium-reasoning"
+        assert stages["draft"]["effort"] == "high"
+        # Untouched stages keep their built-in defaults (recommendation-only,
+        # no explicit model), proving the hand edit was merged, not replacing
+        # the whole plan structure.
+        assert stages["qa"]["model"] is None
+        assert stages["qa"]["recommendation"] == "fast_cheap_check"
+    finally:
+        worker.stop()
+        srv.shutdown()
+
+
+def test_put_config_plan_round_trips_through_hand_editable_toml(tmp_path):
+    # Regression for the spec criterion "...and round-trips through the UI":
+    # a UI-issued PUT must produce a model-plan.toml file that (1) contains
+    # exactly the edited values when read directly with tomllib, and (2) is
+    # still a well-formed plan that load_model_plan can parse against the
+    # catalog -- i.e. an advanced user can keep hand-editing the file the UI
+    # wrote.
+    srv, worker, config = _start_workspace_config_server(tmp_path)
+    try:
+        status, before = _req(srv.server_port, "GET", "/v1/config/plan")
+        assert status == 200
+        base_sha256 = before["plan_sha256"]
+
+        status, updated = _req(
+            srv.server_port,
+            "PUT",
+            "/v1/config/plan",
+            body={
+                "base_sha256": base_sha256,
+                "provider": "claude-code",
+                "stages": {
+                    "draft": {"model": "premium-reasoning", "effort": "high"},
+                    "qa": {"provider": "codex", "model": "fast-check"},
+                },
+            },
+        )
+        assert status == 200
+        assert updated["plan_sha256"] != base_sha256
+
+        plan_file = tmp_path / "config" / "model-plan.toml"
+        assert plan_file.exists()
+        raw = tomllib.loads(plan_file.read_text(encoding="utf-8"))
+        assert raw["provider"] == "claude-code"
+        assert raw["stages"]["draft"]["model"] == "premium-reasoning"
+        assert raw["stages"]["draft"]["effort"] == "high"
+        assert raw["stages"]["qa"]["provider"] == "codex"
+        assert raw["stages"]["qa"]["model"] == "fast-check"
+        # No stray top-level "provider" leaking into the qa stage table -- the
+        # UI-written file is exactly what an advanced user would author by hand.
+        assert "provider" not in raw["stages"]["draft"]
+
+        catalog, _ = config.load()
+        reparsed = load_model_plan(plan_file, catalog)
+        assert reparsed.provider == "claude-code"
+        draft = reparsed.stage("draft")
+        assert draft.model == "premium-reasoning"
+        assert draft.effort == "high"
+        qa = reparsed.stage("qa")
+        assert qa.provider == "codex"
+        assert qa.model == "fast-check"
+    finally:
+        worker.stop()
+        srv.shutdown()
+
+
+@pytest.fixture
+def run_plan_server(tmp_path, monkeypatch):
+    # Provider/model ids drawn from config/model-catalog.example.toml.
+    catalog = parse_model_catalog(
+        {
+            "providers": [
+                {"id": "manual", "models": [{"id": "prompt-only"}]},
+                {
+                    "id": "claude-code",
+                    "models": [
+                        {"id": "balanced", "argv_model": "claude-sonnet-5"},
+                    ],
+                },
+            ]
+        }
+    )
+    plan = parse_model_plan(
+        {
+            "provider": "claude-code",
+            "stages": {
+                "draft": {"model": "balanced"},
+                "qa": {"provider": "manual", "model": "prompt-only"},
+            },
+        },
+        catalog,
+    )
+    srv, worker = _start_server(tmp_path, monkeypatch, catalog=catalog, plan=plan)
+    yield srv.server_port
+    worker.stop()
+    srv.shutdown()
+
+
+def test_run_plan_includes_source_and_command_preview(run_plan_server):
+    status, payload = _req(run_plan_server, "GET", "/v1/runs/t/plan")
+    assert status == 200
+    assert len(payload["plan_sha256"]) == 64
+    stages = {s["stage"]: s for s in payload["stages"]}
+    assert set(stages) == set(STAGE_ORDER)
+    assert all(s["source"] == "default" for s in stages.values())
+
+    draft_command = stages["draft"]["command"]
+    assert draft_command is not None
+    assert draft_command[0] == "claude"
+    assert "--model" in draft_command
+    assert "claude-sonnet-5" in draft_command
+
+    # manual provider -> no invocable command
+    assert stages["qa"]["command"] is None
+    # not a model-driven stage -> no invocable command regardless of provider
+    assert stages["finalize"]["command"] is None
+
+
+def test_run_plan_404_for_unknown_topic(run_plan_server):
+    status, body = _req(run_plan_server, "GET", "/v1/runs/nope/plan")
+    assert status == 404
+    assert body["error"]["code"] == "not_found"
+
+
+def test_put_run_plan_sets_override_then_clears_it(run_plan_server):
+    status, updated = _req(
+        run_plan_server,
+        "PUT",
+        "/v1/runs/t/plan",
+        body={"overrides": {"draft": {"provider": "manual", "model": "prompt-only"}}},
+    )
+    assert status == 200
+    stages = {s["stage"]: s for s in updated["stages"]}
+    assert stages["draft"]["source"] == "override"
+    assert stages["draft"]["provider"] == "manual"
+    assert stages["draft"]["command"] is None  # manual provider -> no invocable command
+
+    status, reread = _req(run_plan_server, "GET", "/v1/runs/t/plan")
+    assert status == 200
+    stages = {s["stage"]: s for s in reread["stages"]}
+    assert stages["draft"]["source"] == "override"
+
+    status, cleared = _req(
+        run_plan_server, "PUT", "/v1/runs/t/plan", body={"overrides": {"draft": None}}
+    )
+    assert status == 200
+    stages = {s["stage"]: s for s in cleared["stages"]}
+    assert stages["draft"]["source"] == "default"
+    assert stages["draft"]["command"] is not None
+
+
+def test_put_run_plan_invalid_model_is_400_and_overrides_unchanged(run_plan_server):
+    status, body = _req(
+        run_plan_server,
+        "PUT",
+        "/v1/runs/t/plan",
+        body={"overrides": {"draft": {"model": "does-not-exist"}}},
+    )
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+
+    status, reread = _req(run_plan_server, "GET", "/v1/runs/t/plan")
+    assert status == 200
+    stages = {s["stage"]: s for s in reread["stages"]}
+    assert stages["draft"]["source"] == "default"
+
+
+def test_put_run_plan_unknown_topic_is_404(run_plan_server):
+    status, body = _req(
+        run_plan_server, "PUT", "/v1/runs/nope/plan", body={"overrides": {}}
+    )
+    assert status == 404
+    assert body["error"]["code"] == "not_found"
+
+
+def test_put_run_plan_missing_overrides_field_is_400(run_plan_server):
+    status, body = _req(run_plan_server, "PUT", "/v1/runs/t/plan", body={})
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
+def test_get_run_plan_with_json_array_overrides_file_is_400_not_500(run_plan_server, tmp_path):
+    RunStore(tmp_path).plan_overrides_path("t").write_text("[]", encoding="utf-8")
+
+    status, body = _req(run_plan_server, "GET", "/v1/runs/t/plan")
+
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
+def test_get_run_plan_with_non_mapping_stages_overrides_file_is_400(run_plan_server, tmp_path):
+    RunStore(tmp_path).plan_overrides_path("t").write_text(
+        '{"stages": []}', encoding="utf-8"
+    )
+
+    status, body = _req(run_plan_server, "GET", "/v1/runs/t/plan")
+
+    assert status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
+def test_get_run_plan_degrades_stage_when_stored_override_invalidated_by_catalog_change(
+    tmp_path, monkeypatch
+):
+    catalog_v1 = parse_model_catalog(
+        {
+            "providers": [
+                {"id": "manual", "models": [{"id": "prompt-only"}]},
+                {
+                    "id": "claude-code",
+                    "models": [
+                        {"id": "balanced", "argv_model": "claude-sonnet-5"},
+                        {"id": "premium", "argv_model": "claude-opus-5"},
+                    ],
+                },
+            ]
+        }
+    )
+    plan = parse_model_plan(
+        {
+            "provider": "claude-code",
+            "stages": {
+                "draft": {"model": "balanced"},
+                "qa": {"provider": "manual", "model": "prompt-only"},
+            },
+        },
+        catalog_v1,
+    )
+    register_runner(FakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    config = StaticConfigSource(catalog_v1, plan)
+    store = JobStore(tmp_path)
+    worker = Worker(store, lambda job: JobRunner(store, runs, catalog_v1, plan, timeout=30))
+    context = DaemonContext(
+        root=tmp_path,
+        store=store,
+        worker=worker,
+        runs=runs,
+        token="secret-token",
+        version="0.1.0",
+        config=config,
+        topics=TopicStore(tmp_path),
+        profiles=ProfileStore(tmp_path),
+        on_shutdown=lambda: None,
+    )
+    srv = build_server(context)
+    import threading
+
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    worker.start()
+    try:
+        # Store a valid override while the "premium" model still exists.
+        status, updated = _req(
+            srv.server_port,
+            "PUT",
+            "/v1/runs/t/plan",
+            body={"overrides": {"draft": {"model": "premium"}}},
+        )
+        assert status == 200
+        stages = {s["stage"]: s for s in updated["stages"]}
+        assert stages["draft"]["source"] == "override"
+        assert "override_error" not in stages["draft"]
+
+        # The global catalog is edited -- "premium" no longer exists.
+        catalog_v2 = parse_model_catalog(
+            {
+                "providers": [
+                    {"id": "manual", "models": [{"id": "prompt-only"}]},
+                    {
+                        "id": "claude-code",
+                        "models": [{"id": "balanced", "argv_model": "claude-sonnet-5"}],
+                    },
+                ]
+            }
+        )
+        config.catalog = catalog_v2
+
+        # GET must still return 200, not 400.
+        status, payload = _req(srv.server_port, "GET", "/v1/runs/t/plan")
+        assert status == 200
+        stages = {s["stage"]: s for s in payload["stages"]}
+        assert stages["draft"]["source"] == "override"
+        assert stages["draft"].get("override_error")
+        assert "premium" in stages["draft"]["override_error"]
+        # Effective values fall back to what would ACTUALLY run (the
+        # override is refused), not to the invalid override itself.
+        assert stages["draft"]["model"] == "balanced"
+        # A broken stage's command preview must not look runnable -- enqueue
+        # of this stage 400s below, so the UI shouldn't show a command as if
+        # it would actually execute.
+        assert stages["draft"]["command"] is None
+        # Other stages are unaffected.
+        assert stages["qa"]["source"] == "default"
+        assert "override_error" not in stages["qa"]
+
+        # Enqueue of the broken stage 400s with the override message; a
+        # different stage enqueues fine.
+        status, body = _req(
+            srv.server_port,
+            "POST",
+            "/v1/jobs",
+            body={"topic_id": "t", "stage": "draft"},
+        )
+        assert status == 400
+        assert "premium" in body["error"]["message"]
+
+        status, body = _req(
+            srv.server_port,
+            "POST",
+            "/v1/jobs",
+            body={"topic_id": "t", "stage": "qa"},
+        )
+        assert status == 200
+
+        # Clearing the broken stage while it's broken succeeds.
+        status, cleared = _req(
+            srv.server_port, "PUT", "/v1/runs/t/plan", body={"overrides": {"draft": None}}
+        )
+        assert status == 200
+        stages = {s["stage"]: s for s in cleared["stages"]}
+        assert stages["draft"]["source"] == "default"
+        assert "override_error" not in stages["draft"]
+
+        # Re-setting the broken stage to a still-invalid value stays 400.
+        status, body = _req(
+            srv.server_port,
+            "PUT",
+            "/v1/runs/t/plan",
+            body={"overrides": {"draft": {"model": "premium"}}},
+        )
+        assert status == 400
+        assert body["error"]["code"] == "bad_request"
+    finally:
+        worker.stop()
+        srv.shutdown()

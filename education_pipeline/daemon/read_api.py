@@ -11,8 +11,17 @@ import hashlib
 import json
 from pathlib import Path
 
-from education_pipeline.config import ConfigError
-from education_pipeline.runs import RunStore
+from education_pipeline.config import (
+    STAGE_ORDER,
+    ConfigError,
+    ModelCatalog,
+    ModelOption,
+    ModelPlan,
+    apply_overrides_lenient,
+    weak_stage_warning,
+)
+from education_pipeline.providers import get_runner
+from education_pipeline.runs import SUPPORTED_STAGES, RunStore
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 
@@ -70,6 +79,7 @@ def run_status_payload(runs: RunStore, topic_id: str) -> dict:
     require_run(runs, topic_id)
     status = runs.run_status(topic_id)
     contract = runs.content_contract(topic_id)
+    manifest = runs.read_manifest(topic_id)
     validations = {
         phase: _validation_summary(runs, topic_id, phase)
         for phase in ("draft", "final")
@@ -78,6 +88,7 @@ def run_status_payload(runs: RunStore, topic_id: str) -> dict:
         "topic_id": status.topic_id,
         "finalized": status.finalized,
         "content_contract": contract.to_manifest(),
+        "stage_provenance": manifest.get("stage_provenance", []),
         "validations": validations,
         "stages": [
             {
@@ -201,3 +212,136 @@ def export_download_path(runs: RunStore, topic_id: str, format: str) -> Path:
     if not path.is_file():
         raise NotFoundError(f"no {format} export produced for topic {topic_id!r}")
     return path
+
+
+def providers_payload(catalog: ModelCatalog) -> dict:
+    providers = []
+    for provider in catalog.providers.values():
+        available = False
+        reason: str | None = None
+        executable = False
+        try:
+            runner = get_runner(provider.id)
+        except ConfigError:
+            reason = f"no runner registered for {provider.id!r}"
+        else:
+            executable = runner.executable
+            if runner.is_available():
+                available = True
+            else:
+                reason = f"{provider.id} CLI not found on PATH"
+        providers.append(
+            {
+                "id": provider.id,
+                "label": provider.label,
+                "description": provider.description,
+                "executable": executable,
+                "available": available,
+                "reason": reason,
+            }
+        )
+    return {"providers": providers}
+
+
+def catalog_payload(catalog: ModelCatalog) -> dict:
+    providers = []
+    for provider in catalog.providers.values():
+        providers.append(
+            {
+                "id": provider.id,
+                "label": provider.label,
+                "description": provider.description,
+                "models": [
+                    {
+                        "id": model.id,
+                        "label": model.label,
+                        "description": model.description,
+                        "quality": model.quality,
+                        "default_effort": model.default_effort,
+                    }
+                    for model in provider.models.values()
+                ],
+            }
+        )
+    return {"providers": providers}
+
+
+def plan_payload(catalog: ModelCatalog, plan: ModelPlan, plan_sha256: str) -> dict:
+    stages = []
+    for stage_name in STAGE_ORDER:
+        stage_plan = plan.stage(stage_name)
+        stages.append(
+            {
+                "stage": stage_plan.stage,
+                "provider": stage_plan.provider,
+                "model": stage_plan.model,
+                "effort": stage_plan.effort,
+                "recommendation": stage_plan.recommendation,
+                "warning": weak_stage_warning(catalog, stage_plan),
+            }
+        )
+    return {
+        "provider": plan.provider,
+        "plan_sha256": plan_sha256,
+        "stages": stages,
+    }
+
+
+def _stage_command(
+    catalog: ModelCatalog, stage_plan, runs: RunStore, topic_id: str
+) -> list[str] | None:
+    """The argv the daemon would spawn for this stage, or None if unresolvable.
+
+    Unresolvable covers: manual/unset provider, a stage the run engine doesn't
+    drive through a model, an unregistered provider, a non-executable runner,
+    and an unknown model id — none of these are errors, they just mean there's
+    nothing to preview yet.
+    """
+
+    provider_id = stage_plan.provider
+    if provider_id in (None, "manual") or stage_plan.stage not in SUPPORTED_STAGES:
+        return None
+    try:
+        runner = get_runner(provider_id)
+        if not runner.executable:
+            return None
+        provider = catalog.require_provider(provider_id)
+        if stage_plan.model is not None:
+            model = provider.models.get(stage_plan.model)
+            if model is None:
+                return None
+        else:
+            model = ModelOption(id="", label="")
+        prompt_path = runs.stage_paths(topic_id, stage_plan.stage).prompt_path
+        return list(runner.build_invocation(model, stage_plan, prompt_path).argv)
+    except ConfigError:
+        return None
+
+
+def run_plan_payload(
+    catalog: ModelCatalog, plan: ModelPlan, plan_sha256: str, runs: RunStore, topic_id: str
+) -> dict:
+    """The effective plan for one run, plus per-stage source + command preview."""
+
+    require_run(runs, topic_id)
+    overrides = runs.read_plan_overrides(topic_id)
+    override_stage_names = set(overrides.get("stages", {}) or {})
+    effective, errors = apply_overrides_lenient(plan, overrides, catalog)
+    payload = plan_payload(catalog, effective, plan_sha256)
+    for stage_entry in payload["stages"]:
+        stage_name = stage_entry["stage"]
+        stage_plan = effective.stage(stage_name)
+        is_override = stage_name in override_stage_names
+        stage_entry["source"] = "override" if is_override else "default"
+        if is_override and stage_name in errors:
+            stage_entry["override_error"] = (
+                f"stored override is invalid: {errors[stage_name]} "
+                "-- reset this stage to clear it."
+            )
+        if stage_entry.get("override_error"):
+            # The command preview would be computed from the fallback plan,
+            # which looks runnable but isn't -- enqueue of this stage 400s.
+            stage_entry["command"] = None
+        else:
+            stage_entry["command"] = _stage_command(catalog, stage_plan, runs, topic_id)
+    return payload

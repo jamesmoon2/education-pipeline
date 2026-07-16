@@ -232,6 +232,34 @@ class RunStore:
         manifest = self.read_manifest(topic_id)
         return _parse_content_contract(manifest.get("content_contract"))
 
+    def plan_overrides_path(self, topic_id: str) -> Path:
+        return self.run_dir(topic_id) / "model-plan-overrides.json"
+
+    def read_plan_overrides(self, topic_id: str) -> dict:
+        """Return the run's sparse model-plan overrides, or {} when absent."""
+
+        path = self.plan_overrides_path(topic_id)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ConfigError(f"invalid model-plan overrides file: {path}") from exc
+        if not isinstance(data, dict):
+            raise ConfigError(f"invalid model-plan overrides file: {path} (must be a JSON object)")
+        stages = data.get("stages", {})
+        if stages is not None and not isinstance(stages, dict):
+            raise ConfigError(
+                f"invalid model-plan overrides file: {path} ('stages' must be a JSON object)"
+            )
+        return data
+
+    def write_plan_overrides(self, topic_id: str, overrides: dict) -> None:
+        """Atomically persist sparse per-run model-plan overrides."""
+
+        path = self.plan_overrides_path(topic_id)
+        _write_bytes_atomic(path, (json.dumps(overrides, indent=2) + "\n").encode("utf-8"))
+
     def response_path(self, topic_id: str, stage: str) -> Path:
         return self.stage_paths(topic_id, stage).response_path
 
@@ -706,6 +734,36 @@ class RunStore:
         entry = dict(event)
         entry.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
         manifest.setdefault("events", []).append(entry)
+        _write_manifest(run / "manifest.json", manifest)
+
+    def record_stage_provenance(
+        self,
+        topic_id: str,
+        stage: str,
+        *,
+        provider: str,
+        model: str | None,
+        effort: str | None,
+        source: str,
+        job_id: str | None = None,
+    ) -> None:
+        """Append the effective provider/model/effort that ran a stage to
+        manifest["stage_provenance"] (created as [] when missing). Append-only;
+        re-running a stage appends a new entry rather than replacing the last."""
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        run = self.run_dir(safe_id)
+        manifest = self.read_manifest(safe_id)
+        entry = {
+            "stage": stage,
+            "provider": provider,
+            "model": model,
+            "effort": effort,
+            "source": source,
+            "job_id": job_id,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        manifest.setdefault("stage_provenance", []).append(entry)
         _write_manifest(run / "manifest.json", manifest)
 
     def final_path(self, topic_id: str) -> Path:

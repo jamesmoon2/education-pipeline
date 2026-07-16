@@ -61,6 +61,8 @@ def render_markdown_to_html(markdown_text: str, *, title: str) -> str:
         "<head>\n"
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<meta http-equiv="Content-Security-Policy" '
+        "content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:;\">\n"
         f"<title>{_html.escape(title)}</title>\n"
         f"<style>{_CSS}</style>\n"
         "</head>\n"
@@ -193,9 +195,27 @@ def _render_inline(text: str) -> str:
     return "".join(rendered)
 
 
+_SAFE_LINK_SCHEMES = ("http:", "https:", "mailto:")
+
+
+def _href_is_safe(href: str) -> bool:
+    compact = "".join(href.split()).lower()
+    if compact.startswith(_SAFE_LINK_SCHEMES):
+        return True
+    head = compact.split("#", 1)[0].split("?", 1)[0]
+    return ":" not in head  # relative URL: no scheme at all
+
+
+def _render_link(match: "re.Match[str]") -> str:
+    label, href = match.group(1), match.group(2)
+    if not _href_is_safe(href):
+        return label
+    return f'<a href="{href}">{label}</a>'
+
+
 def _render_inline_text(text: str) -> str:
     escaped = _html.escape(text)
-    escaped = _LINK_RE.sub(r'<a href="\2">\1</a>', escaped)
+    escaped = _LINK_RE.sub(_render_link, escaped)
     escaped = _BOLD_RE.sub(r"<strong>\1</strong>", escaped)
     escaped = _ITALIC_RE.sub(r"<em>\1</em>", escaped)
     return escaped

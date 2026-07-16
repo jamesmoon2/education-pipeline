@@ -5,13 +5,116 @@ from pathlib import Path
 
 import pytest
 
-from education_pipeline.config import ConfigError
-from education_pipeline.daemon import write_api
+from education_pipeline.config import ConfigError, parse_model_catalog, parse_model_plan
+from education_pipeline.daemon import StaticConfigSource, write_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
 from education_pipeline.runs import ContentContract, RunStore, SUPPORTED_STAGES
 
 FIXTURE = Path(__file__).parent / "fixtures" / "guides" / "feedback-loops.guide.json"
+
+
+def _config_source():
+    catalog = parse_model_catalog(
+        {
+            "providers": [
+                {"id": "manual"},
+                {"id": "fake", "models": [{"id": "m"}]},
+            ]
+        }
+    )
+    plan = parse_model_plan({"provider": "manual", "stages": {}}, catalog)
+    return StaticConfigSource(catalog, plan)
+
+
+def test_update_global_plan_with_correct_sha_updates_plan_and_returns_new_sha():
+    config = _config_source()
+    base_sha256 = config.plan_sha256()
+    result = write_api.update_global_plan(
+        config,
+        {
+            "base_sha256": base_sha256,
+            "provider": "fake",
+            "stages": {"draft": {"model": "m"}},
+        },
+    )
+    assert result["provider"] == "fake"
+    assert result["plan_sha256"] == config.plan_sha256()
+    assert result["plan_sha256"] != base_sha256
+    stages = {s["stage"]: s for s in result["stages"]}
+    assert stages["draft"]["model"] == "m"
+    assert config.plan.provider == "fake"
+
+
+def test_update_global_plan_with_unknown_model_raises_config_error_and_leaves_plan_untouched():
+    config = _config_source()
+    base_sha256 = config.plan_sha256()
+    with pytest.raises(ConfigError):
+        write_api.update_global_plan(
+            config,
+            {
+                "base_sha256": base_sha256,
+                "provider": "fake",
+                "stages": {"draft": {"model": "does-not-exist"}},
+            },
+        )
+    assert config.plan.provider == "manual"
+    assert config.plan_sha256() == base_sha256
+
+
+def test_update_run_plan_sets_override_and_source_and_command_change(tmp_path):
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    result = write_api.update_run_plan(
+        runs, config, "t", {"overrides": {"draft": {"model": "m"}}}
+    )
+    stages = {s["stage"]: s for s in result["stages"]}
+    assert stages["draft"]["source"] == "override"
+    assert stages["draft"]["model"] == "m"
+    other_stages = [s for name, s in stages.items() if name != "draft"]
+    assert all(s["source"] == "default" for s in other_stages)
+
+
+def test_update_run_plan_clear_override_with_null_reverts_to_default(tmp_path):
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    write_api.update_run_plan(runs, config, "t", {"overrides": {"draft": {"model": "m"}}})
+    result = write_api.update_run_plan(runs, config, "t", {"overrides": {"draft": None}})
+    stages = {s["stage"]: s for s in result["stages"]}
+    assert stages["draft"]["source"] == "default"
+
+
+def test_update_run_plan_invalid_model_is_400_and_stored_overrides_untouched(tmp_path):
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    write_api.update_run_plan(
+        runs, config, "t", {"overrides": {"draft": {"provider": "fake", "model": "m"}}}
+    )
+    before = runs.read_plan_overrides("t")
+    with pytest.raises(ConfigError):
+        write_api.update_run_plan(
+            runs,
+            config,
+            "t",
+            {"overrides": {"draft": {"provider": "fake", "model": "does-not-exist"}}},
+        )
+    assert runs.read_plan_overrides("t") == before
+
+
+def test_update_run_plan_missing_or_bad_overrides_field_is_config_error(tmp_path):
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    with pytest.raises(ConfigError):
+        write_api.update_run_plan(runs, config, "t", {})
+    with pytest.raises(ConfigError):
+        write_api.update_run_plan(runs, config, "t", {"overrides": "not-a-dict"})
+
+
+def test_update_run_plan_unknown_topic_is_404(tmp_path):
+    config = _config_source()
+    runs = RunStore(tmp_path)
+    with pytest.raises(NotFoundError):
+        write_api.update_run_plan(runs, config, "nope", {"overrides": {}})
 
 
 def _workspace(tmp_path, *, create_legacy_run: bool = True):
@@ -63,6 +166,21 @@ def test_ingest_conflict_and_force(tmp_path):
     assert exc.value.code == "already_exists"
     write_api.ingest_response(runs, jobs, "t", "spec", "second", force=True)
     assert runs.stage_paths("t", "spec").response_path.read_text(encoding="utf-8") == "second"
+
+
+def test_ingest_response_records_manual_provenance_entry(tmp_path):
+    runs, jobs = _workspace(tmp_path)
+    write_api.advance_run(runs, jobs, "t")
+    write_api.ingest_response(runs, jobs, "t", "spec", "manual body")
+    entries = runs.read_manifest("t")["stage_provenance"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["stage"] == "spec"
+    assert entry["provider"] == "manual"
+    assert entry["model"] is None
+    assert entry["effort"] is None
+    assert entry["source"] == "manual"
+    assert "recorded_at" in entry
 
 
 def test_ingest_empty_text_is_config_error(tmp_path):
@@ -167,6 +285,58 @@ def test_import_topic_rejects_bad_toml_and_missing_id(tmp_path):
         write_api.import_topic(topics, 'schema_version = 1\ntitle = "No Id"\n')
 
 
+def test_create_topic_from_structured_fields(tmp_path):
+    from education_pipeline.workspace import TopicStore
+
+    topics = TopicStore(tmp_path)
+    body = {
+        "id": "n2",
+        "title": "New Two",
+        "brief": "A short brief.",
+        "audience": "engineers",
+        "goals": ["explain X", "explain Y"],
+    }
+
+    result = write_api.create_topic(topics, body)
+
+    assert result == {"id": "n2", "title": "New Two"}
+    saved = topics.load_topic("n2")
+    assert saved.brief == "A short brief."
+    assert saved.audience == "engineers"
+    assert saved.goals == ("explain X", "explain Y")
+
+
+def test_create_topic_duplicate_id_conflicts_then_overwrite(tmp_path):
+    from education_pipeline.workspace import TopicStore
+
+    topics = TopicStore(tmp_path)
+    body = {"id": "n3", "title": "New Three"}
+    assert write_api.create_topic(topics, body) == {"id": "n3", "title": "New Three"}
+
+    with pytest.raises(write_api.ConflictError) as exc:
+        write_api.create_topic(topics, body)
+    assert exc.value.code == "already_exists"
+
+    body["title"] = "New Three Updated"
+    result = write_api.create_topic(topics, body, overwrite=True)
+    assert result == {"id": "n3", "title": "New Three Updated"}
+    assert topics.load_topic("n3").title == "New Three Updated"
+
+
+def test_create_topic_requires_non_empty_id_and_title(tmp_path):
+    from education_pipeline.workspace import TopicStore
+
+    topics = TopicStore(tmp_path)
+    with pytest.raises(ConfigError):
+        write_api.create_topic(topics, {"title": "No Id"})
+    with pytest.raises(ConfigError):
+        write_api.create_topic(topics, {"id": "no-title"})
+    with pytest.raises(ConfigError):
+        write_api.create_topic(topics, {"id": "  ", "title": "Blank Id"})
+    with pytest.raises(ConfigError):
+        write_api.create_topic(topics, {"id": "bad-goals", "title": "Bad Goals", "goals": ["ok", ""]})
+
+
 def test_import_profile(tmp_path):
     from education_pipeline.workspace import ProfileStore
 
@@ -213,6 +383,19 @@ def test_guide_status_stage_content_and_validate_payloads(tmp_path):
     assert result["state"] == "current"
     assert result["report"]["guide_sha256"]
     assert result["status"]["validations"]["draft"]["state"] == "current"
+
+
+def test_run_status_payload_surfaces_stage_provenance(tmp_path):
+    runs, jobs = _workspace(tmp_path)
+    write_api.advance_run(runs, jobs, "t")
+    # Legacy manifests (no stage_provenance key yet) must yield an empty list.
+    status = write_api.read_api.run_status_payload(runs, "t")
+    assert status["stage_provenance"] == []
+
+    write_api.ingest_response(runs, jobs, "t", "spec", "manual body")
+    status = write_api.read_api.run_status_payload(runs, "t")
+    assert len(status["stage_provenance"]) == 1
+    assert status["stage_provenance"][0]["source"] == "manual"
 
 
 def test_waiver_requires_current_hash_reason_and_waivable_finding(tmp_path):

@@ -9,6 +9,9 @@ from education_pipeline import (
     load_topic,
     parse_topic,
 )
+from education_pipeline.topics import emit_topic_toml
+
+import tomllib
 
 
 TOPIC_TOML = """\
@@ -160,3 +163,35 @@ def test_topic_store_rejects_path_traversal_ids(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="topic id must match"):
         store.save_topic_toml("../escape", TOPIC_TOML)
+
+
+def test_emit_topic_toml_round_trips_goals_and_special_characters() -> None:
+    topic = Topic(
+        id="quotes-and-slashes",
+        title='Systems "Thinking" 101',
+        brief='A guide with a backslash \\ and a "quoted" phrase.',
+        audience="early-career analysts",
+        goals=('explain "feedback" loops', "handle backslashes \\ safely"),
+        notes="Line with a tab\tand a newline\nembedded.",
+    )
+
+    toml_text = emit_topic_toml(topic)
+    round_tripped = parse_topic(tomllib.loads(toml_text))
+
+    assert round_tripped == topic
+
+
+def test_emit_topic_toml_omits_empty_optional_fields() -> None:
+    topic = Topic(id="minimal-topic", title="Minimal Topic")
+
+    toml_text = emit_topic_toml(topic)
+
+    assert 'id = "minimal-topic"' in toml_text
+    assert 'title = "Minimal Topic"' in toml_text
+    assert "schema_version = 1" in toml_text
+    assert "brief" not in toml_text
+    assert "goals" not in toml_text
+    assert "metadata" not in toml_text
+
+    round_tripped = parse_topic(tomllib.loads(toml_text))
+    assert round_tripped == topic

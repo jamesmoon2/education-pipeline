@@ -64,7 +64,7 @@ describe("useAction", () => {
       resolve = r;
     });
     const { result } = renderHook(() => useAction());
-    let done!: Promise<void>;
+    let done!: Promise<boolean>;
     act(() => {
       done = result.current.run(() => pending);
     });

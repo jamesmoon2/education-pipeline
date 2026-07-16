@@ -13,9 +13,14 @@ import secrets
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 
-from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
+from education_pipeline.config import (
+    ConfigError,
+    ModelCatalog,
+    ModelPlan,
+    apply_overrides_lenient,
+)
 from education_pipeline.daemon import read_api, write_api
 from education_pipeline.daemon.jobs import Job, JobStore, Worker
 from education_pipeline.daemon.static import resolve_static
@@ -31,6 +36,16 @@ from education_pipeline.runs import RunStore, SUPPORTED_STAGES
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
+
+
+class ConfigSource(Protocol):
+    """Reads the model catalog + plan, fresh, on every ``load()`` call."""
+
+    def load(self) -> tuple[ModelCatalog, ModelPlan]: ...
+
+    def plan_sha256(self) -> str: ...
+
+    def write_plan(self, toml_text: str) -> None: ...
 MAX_REQUEST_BODY_BYTES = 1024 * 1024  # 1 MiB; job POST bodies are tiny
 
 
@@ -49,14 +64,16 @@ class DaemonContext:
     runs: RunStore
     token: str
     version: str
-    catalog: ModelCatalog
-    plan: ModelPlan
+    config: ConfigSource
     topics: TopicStore
     profiles: ProfileStore
     on_shutdown: Callable[[], None]
     web_dist: Path | None = None
 
     def enqueue_stage(self, topic_id: str, stage: str | None, force: bool) -> Job:
+        catalog, plan = self.config.load()
+        overrides = self.runs.read_plan_overrides(topic_id)
+        plan, override_errors = apply_overrides_lenient(plan, overrides, catalog)
         # Validate topic against the workspace (reuses safe-id logic in RunStore).
         status = self.runs.run_status(topic_id)
         target_stage = stage or status.next_action.stage
@@ -64,6 +81,11 @@ class DaemonContext:
             raise ConfigError(
                 f"stage {target_stage!r} is not an executable stage; "
                 f"executable stages: {', '.join(SUPPORTED_STAGES)}"
+            )
+        if target_stage in override_errors:
+            raise ConfigError(
+                f"override for stage {target_stage!r} is invalid: "
+                f"{override_errors[target_stage]}"
             )
         # Structural approval gate: only enqueue when the next action is to run a prompt.
         action = status.next_action
@@ -75,10 +97,13 @@ class DaemonContext:
             raise ConfigError(
                 f"a job is already active for {topic_id}/{target_stage}"
             )
-        stage_plan = self.plan.stage(target_stage)
-        provider = stage_plan.provider or self.plan.provider
+        stage_plan = plan.stage(target_stage)
+        provider = stage_plan.provider or plan.provider
         job = self.store.create(topic_id, target_stage, provider, stage_plan.model, stage_plan.effort)
         job.metadata["force"] = force
+        job.metadata["plan_source"] = (
+            "override" if target_stage in overrides.get("stages", {}) else "default"
+        )
         # Do not pre-save here: Worker.enqueue performs the duplicate-active
         # check, durable save, and queue insertion as one atomic operation
         # under its lock, so a rejected job never gets a job.json written.
@@ -193,6 +218,14 @@ def _make_handler(context: DaemonContext):
             self.send_header("Content-Type", static.content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", static.cache_control)
+            if static.content_type.startswith("text/html"):
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                    "connect-src 'self'; frame-src 'self'; object-src 'none'; "
+                    "base-uri 'none'; form-action 'none'",
+                )
             self.end_headers()
             self.wfile.write(body)
 
@@ -222,6 +255,18 @@ def _make_handler(context: DaemonContext):
             if m:
                 return self._send(
                     200, read_api.get_profile(context.profiles, m.group(1))
+                )
+            if self.path == "/v1/config/providers":
+                catalog, _ = context.config.load()
+                return self._send(200, read_api.providers_payload(catalog))
+            if self.path == "/v1/config/catalog":
+                catalog, _ = context.config.load()
+                return self._send(200, read_api.catalog_payload(catalog))
+            if self.path == "/v1/config/plan":
+                catalog, plan = context.config.load()
+                return self._send(
+                    200,
+                    read_api.plan_payload(catalog, plan, context.config.plan_sha256()),
                 )
             if self.path == "/v1/runs":
                 return self._send(200, read_api.list_runs(context.runs))
@@ -266,6 +311,15 @@ def _make_handler(context: DaemonContext):
                     )
                 return self._send_file(
                     path, "text/markdown; charset=utf-8", f"{topic_id}-guide.bundle.md"
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/plan$", self.path)
+            if m:
+                catalog, plan = context.config.load()
+                return self._send(
+                    200,
+                    read_api.run_plan_payload(
+                        catalog, plan, context.config.plan_sha256(), context.runs, m.group(1)
+                    ),
                 )
             m = re.match(r"^/v1/runs/([^/?]+)$", self.path)
             if m:
@@ -447,11 +501,20 @@ def _make_handler(context: DaemonContext):
                 )
             if self.path == "/v1/topics":
                 body = self._read_body()
+                if "toml" in body:
+                    return self._send(
+                        200,
+                        write_api.import_topic(
+                            context.topics,
+                            _require_str(body, "toml"),
+                            overwrite=bool(body.get("overwrite")),
+                        ),
+                    )
                 return self._send(
                     200,
-                    write_api.import_topic(
+                    write_api.create_topic(
                         context.topics,
-                        _require_str(body, "toml"),
+                        body,
                         overwrite=bool(body.get("overwrite")),
                     ),
                 )
@@ -492,6 +555,19 @@ def _make_handler(context: DaemonContext):
                 return self._error(400, "bad_request", str(exc))
 
         def _api_put_routes(self):
+            if self.path == "/v1/config/plan":
+                return self._send(
+                    200,
+                    write_api.update_global_plan(context.config, self._read_body()),
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/plan$", self.path)
+            if m:
+                return self._send(
+                    200,
+                    write_api.update_run_plan(
+                        context.runs, context.config, m.group(1), self._read_body()
+                    ),
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/response$", self.path)
             if m:
                 body = self._read_body()

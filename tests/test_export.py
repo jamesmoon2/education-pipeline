@@ -65,6 +65,12 @@ def test_render_escapes_document_title() -> None:
     assert "<title>A &amp; B &lt;c&gt;</title>" in html
 
 
+def test_legacy_export_document_carries_csp() -> None:
+    html = render_markdown_to_html("# T", title="T")
+    assert 'http-equiv="Content-Security-Policy"' in html
+    assert "default-src 'none'" in html
+
+
 def test_build_markdown_bundle_prepends_front_matter() -> None:
     bundle = build_markdown_bundle(
         "# Guide\n\nBody.\n",
@@ -94,3 +100,23 @@ def test_render_html_body_escapes_script_input() -> None:
 
     assert "<script>" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+
+def test_javascript_links_are_neutralized() -> None:
+    html = render_html_body("[x](javascript:alert(1))")
+    assert "javascript:" not in html.lower()
+    assert "<a " not in html
+    assert "x" in html
+
+
+def test_scheme_check_defeats_case_and_whitespace_tricks() -> None:
+    for href in ("JaVaScRiPt:alert(1)", "java\tscript:alert(1)", " javascript:alert(1)", "data:text/html,x", "vbscript:x"):
+        html = render_html_body(f"[x]({href})")
+        assert "<a " not in html, href
+
+
+def test_safe_links_still_render() -> None:
+    html = render_html_body("[docs](https://example.com/a) and [rel](./page.md) and [mail](mailto:a@b.c)")
+    assert '<a href="https://example.com/a">docs</a>' in html
+    assert '<a href="./page.md">rel</a>' in html
+    assert '<a href="mailto:a@b.c">mail</a>' in html
