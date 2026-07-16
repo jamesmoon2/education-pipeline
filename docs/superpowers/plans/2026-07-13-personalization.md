@@ -172,7 +172,7 @@ recommendation instead of another kickoff prompt.
 | 1 — Profile product surface | **complete** | code `98e3ca8`, `3f13ab2`, `8f2a2c5`, `2fbf2af`, `0fca471` | 716 | 163 | 44 | clean | Gate run 2026-07-14. Frozen HTTP payloads implemented verbatim. Authorized deviation: `ProfileStore.import_profile_toml()` added (locked canonical raw import; daemon raw-import adapter delegates to it, removing a TOCTOU 400-vs-409 defect). `daemon/server.py` `_last_resort` now returns a constant 500 message and logs exception class only (privacy hardening — do not reintroduce interpolated exception text). Cockpit preserves metadata numeric kind/precision via JSON reviver source-text parsing plus a custom request-body serializer in `web/src/api/client.ts`; do not replace with plain `JSON.parse`/`stringify`. `web/e2e/profiles.spec.ts` owns profiles acceptance (found+fixed axe scrollable-region-focusable in `ProfilePrivacyPreview`). Deferred Minor: GET/duplicate concurrent-deletion race can 400 instead of 404 (contract silent). Sandbox note: implementer/reviewer subagents cannot bind `127.0.0.1`; the manager reran every loopback suite personally. |
 | 2 — Guide 1.1 + trace | **complete** | code `bd4d814`, `345196d`, `59dfc68`, `7a54273`, `1db88c8`, `bd1aa55` | 832 | 163 | 46 | clean | Gate run 2026-07-14. Source 1.1, private trace, public projection, versioned prompts/MIME, trace-integrity gating, and projection-bound public sidecar hashes are frozen. Wave 3 must preserve the Wave 2 public-hash boundary and safe `personalization.trace_integrity` id while adding optional audit state; see closeout notes. |
 | 3 — Optional audit + report | **complete** | code `7e540a3`, `64acd69`, `a159734`, `6f39d86`, `9482119` | 954 | 165 | 46 | clean | Gate run 2026-07-15. Optional audit lifecycle, strict hostile-response projection, public-safe report provenance/export state, and daemon/CLI controls are frozen. Audit provider stdout/stderr are never persisted to job logs; rebuild commands add `--force` only when a prior response exists. Wave 4 should consume `RunStore.combined_findings()` and `export_state()` without adding another audit state machine; see closeout notes. |
-| 4 — Fit panel + acceptance | pending | — | — | — | — | — | — |
+| 4 — Fit panel + acceptance | **complete** | code `69391e7`, `2f3ae50`, `87d73b3`, `8b186c5`, `f27d499`, `ad7daf6`, `de2fb4c`, `3aa2758`, `f3ec0e7`, `9ffa411`, `0662547` | 973 | 210 | 53 | clean | Gate run 2026-07-16. Cockpit aggregate, optional audit controls, fit panel, sandboxed evidence bridge, Python/browser acceptance, and durable docs are complete. Fresh whole-milestone review found two Important concurrency/route-identity defects; both were fixed with RED tests and freshly re-reviewed. Review verdict APPROVED. The sole accepted Minor is recorded in the post-milestone audit ledger; see closeout notes. |
 
 Baseline commands: `python3 -m pytest` → 600; `cd web && npm run test --
 --run` → 127; `npm run e2e` → 42; `npm run build` → clean.
@@ -1045,13 +1045,13 @@ pointer. This task also owns typed client adapters/results for the explicit
 `POST /v1/runs/{topic}/audit` preparation action and the existing audit
 response/approve/provider-job routes consumed by Wave 4 UI.
 
-- [ ] Write RED Python and TS contract tests for no-profile, trace-only, current
+- [x] Write RED Python and TS contract tests for no-profile, trace-only, current
   audit, stale audit, invalid trace, and stale export states.
-- [ ] Run focused server/client tests and observe RED.
-- [ ] Implement one server-side aggregate; the browser never reads raw trace or
+- [x] Run focused server/client tests and observe RED.
+- [x] Implement one server-side aggregate; the browser never reads raw trace or
   audit artifacts.
-- [ ] Run focused Python/vitest tests and build green.
-- [ ] Fresh API/privacy/spec/code review; manager lands
+- [x] Run focused Python/vitest tests and build green.
+- [x] Fresh API/privacy/spec/code review; manager lands
   `feat(api): expose cockpit personalization state`.
 
 ### Task 4.2: Optional audit cockpit controls
@@ -1067,15 +1067,15 @@ response/approve/provider-job routes consumed by Wave 4 UI.
 review, approval, rerun, stale state, and re-export prompt. It never replaces or
 blocks `PrimaryAction`.
 
-- [ ] Write RED component/page tests for every optional state and action.
-- [ ] Add RED finding-navigation coverage proving an audit finding renders in
+- [x] Write RED component/page tests for every optional state and action.
+- [x] Add RED finding-navigation coverage proving an audit finding renders in
   the shared panel and opens `source_stage ?? stage`, so audit evidence targets
   the repair guide rather than the private audit response.
-- [ ] Run focused vitest and observe RED.
-- [ ] Implement using generic stage viewer/job controls where possible; do not
+- [x] Run focused vitest and observe RED.
+- [x] Implement using generic stage viewer/job controls where possible; do not
   fork response editing.
-- [ ] Run focused tests and build green.
-- [ ] Fresh accessibility/state-machine/code review; manager lands
+- [x] Run focused tests and build green.
+- [x] Fresh accessibility/state-machine/code review; manager lands
   `feat(cockpit): add optional audit controls`.
 
 ### Task 4.3: PersonalizationPanel and sandboxed preview bridge
@@ -1093,7 +1093,7 @@ current/stale audit, no-profile/invalid states; goal/facet/exclusion/evidence
 display; click-to-reveal/scroll/focus through a preview-only semantic evidence
 resolver.
 
-- [ ] Write RED vitest/runtime tests for rendering states and the exact
+- [x] Write RED vitest/runtime tests for rendering states and the exact
   `postMessage` contract. Parent messages include only a fixed type, evidence
   kind (`module` or `outcome`), and validated id. Runtime listens only when the
   document has `data-guide-mode="preview"`, requires
@@ -1102,11 +1102,11 @@ resolver.
   outcome evidence by DOM id, reveals the owning section, scrolls, and focuses
   the target. Test both evidence kinds and prove export-mode documents ignore
   messages.
-- [ ] Run focused vitest/runtime tests and observe RED.
-- [ ] Implement with an imperative iframe ref and `postMessage`. Keep the iframe
+- [x] Run focused vitest/runtime tests and observe RED.
+- [x] Implement with an imperative iframe ref and `postMessage`. Keep the iframe
   opaque; **do not add `allow-same-origin`**.
-- [ ] Run focused vitest, runtime Playwright cases, and build green.
-- [ ] Fresh security/accessibility/spec/code review; manager lands
+- [x] Run focused vitest, runtime Playwright cases, and build green.
+- [x] Fresh security/accessibility/spec/code review; manager lands
   `feat(cockpit): add personalization fit panel`.
 
 ### Task 4.4: Python milestone acceptance
@@ -1117,30 +1117,30 @@ resolver.
 
 Reuse existing guide-run helpers rather than creating a second pipeline harness.
 
-- [ ] Write acceptance tests for structured CRUD and snapshot immutability;
+- [x] Write acceptance tests for structured CRUD and snapshot immutability;
   planted high/medium leak refusal; 1.1 trace construction; dangling/missing/
   stale trace refusal; stripped public outputs; optional audit before/after
   finalize; hostile narrative projection; export staleness; and reproducible
   not-run/current/stale sidecars.
-- [ ] Run the new file and observe RED only for any still-missing integration.
-- [ ] During parallel dispatch, modify only this new test file. Report product
+- [x] Run the new file and observe RED only for any still-missing integration.
+- [x] During parallel dispatch, modify only this new test file. Report product
   gaps with their owning modules to the manager; do not collide with active
   UI/runtime/API agents, weaken tests, or duplicate core logic.
-- [ ] After the parallel barrier, the manager dispatches or applies queued fixes
+- [x] After the parallel barrier, the manager dispatches or applies queued fixes
   serially through the owning modules, then runs this file and the existing
   release-gate acceptance green.
-- [ ] Fresh adversarial acceptance review after fixes; manager lands
+- [x] Fresh adversarial acceptance review after fixes; manager lands
   `test(personalization): add end-to-end engine acceptance`.
 
 ### Wave 4 integration barrier (manager-owned hot files)
 
-- [ ] Integrate `AuditControls`, the canonical repair/final preview wrapper, and
+- [x] Integrate `AuditControls`, the canonical repair/final preview wrapper, and
   `PersonalizationPanel` in `web/src/pages/RunBoardPage.tsx`; add scoped rules in
   `web/src/styles.css`. No sub-agent edits these two files during the parallel
   batch.
-- [ ] Add/update `RunBoardPage.test.tsx` for trace-only, current/stale audit,
+- [x] Add/update `RunBoardPage.test.tsx` for trace-only, current/stale audit,
   re-export prompt, and no-profile states; run focused vitest and build green.
-- [ ] Land the integration as `feat(cockpit): integrate personalization workspace`.
+- [x] Land the integration as `feat(cockpit): integrate personalization workspace`.
 
 ### Task 4.5: Browser milestone acceptance
 
@@ -1156,13 +1156,13 @@ annotation keys; optional audit run/approval/re-export; safe projected findings;
 goal evidence click changing current/focused preview target; axe scans for
 Profiles, trace-only, current-audit, stale-audit, and no-profile states.
 
-- [ ] Write the scenario and observe focused RED.
-- [ ] Fix only genuine integration/accessibility gaps, preserving privacy and
+- [x] Write the scenario and observe focused RED.
+- [x] Fix only genuine integration/accessibility gaps, preserving privacy and
   optional-stage invariants.
-- [ ] Run `cd web && npx playwright test e2e/personalization.spec.ts` green.
-- [ ] Sabotage-check the absence assertions and click bridge so the test fails
+- [x] Run `cd web && npx playwright test e2e/personalization.spec.ts` green.
+- [x] Sabotage-check the absence assertions and click bridge so the test fails
   when stripping or messaging is bypassed.
-- [ ] Fresh acceptance review; manager lands
+- [x] Fresh acceptance review; manager lands
   `test(cockpit): cover personalization milestone`.
 
 ### Task 4.6: Final review and durable closeout
@@ -1173,21 +1173,67 @@ Profiles, trace-only, current-audit, stale-audit, and no-profile states.
 - Create: `docs/superpowers/specs/2026-07-13-personalization-post-milestone-audit.md`
   if the fresh review finds accepted/deferred items
 
-- [ ] Dispatch an independent fresh-eyes whole-milestone review covering privacy
+- [x] Dispatch an independent fresh-eyes whole-milestone review covering privacy
   boundary, source/public projection, trace freshness, optional audit state,
   report reproducibility, API stale writes, cockpit recovery, accessibility, and
   generated-artifact hygiene.
-- [ ] Fix all Critical/Important findings with RED tests. Explicitly adjudicate
+- [x] Fix all Critical/Important findings with RED tests. Explicitly adjudicate
   lesser findings into fix-now, accepted, or next-milestone buckets.
-- [ ] Update README usage/privacy guidance and mark PRD P1 status/exit evidence
+- [x] Update README usage/privacy guidance and mark PRD P1 status/exit evidence
   with exact test paths and delivered commits.
-- [ ] Record any deferred items in the post-milestone audit artifact; do not hide
+- [x] Record any deferred items in the post-milestone audit artifact; do not hide
   them only in chat or a commit message.
-- [ ] Run the final Wave 4 close checklist and commit the completed plan/log.
+- [x] Run the final Wave 4 close checklist and commit the completed plan/log.
 
 ### Wave 4 close
 
-- [ ] Record the final four-suite gate, milestone commit range, acceptance test
+- [x] Record the final four-suite gate, milestone commit range, acceptance test
   paths, and review verdict in the Wave Log.
-- [ ] Return a milestone summary and recommend a fresh post-milestone audit
+- [x] Return a milestone summary and recommend a fresh post-milestone audit
   task. Stop; do not begin the next PRD milestone.
+
+### Wave 4 closeout notes
+
+- **Implementation:** `69391e7` added the atomic cockpit personalization
+  aggregate and typed client; `2f3ae50` added optional audit controls;
+  `87d73b3` added engine acceptance; `8b186c5` added the fit panel and preview
+  bridge; `f27d499` integrated the workspace; and `ad7daf6` added browser
+  milestone acceptance plus opaque-preview/runtime and daemon-cleanup
+  regressions. Final review then landed profile-derived write serialization in
+  `de2fb4c`, Stage Viewer route-identity isolation in `3aa2758`, corrected lock
+  guidance in `f3ec0e7`, durable closeout docs in `9ffa411`, and the final-gate
+  lock-order regression update in `0662547`.
+- **TDD and review evidence:** every bounded task recorded genuine focused RED
+  before GREEN and received fresh spec and code-quality review. Task 4.5 closed
+  with its single real browser scenario and 41 runtime cases green. Independent
+  whole-milestone review found two Important defects: profile reattachment
+  could interleave after privacy validation but before profile-derived export,
+  validation, or audit persistence; and Stage Viewer could retain a prior
+  topic's private response and actions across route changes. Deterministic
+  concurrency and route-transition RED tests drove both fixes. Re-review also
+  strengthened thread-start/cleanup sabotage value and corrected one stale
+  lock-order docstring. Final spec and quality verdict: **APPROVED**; no Critical
+  or Important finding remains.
+- **Four-suite gate:** the first manager pytest run reached 972 passed and one
+  failed white-box lock-order test; the reviewed test update in `0662547`
+  changed it to observe the new canonical outer lock without weakening the
+  assertion, and the complete gate restarted from pytest. Final manager run:
+  `python3 -m pytest` → 973 passed; `cd web && npm run test -- --run` → 210
+  passed; `npm run e2e` → 53 passed; `npm run build` → clean (65 modules).
+- **Acceptance and privacy evidence:** engine coverage is
+  `tests/test_personalization_acceptance.py`; browser coverage is
+  `web/e2e/personalization.spec.ts` with runtime isolation in
+  `web/e2e/guide-runtime.spec.ts`. The scenario proves structured profile
+  creation/attachment, immutable snapshots, planted leak refusal, repair and
+  export, optional audit approval/re-export, safe projected findings,
+  sandboxed evidence focus, all required axe states, and absence of private
+  profile values, raw goals, exclusion reasons, and source annotations from
+  HTML and the public sidecar.
+- **Milestone range and disposition:** implementation begins at Wave 0 commit
+  `dc75c54` and closes at `0662547`; exact per-wave commit sets are recorded in
+  the Wave Log. The only accepted item is the Wave 1 Minor in which concurrent
+  source-profile deletion can make GET/duplicate return 400 instead of 404;
+  its safety boundary and revisit trigger are durable in
+  `docs/superpowers/specs/2026-07-13-personalization-post-milestone-audit.md`.
+  The pre-existing untracked `docs/design-demos/`, `docs/design-system.md`, and
+  `docs/superpowers/wave-runner-paper-draft.md` remain untouched.
