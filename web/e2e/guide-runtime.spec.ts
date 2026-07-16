@@ -24,6 +24,7 @@ function assembleFixtureDocument(
 
 let documentHtml: string;
 let personalizedDocumentHtml: string;
+let previewDocumentHtml: string;
 let httpServer: Server;
 let httpBaseUrl: string;
 let tempDir: string;
@@ -33,6 +34,10 @@ test.beforeAll(async () => {
   documentHtml = assembleFixtureDocument();
   personalizedDocumentHtml = assembleFixtureDocument(
     "tests/fixtures/guides/feedback-loops.personalized.guide.json",
+  );
+  previewDocumentHtml = documentHtml.replace(
+    'data-guide-mode="export"',
+    'data-guide-mode="preview"',
   );
 
   tempDir = mkdtempSync(path.join(tmpdir(), "guide-runtime-e2e-"));
@@ -81,6 +86,104 @@ test.describe("guide schema compatibility", () => {
     await expect(page.locator("[data-guide-status]")).toContainText(
       "schema 2.0, runtime 1.0",
     );
+  });
+});
+
+test.describe("preview evidence message bridge", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.setContent(previewDocumentHtml, { waitUntil: "load" });
+  });
+
+  test("reveals, scrolls, and focuses the first section for module evidence", async ({ page }) => {
+    await page.evaluate(() => {
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function scrollIntoView(options) {
+        document.documentElement.dataset.evidenceScrolledTo = this.id;
+        if (original) original.call(this, options);
+      };
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        data: {
+          type: "education-pipeline:preview-evidence",
+          kind: "module",
+          id: "intervention-practice",
+        },
+      }));
+    });
+
+    const target = page.locator('section[data-module-id="intervention-practice"]').first();
+    await expect(target).toHaveClass(/is-current/);
+    await expect(target).toBeFocused();
+    await expect(target).toHaveAttribute("tabindex", "-1");
+    await expect(page.locator("html")).toHaveAttribute(
+      "data-evidence-scrolled-to",
+      "delays-and-leverage",
+    );
+  });
+
+  test("resolves outcome evidence by DOM id and focuses the target", async ({ page }) => {
+    await page.evaluate(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        data: {
+          type: "education-pipeline:preview-evidence",
+          kind: "outcome",
+          id: "identify-loop",
+        },
+      }));
+    });
+
+    await expect(page.locator("#identify-loop")).toBeFocused();
+    await expect(page.locator("#identify-loop")).toHaveAttribute("tabindex", "-1");
+  });
+
+  test("rejects malformed, unknown, and non-parent messages", async ({ page }) => {
+    await expect(page.locator('section[data-role="guide-section"]').first()).toHaveClass(/is-current/);
+    await page.evaluate(() => {
+      const dispatch = (data: unknown, source: MessageEventSource | null = window) =>
+        window.dispatchEvent(new MessageEvent("message", { source, data }));
+      dispatch({ type: "education-pipeline:preview-evidence", kind: "module", id: "missing" });
+      dispatch({ type: "education-pipeline:preview-evidence", kind: "module", id: "intervention-practice", extra: true });
+      dispatch({ type: "education-pipeline:preview-evidence", kind: "block", id: "intervention-practice" });
+      dispatch({ type: "education-pipeline:preview-evidence", kind: "module", id: "Not A Guide ID" });
+      dispatch({ type: "education-pipeline:preview-evidence", kind: "module", id: "intervention-practice" }, null);
+    });
+
+    await expect(page.locator('section[data-role="guide-section"]').first()).toHaveClass(/is-current/);
+    await expect(page.locator('section[data-module-id="intervention-practice"]').first()).not.toBeFocused();
+  });
+
+  test("rejects a DOM id that is not a declared outcome", async ({ page }) => {
+    await page.evaluate(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        data: {
+          type: "education-pipeline:preview-evidence",
+          kind: "outcome",
+          id: "guide-main",
+        },
+      }));
+    });
+
+    await expect(page.locator("#guide-main")).not.toBeFocused();
+    await expect(page.locator("#guide-main")).not.toHaveAttribute("tabindex", "-1");
+  });
+
+  test("export-mode documents ignore otherwise valid evidence messages", async ({ page }) => {
+    await page.setContent(documentHtml, { waitUntil: "load" });
+    await page.evaluate(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window,
+        data: {
+          type: "education-pipeline:preview-evidence",
+          kind: "module",
+          id: "intervention-practice",
+        },
+      }));
+    });
+
+    await expect(page.locator('section[data-role="guide-section"]').first()).toHaveClass(/is-current/);
+    await expect(page.locator('section[data-module-id="intervention-practice"]').first()).not.toBeFocused();
   });
 });
 
