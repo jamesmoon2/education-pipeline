@@ -91,6 +91,11 @@ from education_pipeline.prompts import (
     compile_spec_prompt,
     compile_topic_spec_prompt,
 )
+from education_pipeline.guides.blueprints import (
+    Blueprint,
+    get_blueprint,
+    recommend_blueprint,
+)
 from education_pipeline.workspace import ProfileStore, TopicStore
 
 _GUIDE_CONTRACT_FILENAME = "guide-contract.json"
@@ -435,6 +440,7 @@ class RunStore:
         topic_id: str,
         *,
         content_contract: ContentContract | None = None,
+        blueprint: str | None = None,
     ) -> Path:
         """Create the run directory tree and initialize a manifest if needed.
 
@@ -447,6 +453,17 @@ class RunStore:
         without a ``content_contract`` field, which still read as legacy). When
         a contract is provided against an existing run, it must match the
         immutable recorded contract.
+
+        For interactive-guide runs the effective pedagogical blueprint is
+        resolved when the manifest is first created — explicit ``blueprint``
+        argument, else the stored topic's ``blueprint`` field, else the
+        deterministic recommendation over the stored topic — and recorded
+        immutably as ``manifest["blueprint"] = {id, source, rationale?}``.
+        Runs with no stored topic and no explicit choice record nothing and
+        keep today's blueprint-free behavior. An explicit ``blueprint`` may
+        also be recorded, once, on an existing guide manifest that has no
+        record yet; a conflicting re-record raises. Legacy Markdown runs never
+        record a blueprint.
         """
 
         run = self.run_dir(topic_id)
@@ -472,15 +489,99 @@ class RunStore:
                     "events": [],
                     "content_contract": requested.to_manifest(),
                 }
-                _write_manifest(manifest_path, manifest)
-            elif content_contract is not None:
-                _validate_content_contract(content_contract)
-                if self.content_contract(run.name) != content_contract:
+                if requested.kind == "interactive_guide":
+                    record = self._resolve_blueprint_record(run.name, blueprint)
+                    if record is not None:
+                        manifest["blueprint"] = record
+                elif blueprint is not None:
                     raise ConfigError(
-                        f"run {run.name!r} already has immutable content contract "
-                        f"{self.content_contract(run.name)!r}; requested {content_contract!r}"
+                        f"run {run.name!r} is a legacy Markdown run; "
+                        "legacy runs do not support blueprints"
                     )
+                _write_manifest(manifest_path, manifest)
+            else:
+                if content_contract is not None:
+                    _validate_content_contract(content_contract)
+                    if self.content_contract(run.name) != content_contract:
+                        raise ConfigError(
+                            f"run {run.name!r} already has immutable content contract "
+                            f"{self.content_contract(run.name)!r}; requested {content_contract!r}"
+                        )
+                if blueprint is not None:
+                    self._record_blueprint_locked(run.name, blueprint)
         return run
+
+    def _resolve_blueprint_record(
+        self, topic_id: str, explicit: str | None
+    ) -> dict | None:
+        """Resolve the effective blueprint record: user > topic > recommended.
+
+        An unregistered explicit or topic-declared blueprint id raises; a
+        missing or malformed stored topic degrades to no record (legacy
+        behavior) rather than failing run creation.
+        """
+
+        if explicit is not None:
+            get_blueprint(explicit)
+            return {"id": explicit, "source": "user"}
+        try:
+            topic = TopicStore(self.root).load_topic(topic_id)
+        except ConfigError:
+            return None
+        if topic.blueprint is not None:
+            get_blueprint(topic.blueprint)
+            return {"id": topic.blueprint, "source": "topic"}
+        blueprint_id, rationale = recommend_blueprint(topic)
+        return {"id": blueprint_id, "source": "recommended", "rationale": rationale}
+
+    def _record_blueprint_locked(self, topic_id: str, blueprint: str) -> None:
+        """Record an explicit blueprint on an existing manifest, immutably.
+
+        Caller must already hold ``_manifest_write_lock(topic_id)``. Recording
+        the already-recorded id is a no-op; a different id raises; legacy
+        Markdown runs are refused.
+        """
+
+        if self.content_contract(topic_id).kind != "interactive_guide":
+            raise ConfigError(
+                f"run {topic_id!r} is a legacy Markdown run; "
+                "legacy runs do not support blueprints"
+            )
+        get_blueprint(blueprint)
+        manifest = self.read_manifest(topic_id)
+        existing = manifest.get("blueprint")
+        if isinstance(existing, dict):
+            if existing.get("id") != blueprint:
+                raise ConfigError(
+                    f"run {topic_id!r} already has immutable blueprint "
+                    f"{existing.get('id')!r}; requested {blueprint!r}"
+                )
+            return
+        manifest["blueprint"] = {"id": blueprint, "source": "user"}
+        _write_manifest(self.manifest_path(topic_id), manifest)
+
+    def blueprint_config(self, topic_id: str) -> dict | None:
+        """Return the run's recorded blueprint ``{id, source, rationale?}``.
+
+        ``None`` when the run has no manifest, records no blueprint (legacy
+        and pre-blueprint runs), or the record is unreadable.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        if not self.manifest_path(safe_id).exists():
+            return None
+        record = self.read_manifest(safe_id).get("blueprint")
+        if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+            return None
+        return dict(record)
+
+    def run_blueprint(self, topic_id: str) -> Blueprint | None:
+        """Resolve the run's recorded blueprint through the registry."""
+
+        config = self.blueprint_config(topic_id)
+        if config is None:
+            return None
+        return get_blueprint(config["id"])
 
     def list_run_ids(self) -> tuple[str, ...]:
         """List topic ids that have a started run (an initialized manifest)."""

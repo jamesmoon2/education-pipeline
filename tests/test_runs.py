@@ -426,6 +426,128 @@ def _first_waivable_blocking_finding_id(runs: RunStore, topic_id: str, phase: st
     raise AssertionError("fixture produced no waivable blocking finding")
 
 
+def test_create_run_records_recommended_blueprint_for_stored_topic(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+
+    config = runs.blueprint_config("systems-thinking")
+    assert config is not None
+    assert config["id"] == "conceptual-foundations"
+    assert config["source"] == "recommended"
+    assert config["rationale"].strip()
+    blueprint = runs.run_blueprint("systems-thinking")
+    assert blueprint is not None and blueprint.id == "conceptual-foundations"
+
+
+def test_create_run_explicit_blueprint_wins_over_topic_and_recommendation(
+    tmp_path: Path,
+) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "casebook"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking", blueprint="procedural-skill")
+
+    config = runs.blueprint_config("systems-thinking")
+    assert config == {"id": "procedural-skill", "source": "user"}
+
+
+def test_create_run_topic_blueprint_wins_over_recommendation(tmp_path: Path) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "casebook"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+
+    assert runs.blueprint_config("systems-thinking") == {
+        "id": "casebook",
+        "source": "topic",
+    }
+
+
+def test_create_run_rejects_unregistered_explicit_blueprint(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+
+    with pytest.raises(ConfigError, match="unregistered blueprint"):
+        runs.create_run("systems-thinking", blueprint="socratic-method")
+
+
+def test_create_run_rejects_unregistered_topic_blueprint(tmp_path: Path) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "socratic-method"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+
+    with pytest.raises(ConfigError, match="unregistered blueprint"):
+        runs.create_run("systems-thinking")
+
+
+def test_create_run_without_topic_or_choice_records_no_blueprint(tmp_path: Path) -> None:
+    runs = RunStore(tmp_path)
+    runs.create_run("no-topic-run")
+
+    assert runs.blueprint_config("no-topic-run") is None
+    assert runs.run_blueprint("no-topic-run") is None
+    assert "blueprint" not in runs.read_manifest("no-topic-run")
+
+
+def test_legacy_markdown_runs_never_record_a_blueprint(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    runs.create_run(
+        "systems-thinking", content_contract=ContentContract.legacy_markdown()
+    )
+
+    assert runs.blueprint_config("systems-thinking") is None
+    with pytest.raises(ConfigError, match="legacy"):
+        runs.create_run(
+            "systems-thinking",
+            content_contract=ContentContract.legacy_markdown(),
+            blueprint="casebook",
+        )
+
+
+def test_blueprint_record_is_immutable_once_written(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+
+    # Re-recording the same id is a no-op; a different id is refused.
+    runs.create_run("systems-thinking", blueprint="conceptual-foundations")
+    with pytest.raises(ConfigError, match="immutable"):
+        runs.create_run("systems-thinking", blueprint="casebook")
+    assert runs.blueprint_config("systems-thinking") == {
+        "id": "conceptual-foundations",
+        "source": "recommended",
+        "rationale": runs.blueprint_config("systems-thinking")["rationale"],
+    }
+
+
+def test_explicit_blueprint_can_be_recorded_on_existing_guide_run_without_one(
+    tmp_path: Path,
+) -> None:
+    runs = RunStore(tmp_path)
+    runs.create_run(
+        "no-topic-run", content_contract=ContentContract.interactive_guide_v1()
+    )
+    assert runs.blueprint_config("no-topic-run") is None
+
+    runs.create_run("no-topic-run", blueprint="quantitative-scientific")
+
+    assert runs.blueprint_config("no-topic-run") == {
+        "id": "quantitative-scientific",
+        "source": "user",
+    }
+
+
+def test_create_run_tolerates_malformed_stored_topic(tmp_path: Path) -> None:
+    """A malformed topic file degrades to no blueprint record, not a failure."""
+
+    topics_dir = tmp_path / "topics"
+    topics_dir.mkdir(parents=True)
+    (topics_dir / "broken-topic.toml").write_text("not = 'a topic'", encoding="utf-8")
+    runs = RunStore(tmp_path)
+
+    runs.create_run("broken-topic")
+
+    assert runs.blueprint_config("broken-topic") is None
+
+
 def test_run_store_creates_run_directories(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
 
