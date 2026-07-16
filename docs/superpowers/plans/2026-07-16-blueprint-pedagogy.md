@@ -356,26 +356,26 @@ recommendation rationale and override; run-header blueprint display; repair
 **Outcome:** end-to-end evidence, green four-suite gate with recorded counts,
 PRD entry moved to Delivered, post-milestone audit ledger.
 
-- [ ] Playwright `web/e2e/blueprints.spec.ts`: create a course accepting the
+- [x] Playwright `web/e2e/blueprints.spec.ts`: create a course accepting the
   recommendation and verify the spec prompt carries the blueprint contract;
   override to a second blueprint and verify the prompt differs; drive a
   fixture run to repair, regenerate one module, assert other modules
   unchanged and the run proceeds; verify a time-budget warning surfaces at
   the responsible stage.
-- [ ] Python acceptance: contrasting `quantitative-scientific` path exercising
+- [x] Python acceptance: contrasting `quantitative-scientific` path exercising
   divergent prompt/rubric output (in `tests/test_prompts.py` +
   `tests/test_release_gate_acceptance.py` additions).
-- [ ] Canonical fixture check: regenerate at most once under
+- [x] Canonical fixture check: regenerate at most once under
   `conceptual-foundations` (or record that bytes are unchanged) and update the
   pinned SHA in the same commit; explain in the Wave Log.
-- [ ] Four-suite gate: `python3 -m pytest`; from `web/`: `npm run test --
+- [x] Four-suite gate: `python3 -m pytest`; from `web/`: `npm run test --
   --run`, `npm run build`, `npm run e2e`. Record counts below.
-- [ ] PRD §10 "P1 — Blueprint-driven pedagogy" → Delivered with closeout
+- [x] PRD §10 "P1 — Blueprint-driven pedagogy" → Delivered with closeout
   evidence links in the format of the delivered entries above it.
-- [ ] Write
+- [x] Write
   `docs/superpowers/specs/2026-07-16-blueprint-pedagogy-post-milestone-audit.md`
   following the 2026-07-13 personalization audit ledger.
-- [ ] Final commit and push to `claude/blueprint-pedagogy`.
+- [x] Final commit and push to `claude/blueprint-pedagogy`.
 
 ---
 
@@ -389,7 +389,7 @@ PRD entry moved to Delivered, post-milestone audit ledger.
 | 2 — Calibration | **complete** | `a6fcbea` | 1044 | — | — | — | Seven rules behind `CalibrationContext` (None → reports byte-identical). Constants pinned (200 WPM, per-block seconds, skill keywords, difficulty levels) with `estimated_reading_minutes()` public for tests. Boundaries: exceeded strictly above 1.1×, underrun strictly below 0.5×, implausible strictly beyond 2× either way, overrun strictly above 45 min, difficulty distance ≥ 2, `mixed`/ambiguous never fire. `RunStore._calibration_context` reads topic (silent degrade), manifest record, and profile snapshot; threaded through validate/gate/finalize/export-freshness so sidecar bytes stay reproducible. Note: the canonical fixture legitimately triggers `time.estimate_implausible` (30 declared vs ~9-minute model) — a nonblocking warning that no existing suite pinned against. |
 | 3 — Scoped repair | **complete** | `2877c7a` | 1067 | — | — | — | Splice refuses renames/collisions/dangling refs via strict re-parse; untouched modules byte-identical (canonical). Splice runs at approval (covers provider ingest, cockpit paste, and manual file-save uniformly); approved/repair.json holds the merged whole guide while the response file keeps the raw fragment. Scope = latest repair prompt_written event's `repair_module`; whole-guide prompt clears it. Deviation from the frozen contract: none. Note for Wave 4: after a scoped approval the response fragment ≠ approved bytes, so the stage view must not rely on response==approved to derive approval state for scoped repairs — use run status + `repair_scope`. |
 | 4 — Cockpit | **complete** | `84aa9a4` | — | 221 | — | clean | `BlueprintPicker` + wizard blueprint step (topic → blueprint → profile → plan); accepted recommendation sends no override so provenance stays `recommended`; registry-fetch failure falls back to the pre-blueprint flow. `RunStatus.blueprint` and `StageContent.repair_scope` typed optional so existing fixtures stay valid. `ModuleRepairControl` hides itself until `GET repair/modules` succeeds. Known cosmetic quirk (accepted): after a scoped approval the response fragment ≠ approved bytes, so the generic Approve button stays visible like an edited response; re-approving re-splices idempotently. `web/e2e/new-run.spec.ts` will need the blueprint-step click — handled in Wave 5. |
-| 5 — Acceptance + closeout | pending | | | | | | |
+| 5 — Acceptance + closeout | **complete** | see final log commit | 1068 | 221 | 57 | clean | Four-suite gate green (pytest 1068; vitest 221 across 30 files; Playwright 57 incl. 4 new blueprint specs; build clean). Canonical fixture **not regenerated**: schema/canonicalization untouched, fixture already `conceptual-foundations`, pinned SHA `99fde906…` unchanged — recorded here in lieu of a diff. Contrasting `quantitative-scientific` acceptance covers divergent spec/QA prompts, echo refusal, superset refusal, and the draft-side `blueprint.contract_mismatch` gate. `new-run.spec.ts` updated for the wizard blueprint step. PRD §10 entry moved to Delivered; post-milestone audit ledger added at `docs/superpowers/specs/2026-07-16-blueprint-pedagogy-post-milestone-audit.md`. |
 
 Baseline commands: `python3 -m pytest`; `cd web && npm run test -- --run`;
 `npm run e2e`; `npm run build`.
