@@ -635,6 +635,50 @@ def test_create_command_rejects_blueprint_with_legacy_markdown(
     assert "legacy" in capsys.readouterr().err
 
 
+def test_advance_repair_module_writes_scoped_prompt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    runs = test_runs._create_guide_run(ws)
+    test_runs._drive_guide_through_qa(runs, "systems-thinking")
+    capsys.readouterr()
+
+    exit_code = _run(ws, "advance", "systems-thinking", "--repair-module", "loop-basics")
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "loop-basics" in out
+    assert runs.repair_scope("systems-thinking") == "loop-basics"
+    assert "## Module To Regenerate" in runs.stage_paths(
+        "systems-thinking", "repair"
+    ).prompt_path.read_text(encoding="utf-8")
+
+
+def test_advance_repair_module_unknown_module_is_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    runs = test_runs._create_guide_run(ws)
+    test_runs._drive_guide_through_qa(runs, "systems-thinking")
+    capsys.readouterr()
+
+    assert _run(ws, "advance", "systems-thinking", "--repair-module", "nope") == 2
+    assert "nope" in capsys.readouterr().err
+
+
+def test_advance_repair_module_outside_repair_is_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    test_runs._create_guide_run(ws)
+    capsys.readouterr()
+
+    exit_code = _run(ws, "advance", "systems-thinking", "--repair-module", "loop-basics")
+
+    assert exit_code == 2
+    assert "repair" in capsys.readouterr().err
+
+
 def test_create_command_conflicting_contract_exits_1(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -140,6 +140,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("advance", help="perform the run's next machine step")
     p.add_argument("topic_id")
+    p.add_argument(
+        "--repair-module",
+        default=None,
+        metavar="MODULE_ID",
+        help="write a module-scoped repair prompt instead (repair stage only)",
+    )
     p.set_defaults(func=_cmd_advance)
 
     p = sub.add_parser("audit", help="prepare or rebuild the optional personalization audit")
@@ -359,7 +365,28 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_advance(args: argparse.Namespace) -> int:
-    result = RunStore(_root(args)).advance(args.topic_id)
+    runs = RunStore(_root(args))
+    if args.repair_module is not None:
+        # A scoped repair request outside the repair stage or naming an
+        # unknown module is a usage error (exit 2), distinct from ordinary
+        # run failures.
+        try:
+            prompt_exists = runs.stage_paths(
+                args.topic_id, "repair"
+            ).prompt_path.exists()
+            prompt = runs.write_module_repair_prompt(
+                args.topic_id, args.repair_module, overwrite=prompt_exists
+            )
+        except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(
+            f"Performed: write_prompt (repair scoped to module {args.repair_module})"
+        )
+        print(f"  prompt: {prompt.prompt_path}")
+        _print_next(runs.run_status(args.topic_id).next_action)
+        return 0
+    result = runs.advance(args.topic_id)
     print(f"Performed: {result.performed or 'nothing (waiting on you)'}")
     _print_next(result.status.next_action)
     return 0

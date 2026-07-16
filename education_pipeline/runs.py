@@ -81,6 +81,7 @@ from education_pipeline.prompts import (
     SpecPromptInput,
     compile_draft_prompt,
     compile_guide_v1_draft_prompt,
+    compile_guide_v1_module_repair_prompt,
     compile_guide_v1_outline_prompt,
     compile_guide_v1_qa_prompt,
     compile_guide_v1_repair_prompt,
@@ -92,6 +93,7 @@ from education_pipeline.prompts import (
     compile_spec_prompt,
     compile_topic_spec_prompt,
 )
+from education_pipeline.guides.canonical import SpliceError, splice_module
 from education_pipeline.guides.blueprints import (
     Blueprint,
     get_blueprint,
@@ -1019,6 +1021,11 @@ class RunStore:
         text = paths.response_path.read_text(encoding="utf-8")
         if self._is_guide_v1(paths.topic_id) and paths.stage in {"spec", "outline"}:
             self._validate_guide_approval(paths.topic_id, paths.stage, text)
+        scope: str | None = None
+        if self._is_guide_v1(paths.topic_id) and paths.stage == "repair":
+            scope = self.repair_scope(paths.topic_id)
+            if scope is not None:
+                text = self._spliced_scoped_repair(paths.topic_id, scope, text)
         _write_text(paths.approved_path, text, overwrite=overwrite)
         files: dict[str, Path] = {
             "prompt_file": paths.prompt_path,
@@ -1033,8 +1040,61 @@ class RunStore:
             stage=paths.stage,
             action="response_approved",
             files=files,
+            extra={"repair_module": scope} if scope is not None else None,
         )
         return paths.approved_path
+
+    def repair_scope(self, topic_id: str) -> str | None:
+        """The target module id of the pending scoped repair, if any.
+
+        Derived from the latest repair ``prompt_written`` event: a scoped
+        prompt records its module; a later whole-guide repair prompt clears
+        the scope.
+        """
+
+        event = self._latest_stage_event(topic_id, "repair", "prompt_written")
+        if event is None:
+            return None
+        scope = event.get("repair_module")
+        return scope if isinstance(scope, str) else None
+
+    def _spliced_scoped_repair(
+        self, topic_id: str, module_id: str, response_text: str
+    ) -> str:
+        """Merge a scoped repair response into the approved draft, fail-closed.
+
+        The scoped response is keyed to the exact base draft the prompt was
+        built from: a drifted draft raises :class:`StaleContentError`, and any
+        splice violation (module rename, element-id collision, out-of-contract
+        reference) refuses the approval — never a silent fix.
+        """
+
+        prompt_event = self._latest_stage_event(topic_id, "repair", "prompt_written")
+        draft_path = self.stage_paths(topic_id, "draft").approved_path
+        if not draft_path.is_file():
+            raise ConfigError(
+                f"approved draft not found for {topic_id!r}; a scoped repair needs its base draft"
+            )
+        draft_bytes = draft_path.read_bytes()
+        recorded = (
+            prompt_event.get("source_draft_file_sha256")
+            if prompt_event is not None
+            else None
+        )
+        if recorded != hashlib.sha256(draft_bytes).hexdigest():
+            raise StaleContentError(
+                f"the approved draft for {topic_id!r} changed since the scoped repair "
+                "prompt was written; rebuild the scoped repair prompt and re-run it"
+            )
+        try:
+            merged = splice_module(
+                draft_bytes.decode("utf-8"), module_id, response_text
+            )
+        except SpliceError as exc:
+            raise ConfigError(
+                f"cannot approve module-scoped repair for guide run {topic_id!r}: {exc}"
+            ) from exc
+        return merged.decode("utf-8")
 
     def ingest_response(
         self, topic_id: str, stage: str, text: str, *, force: bool = False
@@ -2875,12 +2935,91 @@ class RunStore:
         )
         return self._write_prompt(artifact, overwrite=overwrite)
 
+    def write_module_repair_prompt(
+        self,
+        topic_id: str,
+        module_id: str,
+        *,
+        overwrite: bool = False,
+    ) -> PromptFile:
+        """Compile and write the module-scoped variant of the repair prompt.
+
+        Available whenever repair is the run's active stage (QA approved, or
+        re-entry after final validation found problems). The scope and the
+        exact base-draft hash are recorded on the ``prompt_written`` event so
+        approval can key the scoped response to the draft it patches. An
+        unknown module id is a usage error.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        if not self._is_guide_v1(safe_id):
+            raise ConfigError(
+                f"module-scoped repair applies only to interactive-guide runs; "
+                f"{safe_id!r} is a legacy Markdown run"
+            )
+        if not self.stage_paths(safe_id, "qa").approved_path.is_file():
+            raise ConfigError(
+                f"module-scoped repair for {safe_id!r} is available only when repair "
+                "is the run's active stage; approve the qa stage first"
+            )
+        topic = TopicStore(self.root).load_topic(safe_id)
+        approved_draft = self.read_approved(safe_id, "draft")
+        approved_qa = self.read_approved(safe_id, "qa")
+        profile = self._load_attached_profile(safe_id)
+        state = self.report_state(safe_id, "draft")
+        if state != "current":
+            if state == "missing":
+                raise ConfigError(
+                    f"draft validation is required before repair for {safe_id!r}; "
+                    "run draft validation first"
+                )
+            raise ConfigError(
+                f"draft validation is stale for {safe_id!r}; "
+                "the draft changed and must be revalidated before repair"
+            )
+        contract_path = self._guide_contract_path(safe_id)
+        if not contract_path.is_file():
+            raise ConfigError(
+                f"guide contract not found for {safe_id!r}: {contract_path}"
+            )
+        parsed = parse_guide(approved_draft)
+        if not parsed.ok:
+            raise ConfigError(
+                f"approved draft for {safe_id!r} is too malformed for repair; "
+                "correct and reapprove the draft response"
+            )
+        draft_guide_json = canonical_guide_bytes(normalize_guide(parsed)).decode("utf-8")
+        draft_findings_json = self.draft_report_path(safe_id).read_text(encoding="utf-8")
+        artifact = compile_guide_v1_module_repair_prompt(
+            topic,
+            module_id=module_id,
+            draft_guide_json=draft_guide_json,
+            qa_findings_markdown=approved_qa,
+            draft_findings_json=draft_findings_json,
+            guide_contract=contract_path.read_bytes(),
+            profile=profile,
+            blueprint=self.run_blueprint(safe_id),
+        )
+        extra_files = {
+            "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
+            "source_qa_file": self.stage_paths(safe_id, "qa").approved_path,
+            "draft_report_file": self.draft_report_path(safe_id),
+            "contract_file": contract_path,
+        }
+        return self._write_prompt(
+            artifact,
+            overwrite=overwrite,
+            extra_event_files=extra_files,
+            extra_event={"repair_module": module_id},
+        )
+
     def _write_prompt(
         self,
         artifact: PromptArtifact,
         *,
         overwrite: bool,
         extra_event_files: dict[str, Path] | None = None,
+        extra_event: dict[str, object] | None = None,
     ) -> PromptFile:
         paths = self.stage_paths(artifact.topic_id, artifact.stage)
         self.create_run(artifact.topic_id)
@@ -2900,6 +3039,7 @@ class RunStore:
             stage=paths.stage,
             action="prompt_written",
             files=files,
+            extra=extra_event,
         )
         return PromptFile(
             stage=paths.stage,

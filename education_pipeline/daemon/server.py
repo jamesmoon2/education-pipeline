@@ -362,6 +362,11 @@ def _make_handler(context: DaemonContext):
                     200,
                     read_api.personalization_payload(context.runs, m.group(1)),
                 )
+            m = re.match(r"^/v1/runs/([^/?]+)/repair/modules$", self.path)
+            if m:
+                return self._send(
+                    200, read_api.repair_modules_payload(context.runs, m.group(1))
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)$", self.path)
             if m:
                 return self._send(
@@ -573,25 +578,27 @@ def _make_handler(context: DaemonContext):
             m = re.match(r"^/v1/runs/([^/?]+)/advance$", self.path)
             if m:
                 body = self._read_body()
-                unknown = sorted(set(body) - {"blueprint"})
+                unknown = sorted(set(body) - {"blueprint", "repair_module"})
                 if unknown:
                     raise ConfigError(
                         "unknown advance field(s): " + ", ".join(unknown)
                     )
-                blueprint = body.get("blueprint")
-                if blueprint is not None and (
-                    not isinstance(blueprint, str) or not blueprint.strip()
-                ):
-                    raise ConfigError(
-                        "body field 'blueprint' must be a non-empty string when set"
-                    )
+                for field in ("blueprint", "repair_module"):
+                    value = body.get(field)
+                    if value is not None and (
+                        not isinstance(value, str) or not value.strip()
+                    ):
+                        raise ConfigError(
+                            f"body field {field!r} must be a non-empty string when set"
+                        )
                 return self._send(
                     200,
                     write_api.advance_run(
                         context.runs,
                         context.store,
                         m.group(1),
-                        blueprint=blueprint,
+                        blueprint=body.get("blueprint"),
+                        repair_module=body.get("repair_module"),
                     ),
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/audit$", self.path)

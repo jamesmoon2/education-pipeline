@@ -81,6 +81,118 @@ def test_schema_1_1_canonical_round_trip_preserves_authored_version_and_annotati
     assert canonical == canonical_guide_bytes(normalize_guide(parse_guide(canonical)))
 
 
+def _fixture_data() -> dict:
+    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def _base_json() -> str:
+    return FIXTURE.read_text(encoding="utf-8")
+
+
+def _module_json(module: dict) -> str:
+    return json.dumps(module, ensure_ascii=False)
+
+
+def test_splice_module_replaces_only_the_target_module() -> None:
+    from education_pipeline.guides.canonical import splice_module
+
+    data = _fixture_data()
+    revised = json.loads(json.dumps(data["modules"][0]))
+    revised["title"] = "Loop Basics, Regenerated"
+    revised["sections"][0]["blocks"][0]["markdown"] = "A fully regenerated opener."
+
+    merged_bytes = splice_module(_base_json(), "loop-basics", _module_json(revised))
+    merged = json.loads(merged_bytes)
+
+    # Canonical output that round-trips.
+    merged_guide = normalize_guide(parse_guide(merged_bytes))
+    assert merged_bytes == canonical_guide_bytes(merged_guide)
+
+    # The target changed; module order is preserved.
+    assert [module["id"] for module in merged["modules"]] == [
+        module["id"] for module in data["modules"]
+    ]
+    assert merged["modules"][0]["title"] == "Loop Basics, Regenerated"
+
+    # Modules outside the target are byte-identical (canonical serialization).
+    base_canonical = json.loads(canonical_guide_bytes(guide()))
+    assert json.dumps(merged["modules"][1], sort_keys=True) == json.dumps(
+        base_canonical["modules"][1], sort_keys=True
+    )
+    # Course metadata, outcomes, glossary, and sources are untouched.
+    for key in ("course", "outcomes", "glossary", "sources", "schema_version"):
+        assert json.dumps(merged[key], sort_keys=True) == json.dumps(
+            base_canonical[key], sort_keys=True
+        )
+
+
+def test_splice_module_rejects_module_id_rename() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_module
+
+    revised = _fixture_data()["modules"][0]
+    revised["id"] = "loop-basics-renamed"
+
+    with pytest.raises(SpliceError, match="rename"):
+        splice_module(_base_json(), "loop-basics", _module_json(revised))
+
+
+def test_splice_module_rejects_unknown_target_module() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_module
+
+    revised = _fixture_data()["modules"][0]
+    revised["id"] = "no-such-module"
+
+    with pytest.raises(SpliceError, match="no-such-module"):
+        splice_module(_base_json(), "no-such-module", _module_json(revised))
+
+
+def test_splice_module_rejects_element_id_collision_with_other_modules() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_module
+
+    data = _fixture_data()
+    revised = data["modules"][0]
+    # Steal a block id that lives in the other module.
+    other_block_id = data["modules"][1]["sections"][0]["blocks"][0]["id"]
+    revised["sections"][0]["blocks"][0]["id"] = other_block_id
+
+    with pytest.raises(SpliceError, match="duplicate"):
+        splice_module(_base_json(), "loop-basics", _module_json(revised))
+
+
+def test_splice_module_rejects_out_of_contract_outcome_reference() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_module
+
+    revised = _fixture_data()["modules"][0]
+    revised["outcome_ids"] = ["identify-loop", "not-a-contract-outcome"]
+
+    with pytest.raises(SpliceError, match="not-a-contract-outcome"):
+        splice_module(_base_json(), "loop-basics", _module_json(revised))
+
+
+def test_splice_module_rejects_non_module_payloads() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_module
+
+    with pytest.raises(SpliceError, match="not valid JSON"):
+        splice_module(_base_json(), "loop-basics", "not json {")
+
+    with pytest.raises(SpliceError, match="single JSON object"):
+        splice_module(_base_json(), "loop-basics", json.dumps([1, 2]))
+
+    # A whole guide is not a module.
+    with pytest.raises(SpliceError, match="rename|module"):
+        splice_module(_base_json(), "loop-basics", _base_json())
+
+
 def test_empty_personalization_annotations_are_omitted_for_both_versions() -> None:
     for version in ("1.0", "1.1"):
         data = json.loads(FIXTURE.read_text(encoding="utf-8"))

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from education_pipeline.config import (
@@ -381,6 +382,64 @@ def personalization_payload(runs: RunStore, topic_id: str) -> dict:
     }
 
 
+def repair_modules_payload(runs: RunStore, topic_id: str) -> dict:
+    """List the approved draft's modules with open finding counts and scope.
+
+    Candidates for module-scoped regeneration: every module of the approved
+    draft, with the number of current-report findings located inside it
+    (draft and final phases, current reports only), plus the pending scoped
+    repair's target when one is set.
+    """
+
+    from education_pipeline.guides import normalize_guide, parse_guide
+
+    require_run(runs, topic_id)
+    if runs.content_contract(topic_id).kind != "interactive_guide":
+        raise ConfigError("module-scoped repair applies only to interactive-guide runs")
+    draft_path = runs.stage_paths(topic_id, "draft").approved_path
+    if not draft_path.is_file():
+        raise ConfigError(
+            f"no approved draft for {topic_id!r}; modules are not known yet"
+        )
+    parsed = parse_guide(draft_path.read_text(encoding="utf-8"))
+    if not parsed.ok:
+        raise ConfigError(
+            f"approved draft for {topic_id!r} is too malformed to list modules"
+        )
+    guide = normalize_guide(parsed)
+    counts = {module.id: 0 for module in guide.modules}
+    for phase in ("draft", "final"):
+        if runs.report_state(topic_id, phase) != "current":
+            continue
+        report_path = (
+            runs.draft_report_path(topic_id)
+            if phase == "draft"
+            else runs.final_report_path(topic_id)
+        )
+        try:
+            findings = json.loads(report_path.read_text(encoding="utf-8")).get(
+                "findings", []
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        for finding in findings:
+            path = finding.get("path", "") if isinstance(finding, dict) else ""
+            match = re.match(r"^/modules/(\d+)(?:/|$)", path)
+            if match:
+                index = int(match.group(1))
+                if index < len(guide.modules):
+                    counts[guide.modules[index].id] += 1
+    scope = runs.repair_scope(topic_id)
+    return {
+        "topic_id": topic_id,
+        "modules": [
+            {"id": module.id, "title": module.title, "open_findings": counts[module.id]}
+            for module in guide.modules
+        ],
+        "repair_scope": {"module_id": scope} if scope is not None else None,
+    }
+
+
 def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
     require_run(runs, topic_id)
     paths = runs.stage_paths(topic_id, stage)  # ConfigError on bad stage -> 400
@@ -393,7 +452,7 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
         if paths.response_path.is_file()
         else None
     )
-    return {
+    payload = {
         "topic_id": paths.topic_id,
         "stage": paths.stage,
         "prompt": _read(paths.prompt_path),
@@ -402,6 +461,15 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
         "response_sha256": response_sha256,
         "content_type": paths.content_type,
     }
+    if (
+        paths.stage == "repair"
+        and runs.content_contract(topic_id).kind == "interactive_guide"
+    ):
+        scope = runs.repair_scope(topic_id)
+        payload["repair_scope"] = (
+            {"module_id": scope} if scope is not None else None
+        )
+    return payload
 
 
 def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:

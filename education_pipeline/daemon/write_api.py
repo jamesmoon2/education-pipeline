@@ -100,6 +100,7 @@ def advance_run(
     topic_id: str,
     *,
     blueprint: str | None = None,
+    repair_module: str | None = None,
 ) -> dict:
     _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
@@ -108,6 +109,17 @@ def advance_run(
         # step) is recorded before the advance step runs, so the spec prompt
         # it writes already carries the blueprint contract.
         runs.create_run(topic_id, blueprint=blueprint)
+    if repair_module is not None:
+        # A scoped repair prepares (or rebuilds) the repair prompt for one
+        # module instead of performing the generic next step.
+        prompt_exists = runs.stage_paths(topic_id, "repair").prompt_path.exists()
+        runs.write_module_repair_prompt(
+            topic_id, repair_module, overwrite=prompt_exists
+        )
+        return {
+            "performed": "write_prompt",
+            "status": read_api.run_status_payload(runs, topic_id),
+        }
     result = runs.advance(topic_id)
     return {
         "performed": result.performed,

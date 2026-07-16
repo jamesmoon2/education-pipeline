@@ -678,6 +678,124 @@ def test_validate_run_flags_blueprint_contract_mismatch_in_draft(tmp_path: Path)
     assert not gate.gate_open
 
 
+def _revised_module_json(module_index: int = 0, **changes) -> str:
+    """One revised module from the guide fixture, as a JSON fragment."""
+
+    data = json.loads(GUIDE_FIXTURE)
+    module = data["modules"][module_index]
+    module.update(changes)
+    return json.dumps(module, ensure_ascii=False)
+
+
+def test_write_module_repair_prompt_scopes_and_records_the_module(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_qa(runs, "systems-thinking")
+
+    prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+
+    assert prompt.stage == "repair"
+    assert "## Module To Regenerate" in prompt.artifact.text
+    assert runs.repair_scope("systems-thinking") == "loop-basics"
+    event = next(
+        event
+        for event in reversed(runs.read_manifest("systems-thinking")["events"])
+        if event.get("stage") == "repair" and event.get("action") == "prompt_written"
+    )
+    assert event["repair_module"] == "loop-basics"
+    assert isinstance(event.get("source_draft_file_sha256"), str)
+
+
+def test_write_module_repair_prompt_rejects_unknown_module(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_qa(runs, "systems-thinking")
+
+    with pytest.raises(ConfigError, match="no-such-module"):
+        runs.write_module_repair_prompt("systems-thinking", "no-such-module")
+
+
+def test_write_module_repair_prompt_requires_approved_qa(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_to_draft_approved(runs, "systems-thinking")
+    runs.validate_run("systems-thinking", "draft")
+
+    with pytest.raises(ConfigError, match="repair"):
+        runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+
+
+def test_scoped_repair_approval_splices_and_preserves_other_modules(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_qa(runs, "systems-thinking")
+    prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+    prompt.response_path.write_text(
+        _revised_module_json(0, title="Loop Basics, Regenerated"), encoding="utf-8"
+    )
+
+    approved_path = runs.approve_stage("systems-thinking", "repair")
+
+    merged = json.loads(approved_path.read_text(encoding="utf-8"))
+    assert merged["modules"][0]["title"] == "Loop Basics, Regenerated"
+    base = json.loads(
+        canonical_guide_bytes(normalize_guide(parse_guide(GUIDE_FIXTURE)))
+    )
+    assert json.dumps(merged["modules"][1], sort_keys=True) == json.dumps(
+        base["modules"][1], sort_keys=True
+    )
+    # The approval event records the scope.
+    approval = next(
+        event
+        for event in reversed(runs.read_manifest("systems-thinking")["events"])
+        if event.get("stage") == "repair" and event.get("action") == "response_approved"
+    )
+    assert approval["repair_module"] == "loop-basics"
+
+    # The merged whole guide flows through the ordinary final gates.
+    runs.validate_run("systems-thinking", "final")
+    assert runs.report_state("systems-thinking", "final") == "current"
+
+
+def test_scoped_repair_approval_refuses_splice_violations(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_qa(runs, "systems-thinking")
+    prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+    prompt.response_path.write_text(
+        _revised_module_json(0, id="loop-basics-renamed"), encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigError, match="rename"):
+        runs.approve_stage("systems-thinking", "repair")
+    assert not runs.stage_paths("systems-thinking", "repair").approved_path.exists()
+
+
+def test_scoped_repair_approval_refuses_a_drifted_draft(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_qa(runs, "systems-thinking")
+    prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+    prompt.response_path.write_text(_revised_module_json(0), encoding="utf-8")
+
+    # The approved draft changes underneath the pending scoped repair.
+    draft_path = runs.stage_paths("systems-thinking", "draft").approved_path
+    data = json.loads(draft_path.read_text(encoding="utf-8"))
+    data["course"]["description"] = "Edited after the scoped prompt was written."
+    draft_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(StaleContentError, match="scoped repair"):
+        runs.approve_stage("systems-thinking", "repair")
+
+
+def test_whole_guide_repair_approval_is_unchanged_after_a_scoped_retry(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_qa(runs, "systems-thinking")
+    # A scoped prompt is written first, then replaced by a whole-guide prompt.
+    runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+    prompt = runs.write_repair_prompt("systems-thinking", overwrite=True)
+    assert runs.repair_scope("systems-thinking") is None
+    prompt.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+
+    approved_path = runs.approve_stage("systems-thinking", "repair")
+
+    assert approved_path.read_text(encoding="utf-8") == GUIDE_FIXTURE
+
+
 def test_run_store_creates_run_directories(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
 
