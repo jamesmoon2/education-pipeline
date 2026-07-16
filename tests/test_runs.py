@@ -626,6 +626,58 @@ def test_spec_approval_accepts_matching_blueprint_echo(tmp_path: Path) -> None:
     assert runs.stage_status("systems-thinking", "spec").approved
 
 
+def test_validate_run_includes_time_budget_calibration_findings(tmp_path: Path) -> None:
+    topic_toml = TOPIC_TOML + "time_budget_minutes = 10\n"
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking", content_contract=ContentContract.interactive_guide_v1())
+    _drive_guide_to_draft_approved(runs, "systems-thinking")
+
+    gate = runs.validate_and_gate("systems-thinking", "draft")
+
+    report = json.loads(
+        runs.draft_report_path("systems-thinking").read_text(encoding="utf-8")
+    )
+    rule_ids = {finding["rule_id"] for finding in report["findings"]}
+    assert "time.budget_exceeded" in rule_ids
+    exceeded = next(
+        finding
+        for finding in report["findings"]
+        if finding["rule_id"] == "time.budget_exceeded"
+    )
+    assert exceeded["stage"] == "outline"
+    assert not exceeded["blocking"]
+    # Calibration warnings never close the gate on their own.
+    assert gate.gate_open
+
+
+def test_validate_run_flags_blueprint_contract_mismatch_in_draft(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking", blueprint="procedural-skill")
+    spec_contract = dict(VALID_SPEC_CONTRACT, blueprint="procedural-skill")
+    prompt = runs.write_topic_spec_prompt("systems-thinking")
+    prompt.response_path.write_text(_guide_spec_response(spec_contract), encoding="utf-8")
+    runs.approve_stage("systems-thinking", "spec")
+    _drive_guide_outline_to_approved(runs, "systems-thinking")
+    draft = runs.write_draft_prompt("systems-thinking")
+    draft.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    runs.approve_stage("systems-thinking", "draft")
+
+    gate = runs.validate_and_gate("systems-thinking", "draft")
+
+    report = json.loads(
+        runs.draft_report_path("systems-thinking").read_text(encoding="utf-8")
+    )
+    mismatch = next(
+        finding
+        for finding in report["findings"]
+        if finding["rule_id"] == "blueprint.contract_mismatch"
+    )
+    assert mismatch["blocking"] and mismatch["waivable"]
+    assert not gate.gate_open
+
+
 def test_run_store_creates_run_directories(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
 

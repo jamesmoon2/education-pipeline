@@ -52,6 +52,7 @@ from education_pipeline.guides import (
 from education_pipeline.guide_runtime import load_runtime_assets
 from education_pipeline.guide_runtime import RuntimeAssets
 from education_pipeline.guides.validation import (
+    CalibrationContext,
     PersonalizationValidationContext,
     validation_guide_sha256,
 )
@@ -1601,6 +1602,7 @@ class RunStore:
                         goal.goal_id for goal in authoritative_goals(profile)
                     ) if profile else (),
                 ),
+                self._calibration_context(safe_id, profile),
             )
             waiver_set = self._load_waiver_set(safe_id)
             report, _, guide = self._validated_final(
@@ -1907,6 +1909,7 @@ class RunStore:
                     goal.goal_id for goal in authoritative_goals(profile)
                 ) if profile else (),
             ),
+            self._calibration_context(topic_id, profile),
         )
         waiver_set = self._load_waiver_set(topic_id)
         report, document, guide = self._validated_final(
@@ -2280,7 +2283,10 @@ class RunStore:
         topic_id: str,
         source_text: str,
         *,
-        validation_inputs: tuple[tuple[str, ...], PersonalizationValidationContext] | None = None,
+        validation_inputs: tuple[
+            tuple[str, ...], PersonalizationValidationContext, CalibrationContext
+        ]
+        | None = None,
         assets: RuntimeAssets | None = None,
     ) -> tuple[ValidationReport, str | None, Guide | None]:
         """Validate final-phase content with computed static checks.
@@ -2293,7 +2299,7 @@ class RunStore:
         reuse the single parse instead of re-parsing the source.
         """
 
-        private_values, personalization_context = (
+        private_values, personalization_context, calibration_context = (
             validation_inputs
             if validation_inputs is not None
             else self._profile_validation_inputs(topic_id)
@@ -2307,6 +2313,7 @@ class RunStore:
                 phase="final",
                 private_values=private_values,
                 personalization_context=personalization_context,
+                calibration_context=calibration_context,
             ), None, None
         parsed = parse_guide(source_text)
         if not parsed.ok:
@@ -2315,6 +2322,7 @@ class RunStore:
                 phase="final",
                 private_values=private_values,
                 personalization_context=personalization_context,
+                calibration_context=calibration_context,
             ), None, None
         guide = normalize_guide(parsed)
         result = (
@@ -2332,6 +2340,7 @@ class RunStore:
             context=result.context,
             private_values=private_values,
             personalization_context=personalization_context,
+            calibration_context=calibration_context,
         )
         return report, result.document, guide
 
@@ -2349,8 +2358,8 @@ class RunStore:
 
     def _profile_validation_inputs(
         self, topic_id: str
-    ) -> tuple[tuple[str, ...], PersonalizationValidationContext]:
-        """Load one snapshot for both profile presence and protected values."""
+    ) -> tuple[tuple[str, ...], PersonalizationValidationContext, CalibrationContext]:
+        """Load one snapshot for profile presence, protected values, and calibration."""
 
         snapshot = self._read_attached_profile_snapshot(topic_id)
         profile = snapshot[0] if snapshot is not None else None
@@ -2361,6 +2370,33 @@ class RunStore:
                 authoritative_goal_ids=tuple(
                     goal.goal_id for goal in authoritative_goals(profile)
                 ) if profile is not None else (),
+            ),
+            self._calibration_context(topic_id, profile),
+        )
+
+    def _calibration_context(self, topic_id: str, profile) -> CalibrationContext:
+        """Build the run's calibration inputs from topic, manifest, and profile.
+
+        A missing or malformed stored topic degrades to no topic-derived
+        checks. Only field presence and declared configuration cross into the
+        context; finding messages never carry profile values.
+        """
+
+        config = self.blueprint_config(topic_id)
+        time_budget = None
+        try:
+            time_budget = TopicStore(self.root).load_topic(topic_id).time_budget_minutes
+        except ConfigError:
+            pass
+        return CalibrationContext(
+            configured_blueprint=config["id"] if config is not None else None,
+            time_budget_minutes=time_budget,
+            attention_constraints_present=bool(
+                profile is not None
+                and profile.learning_preferences.attention_constraints
+            ),
+            learner_skill_level=(
+                profile.current_skill_level if profile is not None else None
             ),
         )
 
@@ -2402,12 +2438,17 @@ class RunStore:
                 goal.goal_id for goal in authoritative_goals(profile)
             ) if profile is not None else (),
         )
+        calibration_context = self._calibration_context(safe_id, profile)
         guide: Guide | None = None
         if phase == "final":
             report, _, guide = self._validated_final(
                 safe_id,
                 source_text,
-                validation_inputs=(private_values, personalization_context),
+                validation_inputs=(
+                    private_values,
+                    personalization_context,
+                    calibration_context,
+                ),
             )
         else:
             report = validate_guide(
@@ -2415,6 +2456,7 @@ class RunStore:
                 phase=phase,
                 private_values=private_values,
                 personalization_context=personalization_context,
+                calibration_context=calibration_context,
             )
             if len(source_text.encode("utf-8")) <= MAX_GUIDE_SOURCE_BYTES:
                 parsed = parse_guide(source_text)
