@@ -245,21 +245,21 @@ pure code with pinned tables; topics carry optional `blueprint` and
 `time_budget_minutes`; `RunStore` resolves and immutably records the effective
 blueprint on new guide runs.
 
-- [ ] RED: `tests/test_guide_blueprints.py` — registry integrity (unique ids
+- [x] RED: `tests/test_guide_blueprints.py` — registry integrity (unique ids
   matching `^[a-z][a-z0-9-]{0,63}$`, six PRD ids present,
   `required_interactions` non-empty subsets of `REQUIRED_INTERACTION_TYPES`,
   valid `default_difficulty`, non-empty prompt-line tuples), `get_blueprint`
   unknown-id `ConfigError`, `list_blueprints` stable order, recommendation
   keyword-table pinning, per-signal recommendation cases, fallback rationale.
-- [ ] RED: `tests/test_topics.py` — optional field parsing, bounds (5–10 000),
+- [x] RED: `tests/test_topics.py` — optional field parsing, bounds (5–10 000),
   type rejection, round-trip via `emit_topic_toml`, absent-field defaults.
-- [ ] RED: `tests/test_runs.py` — resolution precedence (`user` > `topic` >
+- [x] RED: `tests/test_runs.py` — resolution precedence (`user` > `topic` >
   `recommended`), manifest record shape/immutability, no record without topic
   or explicit choice, legacy-markdown runs never record, conflicting explicit
   re-record raises, `run_blueprint` round-trip.
-- [ ] GREEN: implement `blueprints.py`, topic fields, `create_run` blueprint
+- [x] GREEN: implement `blueprints.py`, topic fields, `create_run` blueprint
   resolution + `blueprint_config`/`run_blueprint`.
-- [ ] Focused suites green; commit
+- [x] Focused suites green; commit
   `feat(blueprints): add registry, recommender, and run configuration`.
 
 # Wave 1 — Prompt contracts and contract echo/superset checks
@@ -384,7 +384,7 @@ PRD entry moved to Delivered, post-milestone audit ledger.
 | Wave | Status | Commits | pytest | vitest | e2e | build | Notes for the next wave |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Baseline | **recorded** | branch base `28bf6aa` + spec cherry-pick `6e291f5` | 973 (prior gate) | 210 (prior gate) | 53 (prior gate) | clean (prior gate) | Baseline counts are the personalization Wave 4 closeout gate recorded on the same code HEAD (`docs/superpowers/plans/2026-07-13-personalization.md`); the cherry-pick is docs-only. |
-| 0 — Registry + topic fields | pending | | | | | | |
+| 0 — Registry + topic fields | **complete** | `2808a84` | 1009 | — | — | — | Registry/recommender/topic fields/manifest record frozen as planned. Recommender matches whole words only ("example" never triggers "exam"); scanned fields are title/brief/goals/key_questions/constraints. `create_run` records a blueprint only for interactive-guide manifests and degrades silently on a missing/malformed stored topic; unregistered explicit or topic-declared ids raise at run creation. Existing guide-run test helpers now produce runs recorded as recommended `conceptual-foundations`, matching their spec-contract echoes. |
 | 1 — Prompts + echo | pending | | | | | | |
 | 2 — Calibration | pending | | | | | | |
 | 3 — Scoped repair | pending | | | | | | |
