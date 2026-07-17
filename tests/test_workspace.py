@@ -4,6 +4,7 @@ import threading
 
 import pytest
 
+from conftest import symlink_or_skip
 from education_pipeline import ConfigError, ProfileStore, TopicStore
 from education_pipeline.privacy import canonical_profile_toml_bytes
 from education_pipeline.workspace import ProfileRecord, ProfileWriteConflict, _profile_lock
@@ -293,7 +294,7 @@ def test_profile_store_alias_paths_share_lock_and_allow_one_stale_writer(
     alias_parent.mkdir()
     dotdot = ProfileStore(alias_parent / ".." / "workspace")
     symlink_root = tmp_path / "workspace-link"
-    symlink_root.symlink_to(workspace, target_is_directory=True)
+    symlink_or_skip(symlink_root, workspace, target_is_directory=True)
     symlinked = ProfileStore(symlink_root)
 
     locks = [
@@ -552,6 +553,10 @@ class TestValidateWorkspace:
 
         from education_pipeline.workspace import validate_workspace
 
+        if os.name == "nt":
+            # chmod cannot make a directory unwritable on Windows (and
+            # os.geteuid does not exist there).
+            pytest.skip("POSIX directory modes")
         if os.geteuid() == 0:
             pytest.skip("permission checks are meaningless as root")
         target = tmp_path / "readonly"
