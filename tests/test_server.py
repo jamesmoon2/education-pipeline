@@ -133,7 +133,25 @@ def config_server(tmp_path, monkeypatch):
                     ],
                 },
                 {"id": "nope"},
-            ]
+            ],
+            "presets": [
+                {
+                    "id": "test-preset",
+                    "label": "Test preset",
+                    "description": "Preset used by payload tests.",
+                    "stages": {
+                        "fake": {
+                            "profile": {"model": "m"},
+                            "spec": {"model": "strong-m", "effort": "high"},
+                            "outline": {"model": "strong-m"},
+                            "draft": {"model": "strong-m"},
+                            "qa": {"model": "m"},
+                            "repair": {"model": "strong-m"},
+                            "audit": {"model": "strong-m"},
+                        }
+                    },
+                }
+            ],
         }
     )
     plan = parse_model_plan(
@@ -2820,6 +2838,18 @@ def test_config_catalog_lists_providers_and_models(config_server):
     fake_models = {m["id"]: m for m in by_id["fake"]["models"]}
     assert fake_models["m"]["quality"] == "fast"
     assert fake_models["strong-m"]["quality"] == "strong"
+
+
+def test_config_catalog_includes_presets(config_server):
+    status, payload = _req(config_server, "GET", "/v1/config/catalog")
+    assert status == 200
+    assert isinstance(payload["presets"], list)
+    preset = {p["id"]: p for p in payload["presets"]}["test-preset"]
+    assert preset["label"] == "Test preset"
+    stage_map = preset["stages"]["fake"]
+    assert set(stage_map) == {"profile", "spec", "outline", "draft", "qa", "repair", "audit"}
+    assert stage_map["spec"] == {"model": "strong-m", "effort": "high"}
+    assert stage_map["qa"] == {"model": "m", "effort": None}
 
 
 def test_config_plan_includes_sha_and_warnings(config_server):
