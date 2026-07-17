@@ -141,6 +141,26 @@ describe("ProfileForm", () => {
     }
   });
 
+  it("free-text fields are textareas and normalize newlines to spaces", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    function Harness() {
+      const [value, setValue] = useState<LearnerProfile>({ ...profile, math_comfort: undefined });
+      return <ProfileForm value={value} onChange={(next) => { onChange(next); setValue(next); }} sensitivity={{}} />;
+    }
+    render(<Harness />);
+    const mathComfort = screen.getByLabelText("Math comfort");
+    expect(mathComfort.tagName).toBe("TEXTAREA");
+    await user.type(mathComfort, "algebra fine{enter}no proofs");
+    const last = onChange.mock.lastCall![0];
+    expect(last.math_comfort).toBe("algebra fine no proofs");
+  });
+
+  it("profile id stays a single-line input", () => {
+    render(<ProfileForm value={profile} onChange={vi.fn()} sensitivity={{}} />);
+    expect(screen.getByLabelText("Profile id").tagName).toBe("INPUT");
+  });
+
   it("gives repeated metadata actions contextual accessible names", () => {
     render(<ProfileForm value={profile} onChange={vi.fn()} sensitivity={{}} />);
     expect(screen.getByRole("button", { name: "Remove metadata cohort.labels.1" })).toBeInTheDocument();
