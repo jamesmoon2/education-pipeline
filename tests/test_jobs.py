@@ -104,15 +104,49 @@ def _spawn_provider_tree(tmp_path):
     raise AssertionError("provider grandchild never started")
 
 
-def _wait_until_dead(pid, timeout=10.0):
+def _dead_or_zombie(pid) -> bool:
+    """True once ``pid`` no longer exists or is a terminated, unreaped zombie.
+
+    A grandchild orphaned by killing its parent reparents to PID 1; on
+    runners whose PID 1 does not reap promptly it lingers as a zombie, and
+    ``os.kill(pid, 0)`` (lifecycle.is_pid_alive) still "sees" it. For these
+    tests terminated-but-unreaped counts as dead.
+    """
+
     from education_pipeline.daemon import lifecycle
 
+    if not lifecycle.is_pid_alive(pid):
+        return True
+    if sys.platform == "win32":
+        return False  # no zombie state on Windows
+    state = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return state == "" or state.startswith("Z")
+
+
+def _wait_until_dead(pid, timeout=10.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not lifecycle.is_pid_alive(pid):
+        if _dead_or_zombie(pid):
             return True
         time.sleep(0.1)
-    return not lifecycle.is_pid_alive(pid)
+    return _dead_or_zombie(pid)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no zombie state on Windows")
+def test_wait_until_dead_treats_unreaped_zombie_as_dead():
+    proc = subprocess.Popen([sys.executable, "-c", "raise SystemExit(0)"])
+    # Deliberately no wait()/poll() before the assertion: once the child
+    # exits it sits unreaped as a zombie, exactly like an orphaned grandchild
+    # under a non-reaping PID 1.
+    try:
+        assert _wait_until_dead(proc.pid, timeout=5)
+    finally:
+        proc.wait()
 
 
 def test_terminate_process_kills_the_whole_child_tree(tmp_path):
