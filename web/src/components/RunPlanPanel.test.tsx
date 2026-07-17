@@ -90,13 +90,13 @@ describe("RunPlanPanel", () => {
     });
   });
 
-  it("fires putRunPlan with a null override when Use recommended is clicked", async () => {
+  it("fires putRunPlan with a null override when Reset to default is clicked", async () => {
     setup();
     await screen.findByLabelText("Provider for draft");
     vi.mocked(putRunPlan).mockResolvedValue(makePlan());
 
     const draftRow = screen.getByLabelText("Provider for draft").closest(".plan-stage-row")!;
-    await userEvent.click(within(draftRow as HTMLElement).getByRole("button", { name: "Use recommended" }));
+    await userEvent.click(within(draftRow as HTMLElement).getByRole("button", { name: "Reset to default" }));
 
     expect(putRunPlan).toHaveBeenCalledWith("t", { draft: null });
   });

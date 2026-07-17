@@ -95,6 +95,7 @@ export default function RunPlanPanel({
             stage={stage}
             catalog={catalog}
             providers={providers}
+            resetValue={null}
             onChange={(s, o) => void handleRowChange(s, o)}
           />
         </div>

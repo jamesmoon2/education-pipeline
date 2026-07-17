@@ -195,7 +195,7 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("shows the recommended default (top-level provider, no model/effort) after a row's Use recommended", async () => {
+  it("applies the balanced default for the row's provider after Reset to default", async () => {
     const plan = makePlan();
     const outline = plan.stages.find((s) => s.stage === "outline")!;
     outline.provider = "codex";
@@ -203,17 +203,18 @@ describe("SettingsPage", () => {
     setup(plan);
     await screen.findByLabelText("Provider for outline");
 
-    // starts showing the persisted override
+    // starts showing the persisted override (no effort recorded)
     expect(screen.getByLabelText("Provider for outline")).toHaveValue("codex");
     expect(screen.getByLabelText("Model for outline")).toHaveValue("gpt");
+    expect(screen.getByLabelText("Effort for outline")).toHaveValue("default");
 
     const row = screen.getByLabelText("Provider for outline").closest(".plan-stage-row")!;
-    await userEvent.click(within(row as HTMLElement).getByRole("button", { name: "Use recommended" }));
+    await userEvent.click(within(row as HTMLElement).getByRole("button", { name: "Reset to default" }));
 
-    // now shows the recommended default, not the stale loaded value
-    expect(screen.getByLabelText("Provider for outline")).toHaveValue("claude-code");
-    expect(screen.getByLabelText("Model for outline")).toHaveValue("");
-    expect(screen.getByLabelText("Effort for outline")).toHaveValue("default");
+    // now shows the balanced-preset default for codex, not the stale loaded value
+    expect(screen.getByLabelText("Provider for outline")).toHaveValue("codex");
+    expect(screen.getByLabelText("Model for outline")).toHaveValue("gpt");
+    expect(screen.getByLabelText("Effort for outline")).toHaveValue("high");
   });
 
   it("applies a preset to every stage row for the selected provider", async () => {

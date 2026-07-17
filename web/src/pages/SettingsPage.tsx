@@ -140,6 +140,14 @@ export default function SettingsPage() {
     new Set(presets.flatMap((p) => Object.keys(p.stages))),
   );
 
+  const balanced = presets.find((p) => p.id === "balanced") ?? presets[0] ?? null;
+
+  const resetValueFor = (stageName: string, providerId: string): StageOverride | null => {
+    const choice = balanced?.stages[providerId]?.[stageName];
+    if (!choice) return null;
+    return { provider: providerId, model: choice.model, effort: choice.effort ?? undefined };
+  };
+
   const doSave = () =>
     save.run(async () => {
       if (!plan) return;
@@ -246,15 +254,19 @@ export default function SettingsPage() {
             Save
           </button>
         </div>
-        {plan.stages.map((stage) => (
-          <PlanStageRow
-            key={stage.stage}
-            stage={displayStage(stage, overrides[stage.stage], plan.provider)}
-            catalog={catalog}
-            providers={providers}
-            onChange={handleRowChange}
-          />
-        ))}
+        {plan.stages.map((stage) => {
+          const display = displayStage(stage, overrides[stage.stage], plan.provider);
+          return (
+            <PlanStageRow
+              key={stage.stage}
+              stage={display}
+              catalog={catalog}
+              providers={providers}
+              resetValue={resetValueFor(stage.stage, display.provider ?? plan.provider)}
+              onChange={handleRowChange}
+            />
+          );
+        })}
         {save.feedback && (
           <p className={save.isError ? "error" : "success"}>{save.feedback}</p>
         )}
