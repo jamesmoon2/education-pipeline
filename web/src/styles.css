@@ -739,6 +739,11 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.875rem; }
   border-bottom: 1px solid var(--ep-color-border);
 }
 .plan-stage-row label { font-size: 0.875rem; }
+/* Uniform column: heading line (label + info tip) over the control, so every
+ * heading and every select lines up across the row. */
+.plan-stage-field { display: flex; flex-direction: column; }
+.plan-stage-field-label { display: flex; align-items: center; min-height: 1.5rem; }
+.plan-stage-field select { display: block; margin-top: var(--ep-space-1); }
 .plan-stage-name { min-width: 5rem; font-family: var(--ep-font-technical); font-size: 0.875rem; }
 .plan-stage-local, .plan-stage-warning { color: var(--ep-color-text-muted); font-size: 0.875rem; }
 .plan-stage-override-error { color: var(--ep-color-danger); font-size: 0.875rem; }

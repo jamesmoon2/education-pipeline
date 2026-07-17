@@ -30,10 +30,11 @@ export default function PlanStageRow({
   resetValue,
   onChange,
 }: PlanStageRowProps) {
-  // Explicit label/select association. The InfoTip trigger inside each label
-  // is itself a labelable <button>; without htmlFor the label would associate
-  // with the button instead of the select.
+  // Explicit label/select association. The InfoTip trigger is a labelable
+  // <button>, so it lives on the heading line beside the label, never inside
+  // it — otherwise the label would associate with the button, not the select.
   const providerSelectId = useId();
+  const modelSelectId = useId();
   const effortSelectId = useId();
 
   if (LOCAL_ONLY_STAGES.has(stage.stage)) {
@@ -78,8 +79,11 @@ export default function PlanStageRow({
           <InfoTip label={`${stage.stage} stage`} text={STAGE_HELP[stage.stage]} />
         )}
       </span>
-      <label htmlFor={providerSelectId}>
-        {`Provider for ${stage.stage}`}
+      <div className="plan-stage-field">
+        <span className="plan-stage-field-label">
+          <label htmlFor={providerSelectId}>{`Provider for ${stage.stage}`}</label>
+          <InfoTip label={`provider for ${stage.stage}`} text={PROVIDER_HELP} />
+        </span>
         <select
           id={providerSelectId}
           value={currentProviderId}
@@ -103,11 +107,16 @@ export default function PlanStageRow({
             <option value={MANUAL_PROVIDER}>manual</option>
           )}
         </select>
-        <InfoTip label={`provider for ${stage.stage}`} text={PROVIDER_HELP} />
-      </label>
-      <label>
-        {`Model for ${stage.stage}`}
-        <select value={stage.model ?? ""} onChange={(e) => handleModelChange(e.target.value)}>
+      </div>
+      <div className="plan-stage-field">
+        <span className="plan-stage-field-label">
+          <label htmlFor={modelSelectId}>{`Model for ${stage.stage}`}</label>
+        </span>
+        <select
+          id={modelSelectId}
+          value={stage.model ?? ""}
+          onChange={(e) => handleModelChange(e.target.value)}
+        >
           <option value="">(provider default)</option>
           {models.map((model) => (
             <option key={model.id} value={model.id}>
@@ -115,9 +124,12 @@ export default function PlanStageRow({
             </option>
           ))}
         </select>
-      </label>
-      <label htmlFor={effortSelectId}>
-        {`Effort for ${stage.stage}`}
+      </div>
+      <div className="plan-stage-field">
+        <span className="plan-stage-field-label">
+          <label htmlFor={effortSelectId}>{`Effort for ${stage.stage}`}</label>
+          <InfoTip label={`effort for ${stage.stage}`} text={EFFORT_HELP} />
+        </span>
         <select
           id={effortSelectId}
           value={stage.effort ?? "default"}
@@ -130,8 +142,7 @@ export default function PlanStageRow({
             </option>
           ))}
         </select>
-        <InfoTip label={`effort for ${stage.stage}`} text={EFFORT_HELP} />
-      </label>
+      </div>
       <button type="button" onClick={resetToDefault}>
         Reset to default
       </button>
