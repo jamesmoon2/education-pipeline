@@ -28,7 +28,7 @@ from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
 from education_pipeline.runs import RunStore, StaleContentError
-from education_pipeline.topics import Topic, emit_topic_toml
+from education_pipeline.topics import TIME_BUDGET_MINUTES_RANGE, Topic, emit_topic_toml
 from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
 
 
@@ -477,6 +477,18 @@ def _optional_body_string_tuple(body: dict, key: str) -> tuple[str, ...]:
     return tuple(strings)
 
 
+def _optional_body_time_budget(body: dict) -> int | None:
+    if "time_budget_minutes" not in body or body["time_budget_minutes"] is None:
+        return None
+    value = body["time_budget_minutes"]
+    low, high = TIME_BUDGET_MINUTES_RANGE
+    if not isinstance(value, int) or isinstance(value, bool) or not (low <= value <= high):
+        raise ConfigError(
+            f"body field 'time_budget_minutes' must be an integer between {low} and {high}"
+        )
+    return value
+
+
 def create_topic(topics: TopicStore, body: dict, *, overwrite: bool = False) -> dict:
     topic_id = _require_body_string(body, "id")
     title = _require_body_string(body, "title")
@@ -493,6 +505,8 @@ def create_topic(topics: TopicStore, body: dict, *, overwrite: bool = False) -> 
         constraints=_optional_body_string_tuple(body, "constraints"),
         tags=_optional_body_string_tuple(body, "tags"),
         notes=_optional_body_string(body, "notes"),
+        blueprint=_optional_body_string(body, "blueprint"),
+        time_budget_minutes=_optional_body_time_budget(body),
     )
     if topics.topic_path(topic_id).is_file() and not overwrite:
         raise ConflictError(

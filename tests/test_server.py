@@ -972,6 +972,65 @@ def test_blueprints_endpoint_unknown_topic_is_404(server):
     assert status == 404
 
 
+def test_blueprints_recommend_route_works_before_the_topic_exists(server):
+    """The wizard recommends from in-progress fields, pre-topic-creation."""
+
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/blueprints/recommend",
+        body={"id": "draft-topic", "title": "Certification exam readiness"},
+    )
+    assert status == 200
+    assert body["recommendation"]["id"] == "exam-preparation"
+    assert body["recommendation"]["rationale"].strip()
+    assert [entry["id"] for entry in body["blueprints"]][0] == "conceptual-foundations"
+    assert body["topic_blueprint"] is None
+
+    # TOML mode carries the topic's own blueprint field through.
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/blueprints/recommend",
+        body={"toml": 'id = "t2"\ntitle = "Anything"\nblueprint = "casebook"\n'},
+    )
+    assert status == 200
+    assert body["topic_blueprint"] == "casebook"
+
+    status, _ = _req(server, "POST", "/v1/blueprints/recommend", body={"toml": "not = toml ="})
+    assert status == 400
+
+    status, _ = _req(server, "POST", "/v1/blueprints/recommend", body={"id": "x"})
+    assert status == 400
+
+
+def test_create_topic_accepts_blueprint_and_time_budget(server):
+    status, _ = _req(
+        server,
+        "POST",
+        "/v1/topics",
+        body={
+            "id": "budgeted",
+            "title": "Budgeted Topic",
+            "blueprint": "casebook",
+            "time_budget_minutes": 90,
+        },
+    )
+    assert status == 200
+    status, body = _req(server, "GET", "/v1/topics/budgeted")
+    assert status == 200
+    assert 'blueprint = "casebook"' in body["toml"]
+    assert "time_budget_minutes = 90" in body["toml"]
+
+    status, _ = _req(
+        server,
+        "POST",
+        "/v1/topics",
+        body={"id": "bad-budget", "title": "X", "time_budget_minutes": 2},
+    )
+    assert status == 400
+
+
 def test_run_status_payload_includes_blueprint(server):
     # Run "g" was created before its topic existed, so it has no record.
     status, body = _req(server, "GET", "/v1/runs/g")

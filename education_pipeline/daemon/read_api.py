@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import tomllib
 from pathlib import Path
 
 from education_pipeline.config import (
@@ -221,10 +222,7 @@ def blueprints_payload(
     topic's own declared blueprint (when set). Without it both are ``None``.
     """
 
-    from education_pipeline.guides.blueprints import (
-        list_blueprints,
-        recommend_blueprint,
-    )
+    from education_pipeline.guides.blueprints import recommend_blueprint
 
     recommendation = None
     topic_blueprint = None
@@ -236,19 +234,82 @@ def blueprints_payload(
         recommendation = {"id": blueprint_id, "rationale": rationale}
         topic_blueprint = topic.blueprint
     return {
-        "blueprints": [
-            {
-                "id": blueprint.id,
-                "title": blueprint.title,
-                "summary": blueprint.summary,
-                "when_to_use": blueprint.when_to_use,
-                "required_interactions": sorted(blueprint.required_interactions),
-                "default_difficulty": blueprint.default_difficulty,
-            }
-            for blueprint in list_blueprints()
-        ],
+        "blueprints": _blueprint_entries(),
         "recommendation": recommendation,
         "topic_blueprint": topic_blueprint,
+    }
+
+
+def _blueprint_entries() -> list[dict]:
+    from education_pipeline.guides.blueprints import list_blueprints
+
+    return [
+        {
+            "id": blueprint.id,
+            "title": blueprint.title,
+            "summary": blueprint.summary,
+            "when_to_use": blueprint.when_to_use,
+            "required_interactions": sorted(blueprint.required_interactions),
+            "default_difficulty": blueprint.default_difficulty,
+        }
+        for blueprint in list_blueprints()
+    ]
+
+
+#: Topic fields the pre-creation recommend route accepts from the wizard.
+_RECOMMEND_BODY_KEYS = {
+    "id",
+    "title",
+    "brief",
+    "audience",
+    "goals",
+    "scope_includes",
+    "scope_excludes",
+    "key_questions",
+    "prerequisites",
+    "constraints",
+    "tags",
+    "notes",
+    "blueprint",
+    "time_budget_minutes",
+}
+
+
+def recommend_blueprint_payload(body: object) -> dict:
+    """Recommend a blueprint for a not-yet-created topic (wizard body).
+
+    The New Course wizard collects topic fields before anything is stored,
+    so the recommendation must run over the in-progress fields — either the
+    describe-mode field object or ``{"toml": ...}`` for paste mode. Same
+    payload shape as :func:`blueprints_payload`, always with a
+    recommendation. Pure read: nothing is written.
+    """
+
+    from education_pipeline.guides.blueprints import recommend_blueprint
+    from education_pipeline.topics import parse_topic
+
+    if not isinstance(body, dict):
+        raise ConfigError("body must be an object")
+    if "toml" in body:
+        toml_text = body["toml"]
+        if not isinstance(toml_text, str) or not toml_text.strip():
+            raise ConfigError("body field 'toml' must be a non-empty string")
+        try:
+            data = tomllib.loads(toml_text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"invalid TOML in recommendation request: {exc}") from exc
+    else:
+        data = {key: value for key, value in body.items() if key in _RECOMMEND_BODY_KEYS}
+        # A stable id is not required to recommend; the wizard may not have
+        # settled one yet.
+        if not isinstance(data.get("id"), str) or not data["id"].strip():
+            data["id"] = "pending-topic"
+    topic = parse_topic(data)  # ConfigError on invalid field shapes -> 400
+    blueprint_id, rationale = recommend_blueprint(topic)
+    return {
+        "blueprints": _blueprint_entries(),
+        "recommendation": {"id": blueprint_id, "rationale": rationale},
+        "topic_blueprint": topic.blueprint,
     }
 
 

@@ -73,25 +73,35 @@ test.afterAll(() => {
   handle?.daemon?.kill();
 });
 
+async function walkWizardToBlueprint(page: Page, id: string, title: string) {
+  await page.goto(`${baseURL}/new`);
+  // Learner step (empty workspace) -> topic step.
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel("Topic id").fill(id);
+  await page.getByLabel("Title").fill(title);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Choose a blueprint" })).toBeVisible();
+}
+
+async function finishWizard(page: Page) {
+  await page.getByRole("button", { name: "Continue" }).click(); // blueprint -> plan
+  await page.getByRole("button", { name: "Continue" }).click(); // plan -> confirm
+  await page.getByRole("button", { name: "Create course" }).click();
+}
+
 test("accepting the recommendation puts the blueprint contract in the spec prompt", async ({
   page,
 }) => {
-  await page.goto(`${baseURL}/new`);
-  await page.getByLabel("Topic id").fill("bp-accept");
-  await page.getByLabel("Title").fill("Feedback Systems");
-  await page.getByRole("button", { name: "Create topic" }).click();
-
-  await expect(page.getByRole("heading", { name: "Choose a blueprint" })).toBeVisible();
+  await walkWizardToBlueprint(page, "bp-accept", "Feedback Systems");
   await expect(
     page.getByRole("radio", { name: /Conceptual foundations/ }),
   ).toBeChecked();
   await expect(page.getByText(/general conceptual topic/)).toBeVisible();
-  await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByText("Model plan for this run")).toBeVisible();
+  await finishWizard(page);
 
   // The run header records the recommendation, and the spec prompt carries
   // the blueprint contract.
-  await page.goto(`${baseURL}/topics/bp-accept`);
+  await expect(page).toHaveURL(`${baseURL}/topics/bp-accept`);
   await expect(page.getByText(/Blueprint:/)).toBeVisible();
   await expect(page.getByText("conceptual-foundations")).toBeVisible();
   await page.goto(`${baseURL}/topics/bp-accept/stages/spec`);
@@ -102,16 +112,11 @@ test("accepting the recommendation puts the blueprint contract in the spec promp
 test("overriding to a second blueprint produces a visibly different prompt", async ({
   page,
 }) => {
-  await page.goto(`${baseURL}/new`);
-  await page.getByLabel("Topic id").fill("bp-override");
-  await page.getByLabel("Title").fill("Feedback Systems Again");
-  await page.getByRole("button", { name: "Create topic" }).click();
-
+  await walkWizardToBlueprint(page, "bp-override", "Feedback Systems Again");
   await page.getByRole("radio", { name: /Exam preparation/ }).click();
-  await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByText("Model plan for this run")).toBeVisible();
+  await finishWizard(page);
 
-  await page.goto(`${baseURL}/topics/bp-override`);
+  await expect(page).toHaveURL(`${baseURL}/topics/bp-override`);
   await expect(page.getByText("exam-preparation")).toBeVisible();
   await expect(page.getByText(/\(user\)/)).toBeVisible();
   await page.goto(`${baseURL}/topics/bp-override/stages/spec`);

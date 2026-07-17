@@ -469,6 +469,9 @@ def _make_handler(context: DaemonContext):
                 return self._last_resort(exc)
 
         def _api_post_routes(self):
+            if self.path == "/v1/blueprints/recommend":
+                body = self._read_body()
+                return self._send(200, read_api.recommend_blueprint_payload(body))
             if self.path == "/v1/profiles/preview":
                 body = self._read_body()
                 unknown = sorted(set(body) - {"profile"})

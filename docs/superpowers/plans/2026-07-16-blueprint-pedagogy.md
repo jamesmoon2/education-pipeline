@@ -391,5 +391,20 @@ PRD entry moved to Delivered, post-milestone audit ledger.
 | 4 — Cockpit | **complete** | `84aa9a4` | — | 221 | — | clean | `BlueprintPicker` + wizard blueprint step (topic → blueprint → profile → plan); accepted recommendation sends no override so provenance stays `recommended`; registry-fetch failure falls back to the pre-blueprint flow. `RunStatus.blueprint` and `StageContent.repair_scope` typed optional so existing fixtures stay valid. `ModuleRepairControl` hides itself until `GET repair/modules` succeeds. Known cosmetic quirk (accepted): after a scoped approval the response fragment ≠ approved bytes, so the generic Approve button stays visible like an edited response; re-approving re-splices idempotently. `web/e2e/new-run.spec.ts` will need the blueprint-step click — handled in Wave 5. |
 | 5 — Acceptance + closeout | **complete** | `3f951e8` | 1068 | 221 | 57 | clean | Four-suite gate green (pytest 1068; vitest 221 across 30 files; Playwright 57 incl. 4 new blueprint specs; build clean). Canonical fixture **not regenerated**: schema/canonicalization untouched, fixture already `conceptual-foundations`, pinned SHA `99fde906…` unchanged — recorded here in lieu of a diff. Contrasting `quantitative-scientific` acceptance covers divergent spec/QA prompts, echo refusal, superset refusal, and the draft-side `blueprint.contract_mismatch` gate. `new-run.spec.ts` updated for the wizard blueprint step. PRD §10 entry moved to Delivered; post-milestone audit ledger added at `docs/superpowers/specs/2026-07-16-blueprint-pedagogy-post-milestone-audit.md`. |
 
+### Post-milestone rebase onto the first-run milestone (2026-07-17)
+
+The branch was rebased onto `main` after the first-run/course-management
+milestone merged (PR #11). The daemon-side conflict (`write_api.advance_run`)
+was a mechanical union of both signatures. The New Course wizard was
+restructured by that milestone, so the blueprint step was re-fitted into the
+new `learner → topic → blueprint → plan → confirm` order in a dedicated
+commit: because the new wizard creates the topic only at Confirm, the
+recommendation now comes from `POST /v1/blueprints/recommend` over the
+in-progress fields (describe object or pasted TOML), the daemon's
+`create_topic` gained the `blueprint`/`time_budget_minutes` body fields the
+wizard sends, and the override still travels via the advance body so an
+accepted recommendation keeps `recommended` provenance. Post-rebase gate:
+pytest 1186 passed + 1 skipped; vitest 261; Playwright e2e 60; build clean.
+
 Baseline commands: `python3 -m pytest`; `cd web && npm run test -- --run`;
 `npm run e2e`; `npm run build`.
