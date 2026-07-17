@@ -430,7 +430,7 @@ def test_job_active_blocks_run_mutations_but_not_export(tmp_path):
     for call in blocked:
         with pytest.raises(write_api.ConflictError) as exc:
             call()
-        assert exc.value.code == "job_active"
+        assert exc.value.code == "job_conflict"
     # export is exempt: it only reads final/ and writes a file the worker never touches
     assert write_api.export_run(runs, "t", format="html")["export_path"] == "final/guide.html"
 
@@ -597,15 +597,16 @@ def test_attach_profile_defaults_to_overwrite(tmp_path):
     write_api.import_profile(
         profiles, 'schema_version = 1\nid = "p1"\ntarget_learner = "team cohort"\n'
     )
-    result = write_api.attach_profile(profiles, "t", "p1")
+    runs = RunStore(tmp_path)
+    result = write_api.attach_profile(profiles, runs, "t", "p1")
     assert result == {"profile_id": "p1", "topic_id": "t", "snapshot_path": "inputs/profile.toml"}
     # re-attach refreshes the snapshot without an explicit flag
-    assert write_api.attach_profile(profiles, "t", "p1")["snapshot_path"] == "inputs/profile.toml"
+    assert write_api.attach_profile(profiles, runs, "t", "p1")["snapshot_path"] == "inputs/profile.toml"
 
 
 def test_attach_unknown_profile_is_404(tmp_path):
     with pytest.raises(NotFoundError):
-        write_api.attach_profile(ProfileStore(tmp_path), "t", "ghost")
+        write_api.attach_profile(ProfileStore(tmp_path), RunStore(tmp_path), "t", "ghost")
 
 
 def _structured_profile(profile_id="profile-one", target_learner="Synthetic cohort alpha"):
@@ -1157,3 +1158,160 @@ def test_create_topic_rejects_wrong_shape_nested_values(tmp_path, body):
     topics = TopicStore(tmp_path)
     with pytest.raises(ConfigError):
         write_api.create_topic(topics, body)
+
+
+# ---------------------------------------------------------------------------
+# Archive / unarchive + archived_course write guard (spec §5.3)
+
+
+def test_archive_and_unarchive_payloads(tmp_path):
+    runs, jobs = _workspace(tmp_path)
+    result = write_api.archive_run(runs, "t")
+    assert result["topic_id"] == "t"
+    assert result["archived"] is True
+    assert runs.is_archived("t") is True
+    result = write_api.unarchive_run(runs, "t")
+    assert result["archived"] is False
+    assert runs.is_archived("t") is False
+
+
+def test_archive_without_run_is_not_found(tmp_path):
+    runs, jobs = _workspace(tmp_path, create_legacy_run=False)
+    with pytest.raises(NotFoundError):
+        write_api.archive_run(runs, "t")
+    with pytest.raises(NotFoundError):
+        write_api.unarchive_run(runs, "t")
+
+
+def test_archived_course_blocks_every_write_action(tmp_path):
+    runs, jobs = _workspace(tmp_path)
+    profiles = ProfileStore(tmp_path)
+    (tmp_path / "profiles").mkdir(exist_ok=True)
+    (tmp_path / "profiles" / "p.toml").write_text(
+        'schema_version = 1\nid = "p"\ntarget_learner = "cohort"\n', encoding="utf-8"
+    )
+    write_api.advance_run(runs, jobs, "t")  # write the spec prompt first
+    runs.archive_run("t")
+
+    blocked = (
+        lambda: write_api.advance_run(runs, jobs, "t"),
+        lambda: write_api.ingest_response(runs, jobs, "t", "spec", "body"),
+        lambda: write_api.edit_response(runs, jobs, "t", "spec", "body", base_sha256="x"),
+        lambda: write_api.approve_stage(runs, jobs, "t", "spec"),
+        lambda: write_api.finalize_run(runs, jobs, "t"),
+        lambda: write_api.export_run(runs, "t", format="html"),
+        lambda: write_api.validate_run(runs, jobs, "t", "final"),
+        lambda: write_api.prepare_audit(runs, jobs, "t"),
+        lambda: write_api.attach_profile(profiles, runs, "t", "p"),
+    )
+    for call in blocked:
+        with pytest.raises(write_api.ConflictError) as exc:
+            call()
+        assert exc.value.code == "archived_course"
+
+    # Reads still work.
+    assert read_api.run_status_payload(runs, "t")["topic_id"] == "t"
+
+    runs.unarchive_run("t")
+    ingest = write_api.ingest_response(runs, jobs, "t", "spec", "spec body")
+    assert ingest["response_path"] == "responses/spec.response.md"
+
+
+def test_unarchive_and_archive_endpoints_work_while_archived(tmp_path):
+    runs, jobs = _workspace(tmp_path)
+    runs.archive_run("t")
+    # The unarchive action itself must never be blocked by the guard.
+    assert write_api.unarchive_run(runs, "t")["archived"] is False
+
+
+# ---------------------------------------------------------------------------
+# Duplicate from brief (spec §5.4)
+
+
+def _duplicate_env(tmp_path):
+    from education_pipeline.workspace import TopicStore
+
+    runs, jobs = _workspace(tmp_path)
+    topics = TopicStore(tmp_path)
+    profiles = ProfileStore(tmp_path)
+    return runs, jobs, topics, profiles
+
+
+def test_duplicate_copies_brief_under_copy_suffix(tmp_path):
+    runs, jobs, topics, profiles = _duplicate_env(tmp_path)
+    result = write_api.duplicate_topic(topics, profiles, "t", {})
+    assert result["id"] == "t-copy"
+    assert result["title"] == "Test Topic"
+    duplicated = topics.load_topic("t-copy")
+    assert duplicated.id == "t-copy"
+    assert duplicated.title == "Test Topic"
+
+
+def test_duplicate_increments_suffix_on_collision(tmp_path):
+    runs, jobs, topics, profiles = _duplicate_env(tmp_path)
+    assert write_api.duplicate_topic(topics, profiles, "t", {})["id"] == "t-copy"
+    assert write_api.duplicate_topic(topics, profiles, "t", {})["id"] == "t-copy-2"
+    assert write_api.duplicate_topic(topics, profiles, "t", {})["id"] == "t-copy-3"
+
+
+def test_duplicate_copies_no_run_artifacts(tmp_path):
+    runs, jobs, topics, profiles = _duplicate_env(tmp_path)
+    write_api.advance_run(runs, jobs, "t")  # source has a live run
+    write_api.duplicate_topic(topics, profiles, "t", {})
+    assert not runs.manifest_path("t-copy").exists()
+    assert not runs.run_dir("t-copy").exists()
+
+
+def test_duplicate_missing_source_is_not_found(tmp_path):
+    runs, jobs, topics, profiles = _duplicate_env(tmp_path)
+    with pytest.raises(NotFoundError):
+        write_api.duplicate_topic(topics, profiles, "nope", {})
+
+
+def test_duplicate_rejects_unknown_body_fields(tmp_path):
+    runs, jobs, topics, profiles = _duplicate_env(tmp_path)
+    with pytest.raises(ConfigError):
+        write_api.duplicate_topic(topics, profiles, "t", {"widen": True})
+
+
+def test_duplicate_with_attach_profile_takes_fresh_snapshot(tmp_path):
+    runs, jobs, topics, profiles = _duplicate_env(tmp_path)
+    (tmp_path / "profiles").mkdir(exist_ok=True)
+    (tmp_path / "profiles" / "p.toml").write_text(
+        'schema_version = 1\nid = "p"\ntarget_learner = "cohort v1"\n',
+        encoding="utf-8",
+    )
+    profiles.attach_profile_to_topic("p", "t")
+    # The stored profile changes AFTER the source attachment; the duplicate
+    # must snapshot the CURRENT store bytes, not copy the stale snapshot.
+    (tmp_path / "profiles" / "p.toml").write_text(
+        'schema_version = 1\nid = "p"\ntarget_learner = "cohort v2"\n',
+        encoding="utf-8",
+    )
+
+    result = write_api.duplicate_topic(
+        topics, profiles, "t", {"attach_profile": True}
+    )
+    assert result["profile_id"] == "p"
+    snapshot = profiles.topic_profile_snapshot_path(result["id"]).read_text(
+        encoding="utf-8"
+    )
+    assert "cohort v2" in snapshot
+
+
+def test_duplicate_attach_profile_without_source_attachment_is_invalid(tmp_path):
+    runs, jobs, topics, profiles = _duplicate_env(tmp_path)
+    with pytest.raises(ConfigError):
+        write_api.duplicate_topic(topics, profiles, "t", {"attach_profile": True})
+
+
+def test_duplicate_attach_profile_with_deleted_profile_is_not_found(tmp_path):
+    runs, jobs, topics, profiles = _duplicate_env(tmp_path)
+    (tmp_path / "profiles").mkdir(exist_ok=True)
+    (tmp_path / "profiles" / "p.toml").write_text(
+        'schema_version = 1\nid = "p"\ntarget_learner = "cohort"\n', encoding="utf-8"
+    )
+    profiles.attach_profile_to_topic("p", "t")
+    (tmp_path / "profiles" / "p.toml").unlink()
+    with pytest.raises(NotFoundError):
+        write_api.duplicate_topic(topics, profiles, "t", {"attach_profile": True})

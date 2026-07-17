@@ -60,3 +60,51 @@ def test_query_string_is_ignored(dist):
 def test_default_web_dist_env_override(tmp_path, monkeypatch):
     monkeypatch.setenv("EP_WEB_DIST", str(tmp_path))
     assert default_web_dist() == tmp_path
+
+
+def test_default_web_dist_prefers_packaged_then_repo(tmp_path, monkeypatch):
+    """Lookup order (spec §2.1): env override → packaged _webdist → repo web/dist."""
+
+    from education_pipeline.daemon import static
+
+    monkeypatch.delenv("EP_WEB_DIST", raising=False)
+    packaged = tmp_path / "packaged"
+    repo = tmp_path / "repo-dist"
+    for candidate in (packaged, repo):
+        candidate.mkdir()
+        (candidate / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    monkeypatch.setattr(static, "_PACKAGED_WEB_DIST", packaged)
+    monkeypatch.setattr(static, "_REPO_WEB_DIST", repo)
+    assert static.default_web_dist() == packaged
+
+
+def test_default_web_dist_falls_back_to_repo_dist(tmp_path, monkeypatch):
+    from education_pipeline.daemon import static
+
+    monkeypatch.delenv("EP_WEB_DIST", raising=False)
+    repo = tmp_path / "repo-dist"
+    repo.mkdir()
+    (repo / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    monkeypatch.setattr(static, "_PACKAGED_WEB_DIST", tmp_path / "absent")
+    monkeypatch.setattr(static, "_REPO_WEB_DIST", repo)
+    assert static.default_web_dist() == repo
+
+
+def test_default_web_dist_none_when_no_dist_exists(tmp_path, monkeypatch):
+    from education_pipeline.daemon import static
+
+    monkeypatch.delenv("EP_WEB_DIST", raising=False)
+    monkeypatch.setattr(static, "_PACKAGED_WEB_DIST", tmp_path / "a")
+    monkeypatch.setattr(static, "_REPO_WEB_DIST", tmp_path / "b")
+    assert static.default_web_dist() is None
+
+
+def test_default_web_dist_ignores_dir_without_index(tmp_path, monkeypatch):
+    from education_pipeline.daemon import static
+
+    monkeypatch.delenv("EP_WEB_DIST", raising=False)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(static, "_PACKAGED_WEB_DIST", empty)
+    monkeypatch.setattr(static, "_REPO_WEB_DIST", tmp_path / "absent")
+    assert static.default_web_dist() is None

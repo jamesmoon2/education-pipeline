@@ -40,25 +40,43 @@ test.afterAll(() => {
   daemon?.kill();
 });
 
-test("new-run wizard: describe a topic, skip profile, review the plan, land on the run board", async ({
+test("new-run wizard: learner, topic, plan review, confirm, land on the run board", async ({
   page,
 }) => {
   await page.goto(`${baseURL}/`);
   await expect(page.getByText(/No topics yet/)).toBeVisible();
 
-  await page.getByRole("link", { name: "Create your first course →" }).click();
+  // First-run welcome panel: three facts + provider detection + primary CTA.
+  const welcome = page.getByRole("region", { name: /welcome/i });
+  await expect(welcome).toBeVisible();
+  await expect(welcome.getByText(/stored locally/i)).toBeVisible();
+  await expect(welcome.getByText(/Manual copy\/paste — always available/i)).toBeVisible();
+
+  await page.getByRole("link", { name: "Create your first course →" }).first().click();
   await expect(page).toHaveURL(`${baseURL}/new`);
 
+  // Step 1: learner — the empty workspace offers a link out to Profiles.
+  await expect(page.getByText(/No profiles yet/)).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  // Step 2: topic + brief.
   await page.getByLabel("Topic id").fill("wizard-topic");
   await page.getByLabel("Title").fill("Wizard Topic");
-  await page.getByRole("button", { name: "Create topic" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
 
-  // no profiles exist in this empty workspace, so the wizard advances
-  // straight to the plan-review step without a manual skip.
-  await expect(page.getByText("Model plan for this run")).toBeVisible();
-  await expect(page.getByRole("combobox").first()).toBeVisible();
+  // Step 3: read-only model-plan review with a Settings link.
+  await expect(page.getByRole("heading", { name: "Model plan" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Adjust in Settings/i })).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
 
-  await page.getByRole("link", { name: "Go to run board" }).click();
+  // Step 4: confirm preview (learner/topic pairing + estimated stages).
+  await expect(page.getByRole("heading", { name: "Confirm" })).toBeVisible();
+  await expect(page.getByText("No profile (generic course)")).toBeVisible();
+  await expect(page.getByText(/wizard-topic — Wizard Topic/)).toBeVisible();
+  await expect(page.getByText(/spec → outline → draft/)).toBeVisible();
+  await page.getByRole("button", { name: "Create course" }).click();
+
+  // Creation lands on the run board with the next action highlighted.
   await expect(page).toHaveURL(`${baseURL}/topics/wizard-topic`);
   await expect(page.getByRole("heading", { name: "wizard-topic" })).toBeVisible();
 });

@@ -40,14 +40,27 @@ class StaticFile:
     cache_control: str
 
 
+#: Built assets copied into the wheel by scripts/build_webdist.py (spec §2.1).
+_PACKAGED_WEB_DIST = Path(__file__).resolve().parents[1] / "_webdist"
+#: Dev-checkout fallback: the Vite build output in the repo.
+_REPO_WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
+
+
 def default_web_dist() -> Path | None:
-    """Locate the built SPA: $EP_WEB_DIST override, else the repo's web/dist."""
+    """Locate the built SPA (spec §2.1 lookup order).
+
+    ``$EP_WEB_DIST`` override → packaged ``education_pipeline/_webdist/`` →
+    repo-relative ``web/dist/`` (dev checkout) → ``None``. A directory only
+    counts once it holds an ``index.html``, so a half-copied dist is ignored.
+    """
 
     env = os.environ.get("EP_WEB_DIST")
     if env:
         return Path(env)
-    candidate = Path(__file__).resolve().parents[2] / "web" / "dist"
-    return candidate if candidate.is_dir() else None
+    for candidate in (_PACKAGED_WEB_DIST, _REPO_WEB_DIST):
+        if (candidate / "index.html").is_file():
+            return candidate
+    return None
 
 
 def resolve_static(dist: Path, url_path: str) -> StaticFile | None:

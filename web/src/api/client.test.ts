@@ -685,7 +685,7 @@ describe("profile endpoints", () => {
           error: {
             code: "stale_content",
             message: "reload profiles before retrying",
-            details: { current_sha256: "sha-current" },
+            detail: { current_sha256: "sha-current" },
           },
         },
       },
@@ -693,7 +693,7 @@ describe("profile endpoints", () => {
 
     const error = await putProfile("learner-a", structuredProfile, "sha-old").catch((value) => value) as ApiRequestError;
     expect(error.status).toBe(409);
-    expect(error.details).toEqual({ current_sha256: "sha-current" });
+    expect(error.detail).toEqual({ current_sha256: "sha-current" });
   });
 
   it("round-trips exact metadata numeric text without changing the HTTP contract", async () => {
@@ -775,5 +775,34 @@ describe("profile endpoints", () => {
     };
 
     expect(() => putProfile("learner-a", invalidProfile, "sha")).toThrow("Invalid integer metadata value");
+  });
+});
+
+describe("daemon_unreachable synthesis", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetSessionForTests();
+  });
+
+  it("wraps network-level fetch failures as daemon_unreachable", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    }));
+    const error = await api("/v1/topics").catch((value) => value) as ApiRequestError;
+    expect(error).toBeInstanceOf(ApiRequestError);
+    expect(error.code).toBe("daemon_unreachable");
+    expect(error.status).toBe(0);
+  });
+
+  it("keeps HTTP error responses on their envelope code", async () => {
+    vi.stubGlobal("fetch", mockFetch({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/topics": {
+        status: 404,
+        body: { error: { code: "not_found", message: "unknown path" } },
+      },
+    }));
+    const error = await api("/v1/topics").catch((value) => value) as ApiRequestError;
+    expect(error.code).toBe("not_found");
   });
 });

@@ -47,8 +47,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except DaemonError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _print_daemon_error(exc)
         return 1
+
+
+def _print_daemon_error(exc: DaemonError) -> None:
+    """Print a proxied daemon error with the catalog remediation, if known."""
+
+    from education_pipeline.errors import remediation_for
+
+    print(f"error: {exc}", file=sys.stderr)
+    remediation = remediation_for(exc.code) if exc.code else None
+    if remediation:
+        print(f"fix: {remediation}", file=sys.stderr)
 
 
 def _run_profile_command(args: argparse.Namespace) -> int:
@@ -192,6 +203,30 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("cancel", help="cancel a queued or running job")
     p.add_argument("job_id")
     p.set_defaults(func=_cmd_cancel)
+
+    p = sub.add_parser(
+        "ui",
+        help="launch the cockpit: pick a workspace, start the daemon, open the browser",
+    )
+    p.add_argument(
+        "--workspace",
+        dest="ui_workspace",
+        default=None,
+        help="workspace directory (default: last-used from the user registry)",
+    )
+    p.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="print the cockpit URL without opening a browser",
+    )
+    p.set_defaults(func=_cmd_ui)
+
+    workspace = sub.add_parser("workspace", help="manage the workspace itself").add_subparsers(
+        dest="workspace_command", required=True
+    )
+    p = workspace.add_parser("check", help="validate workspace layout and setup")
+    p.add_argument("--fix", action="store_true", help="apply the auto-fixable findings first")
+    p.set_defaults(func=_cmd_workspace_check)
 
     daemon = sub.add_parser("daemon", help="manage the run daemon").add_subparsers(
         dest="daemon_command", required=True
@@ -578,7 +613,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         client = ensure_daemon(root, autostart=args.autostart)
         job = client.enqueue(args.topic_id, stage=args.stage, force=args.force)
     except DaemonError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _print_daemon_error(exc)
         return 1
     print(f"enqueued job {job['id']} ({job['stage']})")
     if not args.wait:
@@ -638,6 +673,37 @@ def _cmd_cancel(args: argparse.Namespace) -> int:
     job = client.cancel(args.job_id)
     print(f"job {job['id']} {job['status']}")
     return 0
+
+
+def _cmd_ui(args: argparse.Namespace) -> int:
+    """Launch the cockpit. The only command that consults the user registry."""
+
+    from education_pipeline.ui import run_ui
+
+    # `ui --workspace` wins; a top-level -C other than the default also counts
+    # as an explicit choice. Otherwise the registry/first-run flow decides.
+    workspace = args.ui_workspace
+    if workspace is None and args.workspace != ".":
+        workspace = args.workspace
+    return run_ui(workspace, no_browser=args.no_browser)
+
+
+def _cmd_workspace_check(args: argparse.Namespace) -> int:
+    """Validate the workspace and report findings; exit 1 while blockers remain."""
+
+    from education_pipeline.workspace import fix_workspace, validate_workspace
+
+    root = _root(args)
+    findings = fix_workspace(root) if args.fix else validate_workspace(root)
+    if not findings:
+        print(f"workspace ok: {root}")
+        return 0
+    for finding in findings:
+        print(
+            f"{finding.severity}\t{finding.code}\t{finding.message}\t"
+            f"fix: {finding.remediation}"
+        )
+    return 1 if any(f.severity == "blocking" for f in findings) else 0
 
 
 def _cmd_daemon_start(args: argparse.Namespace) -> int:

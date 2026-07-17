@@ -1074,3 +1074,139 @@ def test_daemon_status_prints_cockpit_url(tmp_path, capsys, monkeypatch):
     assert _run(tmp_path, "daemon", "status") == 0
     out = capsys.readouterr().out
     assert "http://127.0.0.1:4242/" in out
+
+
+# ---------------------------------------------------------------------------
+# workspace check (first-run milestone, spec §3.3)
+
+
+def test_workspace_check_reports_findings_and_exits_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = _run(tmp_path, "workspace", "check")
+    out = capsys.readouterr().out
+    assert code == 1
+    assert out.count("missing_subdir") == 3
+    assert "blocking" in out
+
+
+def test_workspace_check_ok_exits_0(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for subdir in ("runs", "topics", "profiles"):
+        (tmp_path / subdir).mkdir()
+    code = _run(tmp_path, "workspace", "check")
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "ok" in out.lower()
+
+
+def test_workspace_check_fix_scaffolds_and_exits_0(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = _run(tmp_path, "workspace", "check", "--fix")
+    capsys.readouterr()
+    assert code == 0
+    for subdir in ("runs", "topics", "profiles"):
+        assert (tmp_path / subdir).is_dir()
+
+
+def test_workspace_check_fix_refuses_unrecognized_layout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "photos").mkdir()
+    code = _run(tmp_path, "workspace", "check", "--fix")
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "unrecognized_layout" in out
+    assert not (tmp_path / "runs").exists()
+
+
+def test_workspace_check_warning_only_exits_0(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from education_pipeline.daemon import lifecycle
+
+    for subdir in ("runs", "topics", "profiles"):
+        (tmp_path / subdir).mkdir()
+    lifecycle.write_discovery(tmp_path, pid=999_999_999, port=1, token="t", version="0")
+    code = _run(tmp_path, "workspace", "check")
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "stale_daemon_record" in out
+
+
+def test_daemon_error_prints_catalog_remediation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from education_pipeline import cli
+    from education_pipeline.client import DaemonError
+
+    def _raise(*args, **kwargs):
+        raise DaemonError("job j1 is running for topic 't'", code="job_conflict")
+
+    monkeypatch.setattr(cli, "ensure_daemon", _raise)
+    code = _run(tmp_path, "run", "some-topic")
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "job j1 is running" in err
+    assert "Wait for the running job" in err  # catalog remediation line
+
+
+def test_daemon_error_without_code_prints_no_remediation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from education_pipeline import cli
+    from education_pipeline.client import DaemonError
+
+    def _raise(*args, **kwargs):
+        raise DaemonError("plain failure")
+
+    monkeypatch.setattr(cli, "ensure_daemon", _raise)
+    code = _run(tmp_path, "run", "some-topic")
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "plain failure" in err
+    assert "fix:" not in err
+
+
+# ---------------------------------------------------------------------------
+# ui launcher wiring (spec §2)
+
+
+def _patch_run_ui(monkeypatch: pytest.MonkeyPatch) -> dict:
+    import education_pipeline.ui as ui_module
+
+    seen: dict = {}
+
+    def fake_run_ui(workspace, *, no_browser=False, deps=None):
+        seen["workspace"] = workspace
+        seen["no_browser"] = no_browser
+        return 0
+
+    monkeypatch.setattr(ui_module, "run_ui", fake_run_ui)
+    return seen
+
+
+def test_ui_subcommand_passes_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _patch_run_ui(monkeypatch)
+    assert main(["ui", "--workspace", str(tmp_path), "--no-browser"]) == 0
+    assert seen == {"workspace": str(tmp_path), "no_browser": True}
+
+
+def test_ui_subcommand_defaults_to_registry_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _patch_run_ui(monkeypatch)
+    assert main(["ui", "--no-browser"]) == 0
+    assert seen["workspace"] is None
+
+
+def test_ui_subcommand_honors_top_level_workspace_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _patch_run_ui(monkeypatch)
+    assert main(["--workspace", str(tmp_path), "ui", "--no-browser"]) == 0
+    assert seen["workspace"] == str(tmp_path)

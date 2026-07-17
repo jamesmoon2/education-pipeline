@@ -22,6 +22,10 @@ import type {
   StageOverride,
   TopicDetail,
   TopicSummary,
+  ArchiveResult,
+  DuplicateTopicResult,
+  RevealResult,
+  RevealTarget,
   ValidateResult,
   ValidationResult,
   WaiverResult,
@@ -32,6 +36,7 @@ import type {
   ProfileSummary,
   PersonalizationPayload,
   AuditPreparationResult,
+  WorkspacePayload,
 } from "./types";
 import { isMetadataNumber, metadataNumber, metadataNumberValidationMessage } from "./types";
 
@@ -40,17 +45,37 @@ export class ApiRequestError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
-    public readonly details: Record<string, unknown> | null = null,
+    public readonly detail: Record<string, unknown> | null = null,
   ) {
     super(message);
     this.name = "ApiRequestError";
   }
 }
 
+/**
+ * Wrap a network-level fetch failure (daemon not running, connection
+ * refused) as the catalog code `daemon_unreachable` so ErrorNotice can show
+ * launcher instructions. HTTP responses of any status never take this path.
+ */
+async function fetchOrUnreachable(
+  input: string,
+  init?: RequestInit,
+): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (err) {
+    throw new ApiRequestError(
+      0,
+      "daemon_unreachable",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
 let tokenPromise: Promise<string> | null = null;
 
 async function fetchToken(): Promise<string> {
-  const resp = await fetch("/v1/session");
+  const resp = await fetchOrUnreachable("/v1/session");
   if (!resp.ok) {
     throw new ApiRequestError(
       resp.status,
@@ -81,7 +106,7 @@ async function request<T>(
   parseResponse: (response: Response) => Promise<unknown> = (response) => response.json(),
 ): Promise<T> {
   const token = await getToken();
-  const resp = await fetch(path, {
+  const resp = await fetchOrUnreachable(path, {
     ...init,
     headers: { ...(init.headers ?? {}), "X-EP-Token": token },
   });
@@ -92,12 +117,12 @@ async function request<T>(
     // non-JSON body; fall through to the generic error below
   }
   if (!resp.ok) {
-    const err = (body as { error?: { code: string; message: string; details?: Record<string, unknown> } }).error;
+    const err = (body as { error?: { code: string; message: string; detail?: Record<string, unknown> } }).error;
     throw new ApiRequestError(
       resp.status,
       err?.code ?? "unknown",
       err?.message ?? `HTTP ${resp.status}`,
-      err?.details ?? null,
+      err?.detail ?? null,
     );
   }
   return body as T;
@@ -215,7 +240,7 @@ export async function apiDelete<T>(path: string): Promise<T> {
 
 export async function download(path: string, filename: string): Promise<void> {
   const token = await getToken();
-  const resp = await fetch(path, { headers: { "X-EP-Token": token } });
+  const resp = await fetchOrUnreachable(path, { headers: { "X-EP-Token": token } });
   if (!resp.ok) {
     let body: unknown = {};
     try {
@@ -241,6 +266,7 @@ export async function download(path: string, filename: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
+export const getWorkspace = () => api<WorkspacePayload>("/v1/workspace");
 export const getTopics = () => api<{ topics: TopicSummary[] }>("/v1/topics");
 export const getTopic = (id: string) =>
   api<TopicDetail>(`/v1/topics/${encodeURIComponent(id)}`);
@@ -366,6 +392,17 @@ export const postExport = (topicId: string, format: ExportFormat, overwrite = fa
     format,
     overwrite,
   });
+export const archiveRun = (topicId: string) =>
+  apiPost<ArchiveResult>(`/v1/runs/${encodeURIComponent(topicId)}/archive`, {});
+export const unarchiveRun = (topicId: string) =>
+  apiPost<ArchiveResult>(`/v1/runs/${encodeURIComponent(topicId)}/unarchive`, {});
+export const duplicateTopic = (topicId: string, attachProfile = false) =>
+  apiPost<DuplicateTopicResult>(
+    `/v1/topics/${encodeURIComponent(topicId)}/duplicate`,
+    attachProfile ? { attach_profile: true } : {},
+  );
+export const revealTarget = (target: RevealTarget, topicId: string) =>
+  apiPost<RevealResult>("/v1/reveal", { target, topic_id: topicId });
 export const importTopic = (toml: string, overwrite = false) =>
   apiPost<ImportTopicResult>("/v1/topics", { toml, overwrite });
 export const createTopic = (

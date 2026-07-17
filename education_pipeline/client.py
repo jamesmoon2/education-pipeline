@@ -15,7 +15,16 @@ from education_pipeline.daemon import lifecycle
 
 
 class DaemonError(RuntimeError):
-    """Raised when the daemon is unreachable or returns an error envelope."""
+    """Raised when the daemon is unreachable or returns an error envelope.
+
+    ``code`` carries the stable catalog slug from the envelope (spec §7.1)
+    so callers can print the catalog's remediation; ``daemon_unreachable``
+    is synthesized locally when no HTTP response arrived at all.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class DaemonClient:
@@ -33,13 +42,17 @@ class DaemonClient:
             resp = conn.getresponse()
             raw = resp.read()
         except OSError as exc:
-            raise DaemonError(f"daemon unreachable: {exc}") from exc
+            raise DaemonError(
+                f"daemon unreachable: {exc}", code="daemon_unreachable"
+            ) from exc
         finally:
             conn.close()
         data = json.loads(raw or b"{}")
         if resp.status >= 300:
-            message = data.get("error", {}).get("message", f"HTTP {resp.status}")
-            raise DaemonError(message)
+            error = data.get("error", {})
+            message = error.get("message", f"HTTP {resp.status}")
+            code = error.get("code")
+            raise DaemonError(message, code=code if isinstance(code, str) else None)
         return data
 
     def health(self) -> dict:

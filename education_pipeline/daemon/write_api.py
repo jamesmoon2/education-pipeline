@@ -7,7 +7,7 @@ carry a precise conflict code; the store call remains the authority and its
 
 - :class:`read_api.NotFoundError` -> HTTP 404
 - :class:`ConflictError` -> HTTP 409 (codes: ``already_exists``, ``not_ready``,
-  ``job_active``, ``stale_content``)
+  ``job_conflict``, ``stale_content``)
 - ``ConfigError`` propagates -> HTTP 400
 """
 
@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import tomllib
 from pathlib import Path
+from dataclasses import replace
 
 from education_pipeline.config import (
     ConfigError,
@@ -62,13 +63,39 @@ def _require_no_active_job(jobs: JobStore, topic_id: str) -> None:
     job = jobs.any_active_for(topic_id)
     if job is not None:
         raise ConflictError(
-            "job_active",
+            "job_conflict",
             f"job {job.id} is {job.status} for topic {topic_id!r}; "
             "wait for it to finish or cancel it first",
         )
 
 
+def _require_not_archived(runs: RunStore, topic_id: str) -> None:
+    """Refuse mutating actions on an archived course (spec §5.3).
+
+    Read endpoints and the archive/unarchive actions themselves stay open.
+    """
+
+    if runs.is_archived(topic_id):
+        raise ConflictError(
+            "archived_course",
+            f"course {topic_id!r} is archived; unarchive it first",
+        )
+
+
+def archive_run(runs: RunStore, topic_id: str) -> dict:
+    read_api.require_run(runs, topic_id)
+    runs.archive_run(topic_id)
+    return {"topic_id": topic_id, "archived": True}
+
+
+def unarchive_run(runs: RunStore, topic_id: str) -> dict:
+    read_api.require_run(runs, topic_id)
+    runs.unarchive_run(topic_id)
+    return {"topic_id": topic_id, "archived": False}
+
+
 def advance_run(runs: RunStore, jobs: JobStore, topic_id: str) -> dict:
+    _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
     result = runs.advance(topic_id)
     return {
@@ -87,6 +114,7 @@ def prepare_audit(
     """Prepare the optional audit prompt without affecting primary advance."""
 
     read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
     # The frozen action is "prepare or rebuild": repeating the explicit POST
     # rebuilds the fixed prompt path instead of making callers first discover
@@ -122,13 +150,14 @@ def prepare_audit(
 
 def validate_run(runs: RunStore, jobs: JobStore, topic_id: str, phase: str) -> dict:
     read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
     if phase not in {"draft", "final"}:
         raise ConfigError("phase must be 'draft' or 'final'")
     stage = "draft" if phase == "draft" else "repair"
     job = jobs.active_for(topic_id, stage)
     if job is not None:
         raise ConflictError(
-            "job_active", f"job {job.id} is {job.status} for {topic_id}/{stage}"
+            "job_conflict", f"job {job.id} is {job.status} for {topic_id}/{stage}"
         )
     runs.validate_run(topic_id, phase)
     return {
@@ -145,6 +174,7 @@ def create_waiver(
     guide_sha256: str,
     reason: str,
 ) -> dict:
+    _require_not_archived(runs, topic_id)
     payload = read_api.validation_payload(runs, topic_id, phase)
     if payload["state"] != "current":
         raise ConflictError("stale_validation", "validation report or guide input is stale")
@@ -217,6 +247,7 @@ def delete_waiver(runs: RunStore, topic_id: str, phase: str, finding_id: str) ->
     would be racy).
     """
 
+    _require_not_archived(runs, topic_id)
     _, waiver_set = runs.remove_waiver_with_set(topic_id, phase, finding_id)
     value = {
         "schema_version": waiver_set.schema_version,
@@ -238,6 +269,7 @@ def ingest_response(
     force: bool = False,
 ) -> dict:
     read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
     paths = runs.stage_paths(topic_id, stage)
     if paths.response_path.exists() and not force:
@@ -268,6 +300,7 @@ def edit_response(
     base_sha256: str,
 ) -> dict:
     read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
     paths = runs.stage_paths(topic_id, stage)
     if not paths.response_path.exists():
@@ -297,6 +330,7 @@ def approve_stage(
     overwrite: bool = False,
 ) -> dict:
     read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
     paths = runs.stage_paths(topic_id, stage)
     if not paths.response_path.exists():
@@ -322,6 +356,7 @@ def finalize_run(
     runs: RunStore, jobs: JobStore, topic_id: str, *, overwrite: bool = False
 ) -> dict:
     read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
     if not runs.stage_paths(topic_id, "repair").approved_path.exists():
         raise ConflictError(
@@ -346,6 +381,7 @@ def export_run(
     # Deliberately no job guard: export only reads final/ and writes a new
     # file the worker never touches.
     read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
     export_path = runs.export_path(topic_id, format)  # ConfigError on bad format -> 400
     if not runs.is_finalized(topic_id):
         raise ConflictError("not_ready", "run is not finalized; finalize before exporting")
@@ -442,6 +478,65 @@ def create_topic(topics: TopicStore, body: dict, *, overwrite: bool = False) -> 
         )
     saved = topics.save_topic_toml(topic_id, emit_topic_toml(topic), overwrite=overwrite)
     return {"id": saved.id, "title": saved.title}
+
+
+def duplicate_topic(
+    topics: TopicStore,
+    profiles: ProfileStore,
+    topic_id: str,
+    body: dict,
+) -> dict:
+    """Start a new course from an existing brief (spec §5.4).
+
+    Copies only the topic definition under a fresh ``<id>-copy[-N]`` id; run
+    artifacts are never cloned, so the duplicate starts at spec. The optional
+    ``attach_profile`` flag re-attaches the source's learner profile via a
+    fresh snapshot of the profile's CURRENT store bytes.
+    """
+
+    unknown = sorted(set(body) - {"attach_profile"})
+    if unknown:
+        raise ConfigError("unknown duplicate field(s): " + ", ".join(unknown))
+    attach = body.get("attach_profile", False)
+    if not isinstance(attach, bool):
+        raise ConfigError("body field 'attach_profile' must be a boolean")
+    if not topics.topic_path(topic_id).is_file():
+        raise NotFoundError(f"no such topic: {topic_id}")
+
+    profile_id: str | None = None
+    if attach:
+        # Resolve the source attachment before writing anything so a refusal
+        # leaves no half-created duplicate behind.
+        snapshot_path = profiles.topic_profile_snapshot_path(topic_id)
+        if not snapshot_path.is_file():
+            raise ConfigError(
+                f"topic {topic_id!r} has no attached profile to re-attach"
+            )
+        profile_id = profiles.load_topic_profile_snapshot(topic_id).id
+        if not profiles.profile_path(profile_id).is_file():
+            raise NotFoundError("no such profile")
+
+    source = topics.load_topic(topic_id)  # ConfigError on unparseable -> 400
+    new_id = _allocate_copy_id(topics, topic_id)
+    duplicate = replace(source, id=new_id)
+    saved = topics.save_topic_toml(new_id, emit_topic_toml(duplicate))
+
+    payload: dict = {"id": saved.id, "title": saved.title}
+    if attach and profile_id is not None:
+        profiles.attach_profile_to_topic(profile_id, new_id)
+        payload["profile_id"] = profile_id
+    return payload
+
+
+def _allocate_copy_id(topics: TopicStore, topic_id: str) -> str:
+    candidate = f"{topic_id}-copy"
+    suffix = 1
+    while topics.topic_path(candidate).is_file():
+        suffix += 1
+        if suffix > 1000:
+            raise ConfigError(f"no free duplicate id for topic {topic_id!r}")
+        candidate = f"{topic_id}-copy-{suffix}"
+    return candidate
 
 
 def import_profile(profiles: ProfileStore, toml_text: str, *, overwrite: bool = False) -> dict:
@@ -550,6 +645,7 @@ def update_global_plan(config, body: dict) -> dict:
 
 def update_run_plan(runs: RunStore, config, topic_id: str, body: dict) -> dict:
     read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
     overrides_body = body.get("overrides")
     if not isinstance(overrides_body, dict):
         raise ConfigError("body field 'overrides' must be a table")
@@ -591,8 +687,14 @@ def update_run_plan(runs: RunStore, config, topic_id: str, body: dict) -> dict:
 
 
 def attach_profile(
-    profiles: ProfileStore, topic_id: str, profile_id: str, *, overwrite: bool = True
+    profiles: ProfileStore,
+    runs: RunStore,
+    topic_id: str,
+    profile_id: str,
+    *,
+    overwrite: bool = True,
 ) -> dict:
+    _require_not_archived(runs, topic_id)
     if not profiles.profile_path(profile_id).is_file():
         raise NotFoundError("no such profile")
     attachment = profiles.attach_profile_to_topic(profile_id, topic_id, overwrite=overwrite)

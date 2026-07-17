@@ -467,3 +467,184 @@ def _profile_mapping(toml_text: str) -> dict:
     import tomllib
 
     return tomllib.loads(toml_text)
+
+
+# ---------------------------------------------------------------------------
+# validate_workspace / fix_workspace (first-run milestone, spec §3.3)
+
+
+class TestValidateWorkspace:
+    def _codes(self, findings):
+        return sorted(f.code for f in findings)
+
+    def test_empty_directory_reports_missing_subdirs_only(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import validate_workspace
+
+        findings = validate_workspace(tmp_path)
+        assert self._codes(findings) == ["missing_subdir"] * 3
+        assert all(f.severity == "blocking" for f in findings)
+        assert all(f.auto_fixable for f in findings)
+        messages = " ".join(f.message for f in findings)
+        for subdir in ("runs", "topics", "profiles"):
+            assert subdir in messages
+
+    def test_nonexistent_directory_is_scaffoldable(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import validate_workspace
+
+        findings = validate_workspace(tmp_path / "new-ws")
+        assert self._codes(findings) == ["missing_subdir"] * 3
+        assert all(f.auto_fixable for f in findings)
+
+    def test_complete_workspace_has_no_findings(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import validate_workspace
+
+        for subdir in ("runs", "topics", "profiles"):
+            (tmp_path / subdir).mkdir()
+        assert validate_workspace(tmp_path) == []
+
+    def test_partial_workspace_reports_only_missing_subdirs(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import validate_workspace
+
+        (tmp_path / "topics").mkdir()
+        findings = validate_workspace(tmp_path)
+        assert self._codes(findings) == ["missing_subdir", "missing_subdir"]
+        messages = " ".join(f.message for f in findings)
+        assert "runs" in messages and "profiles" in messages
+
+    def test_path_is_file_is_blocking(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import validate_workspace
+
+        target = tmp_path / "not-a-dir"
+        target.write_text("hello", encoding="utf-8")
+        findings = validate_workspace(target)
+        assert self._codes(findings) == ["path_is_file"]
+        assert findings[0].severity == "blocking"
+        assert not findings[0].auto_fixable
+
+    def test_unrecognized_layout_blocks_scaffolding(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import validate_workspace
+
+        (tmp_path / "photos").mkdir()
+        (tmp_path / "notes.txt").write_text("hi", encoding="utf-8")
+        findings = validate_workspace(tmp_path)
+        assert self._codes(findings) == ["unrecognized_layout"]
+        assert findings[0].severity == "blocking"
+        assert not findings[0].auto_fixable
+
+    def test_workspace_marker_beats_unrecognized_layout(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import validate_workspace
+
+        (tmp_path / "photos").mkdir()
+        (tmp_path / "topics").mkdir()
+        findings = validate_workspace(tmp_path)
+        assert self._codes(findings) == ["missing_subdir", "missing_subdir"]
+
+    def test_discovery_dir_counts_as_workspace_marker(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import validate_workspace
+
+        (tmp_path / ".education-pipeline").mkdir()
+        (tmp_path / "unrelated.txt").write_text("x", encoding="utf-8")
+        findings = validate_workspace(tmp_path)
+        assert self._codes(findings) == ["missing_subdir"] * 3
+
+    def test_not_writable_is_blocking(self, tmp_path: Path) -> None:
+        import os
+
+        from education_pipeline.workspace import validate_workspace
+
+        if os.geteuid() == 0:
+            pytest.skip("permission checks are meaningless as root")
+        target = tmp_path / "readonly"
+        for subdir in ("runs", "topics", "profiles"):
+            (target / subdir).mkdir(parents=True)
+        target.chmod(0o500)
+        try:
+            findings = validate_workspace(target)
+        finally:
+            target.chmod(0o700)
+        assert self._codes(findings) == ["not_writable"]
+        assert findings[0].severity == "blocking"
+        assert not findings[0].auto_fixable
+
+    def test_stale_daemon_record_is_warning(self, tmp_path: Path) -> None:
+        from education_pipeline.daemon import lifecycle
+        from education_pipeline.workspace import validate_workspace
+
+        for subdir in ("runs", "topics", "profiles"):
+            (tmp_path / subdir).mkdir()
+        lifecycle.write_discovery(
+            tmp_path, pid=999_999_999, port=1, token="t", version="0"
+        )
+        findings = validate_workspace(tmp_path)
+        assert self._codes(findings) == ["stale_daemon_record"]
+        assert findings[0].severity == "warning"
+        assert findings[0].auto_fixable
+
+    def test_live_daemon_record_is_not_stale(self, tmp_path: Path) -> None:
+        import os
+
+        from education_pipeline.daemon import lifecycle
+        from education_pipeline.workspace import validate_workspace
+
+        for subdir in ("runs", "topics", "profiles"):
+            (tmp_path / subdir).mkdir()
+        lifecycle.write_discovery(
+            tmp_path, pid=os.getpid(), port=1, token="t", version="0"
+        )
+        assert validate_workspace(tmp_path) == []
+
+    def test_unparseable_daemon_record_is_stale(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import validate_workspace
+
+        for subdir in ("runs", "topics", "profiles"):
+            (tmp_path / subdir).mkdir()
+        record = tmp_path / ".education-pipeline" / "daemon.json"
+        record.parent.mkdir()
+        record.write_text("{corrupt", encoding="utf-8")
+        findings = validate_workspace(tmp_path)
+        assert self._codes(findings) == ["stale_daemon_record"]
+
+    def test_findings_carry_remediation_text(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import validate_workspace
+
+        findings = validate_workspace(tmp_path)
+        assert all(f.remediation for f in findings)
+
+
+class TestFixWorkspace:
+    def test_fix_scaffolds_missing_subdirs(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import fix_workspace
+
+        remaining = fix_workspace(tmp_path / "fresh")
+        assert remaining == []
+        for subdir in ("runs", "topics", "profiles"):
+            assert (tmp_path / "fresh" / subdir).is_dir()
+
+    def test_fix_removes_stale_daemon_record(self, tmp_path: Path) -> None:
+        from education_pipeline.daemon import lifecycle
+        from education_pipeline.workspace import fix_workspace
+
+        for subdir in ("runs", "topics", "profiles"):
+            (tmp_path / subdir).mkdir()
+        lifecycle.write_discovery(
+            tmp_path, pid=999_999_999, port=1, token="t", version="0"
+        )
+        assert fix_workspace(tmp_path) == []
+        assert not lifecycle.discovery_path(tmp_path).exists()
+
+    def test_fix_never_scaffolds_into_unrecognized_layout(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import fix_workspace
+
+        (tmp_path / "photos").mkdir()
+        remaining = fix_workspace(tmp_path)
+        assert [f.code for f in remaining] == ["unrecognized_layout"]
+        assert not (tmp_path / "runs").exists()
+
+    def test_fix_leaves_non_fixable_findings(self, tmp_path: Path) -> None:
+        from education_pipeline.workspace import fix_workspace
+
+        target = tmp_path / "not-a-dir"
+        target.write_text("hello", encoding="utf-8")
+        remaining = fix_workspace(target)
+        assert [f.code for f in remaining] == ["path_is_file"]
+        assert target.is_file()

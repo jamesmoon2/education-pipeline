@@ -822,6 +822,56 @@ class RunStore:
             ),
         )
 
+    def archive_run(self, topic_id: str) -> None:
+        """Flag a run as archived (spec §5.3). Nothing moves on disk."""
+
+        self._set_archived(topic_id, True)
+
+    def unarchive_run(self, topic_id: str) -> None:
+        """Clear the archived flag; a pure flag flip."""
+
+        self._set_archived(topic_id, False)
+
+    def _set_archived(self, topic_id: str, archived: bool) -> None:
+        safe_id = _artifact_id(topic_id, "topic id")
+        with self._manifest_write_lock(safe_id):
+            manifest = self.read_manifest(safe_id)  # ConfigError when no run
+            manifest["archived"] = archived
+            stamp_key = "archived_at" if archived else "unarchived_at"
+            manifest[stamp_key] = datetime.now(timezone.utc).isoformat()
+            _write_manifest(self.manifest_path(safe_id), manifest)
+
+    def is_archived(self, topic_id: str) -> bool:
+        """True only when a run manifest exists and carries the flag."""
+
+        if not self.manifest_path(topic_id).is_file():
+            return False
+        try:
+            manifest = self.read_manifest(topic_id)
+        except ConfigError:
+            return False
+        return manifest.get("archived") is True
+
+    def last_activity_at(self, topic_id: str) -> str | None:
+        """ISO-8601 UTC mtime of the newest run artifact, or None without a run."""
+
+        run = self.run_dir(topic_id)
+        if not run.is_dir():
+            return None
+        newest = None
+        for path in run.rglob("*"):
+            try:
+                if not path.is_file():
+                    continue
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue  # racing deletion; skip
+            if newest is None or mtime > newest:
+                newest = mtime
+        if newest is None:
+            return None
+        return datetime.fromtimestamp(newest, timezone.utc).isoformat()
+
     def read_manifest(self, topic_id: str) -> dict:
         path = self.manifest_path(topic_id)
         try:

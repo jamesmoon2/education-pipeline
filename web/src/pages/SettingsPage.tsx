@@ -15,6 +15,7 @@ import type {
   StageOverride,
 } from "../api/types";
 import { useAction } from "../hooks/useAction";
+import { resetWelcomeDismissal } from "../components/WelcomePanel";
 
 // Mirrors PlanStageRow's LOCAL_ONLY_STAGES: these stages never carry a
 // model-plan override (the run engine drives them deterministically).
@@ -68,6 +69,7 @@ export default function SettingsPage() {
   const [loadError, setLoadError] = useState<Error | null>(null);
   const [overrides, setOverrides] = useState<Record<string, StageOverride>>({});
   const [stale, setStale] = useState(false);
+  const [welcomeReset, setWelcomeReset] = useState(false);
   const save = useAction();
 
   const load = async () => {
@@ -144,6 +146,27 @@ export default function SettingsPage() {
             </li>
           ))}
         </ul>
+      </section>
+
+      <section aria-labelledby="welcome-control-heading">
+        <h3 id="welcome-control-heading">First-run welcome</h3>
+        <p>
+          <button
+            type="button"
+            onClick={() => {
+              resetWelcomeDismissal();
+              setWelcomeReset(true);
+            }}
+          >
+            Show welcome
+          </button>{" "}
+          {welcomeReset && (
+            <span role="status">
+              The welcome panel will show on the course library while the workspace has no
+              runs yet.
+            </span>
+          )}
+        </p>
       </section>
 
       <section aria-labelledby="plan-heading">

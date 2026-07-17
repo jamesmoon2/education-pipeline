@@ -11,3 +11,70 @@ def test_pytest_timeout_is_active_with_a_global_timeout(pytestconfig):
 
     assert pytestconfig.pluginmanager.hasplugin("timeout")
     assert pytestconfig.getoption("timeout") == 60
+
+
+# ---------------------------------------------------------------------------
+# Cockpit asset bundling (first-run milestone, spec §2.1)
+
+
+def test_copy_dist_replaces_destination_cleanly(tmp_path):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    try:
+        from build_webdist import copy_dist
+    finally:
+        sys.path.pop(0)
+
+    source = tmp_path / "dist"
+    (source / "assets").mkdir(parents=True)
+    (source / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    (source / "assets" / "app.js").write_text("js", encoding="utf-8")
+
+    destination = tmp_path / "webdist"
+    destination.mkdir()
+    (destination / "stale.txt").write_text("old", encoding="utf-8")
+
+    assert copy_dist(source, destination) == 2
+    assert (destination / "index.html").is_file()
+    assert (destination / "assets" / "app.js").is_file()
+    assert not (destination / "stale.txt").exists()
+
+
+def test_copy_dist_refuses_source_without_index(tmp_path):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    try:
+        from build_webdist import copy_dist
+    finally:
+        sys.path.pop(0)
+
+    source = tmp_path / "dist"
+    source.mkdir()
+    with __import__("pytest").raises(SystemExit):
+        copy_dist(source, tmp_path / "webdist")
+
+
+def test_webdist_is_declared_as_package_data():
+    import tomllib
+    from pathlib import Path
+
+    pyproject = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    patterns = pyproject["tool"]["setuptools"]["package-data"]["education_pipeline"]
+    assert any(pattern.startswith("_webdist") for pattern in patterns)
+
+
+def test_webdist_is_gitignored():
+    from pathlib import Path
+
+    gitignore = (Path(__file__).resolve().parents[1] / ".gitignore").read_text(
+        encoding="utf-8"
+    )
+    assert "education_pipeline/_webdist/" in gitignore

@@ -554,18 +554,36 @@ private profile values, goals, exclusion reasons, or source annotations.
 
 ### P1 — First-run and course-management experience
 
-**Status: Design specified 2026-07-12** in
-[`docs/superpowers/specs/2026-07-12-first-run-course-management-design.md`](superpowers/specs/2026-07-12-first-run-course-management-design.md).
-Launcher-first approach: cockpit assets bundle into the wheel, a user-level
-workspace registry backs `education-pipeline ui`, and library/error work lands
-as thin layers on existing surfaces. Profile editing and blueprint
-recommendation stay in their own P1 milestones.
+**Status: Delivered 2026-07-16** (closeout evidence in
+[`docs/superpowers/plans/2026-07-16-first-run-course-management.md`](superpowers/plans/2026-07-16-first-run-course-management.md)
+Wave Log; launcher/orchestration tests in `tests/test_ui.py` and
+`tests/test_registry.py`; reveal security tests in `tests/test_reveal.py`;
+browser acceptance in `web/e2e/new-run.spec.ts` and `web/e2e/library.spec.ts`;
+the CI `packaging-smoke` job installs the built wheel into a clean venv and
+asserts `education-pipeline ui --no-browser` serves the cockpit index).
+Accepted limitations are recorded in the post-milestone audit ledger named by
+the closeout plan. Profile editing and blueprint recommendation remain in
+their own P1 milestones per the spec's out-of-scope list.
+
+Milestone specification:
+
+- [`docs/superpowers/specs/2026-07-12-first-run-course-management-design.md`](superpowers/specs/2026-07-12-first-run-course-management-design.md)
 
 - Add workspace selection and setup validation.
 - Add a guided New Course flow.
 - Add course library filtering, duplication, archiving, and reveal-in-files.
 - Add an `education-pipeline ui` launcher or equivalent one-step entry point.
 - Replace developer-oriented errors with user-directed recovery actions.
+
+**Exit evidence:** `education-pipeline ui` resolves a workspace (flag →
+user-level registry → first-run creation prompt), validates/scaffolds it, and
+serves the wheel-bundled cockpit; the library filters/sorts an enriched
+payload and supports archive/unarchive (manifest flag with an
+`archived_course` write guard), duplicate-from-brief, and workspace-confined
+reveal-in-files with a copyable-path fallback; first-run onboarding is a
+dismissable welcome panel plus purposeful empty states; every daemon error
+carries a stable catalog code that the cockpit's `ErrorNotice` and the CLI
+map to user-directed recovery actions.
 
 ### P1 — Blueprint-driven pedagogy
 

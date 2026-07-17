@@ -242,7 +242,7 @@ def test_malformed_json_body_returns_400(server):
     body = b"{not valid json"
     status, payload = _raw_post(server, "/v1/jobs", body, str(len(body)))
     assert status == 400
-    assert payload["error"]["code"] == "bad_request"
+    assert payload["error"]["code"] == "invalid_request"
     # server survives: a well-formed request still succeeds afterward
     status, health = _req(server, "GET", "/v1/health")
     assert status == 200
@@ -251,7 +251,7 @@ def test_malformed_json_body_returns_400(server):
 def test_non_numeric_content_length_returns_400(server):
     status, payload = _raw_post(server, "/v1/jobs", b"{}", "notanumber")
     assert status == 400
-    assert payload["error"]["code"] == "bad_request"
+    assert payload["error"]["code"] == "invalid_request"
 
 
 def test_oversized_content_length_returns_400(server):
@@ -261,7 +261,7 @@ def test_oversized_content_length_returns_400(server):
     oversized = 2 * 1024 * 1024  # 2 MiB > the 1 MiB cap
     status, payload = _raw_post(server, "/v1/jobs", b"{}", str(oversized))
     assert status == 400
-    assert payload["error"]["code"] == "bad_request"
+    assert payload["error"]["code"] == "invalid_request"
     # server survives: a well-formed request still succeeds afterward
     status, health = _req(server, "GET", "/v1/health")
     assert status == 200
@@ -638,7 +638,7 @@ def test_stage_content_includes_response_sha256(server):
 def test_stage_content_bad_stage_is_400(server):
     status, body = _req(server, "GET", "/v1/runs/t/stages/banana")
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
 
 def test_manifest_endpoint(server):
@@ -916,7 +916,7 @@ def test_json_api_response_has_no_csp_header(server):
 def test_no_dist_returns_503(server):
     status, body = _req(server, "GET", "/", token=None)
     assert status == 503
-    assert body["error"]["code"] == "ui_unavailable"
+    assert body["error"]["code"] == "web_assets_missing"
 
 
 def test_write_endpoints_require_token(server):
@@ -1101,7 +1101,7 @@ def test_personalization_aggregate_redacts_malformed_profile_error_path(
     assert status == 400
     assert body == {
         "error": {
-            "code": "bad_request",
+            "code": "invalid_request",
             "message": "personalization state is unavailable",
         }
     }
@@ -1652,7 +1652,7 @@ def test_run_writes_blocked_while_job_active(server, monkeypatch):
     ):
         status, resp = _req(server, "POST", method_path, body=body)
         assert status == 409, method_path
-        assert resp["error"]["code"] == "job_active", method_path
+        assert resp["error"]["code"] == "job_conflict", method_path
 
     status, _ = _req(server, "POST", f"/v1/jobs/{job['id']}/cancel")
     assert status == 200
@@ -1792,7 +1792,7 @@ def test_profile_preview_rejects_wrong_nested_type_and_unknown_key(server):
         body={"profile": wrong_nested},
     )
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
     unknown = _api_profile("unknown-key")
     unknown["learning_preferences"]["secret_copy"] = "forbidden"
@@ -1803,7 +1803,7 @@ def test_profile_preview_rejects_wrong_nested_type_and_unknown_key(server):
         body={"profile": unknown},
     )
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
 
 def test_profile_put_create_update_and_get_status_shapes(server):
@@ -1911,7 +1911,7 @@ def test_profile_put_conflicts_expose_only_fresh_hash_and_no_values(server):
     )
     assert status == 409
     assert existing["error"]["code"] == "already_exists"
-    assert existing["error"]["details"] == {
+    assert existing["error"]["detail"] == {
         "current_sha256": created["content_sha256"]
     }
 
@@ -1924,12 +1924,12 @@ def test_profile_put_conflicts_expose_only_fresh_hash_and_no_values(server):
     )
     assert status == 409
     assert stale["error"]["code"] == "stale_content"
-    assert stale["error"]["details"] == {
+    assert stale["error"]["detail"] == {
         "current_sha256": created["content_sha256"]
     }
     rendered = json.dumps([existing, stale], sort_keys=True)
     assert "PLANTED_HTTP_PRIVATE" not in rendered
-    assert set(stale["error"]["details"]) == {"current_sha256"}
+    assert set(stale["error"]["detail"]) == {"current_sha256"}
 
 
 def test_profile_duplicate_endpoint_success_collision_and_missing_source(server):
@@ -1961,7 +1961,7 @@ def test_profile_duplicate_endpoint_success_collision_and_missing_source(server)
     )
     assert status == 409
     assert collision["error"]["code"] == "already_exists"
-    assert collision["error"]["details"] == {
+    assert collision["error"]["detail"] == {
         "current_sha256": duplicated["content_sha256"]
     }
 
@@ -2178,7 +2178,7 @@ def test_edit_response_put_blocked_while_job_active(server, monkeypatch):
         "/v1/runs/t/stages/draft/response",
         body={"text": "V2", "base_sha256": _sha_hex("V1")},
     )
-    assert status == 409 and body["error"]["code"] == "job_active"
+    assert status == 409 and body["error"]["code"] == "job_conflict"
 
     _req(server, "POST", f"/v1/jobs/{job['id']}/cancel")
     for _ in range(200):
@@ -2355,7 +2355,7 @@ def test_create_waiver_over_http_with_corrupt_element_returns_400_not_dropped_co
         },
     )
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
     # the corrupt file on disk is untouched: no orphaned mkstemp temp file
     # (``.tmp-<random>.json``, per ``_write_bytes_atomic``), no partial write
     assert not list(waivers_path.parent.glob(f".tmp-*{waivers_path.suffix}"))
@@ -2447,7 +2447,7 @@ def test_get_waivers_over_http_with_corrupt_file_returns_400_not_200(server, tmp
 
     status, body = _req(server, "GET", "/v1/runs/g/validation/draft/waivers")
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
 
 def test_delete_waiver_route_removes_the_waiver(server, tmp_path):
@@ -2737,7 +2737,7 @@ def test_put_config_plan_unknown_model_returns_400_and_writes_nothing(tmp_path, 
             },
         )
         assert status == 400
-        assert body["error"]["code"] == "bad_request"
+        assert body["error"]["code"] == "invalid_request"
         # The failed PUT wrote nothing: no workspace plan file was created.
         assert not plan_file.exists()
         assert config.plan_sha256() == base_sha256
@@ -2971,7 +2971,7 @@ def test_put_run_plan_sets_override_then_clears_it(run_plan_server):
 def test_put_run_plan_wrong_shape_nested_value_is_400_not_500(run_plan_server, body):
     status, payload = _req(run_plan_server, "PUT", "/v1/runs/t/plan", body=body)
     assert status == 400
-    assert payload["error"]["code"] == "bad_request"
+    assert payload["error"]["code"] == "invalid_request"
 
 
 def test_put_run_plan_invalid_model_is_400_and_overrides_unchanged(run_plan_server):
@@ -2982,7 +2982,7 @@ def test_put_run_plan_invalid_model_is_400_and_overrides_unchanged(run_plan_serv
         body={"overrides": {"draft": {"model": "does-not-exist"}}},
     )
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
     status, reread = _req(run_plan_server, "GET", "/v1/runs/t/plan")
     assert status == 200
@@ -3001,7 +3001,7 @@ def test_put_run_plan_unknown_topic_is_404(run_plan_server):
 def test_put_run_plan_missing_overrides_field_is_400(run_plan_server):
     status, body = _req(run_plan_server, "PUT", "/v1/runs/t/plan", body={})
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
 
 def test_get_run_plan_with_json_array_overrides_file_is_400_not_500(run_plan_server, tmp_path):
@@ -3010,7 +3010,7 @@ def test_get_run_plan_with_json_array_overrides_file_is_400_not_500(run_plan_ser
     status, body = _req(run_plan_server, "GET", "/v1/runs/t/plan")
 
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
 
 def test_get_run_plan_with_non_mapping_stages_overrides_file_is_400(run_plan_server, tmp_path):
@@ -3021,7 +3021,7 @@ def test_get_run_plan_with_non_mapping_stages_overrides_file_is_400(run_plan_ser
     status, body = _req(run_plan_server, "GET", "/v1/runs/t/plan")
 
     assert status == 400
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "invalid_request"
 
 
 def test_get_run_plan_degrades_stage_when_stored_override_invalidated_by_catalog_change(
@@ -3155,7 +3155,162 @@ def test_get_run_plan_degrades_stage_when_stored_override_invalidated_by_catalog
             body={"overrides": {"draft": {"model": "premium"}}},
         )
         assert status == 400
-        assert body["error"]["code"] == "bad_request"
+        assert body["error"]["code"] == "invalid_request"
     finally:
         worker.stop()
         srv.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Course library: enriched list, archive, duplicate, reveal (spec §5)
+
+
+def _topic_entry(port, topic_id):
+    status, body = _req(port, "GET", "/v1/topics")
+    assert status == 200
+    return next(t for t in body["topics"] if t["id"] == topic_id)
+
+
+def test_topics_list_is_enriched(server):
+    entry = _topic_entry(server, "t")
+    assert entry["archived"] is False
+    assert isinstance(entry["last_activity"], str)
+    assert entry["profile_id"] is None
+    completion = entry["completion"]
+    assert completion["stages_total"] == 5
+    assert completion["stages_approved"] == 0
+    assert completion["exported"] is False
+
+
+def test_topics_list_enrichment_null_without_run(server_with_context):
+    port, context = server_with_context
+    (context.root / "topics" / "norun.toml").write_text(
+        'schema_version = 1\nid = "norun"\ntitle = "No Run"\n', encoding="utf-8"
+    )
+    entry = _topic_entry(port, "norun")
+    assert entry["run"] is None
+    assert entry["archived"] is False
+    assert entry["last_activity"] is None
+    assert entry["completion"] is None
+
+
+def test_topics_list_reports_attached_profile_id(server_with_context):
+    port, context = server_with_context
+    status, _ = _req(
+        port, "POST", "/v1/topics/t/profile", body={"profile_id": "p"}
+    )
+    assert status == 200
+    assert _topic_entry(port, "t")["profile_id"] == "p"
+
+
+def test_archive_route_flips_flag_and_hides_nothing(server_with_context):
+    port, context = server_with_context
+    status, body = _req(port, "POST", "/v1/runs/t/archive", body={})
+    assert status == 200
+    assert body["archived"] is True
+    assert _topic_entry(port, "t")["archived"] is True
+    # Reads still work on an archived course.
+    status, _ = _req(port, "GET", "/v1/runs/t")
+    assert status == 200
+    status, body = _req(port, "POST", "/v1/runs/t/unarchive", body={})
+    assert status == 200
+    assert body["archived"] is False
+
+
+def test_archive_route_404_without_run(server_with_context):
+    port, context = server_with_context
+    (context.root / "topics" / "norun.toml").write_text(
+        'schema_version = 1\nid = "norun"\ntitle = "No Run"\n', encoding="utf-8"
+    )
+    status, body = _req(port, "POST", "/v1/runs/norun/archive", body={})
+    assert status == 404
+    assert body["error"]["code"] == "not_found"
+
+
+def test_archived_course_blocks_writes_over_http(server):
+    status, _ = _req(server, "POST", "/v1/runs/t/archive", body={})
+    assert status == 200
+    status, body = _req(server, "POST", "/v1/runs/t/advance", body={})
+    assert status == 409
+    assert body["error"]["code"] == "archived_course"
+    status, body = _req(
+        server, "POST", "/v1/jobs", body={"topic_id": "t", "stage": "draft"}
+    )
+    assert status == 409
+    assert body["error"]["code"] == "archived_course"
+
+
+def test_duplicate_route_creates_copy(server):
+    status, body = _req(server, "POST", "/v1/topics/t/duplicate", body={})
+    assert status == 201
+    assert body == {"id": "t-copy", "title": "Test Topic"}
+    entry = _topic_entry(server, "t-copy")
+    assert entry["run"] is None
+
+
+def test_reveal_route_success_returns_path(server_with_context, monkeypatch):
+    port, context = server_with_context
+    monkeypatch.setenv("EP_REVEAL_OPENER", "/bin/true")
+    status, body = _req(
+        port, "POST", "/v1/reveal", body={"target": "run", "topic_id": "t"}
+    )
+    assert status == 200
+    assert body["path"] == str(context.runs.run_dir("t").resolve())
+
+
+def test_reveal_route_failure_is_reveal_unsupported_with_path(
+    server_with_context, monkeypatch
+):
+    port, context = server_with_context
+    monkeypatch.setenv("EP_REVEAL_OPENER", "/bin/false")
+    status, body = _req(
+        port, "POST", "/v1/reveal", body={"target": "run", "topic_id": "t"}
+    )
+    assert status == 422
+    assert body["error"]["code"] == "reveal_unsupported"
+    assert body["error"]["detail"]["path"] == str(context.runs.run_dir("t").resolve())
+
+
+def test_reveal_route_rejects_unknown_target(server, monkeypatch):
+    monkeypatch.setenv("EP_REVEAL_OPENER", "/bin/true")
+    status, body = _req(
+        server, "POST", "/v1/reveal", body={"target": "responses", "topic_id": "t"}
+    )
+    assert status == 400
+    assert body["error"]["code"] == "invalid_request"
+
+
+# ---------------------------------------------------------------------------
+# Workspace read endpoint (spec §4.1)
+
+
+def test_workspace_payload_counts_and_first_run(server_with_context):
+    port, context = server_with_context
+    status, body = _req(port, "GET", "/v1/workspace")
+    assert status == 200
+    assert body["path"] == str(context.root)
+    # Fixture workspace: two topics with runs, one profile.
+    assert body["counts"] == {"topics": 2, "runs": 2, "profiles": 1}
+    assert body["first_run"] is False
+
+
+def test_workspace_first_run_true_with_zero_runs(tmp_path, monkeypatch):
+    import shutil
+
+    ws = tmp_path / "fresh"
+    (ws / "topics").mkdir(parents=True)
+    srv, worker, context = _start_server(ws, monkeypatch)
+    try:
+        shutil.rmtree(ws / "runs")
+        status, body = _req(srv.server_port, "GET", "/v1/workspace")
+        assert status == 200
+        assert body["counts"]["runs"] == 0
+        assert body["first_run"] is True
+    finally:
+        worker.stop()
+        srv.shutdown()
+
+
+def test_workspace_requires_token(server):
+    status, body = _req(server, "GET", "/v1/workspace", token="wrong")
+    assert status == 401

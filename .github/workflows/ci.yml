@@ -101,6 +101,50 @@ jobs:
         run: npm run e2e
         working-directory: web
 
+  packaging-smoke:
+    name: packaging smoke (wheel serves the cockpit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Build cockpit and bundle into the package
+        run: python scripts/build_webdist.py
+
+      - name: Build the wheel
+        run: |
+          python -m pip install build
+          python -m build --wheel
+
+      - name: Install the wheel into a clean venv
+        run: |
+          python -m venv /tmp/smoke-venv
+          /tmp/smoke-venv/bin/pip install dist/*.whl
+
+      - name: Launch ui headless and assert the cockpit index is served
+        run: |
+          mkdir -p /tmp/smoke-ws
+          /tmp/smoke-venv/bin/education-pipeline ui --workspace /tmp/smoke-ws --no-browser
+          PORT=$(python -c "import json; print(json.load(open('/tmp/smoke-ws/.education-pipeline/daemon.json'))['port'])")
+          curl -fsS "http://127.0.0.1:${PORT}/" | grep -qi "<!doctype html"
+          echo "cockpit index served on port ${PORT}"
+          /tmp/smoke-venv/bin/education-pipeline --workspace /tmp/smoke-ws daemon stop
+
   artifact-leak:
     name: no private artifacts committed
     runs-on: ubuntu-latest
