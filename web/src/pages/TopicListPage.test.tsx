@@ -106,7 +106,7 @@ describe("TopicListPage", () => {
     const link = await screen.findByRole("link", { name: "systems-thinking" });
     expect(link).toHaveAttribute("href", "/topics/systems-thinking");
     expect(screen.getByText("Systems Thinking")).toBeInTheDocument();
-    expect(screen.getByText("write_prompt")).toBeInTheDocument();
+    expect(screen.getByText("Write the next prompt")).toBeInTheDocument();
   });
 
   it("shows completion progress and export state", async () => {

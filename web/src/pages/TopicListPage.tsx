@@ -14,6 +14,7 @@ import WelcomePanel from "../components/WelcomePanel";
 import ImportForm from "../components/ImportForm";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
+import { nextActionLabel } from "../lib/labels";
 import type { ProfileSummary, TopicSummary } from "../api/types";
 
 type StatusFilter = "all" | "no_run" | "in_progress" | "finalized";
@@ -187,10 +188,10 @@ export default function TopicListPage() {
             <label>
               Status
               <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
-                <option value="all">all</option>
-                <option value="no_run">no_run</option>
-                <option value="in_progress">in_progress</option>
-                <option value="finalized">finalized</option>
+                <option value="all">All</option>
+                <option value="no_run">No run yet</option>
+                <option value="in_progress">In progress</option>
+                <option value="finalized">Finalized</option>
               </select>
             </label>{" "}
             <label>
@@ -207,9 +208,9 @@ export default function TopicListPage() {
             <label>
               Sort by
               <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
-                <option value="last_activity">last activity</option>
-                <option value="title">title</option>
-                <option value="completion">completion</option>
+                <option value="last_activity">Last activity</option>
+                <option value="title">Title</option>
+                <option value="completion">Completion</option>
               </select>
             </label>{" "}
             <label>
@@ -255,10 +256,15 @@ export default function TopicListPage() {
                 <tr key={t.id} className={t.archived ? "archived-row" : undefined}>
                   <td>
                     <Link to={`/topics/${t.id}`}>{t.id}</Link>
-                    {t.archived && <span className="badge"> archived</span>}
+                    {t.archived && (
+                      <>
+                        {" "}
+                        <span className="badge">Archived</span>
+                      </>
+                    )}
                   </td>
                   <td>{t.error ? <span className="error">{t.error}</span> : (t.title ?? "—")}</td>
-                  <td>{t.run ? t.run.next_action.action : "no run"}</td>
+                  <td>{t.run ? nextActionLabel(t.run.next_action.action) : "No run yet"}</td>
                   <td>{formatActivity(t.last_activity)}</td>
                   <td>
                     {t.completion
@@ -267,6 +273,11 @@ export default function TopicListPage() {
                       : "—"}
                   </td>
                   <td>
+                    {t.profile_id && (
+                      <>
+                        <span className="attached-profile">{t.profile_id}</span>{" "}
+                      </>
+                    )}
                     <AttachProfileControl topicId={t.id} profiles={profiles} onDone={refresh} />
                   </td>
                   <td className="library-actions">

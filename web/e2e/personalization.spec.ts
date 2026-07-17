@@ -262,7 +262,7 @@ test("personalization milestone: private profile through safe audited export", a
   await expect(page).toHaveURL(new RegExp(`/profiles/${PROFILE_ID}$`));
 
   // Attach the structured profile to the topic through the cockpit.
-  await page.getByRole("link", { name: "Education Pipeline Cockpit", exact: true }).click();
+  await page.getByRole("link", { name: "Education Pipeline", exact: true }).click();
   await importTopic(page, TOPIC, "Personalization milestone");
   const topicRow = page.getByRole("row").filter({ hasText: TOPIC });
   await topicRow.getByLabel(`Attach profile to ${TOPIC}`, { exact: true }).selectOption(PROFILE_ID);
@@ -426,7 +426,7 @@ test("personalization milestone: private profile through safe audited export", a
   }
 
   // A second interactive-guide run without an attachment exercises the no-profile state.
-  await page.getByRole("link", { name: "Education Pipeline Cockpit", exact: true }).click();
+  await page.getByRole("link", { name: "Education Pipeline", exact: true }).click();
   await importTopic(page, NO_PROFILE_TOPIC, "No profile acceptance");
   await page.getByRole("link", { name: NO_PROFILE_TOPIC, exact: true }).click();
   await page.getByRole("button", { name: "Advance", exact: true }).click();

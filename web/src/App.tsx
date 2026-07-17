@@ -1,4 +1,4 @@
-import { Link, Route, Routes } from "react-router-dom";
+import { Link, NavLink, Route, Routes } from "react-router-dom";
 import NewRunPage from "./pages/NewRunPage";
 import RunBoardPage from "./pages/RunBoardPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -9,17 +9,32 @@ import ProfileEditorPage from "./pages/ProfileEditorPage";
 
 export default function App() {
   return (
-    <div className="app">
-      <header>
-        <h1>
-          <Link to="/">Education Pipeline Cockpit</Link>
-        </h1>
-        <nav>
-          <Link to="/profiles">Profiles</Link>
-          <Link to="/settings">Settings</Link>
+    <div className="app-shell">
+      <header className="app-rail">
+        <Link to="/" className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </span>
+          Education Pipeline
+        </Link>
+        <nav className="rail-nav" aria-label="Primary">
+          <NavLink to="/" end>
+            Courses
+          </NavLink>
+          <NavLink to="/new">New course</NavLink>
+          <NavLink to="/profiles" end>
+            Profiles
+          </NavLink>
+          <NavLink to="/settings">Settings</NavLink>
         </nav>
+        <p className="rail-footer">
+          <strong>Stored on this device</strong>
+          Courses, profiles, and runs live in your local workspace.
+        </p>
       </header>
-      <main>
+      <main className="workspace">
         <Routes>
           <Route path="/" element={<TopicListPage />} />
           <Route path="/new" element={<NewRunPage />} />
