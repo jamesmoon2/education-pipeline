@@ -102,8 +102,19 @@ jobs:
         working-directory: web
 
   packaging-smoke:
-    name: packaging smoke (wheel serves the cockpit)
-    runs-on: ubuntu-latest
+    # Verifies package installation on every supported OS (PRD §10 P2):
+    # build the wheel once per OS, install it into a clean venv, and assert
+    # the installed CLI works and `ui` serves the bundled cockpit.
+    name: packaging smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        # bash exists on all three runners; keeps the steps single-source.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -133,17 +144,41 @@ jobs:
 
       - name: Install the wheel into a clean venv
         run: |
-          python -m venv /tmp/smoke-venv
-          /tmp/smoke-venv/bin/pip install dist/*.whl
+          python -m venv "$RUNNER_TEMP/smoke-venv"
+          if [ -x "$RUNNER_TEMP/smoke-venv/bin/python" ]; then
+            VENV_PY="$RUNNER_TEMP/smoke-venv/bin/python"
+          else
+            VENV_PY="$RUNNER_TEMP/smoke-venv/Scripts/python.exe"
+          fi
+          echo "VENV_PY=$VENV_PY" >> "$GITHUB_ENV"
+          "$VENV_PY" -m pip install dist/*.whl
 
-      - name: Launch ui headless and assert the cockpit index is served
+      - name: Installed CLI smoke test
         run: |
-          mkdir -p /tmp/smoke-ws
-          /tmp/smoke-venv/bin/education-pipeline ui --workspace /tmp/smoke-ws --no-browser
-          PORT=$(python -c "import json; print(json.load(open('/tmp/smoke-ws/.education-pipeline/daemon.json'))['port'])")
-          curl -fsS "http://127.0.0.1:${PORT}/" | grep -qi "<!doctype html"
-          echo "cockpit index served on port ${PORT}"
-          /tmp/smoke-venv/bin/education-pipeline --workspace /tmp/smoke-ws daemon stop
+          "$VENV_PY" -m education_pipeline --help > /dev/null
+          "$VENV_PY" -m education_pipeline blueprints > /dev/null
+
+      # Known v0.1 gap: the daemon cannot run on Windows —
+      # lifecycle.is_pid_alive probes with os.kill(pid, 0), which on Windows
+      # unconditionally terminates the target process, so any liveness check
+      # would kill the daemon it is checking. The manual CLI path works on
+      # Windows; daemon/cockpit support is tracked in
+      # docs/release-checklist.md (PRD §15 open question 5).
+      - name: Launch ui headless and assert the cockpit index is served
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p "$RUNNER_TEMP/smoke-ws"
+          "$VENV_PY" -m education_pipeline ui --workspace "$RUNNER_TEMP/smoke-ws" --no-browser
+          "$VENV_PY" - <<'PYEOF'
+          import json, os, pathlib, urllib.request
+          workspace = pathlib.Path(os.environ["RUNNER_TEMP"]) / "smoke-ws"
+          record = json.loads((workspace / ".education-pipeline" / "daemon.json").read_text(encoding="utf-8"))
+          with urllib.request.urlopen(f"http://127.0.0.1:{record['port']}/") as response:
+              head = response.read(512).decode("utf-8", "replace")
+          assert "<!doctype html" in head.lower(), head
+          print(f"cockpit index served on port {record['port']}")
+          PYEOF
+          "$VENV_PY" -m education_pipeline --workspace "$RUNNER_TEMP/smoke-ws" daemon stop
 
   artifact-leak:
     name: no private artifacts committed

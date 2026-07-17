@@ -1,0 +1,40 @@
+{
+  "audit": {
+    "safe_finding_ids": [],
+    "safe_trace_projection_sha256": "2a8db5c7e60489290879e82fec7dd211033272d9827b1f116fec5667c68f8966",
+    "state": "not_run"
+  },
+  "export": {
+    "file_sha256": "4d23be3596dde28d1d1d7170c157dd564bbee348bb3192a3fee6fcc8126455e5",
+    "input_sha256": "e990cf2bc400df95cef67f16728462c648df6c16640bd45b82fffa77a94903f7",
+    "runtime_css_sha256": "859a00a9c82b75142cfc3d9b214c85c0014671b1b30267fd142e1faeffb3544a",
+    "runtime_js_sha256": "4271a720eb357be0d4f1a39448d6f9e38daa4d354ca2a5fa2292a8f07a1dab25",
+    "runtime_version": "1.0"
+  },
+  "gate": {
+    "effective_blocking": 0,
+    "open": true
+  },
+  "quality_report_schema_version": 2,
+  "report": {
+    "findings": [],
+    "guide_schema_version": "1.1",
+    "guide_sha256": "2ae762c2629b5789bab67a271d1ded68d359dd0e1003d5f721b5b0b55b1dfa87",
+    "phase": "final",
+    "report_schema_version": 3,
+    "summary": {
+      "blocking": 0,
+      "errors": 0,
+      "info": 0,
+      "warnings": 0
+    },
+    "validator_version": "1"
+  },
+  "waivers": {
+    "applied": [],
+    "guide_sha256": "2ae762c2629b5789bab67a271d1ded68d359dd0e1003d5f721b5b0b55b1dfa87",
+    "orphaned": [],
+    "rejected": [],
+    "stale": false
+  }
+}

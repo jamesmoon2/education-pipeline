@@ -1,0 +1,11 @@
+schema_version = 1
+id = "feedback-loops"
+title = "Thinking in Feedback Loops"
+brief = "A practical introduction to reinforcing and balancing feedback, delays, and choosing interventions."
+audience = "a project manager who learns best from concrete, everyday examples"
+goals = [
+  "recognize reinforcing and balancing feedback loops",
+  "choose interventions that respect delays",
+]
+time_budget_minutes = 15
+blueprint = "conceptual-foundations"
