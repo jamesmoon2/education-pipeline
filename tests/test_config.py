@@ -15,6 +15,9 @@ from education_pipeline import (
 )
 from education_pipeline.config import (
     OPTIONAL_STAGES,
+    PRESET_STAGES,
+    Preset,
+    PresetStage,
     REASONING_STAGES,
     REQUIRED_STAGES,
     SUPPORTED_STAGES,
@@ -480,3 +483,101 @@ def test_apply_overrides_lenient_rejects_non_table_stages():
 
     with pytest.raises(ConfigError, match="overrides\\['stages'\\]"):
         apply_overrides_lenient(plan, {"stages": "nope"}, catalog=catalog)
+
+
+def _catalog_data_with_preset(preset: dict) -> dict:
+    return {
+        "providers": [
+            {
+                "id": "claude-code",
+                "label": "Claude Code",
+                "models": [
+                    {"id": "opus-4-8", "label": "Opus 4.8", "quality": "premium"},
+                    {"id": "haiku-4-5", "label": "Haiku 4.5", "quality": "fast"},
+                ],
+            }
+        ],
+        "presets": [preset],
+    }
+
+
+def _full_stage_map(model: str = "opus-4-8") -> dict:
+    return {stage: {"model": model} for stage in PRESET_STAGES}
+
+
+def test_catalog_parses_presets() -> None:
+    data = _catalog_data_with_preset(
+        {
+            "id": "balanced",
+            "label": "Balanced",
+            "description": "Good default.",
+            "stages": {
+                "claude-code": {
+                    **_full_stage_map(),
+                    "qa": {"model": "haiku-4-5", "effort": "medium"},
+                }
+            },
+        }
+    )
+    catalog = parse_model_catalog(data)
+    assert len(catalog.presets) == 1
+    preset = catalog.presets[0]
+    assert preset.id == "balanced" and preset.label == "Balanced"
+    assert preset.stages["claude-code"]["qa"] == PresetStage(
+        model="haiku-4-5", effort="medium"
+    )
+    assert preset.stages["claude-code"]["spec"].effort is None
+
+
+def test_catalog_without_presets_has_empty_tuple() -> None:
+    data = {"providers": [{"id": "manual", "label": "Manual"}]}
+    assert parse_model_catalog(data).presets == ()
+
+
+def test_preset_rejects_duplicate_ids() -> None:
+    data = _catalog_data_with_preset(
+        {"id": "p", "stages": {"claude-code": _full_stage_map()}}
+    )
+    data["presets"].append(
+        {"id": "p", "stages": {"claude-code": _full_stage_map()}}
+    )
+    with pytest.raises(ConfigError, match="duplicate preset id"):
+        parse_model_catalog(data)
+
+
+def test_preset_rejects_unknown_provider() -> None:
+    data = _catalog_data_with_preset(
+        {"id": "p", "stages": {"ghost": _full_stage_map()}}
+    )
+    with pytest.raises(ConfigError, match="unknown provider 'ghost'"):
+        parse_model_catalog(data)
+
+
+def test_preset_rejects_unknown_model() -> None:
+    stages = _full_stage_map()
+    stages["spec"] = {"model": "ghost-model"}
+    data = _catalog_data_with_preset({"id": "p", "stages": {"claude-code": stages}})
+    with pytest.raises(ConfigError, match="unknown model 'ghost-model'"):
+        parse_model_catalog(data)
+
+
+def test_preset_rejects_missing_stage() -> None:
+    stages = _full_stage_map()
+    del stages["audit"]
+    data = _catalog_data_with_preset({"id": "p", "stages": {"claude-code": stages}})
+    with pytest.raises(ConfigError, match="missing stage 'audit'"):
+        parse_model_catalog(data)
+
+
+def test_preset_rejects_unknown_stage_and_bad_effort() -> None:
+    stages = _full_stage_map()
+    stages["finalize"] = {"model": "opus-4-8"}
+    data = _catalog_data_with_preset({"id": "p", "stages": {"claude-code": stages}})
+    with pytest.raises(ConfigError, match="unknown stage"):
+        parse_model_catalog(data)
+
+    stages = _full_stage_map()
+    stages["spec"] = {"model": "opus-4-8", "effort": "turbo"}
+    data = _catalog_data_with_preset({"id": "p", "stages": {"claude-code": stages}})
+    with pytest.raises(ConfigError, match="effort"):
+        parse_model_catalog(data)
