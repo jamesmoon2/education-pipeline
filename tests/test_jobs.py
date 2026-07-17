@@ -79,6 +79,66 @@ def test_terminate_process_kills_a_running_child():
     assert proc.poll() is not None
 
 
+def _spawn_provider_tree(tmp_path):
+    """A provider stand-in that spawns its own helper child (the grandchild).
+
+    Returns the provider Popen and the grandchild pid once the grandchild is
+    confirmed running.
+    """
+
+    pid_file = tmp_path / "grandchild.pid"
+    parent_src = (
+        "import pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid), encoding='utf-8')\n"
+        "time.sleep(60)\n"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", parent_src], **popen_kwargs())
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        text = pid_file.read_text(encoding="utf-8") if pid_file.is_file() else ""
+        if text.strip():
+            return proc, int(text)
+        time.sleep(0.05)
+    terminate_process(proc, grace=2.0)
+    raise AssertionError("provider grandchild never started")
+
+
+def _wait_until_dead(pid, timeout=10.0):
+    from education_pipeline.daemon import lifecycle
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not lifecycle.is_pid_alive(pid):
+            return True
+        time.sleep(0.1)
+    return not lifecycle.is_pid_alive(pid)
+
+
+def test_terminate_process_kills_the_whole_child_tree(tmp_path):
+    # A provider that spawns helpers must not leak them on cancel. POSIX gets
+    # this from killpg over the start_new_session group; Windows needs an
+    # explicit tree kill (Popen.terminate only signals the root).
+    from education_pipeline.daemon import lifecycle
+
+    proc, grandchild_pid = _spawn_provider_tree(tmp_path)
+    assert lifecycle.is_pid_alive(grandchild_pid)
+    terminate_process(proc, grace=2.0)
+    assert proc.poll() is not None
+    assert _wait_until_dead(grandchild_pid), "grandchild survived cancellation"
+
+
+def test_best_effort_kill_kills_the_whole_tree_by_pid(tmp_path):
+    # The reconcile path kills by bare pid (no Popen handle); it must tear
+    # down the same process tree.
+    from education_pipeline.daemon.jobs import _best_effort_kill
+
+    proc, grandchild_pid = _spawn_provider_tree(tmp_path)
+    _best_effort_kill(proc.pid)
+    proc.wait(timeout=10)
+    assert _wait_until_dead(grandchild_pid), "grandchild survived reconcile kill"
+
+
 def test_popen_kwargs_has_platform_group_flag():
     kwargs = popen_kwargs()
     if sys.platform == "win32":
