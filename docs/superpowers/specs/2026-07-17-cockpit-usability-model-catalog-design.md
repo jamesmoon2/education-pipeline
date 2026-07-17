@@ -115,6 +115,17 @@ Efforts: `high` for spec/outline/draft/repair/audit in Max quality and for
 spec/outline in Balanced; `medium` elsewhere; `low` for qa/profile in
 Cost efficient.
 
+Two honesty notes, reflected in all UI copy:
+
+- **`profile` is plan-topology-only today.** The daemon only enqueues
+  `SUPPORTED_STAGES` (spec…audit); nothing executes the plan's `profile`
+  entry. Presets still fill it so applying a preset leaves no stale row in
+  the settings UI (the row already renders today), and its tooltip says the
+  row is reserved and does not affect runs yet.
+- **`effort` is recorded metadata.** Provider adapters do not pass effort to
+  the CLIs (a stated non-goal); its tooltip must not promise behavior,
+  speed, or cost changes.
+
 ### API
 
 `GET /v1/config/catalog` payload gains a `presets` array:

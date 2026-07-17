@@ -965,6 +965,21 @@ it("applies the codex mapping when the preset provider toggle is switched", asyn
   ).toHaveValue("gpt");
 });
 
+it("falls back to a provider that has presets when the plan provider has none", async () => {
+  const user = userEvent.setup();
+  const codexOnly = [{ ...presets[0], stages: { codex: presets[0].stages.codex } }];
+  vi.mocked(getConfigProviders).mockResolvedValue({ providers });
+  vi.mocked(getConfigCatalog).mockResolvedValue({ providers: catalog, presets: codexOnly });
+  vi.mocked(getConfigPlan).mockResolvedValue(makePlan()); // plan provider: claude-code
+  render(<SettingsPage />);
+  await screen.findByText("Default model plan");
+  await user.click(screen.getByRole("button", { name: /Balanced/ }));
+  const specRow = document.querySelector('[data-stage="spec"]')!;
+  expect(
+    within(specRow as HTMLElement).getByLabelText("Provider for spec"),
+  ).toHaveValue("codex");
+});
+
 it("saves preset-applied overrides through putConfigPlan", async () => {
   const user = userEvent.setup();
   vi.mocked(putConfigPlan).mockResolvedValue(makePlan());
@@ -1027,8 +1042,12 @@ setPresets(catalogResp.presets ?? []);
 const presetProviders = new Set(
   (catalogResp.presets ?? []).flatMap((p) => Object.keys(p.stages)),
 );
+// Fall back to the first provider that actually has presets — a workspace
+// catalog may define presets for providers other than claude-code.
 setPresetProvider(
-  presetProviders.has(planResp.provider) ? planResp.provider : "claude-code",
+  presetProviders.has(planResp.provider)
+    ? planResp.provider
+    : ([...presetProviders][0] ?? "claude-code"),
 );
 ```
 
@@ -1187,7 +1206,7 @@ Create `web/src/lib/planHelp.ts`:
 ```tsx
 // Plain-language explanations for the model-plan surface (design system §3.4).
 export const STAGE_HELP: Record<string, string> = {
-  profile: "Summarizes the attached learner profile into guidance the other stages can use.",
+  profile: "Reserved for a future profile-summarization step. Learner-profile context is attached to stage prompts directly today, so this row doesn't affect runs yet.",
   spec: "Turns your topic brief into the course contract — scope, modules, and success criteria — that every later stage builds against.",
   outline: "Expands the spec into a module-by-module lesson outline.",
   draft: "Writes the full course content from the outline.",
@@ -1200,7 +1219,7 @@ export const PROVIDER_HELP =
   "Which tool runs this stage. Claude Code and Codex run automatically through their CLIs; Manual copy/paste means you run the prompt yourself in any model UI.";
 
 export const EFFORT_HELP =
-  "How much reasoning the model is asked to spend on this stage. Higher effort is slower and costs more.";
+  "Recorded guidance for how much reasoning this stage deserves. It's saved with the plan and shown in run provenance, but provider CLIs currently run with their own defaults — changing it doesn't change model behavior or cost yet.";
 ```
 
 In `PlanStageRow.tsx`:
@@ -1440,7 +1459,7 @@ export const PROFILE_HELP: Record<string, string> = {
   "privacy.private_by_default": "When on, profile details stay out of anything you publish unless explicitly marked publishable.",
   "privacy.include_in_published_output": "When on, the publishable summary below is included in exported courses.",
   "privacy.publishable_summary": "A short learner description that is safe to publish with the course, if you choose to include it.",
-  "metadata.*": "Extra structured notes for your own use. Everything here is passed to the models with the rest of the profile.",
+  "metadata.*": "Extra structured notes stored with the profile for your own reference. Not included in model prompts today.",
 };
 ```
 
@@ -1737,9 +1756,9 @@ This is an audit: read each file, list every label/button a first-time user coul
 
 - [ ] **Step 2: Canonical guide vocabulary.** In `CanonicalGuidePreview.tsx`, add near the heading: `<InfoTip label="Canonical guide" text="The cleaned-up, validated version of the draft that finalize will publish." />`; assert in its test.
 
-- [ ] **Step 3: Jobs vocabulary.** In `JobsPanel.tsx`, add near the heading: `<InfoTip label="Jobs" text="Background runs of stage prompts through a provider CLI. Each job's log shows exactly what the model was asked and answered." />`; assert in its test.
+- [ ] **Step 3: Jobs vocabulary.** In `JobsPanel.tsx`, add near the heading: `<InfoTip label="Jobs" text="Background runs of stage prompts through a provider CLI. Each job's log captures the provider's live output (audit jobs redact their log to protect learner privacy)." />`; assert in its test. (Prompts are fed to the CLI via stdin and are not in the log, and audit jobs suppress both output streams from the log — `education_pipeline/daemon/jobs.py` — so the copy must not promise request/response visibility.)
 
-- [ ] **Step 4: Provider availability wording.** In `SettingsPage.tsx`, under the "Provider availability" heading add: `<p className="field-help">Available means the provider's CLI was found on this machine. Unavailable providers can still be selected in the plan — runs will use the manual copy/paste flow until the CLI is installed.</p>`; assert the text in `SettingsPage.test.tsx`.
+- [ ] **Step 4: Provider availability wording.** In `SettingsPage.tsx`, under the "Provider availability" heading add: `<p className="field-help">Available means the provider's CLI was found on this machine. You can still save a plan that uses an unavailable provider, but running one of its stages will fail until the CLI is installed — switch that stage to Manual copy/paste to run it by hand instead.</p>`; assert the text in `SettingsPage.test.tsx`. (The daemon does not auto-fall-back to manual: `Worker.execute` fails the job with "provider … is not available on PATH" — `education_pipeline/daemon/jobs.py` — so the help must not promise a fallback.)
 
 - [ ] **Step 5: Sweep the rest.** Read the remaining files in the list. For every unexplained term or bare control, add an InfoTip/help line using the same voice (concrete, learner-language, no internal nouns). Every added affordance gets a `getByRole("button", { name: "About …" })` assertion in that component's test file. If a page needs no change, note it in the commit message body.
 
