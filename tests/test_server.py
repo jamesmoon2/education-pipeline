@@ -194,6 +194,29 @@ def _req(port, method, path, token="secret-token", body=None):
     return resp.status, payload
 
 
+def test_build_server_binds_loopback_without_reverse_dns(tmp_path, monkeypatch):
+    # HTTPServer.server_bind resolves the bound address with socket.getfqdn(),
+    # a reverse-DNS lookup that can stall for many seconds on macOS CI
+    # runners and push daemon startup past the client's readiness timeout.
+    # The daemon binds loopback only, so binding must never touch DNS.
+    import socket
+
+    def _no_reverse_dns(name=""):
+        raise AssertionError("server_bind must not call socket.getfqdn")
+
+    monkeypatch.setattr(socket, "getfqdn", _no_reverse_dns)
+    srv, worker, _context = _start_server(tmp_path, monkeypatch)
+    try:
+        assert srv.server_address[0] == "127.0.0.1"
+        assert srv.server_name == "127.0.0.1"
+        assert srv.server_port == srv.server_address[1]
+        status, _ = _req(srv.server_port, "GET", "/v1/health")
+        assert status == 200
+    finally:
+        worker.stop()
+        srv.shutdown()
+
+
 def test_health_requires_token(server):
     status, _ = _req(server, "GET", "/v1/health", token=None)
     assert status == 401

@@ -58,6 +58,42 @@ def test_copy_dist_refuses_source_without_index(tmp_path):
         copy_dist(source, tmp_path / "webdist")
 
 
+def test_npm_argv_resolves_the_executable_via_which(monkeypatch):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    try:
+        import build_webdist
+    finally:
+        sys.path.pop(0)
+
+    # Windows resolves npm to npm.cmd only through PATHEXT, which
+    # subprocess.run does not apply; the argv must carry the resolved path.
+    monkeypatch.setattr(
+        build_webdist.shutil,
+        "which",
+        lambda name: r"C:\nodejs\npm.cmd" if name == "npm" else None,
+    )
+    assert build_webdist.npm_argv() == [r"C:\nodejs\npm.cmd", "run", "build"]
+
+
+def test_npm_argv_fails_clearly_when_npm_is_missing(monkeypatch):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    try:
+        import build_webdist
+    finally:
+        sys.path.pop(0)
+
+    monkeypatch.setattr(build_webdist.shutil, "which", lambda name: None)
+    with __import__("pytest").raises(SystemExit) as excinfo:
+        build_webdist.npm_argv()
+    assert "npm" in str(excinfo.value)
+
+
 def test_webdist_is_declared_as_package_data():
     import tomllib
     from pathlib import Path

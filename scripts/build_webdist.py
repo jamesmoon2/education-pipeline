@@ -39,6 +39,20 @@ def copy_dist(source: Path, destination: Path) -> int:
     return sum(1 for path in destination.rglob("*") if path.is_file())
 
 
+def npm_argv() -> list[str]:
+    """The cockpit build command with a which()-resolved npm executable.
+
+    ``subprocess`` does not apply Windows PATHEXT resolution, so the bare
+    name ``npm`` never matches ``npm.cmd`` there; ``shutil.which`` resolves
+    the real executable on every platform.
+    """
+
+    npm = shutil.which("npm")
+    if npm is None:
+        raise SystemExit("error: npm not found on PATH; install Node.js to build the cockpit")
+    return [npm, "run", "build"]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -49,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not args.skip_npm_build:
-        subprocess.run(["npm", "run", "build"], cwd=WEB_DIR, check=True)
+        subprocess.run(npm_argv(), cwd=WEB_DIR, check=True)
     copied = copy_dist(DIST, WEBDIST)
     print(f"copied {copied} files: {DIST} -> {WEBDIST}")
     return 0

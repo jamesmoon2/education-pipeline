@@ -35,6 +35,21 @@ def test_ensure_daemon_ignores_claim_placeholder(tmp_path):
         ensure_daemon(tmp_path, autostart=False)
 
 
+def test_ensure_daemon_captures_startup_stderr_to_a_log(tmp_path):
+    # Pre-claim the workspace from this (live) process so the spawned daemon
+    # fails during startup: its claim_discovery() sees a live placeholder and
+    # raises. That failure must land in a readable log, not /dev/null, and the
+    # timeout error must point at it.
+    assert lifecycle.claim_discovery(tmp_path) is True
+    with pytest.raises(DaemonError) as excinfo:
+        ensure_daemon(tmp_path, autostart=True, timeout=3)
+    log_path = lifecycle.discovery_dir(tmp_path) / "daemon.log"
+    assert str(log_path) in str(excinfo.value)
+    assert "a daemon already owns this workspace" in log_path.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_daemon_error_carries_catalog_code():
     err = DaemonError("boom", code="job_conflict")
     assert err.code == "job_conflict"
