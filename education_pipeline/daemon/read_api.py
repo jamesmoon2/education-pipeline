@@ -763,7 +763,24 @@ def catalog_payload(catalog: ModelCatalog) -> dict:
                 ],
             }
         )
-    return {"providers": providers}
+    return {
+        "providers": providers,
+        "presets": [
+            {
+                "id": preset.id,
+                "label": preset.label,
+                "description": preset.description,
+                "stages": {
+                    provider_id: {
+                        stage_name: {"model": ps.model, "effort": ps.effort}
+                        for stage_name, ps in stage_map.items()
+                    }
+                    for provider_id, stage_map in preset.stages.items()
+                },
+            }
+            for preset in catalog.presets
+        ],
+    }
 
 
 def plan_payload(catalog: ModelCatalog, plan: ModelPlan, plan_sha256: str) -> dict:

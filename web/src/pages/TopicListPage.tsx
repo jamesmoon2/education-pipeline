@@ -10,6 +10,7 @@ import {
 } from "../api/client";
 import AttachProfileControl from "../components/AttachProfileControl";
 import ErrorNotice from "../components/ErrorNotice";
+import InfoTip from "../components/InfoTip";
 import WelcomePanel from "../components/WelcomePanel";
 import ImportForm from "../components/ImportForm";
 import { useAction } from "../hooks/useAction";
@@ -248,7 +249,13 @@ export default function TopicListPage() {
                 <th>Last activity</th>
                 <th>Completion</th>
                 <th>Profile</th>
-                <th>Actions</th>
+                <th>
+                  Actions{" "}
+                  <InfoTip
+                    label="Actions"
+                    text="Reveal opens the course's folder on this computer — every prompt, response, and export lives there as a plain file. Duplicate copies a course so you can take it in a new direction. Archive tucks a finished course out of the list without deleting anything."
+                  />
+                </th>
               </tr>
             </thead>
             <tbody>

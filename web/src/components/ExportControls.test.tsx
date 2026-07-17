@@ -21,6 +21,11 @@ beforeEach(() => {
 });
 
 describe("ExportControls", () => {
+  it("explains export vs download with an InfoTip", () => {
+    render(<ExportControls topicId="t" />);
+    expect(screen.getByRole("button", { name: "About Export" })).toBeInTheDocument();
+  });
+
   it("exports the selected format", async () => {
     vi.mocked(postExport).mockResolvedValue({
       topic_id: "t",

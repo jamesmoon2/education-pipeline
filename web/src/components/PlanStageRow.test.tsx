@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { CatalogProvider, PlanStage, ProviderAvailability } from "../api/types";
-import PlanStageRow from "./PlanStageRow";
+import PlanStageRow, { type PlanStageRowProps } from "./PlanStageRow";
 
 const catalog: CatalogProvider[] = [
   {
@@ -43,11 +43,33 @@ const outlineStage: PlanStage = {
   warning: null,
 };
 
+const specStage: PlanStage = {
+  stage: "spec",
+  provider: "claude-code",
+  model: "sonnet",
+  effort: null,
+  recommendation: "premium_reasoning",
+  warning: null,
+};
+
+function renderRow(props: Partial<PlanStageRowProps> = {}) {
+  return render(
+    <PlanStageRow
+      stage={specStage}
+      catalog={catalog}
+      providers={providers}
+      resetValue={null}
+      onChange={vi.fn()}
+      {...props}
+    />,
+  );
+}
+
 describe("PlanStageRow", () => {
   it("renders provider/model/effort selectors for a model-powered stage", () => {
     const onChange = vi.fn();
     render(
-      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} onChange={onChange} />,
+      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} resetValue={null} onChange={onChange} />,
     );
     expect(screen.getByLabelText("Provider for outline")).toBeInTheDocument();
     expect(screen.getByLabelText("Model for outline")).toBeInTheDocument();
@@ -65,7 +87,7 @@ describe("PlanStageRow", () => {
       recommendation: "local_only",
       warning: null,
     };
-    render(<PlanStageRow stage={stage} catalog={catalog} providers={providers} onChange={onChange} />);
+    render(<PlanStageRow stage={stage} catalog={catalog} providers={providers} resetValue={null} onChange={onChange} />);
     expect(screen.getByText("finalize")).toBeInTheDocument();
     expect(screen.getByText(/Local only/)).toBeInTheDocument();
     expect(screen.queryByRole("combobox")).toBeNull();
@@ -74,7 +96,7 @@ describe("PlanStageRow", () => {
   it("labels an unavailable provider option with its reason", () => {
     const onChange = vi.fn();
     render(
-      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} onChange={onChange} />,
+      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} resetValue={null} onChange={onChange} />,
     );
     const providerSelect = screen.getByLabelText("Provider for outline");
     const codexOption = within(providerSelect).getByText("Codex (unavailable)");
@@ -84,7 +106,7 @@ describe("PlanStageRow", () => {
   it("renders stage.warning in a role=alert element", () => {
     const onChange = vi.fn();
     const warned: PlanStage = { ...outlineStage, warning: "claude-code haiku is a weak choice for outline" };
-    render(<PlanStageRow stage={warned} catalog={catalog} providers={providers} onChange={onChange} />);
+    render(<PlanStageRow stage={warned} catalog={catalog} providers={providers} resetValue={null} onChange={onChange} />);
     expect(screen.getByRole("alert")).toHaveTextContent("weak choice for outline");
   });
 
@@ -95,14 +117,14 @@ describe("PlanStageRow", () => {
       source: "override",
       override_error: "stored override is invalid: unknown model 'x' -- reset this stage to clear it.",
     };
-    render(<PlanStageRow stage={broken} catalog={catalog} providers={providers} onChange={onChange} />);
+    render(<PlanStageRow stage={broken} catalog={catalog} providers={providers} resetValue={null} onChange={onChange} />);
     expect(screen.getByRole("alert")).toHaveTextContent("reset this stage");
   });
 
   it("does not render an override_error element when stage.override_error is absent", () => {
     const onChange = vi.fn();
     render(
-      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} onChange={onChange} />,
+      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} resetValue={null} onChange={onChange} />,
     );
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -110,24 +132,60 @@ describe("PlanStageRow", () => {
   it("does not render a warning element when stage.warning is null", () => {
     const onChange = vi.fn();
     render(
-      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} onChange={onChange} />,
+      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} resetValue={null} onChange={onChange} />,
     );
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("calls onChange(stage, null) when Use recommended is clicked", async () => {
+  it("calls onChange(stage, null) when Reset to default is clicked", async () => {
     const onChange = vi.fn();
     render(
-      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} onChange={onChange} />,
+      <PlanStageRow
+        stage={outlineStage}
+        catalog={catalog}
+        providers={providers}
+        resetValue={null}
+        onChange={onChange}
+      />,
     );
-    await userEvent.click(screen.getByRole("button", { name: "Use recommended" }));
+    await userEvent.click(screen.getByRole("button", { name: "Reset to default" }));
     expect(onChange).toHaveBeenCalledWith("outline", null);
+  });
+
+  it("reset button applies the provided default override", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderRow({
+      resetValue: { provider: "claude-code", model: "sonnet", effort: "high" },
+      onChange,
+    });
+    await user.click(screen.getByRole("button", { name: "Reset to default" }));
+    expect(onChange).toHaveBeenCalledWith("spec", {
+      provider: "claude-code",
+      model: "sonnet",
+      effort: "high",
+    });
+  });
+
+  it("reset button clears the override when no default is provided", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderRow({ resetValue: null, onChange });
+    await user.click(screen.getByRole("button", { name: "Reset to default" }));
+    expect(onChange).toHaveBeenCalledWith("spec", null);
+  });
+
+  it("shows a stage explanation tooltip", async () => {
+    const user = userEvent.setup();
+    renderRow({});
+    await user.click(screen.getByRole("button", { name: "About spec stage" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/course contract/);
   });
 
   it("emits a merged override with the pinned provider when the model changes", async () => {
     const onChange = vi.fn();
     render(
-      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} onChange={onChange} />,
+      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} resetValue={null} onChange={onChange} />,
     );
     await userEvent.selectOptions(screen.getByLabelText("Model for outline"), "haiku");
     expect(onChange).toHaveBeenCalledWith("outline", {
@@ -148,6 +206,7 @@ describe("PlanStageRow", () => {
         stage={outlineStage}
         catalog={catalogWithManual}
         providers={providers}
+        resetValue={null}
         onChange={onChange}
       />,
     );
@@ -159,7 +218,7 @@ describe("PlanStageRow", () => {
   it("emits an override when the effort changes, using default to mean unset", async () => {
     const onChange = vi.fn();
     render(
-      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} onChange={onChange} />,
+      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} resetValue={null} onChange={onChange} />,
     );
     await userEvent.selectOptions(screen.getByLabelText("Effort for outline"), "high");
     expect(onChange).toHaveBeenCalledWith("outline", {

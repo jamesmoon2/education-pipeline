@@ -109,6 +109,14 @@ describe("TopicListPage", () => {
     expect(screen.getByText("Write the next prompt")).toBeInTheDocument();
   });
 
+  it("explains the row actions with an InfoTip in the Actions header", async () => {
+    vi.mocked(getTopics).mockResolvedValue({ topics: [summary] });
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderPage();
+    await screen.findByRole("link", { name: "systems-thinking" });
+    expect(screen.getByRole("button", { name: "About Actions" })).toBeInTheDocument();
+  });
+
   it("shows completion progress and export state", async () => {
     vi.mocked(getTopics).mockResolvedValue({
       topics: [

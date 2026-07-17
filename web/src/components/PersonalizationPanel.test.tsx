@@ -45,6 +45,12 @@ function payload(overrides: Partial<PersonalizationPayload> = {}): Personalizati
 }
 
 describe("PersonalizationPanel", () => {
+  it("explains active facets and the optional audit with InfoTips", () => {
+    render(<PersonalizationPanel personalization={payload()} onEvidence={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "About Active facets" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "About Optional audit" })).toBeInTheDocument();
+  });
+
   it("renders current goal, facet, exclusion, trace-only, and evidence states", async () => {
     const onEvidence = vi.fn();
     render(<PersonalizationPanel personalization={payload()} onEvidence={onEvidence} />);

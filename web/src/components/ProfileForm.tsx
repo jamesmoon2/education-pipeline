@@ -6,6 +6,8 @@ import type {
 } from "../api/types";
 import { isMetadataNumber, metadataNumber, metadataNumberValidationMessage } from "../api/types";
 import SensitivityBadge from "./SensitivityBadge";
+import InfoTip from "./InfoTip";
+import { PROFILE_HELP } from "../lib/profileHelp";
 
 interface ProfileFormProps {
   value: LearnerProfile;
@@ -26,13 +28,16 @@ function Field({
   sensitivity: ProfileSensitivity;
   children: React.ReactElement<{ "aria-label"?: string }>;
 }) {
+  // A <div>, not a <label>: the InfoTip button would otherwise become the
+  // label's implicitly associated control. The input is named via aria-label.
   return (
-    <label className="profile-field">
+    <div className="profile-field">
       <span className="profile-field-label">
         {label} <SensitivityBadge tier={sensitivity[path]} />
+        {PROFILE_HELP[path] && <InfoTip label={label} text={PROFILE_HELP[path]} />}
       </span>
       {cloneElement(children, { "aria-label": label })}
-    </label>
+    </div>
   );
 }
 
@@ -41,6 +46,8 @@ const lines = (value: string) =>
     .split("\n")
     .map((item) => item.trim())
     .filter(Boolean);
+
+const singleLine = (value: string) => value.replace(/\s*\n\s*/g, " ");
 
 function metadataKind(value: ProfileMetadataValue): "string" | "boolean" | "integer" | "float" | "list" | "table" {
   if (isMetadataNumber(value)) return value.kind;
@@ -211,7 +218,26 @@ export default function ProfileForm({ value, onChange, sensitivity, idLocked = f
 
   const input = (label: string, key: keyof LearnerProfile, path = String(key), required = false) => (
     <Field label={label} path={path} sensitivity={sensitivity}>
-      <input required={required} disabled={disabled || (key === "id" && idLocked)} value={(value[key] as string | undefined) ?? ""} onChange={(event) => key === "id" || key === "target_learner" ? set(key, event.target.value as never) : optional(key, event.target.value)} />
+      {key === "id" ? (
+        <input
+          required={required}
+          disabled={disabled || idLocked}
+          value={(value[key] as string | undefined) ?? ""}
+          onChange={(event) => set(key, event.target.value as never)}
+        />
+      ) : (
+        <textarea
+          rows={2}
+          required={required}
+          disabled={disabled}
+          value={(value[key] as string | undefined) ?? ""}
+          onChange={(event) =>
+            key === "target_learner"
+              ? set(key, singleLine(event.target.value) as never)
+              : optional(key, singleLine(event.target.value))
+          }
+        />
+      )}
     </Field>
   );
   const textarea = (label: string, key: keyof LearnerProfile, path = String(key)) => (
@@ -221,7 +247,15 @@ export default function ProfileForm({ value, onChange, sensitivity, idLocked = f
   );
   const preferenceInput = (label: string, key: keyof LearnerProfile["learning_preferences"]) => (
     <Field label={label} path={`learning_preferences.${String(key)}`} sensitivity={sensitivity}>
-      <input disabled={disabled} value={(value.learning_preferences[key] as string | undefined) ?? ""} onChange={(event) => preference(key, (event.target.value.trim() ? event.target.value : undefined) as never)} />
+      <textarea
+        rows={2}
+        disabled={disabled}
+        value={(value.learning_preferences[key] as string | undefined) ?? ""}
+        onChange={(event) => {
+          const text = singleLine(event.target.value);
+          preference(key, (text.trim() ? text : undefined) as never);
+        }}
+      />
     </Field>
   );
   const preferenceArray = (label: string, key: keyof LearnerProfile["learning_preferences"]) => (
@@ -231,7 +265,15 @@ export default function ProfileForm({ value, onChange, sensitivity, idLocked = f
   );
   const localizationInput = (label: string, key: keyof LearnerProfile["localization"]) => (
     <Field label={label} path={`localization.${String(key)}`} sensitivity={sensitivity}>
-      <input disabled={disabled} value={value.localization[key] ?? ""} onChange={(event) => localization(key, (event.target.value.trim() ? event.target.value : undefined) as never)} />
+      <textarea
+        rows={2}
+        disabled={disabled}
+        value={value.localization[key] ?? ""}
+        onChange={(event) => {
+          const text = singleLine(event.target.value);
+          localization(key, (text.trim() ? text : undefined) as never);
+        }}
+      />
     </Field>
   );
 
@@ -256,7 +298,8 @@ export default function ProfileForm({ value, onChange, sensitivity, idLocked = f
         <Field label="Include summary in published output" path="privacy.include_in_published_output" sensitivity={sensitivity}><input type="checkbox" disabled={disabled} checked={value.privacy.include_in_published_output} onChange={(event) => privacy("include_in_published_output", event.target.checked)} /></Field>
         <Field label="Publishable summary" path="privacy.publishable_summary" sensitivity={sensitivity}><textarea rows={4} disabled={disabled} value={value.privacy.publishable_summary ?? ""} onChange={(event) => privacy("publishable_summary", event.target.value.trim() ? event.target.value : undefined)} /></Field>
       </div>
-        <div className="metadata-editor"><h4>Metadata <SensitivityBadge tier={sensitivity["metadata.*"]} /></h4><p className="field-help">Tables and lists may be nested. Values retain their selected TOML-compatible type.</p><MetadataTable value={value.metadata} path={[]} disabled={disabled} onChange={(metadata) => set("metadata", metadata)} /></div>
+        <div className="metadata-editor"><h4>Metadata <SensitivityBadge tier={sensitivity["metadata.*"]} />
+<InfoTip label="Metadata" text={PROFILE_HELP["metadata.*"]} /></h4><p className="field-help">Tables and lists may be nested. Values retain their selected TOML-compatible type.</p><MetadataTable value={value.metadata} path={[]} disabled={disabled} onChange={(metadata) => set("metadata", metadata)} /></div>
       </section>
     </div>
   );

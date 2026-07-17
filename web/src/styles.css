@@ -107,6 +107,9 @@
 /* ------------------------------------------------------------ base rules */
 * { box-sizing: border-box; }
 
+/* 18px root — the whole rem scale reads ~2px larger (usability audit). */
+html { font-size: 112.5%; }
+
 body {
   margin: 0;
   background: var(--ep-color-canvas);
@@ -240,14 +243,14 @@ code, pre, .technical {
   padding-top: var(--ep-space-4);
   border-top: 1px solid var(--ep-color-rail-border);
   color: var(--ep-color-rail-muted);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   line-height: 1.35;
 }
 .rail-footer strong {
   display: block;
   margin-bottom: var(--ep-space-1);
   color: var(--ep-color-rail-text);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
 }
 
 .workspace {
@@ -275,7 +278,7 @@ code, pre, .technical {
 .eyebrow {
   margin: 0 0 var(--ep-space-1);
   color: var(--ep-color-text-muted);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
@@ -401,6 +404,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--ep-color-accen
 }
 .new-run-page input:not([type="checkbox"]):not([type="radio"]),
 .new-run-page textarea { width: 100%; }
+/* A field whose label carries an InfoTip: the tip button must sit outside the
+   <label> (it is itself labelable and its open bubble would pollute the
+   label's text), so the pair lives in a block wrapper styled like a label. */
+.new-run-page .wizard-field { margin: var(--ep-space-3) 0; max-width: 42rem; }
+.new-run-page .wizard-field label { display: inline; margin: 0; }
 .new-run-page section > p:has(input[type="radio"]) label { display: inline-flex; gap: 0.4rem; margin-right: var(--ep-space-4); }
 
 /* --------------------------------------------------------------- tables */
@@ -416,7 +424,7 @@ th, td {
 }
 th {
   color: var(--ep-color-text-muted);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 650;
 }
 tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 55%, transparent); }
@@ -429,7 +437,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 650;
   color: var(--ep-color-text-muted);
   white-space: nowrap;
@@ -470,7 +478,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   border: 1px solid var(--ep-color-border-strong);
   border-radius: var(--ep-radius-control);
   color: var(--ep-color-text-muted);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 650;
 }
 
@@ -483,7 +491,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   border-radius: var(--ep-radius-control);
   background: var(--ep-color-warning-soft);
   color: var(--ep-color-warning);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 700;
 }
 
@@ -494,7 +502,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   border: 1px solid var(--ep-color-accent);
   border-radius: var(--ep-radius-control);
   color: var(--ep-color-accent);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 650;
 }
 
@@ -538,10 +546,10 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   margin: var(--ep-space-1) 0 0;
   color: var(--ep-color-text-muted);
   font-family: var(--ep-font-technical);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   white-space: normal;
 }
-.reveal-result code, .finding-location code { font-size: 0.8125rem; }
+.reveal-result code, .finding-location code { font-size: 0.875rem; }
 
 /* ------------------------------------------------------- library surface */
 .toolbar {
@@ -560,7 +568,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
 }
 .library-actions { white-space: nowrap; }
 .attached-profile { display: block; margin-bottom: var(--ep-space-1); font-weight: 650; }
-.library-actions button { min-height: 2rem; padding: 0.2rem 0.6rem; font-size: 0.8125rem; }
+.library-actions button { min-height: 2rem; padding: 0.2rem 0.6rem; font-size: 0.875rem; }
 .archived-row { color: var(--ep-color-text-muted); }
 .attach-profile select { max-width: 11rem; }
 
@@ -594,7 +602,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   padding: 0;
   list-style: none;
   color: var(--ep-color-text-muted);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 650;
 }
 .wizard-steps li {
@@ -641,7 +649,7 @@ pre.content, pre.log {
   background: var(--ep-color-surface);
   white-space: pre-wrap;
 }
-pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.8125rem; }
+pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.875rem; }
 
 .editor-panes { display: flex; gap: var(--ep-space-4); align-items: flex-start; }
 .editor-panes label { flex: 1; min-width: 0; }
@@ -664,7 +672,7 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.8125rem; }
 .diff {
   overflow-x: auto;
   font-family: var(--ep-font-technical);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   border: 1px solid var(--ep-color-border);
   border-radius: var(--ep-radius-control);
   background: var(--ep-color-surface);
@@ -731,6 +739,11 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.8125rem; }
   border-bottom: 1px solid var(--ep-color-border);
 }
 .plan-stage-row label { font-size: 0.875rem; }
+/* Uniform column: heading line (label + info tip) over the control, so every
+ * heading and every select lines up across the row. */
+.plan-stage-field { display: flex; flex-direction: column; }
+.plan-stage-field-label { display: flex; align-items: center; min-height: 1.5rem; }
+.plan-stage-field select { display: block; margin-top: var(--ep-space-1); }
 .plan-stage-name { min-width: 5rem; font-family: var(--ep-font-technical); font-size: 0.875rem; }
 .plan-stage-local, .plan-stage-warning { color: var(--ep-color-text-muted); font-size: 0.875rem; }
 .plan-stage-override-error { color: var(--ep-color-danger); font-size: 0.875rem; }
@@ -905,7 +918,7 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.8125rem; }
 .blueprint-option .blueprint-when-to-use { color: var(--ep-color-text-muted); }
 .blueprint-recommended {
   color: var(--ep-color-success);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 700;
   margin-left: 0.4rem;
 }
@@ -929,4 +942,47 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.8125rem; }
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
   }
+}
+/* ---------------------------------------------------------------- info tip */
+.info-tip { position: relative; display: inline-block; margin-left: var(--ep-space-1); }
+.info-tip-trigger {
+  border: none;
+  background: none;
+  padding: 0 0.125rem;
+  min-height: 0;
+  color: var(--ep-color-text-muted);
+  cursor: help;
+  line-height: 1;
+}
+.info-tip-trigger:hover, .info-tip-trigger:focus-visible { color: var(--ep-color-accent); }
+.info-tip-bubble {
+  position: absolute;
+  bottom: calc(100% + var(--ep-space-1));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  width: max-content;
+  max-width: 36ch;
+  padding: var(--ep-space-2) var(--ep-space-3);
+  border: 1px solid var(--ep-color-border);
+  border-radius: var(--ep-radius-control);
+  background: var(--ep-color-surface);
+  color: var(--ep-color-text);
+  font-size: 0.875rem;
+  line-height: 1.45;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.15);
+}
+/* ------------------------------------------------------------ preset picker */
+.preset-picker { margin: var(--ep-space-3) 0; }
+.preset-provider-toggle { border: none; padding: 0; margin: 0 0 var(--ep-space-2); display: flex; gap: var(--ep-space-3); align-items: center; }
+.preset-provider-toggle legend { float: left; margin-right: var(--ep-space-3); color: var(--ep-color-text-muted); }
+.preset-buttons { display: flex; gap: var(--ep-space-2); flex-wrap: wrap; }
+.preset-buttons button { display: flex; flex-direction: column; align-items: flex-start; gap: var(--ep-space-1); text-align: left; max-width: 18rem; }
+.preset-label { font-weight: 600; }
+.preset-description { font-size: 0.875rem; color: var(--ep-color-text-muted); }
+
+/* Profile free-text fields grow with content and stay user-resizable. */
+.profile-field textarea { resize: vertical; min-height: 2.5rem; }
+@supports (field-sizing: content) {
+  .profile-field textarea { field-sizing: content; max-height: 24rem; }
 }

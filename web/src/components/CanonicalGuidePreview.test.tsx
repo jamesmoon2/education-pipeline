@@ -43,6 +43,13 @@ describe("CanonicalGuidePreview", () => {
     expect(screen.getByText("Approved repair / final source")).toBeInTheDocument();
   });
 
+  it("explains the canonical guide with an InfoTip near the heading", async () => {
+    render(<CanonicalGuidePreview topicId="feedback-loops" />);
+    expect(
+      await screen.findByRole("button", { name: "About Canonical guide" }),
+    ).toBeInTheDocument();
+  });
+
   it("does not preview an unapproved response", async () => {
     vi.mocked(getStageContent).mockResolvedValue({ ...stage, approved: null });
     render(<CanonicalGuidePreview topicId="feedback-loops" />);

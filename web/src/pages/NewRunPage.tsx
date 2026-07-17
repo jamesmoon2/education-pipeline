@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   attachProfile,
@@ -11,6 +11,8 @@ import {
 } from "../api/client";
 import BlueprintPicker from "../components/BlueprintPicker";
 import ErrorNotice from "../components/ErrorNotice";
+import InfoTip from "../components/InfoTip";
+import { NEW_RUN_HELP, TOPIC_ID_PATTERN } from "../lib/newRunHelp";
 import { usePolling } from "../hooks/usePolling";
 import type { BlueprintsPayload, PlanPayload } from "../api/types";
 
@@ -46,6 +48,16 @@ export default function NewRunPage() {
 
   // "Paste TOML" field
   const [toml, setToml] = useState("");
+
+  // Explicit label/input association for fields whose labels also carry an
+  // InfoTip. The tip's trigger is a labelable <button>; without htmlFor the
+  // wrapping label would associate with the button instead of the input.
+  const topicIdInputId = useId();
+  const briefInputId = useId();
+  const audienceInputId = useId();
+  const goalsInputId = useId();
+  const timeBudgetInputId = useId();
+  const tomlInputId = useId();
 
   // Blueprint step state: the registry + recommendation for the in-progress
   // topic, and the user's (possibly overridden) selection.
@@ -126,8 +138,12 @@ export default function NewRunPage() {
     goNext();
   };
 
+  const idInvalid = id.trim().length > 0 && !TOPIC_ID_PATTERN.test(id.trim());
+
   const topicReady =
-    mode === "describe" ? id.trim().length > 0 && title.trim().length > 0 : toml.trim().length > 0;
+    mode === "describe"
+      ? id.trim().length > 0 && !idInvalid && title.trim().length > 0
+      : toml.trim().length > 0;
 
   const describeFields = () => {
     const parsedGoals = goals
@@ -195,6 +211,7 @@ export default function NewRunPage() {
       {step === "learner" && (
         <section aria-labelledby="new-run-learner-heading">
           <h3 id="new-run-learner-heading">Learner</h3>
+          <p className="field-help">{NEW_RUN_HELP.learner}</p>
           {profiles.length === 0 ? (
             <p>
               No profiles yet — you can continue without one, or{" "}
@@ -246,43 +263,85 @@ export default function NewRunPage() {
 
           {mode === "describe" ? (
             <div>
-              <label>
-                Topic id
-                <input value={id} onChange={(e) => setId(e.target.value)} />
-              </label>
+              <div className="wizard-field">
+                <label htmlFor={topicIdInputId}>Topic id</label>
+                <InfoTip label="Topic id" text={NEW_RUN_HELP.topic_id} />
+                <input
+                  id={topicIdInputId}
+                  value={id}
+                  placeholder="intro-to-sql"
+                  onChange={(e) => setId(e.target.value)}
+                />
+              </div>
+              {idInvalid && (
+                <p className="error field-validation-error">
+                  Topic id must start with a letter or digit and use only letters, digits,
+                  dots, dashes, and underscores.
+                </p>
+              )}
               <label>
                 Title
                 <input value={title} onChange={(e) => setTitle(e.target.value)} />
               </label>
-              <label>
-                Brief
-                <textarea value={brief} onChange={(e) => setBrief(e.target.value)} rows={3} />
-              </label>
-              <label>
-                Audience
-                <input value={audience} onChange={(e) => setAudience(e.target.value)} />
-              </label>
-              <label>
-                Goals (one per line)
-                <textarea value={goals} onChange={(e) => setGoals(e.target.value)} rows={4} />
-              </label>
-              <label>
-                Time budget (minutes, optional)
+              <div className="wizard-field">
+                <label htmlFor={briefInputId}>Brief</label>
+                <InfoTip label="Brief" text={NEW_RUN_HELP.brief} />
+                <textarea
+                  id={briefInputId}
+                  value={brief}
+                  placeholder="e.g. A hands-on introduction to SQL for analysts who live in spreadsheets today — enough to query, join, and summarize real tables confidently."
+                  onChange={(e) => setBrief(e.target.value)}
+                  rows={3}
+                />
+              </div>
+              <div className="wizard-field">
+                <label htmlFor={audienceInputId}>Audience</label>
+                <InfoTip label="Audience" text={NEW_RUN_HELP.audience} />
                 <input
+                  id={audienceInputId}
+                  value={audience}
+                  placeholder="e.g. busy professionals new to investing"
+                  onChange={(e) => setAudience(e.target.value)}
+                />
+              </div>
+              <div className="wizard-field">
+                <label htmlFor={goalsInputId}>Goals (one per line)</label>
+                <InfoTip label="Goals" text={NEW_RUN_HELP.goals} />
+                <textarea
+                  id={goalsInputId}
+                  value={goals}
+                  placeholder="e.g. Join two tables confidently"
+                  onChange={(e) => setGoals(e.target.value)}
+                  rows={4}
+                />
+              </div>
+              <div className="wizard-field">
+                <label htmlFor={timeBudgetInputId}>Time budget (minutes, optional)</label>
+                <InfoTip label="Time budget" text={NEW_RUN_HELP.time_budget} />
+                <input
+                  id={timeBudgetInputId}
                   type="number"
                   min={5}
                   max={10000}
                   value={timeBudget}
+                  placeholder="e.g. 120"
                   onChange={(e) => setTimeBudget(e.target.value)}
                 />
-              </label>
+              </div>
             </div>
           ) : (
             <div>
-              <label>
-                Topic TOML
-                <textarea value={toml} onChange={(e) => setToml(e.target.value)} rows={8} />
-              </label>
+              <div className="wizard-field">
+                <label htmlFor={tomlInputId}>Topic TOML</label>
+                <InfoTip label="Topic TOML" text={NEW_RUN_HELP.toml} />
+                <textarea
+                  id={tomlInputId}
+                  value={toml}
+                  placeholder={'id = "intro-to-sql"\ntitle = "Intro to SQL"'}
+                  onChange={(e) => setToml(e.target.value)}
+                  rows={8}
+                />
+              </div>
             </div>
           )}
           <p>
@@ -297,6 +356,7 @@ export default function NewRunPage() {
       {step === "blueprint" && (
         <section aria-labelledby="new-run-blueprint-heading">
           <h3 id="new-run-blueprint-heading">Choose a blueprint</h3>
+          <p className="field-help">{NEW_RUN_HELP.blueprint}</p>
           {blueprintsError ? (
             <ErrorNotice
               prefix="Blueprint recommendations are unavailable; the daemon will still record its own recommendation"

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import {
   chmodSync,
@@ -76,6 +77,29 @@ id = "prompt-only"
 label = "Prompt-only handoff"
 description = "No automated execution."
 quality = "manual"
+
+[[presets]]
+id = "balanced"
+label = "Balanced"
+description = "Fixture preset."
+
+[presets.stages.claude-code]
+profile = { model = "balanced" }
+spec = { model = "balanced", effort = "high" }
+outline = { model = "balanced" }
+draft = { model = "balanced" }
+qa = { model = "quick", effort = "low" }
+repair = { model = "balanced" }
+audit = { model = "balanced" }
+
+[presets.stages.codex]
+profile = { model = "balanced" }
+spec = { model = "balanced", effort = "high" }
+outline = { model = "balanced" }
+draft = { model = "balanced" }
+qa = { model = "balanced", effort = "low" }
+repair = { model = "balanced" }
+audit = { model = "balanced" }
 `;
 
 const MODEL_PLAN_TOML = `provider = "claude-code"\n`;
@@ -160,14 +184,18 @@ test("mixed-provider run configured entirely in the cockpit", async ({ page }) =
   // Step 3: configure recommended defaults + one per-stage override
   // (draft → the second provider) + qa set to manual — all without ever
   // editing TOML through the UI-driven path.
-  await outlineRow.getByRole("button", { name: "Use recommended" }).click();
+  await outlineRow.getByRole("button", { name: "Reset to default" }).click();
   await expect(outlineRow.getByRole("alert")).not.toBeVisible();
 
-  await draftRow.getByLabel("Provider for draft").selectOption({ label: "Codex" });
+  // Role-based locators for the provider selects: the row's InfoTip trigger
+  // ("About provider for draft") would also substring-match getByLabel.
+  await draftRow
+    .getByRole("combobox", { name: "Provider for draft" })
+    .selectOption({ label: "Codex" });
   // Catalog defines its own "manual" provider (label "Manual prompt
   // workflow") -- select by value, since the row no longer renders a
   // duplicate generic-labeled "manual" option alongside it.
-  await qaRow.getByLabel("Provider for qa").selectOption({ value: "manual" });
+  await qaRow.getByRole("combobox", { name: "Provider for qa" }).selectOption({ value: "manual" });
 
   // Step 4: drive the run — provider stages via the run button, manual stage
   // via the existing response paste flow.
@@ -202,4 +230,31 @@ test("mixed-provider run configured entirely in the cockpit", async ({ page }) =
     "ran on codex (override)",
   );
   await expect(stageRow("qa").locator(".stage-provenance")).toHaveText("ran on manual (manual)");
+});
+
+test("preset fills every stage row, saves, and survives reload", async ({ page }) => {
+  await page.goto(`${baseURL}/settings`);
+  await page.getByRole("button", { name: /Balanced/ }).click();
+  const specRow = page.locator('[data-stage="spec"]');
+  await expect(specRow.getByLabel("Model for spec")).toHaveValue("balanced");
+  // Role-based locator: the row's InfoTip trigger ("About effort for spec")
+  // would also substring-match getByLabel("Effort for spec").
+  await expect(specRow.getByRole("combobox", { name: "Effort for spec" })).toHaveValue("high");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.reload();
+  await expect(
+    page.locator('[data-stage="qa"]').getByLabel("Model for qa"),
+  ).toHaveValue("quick");
+});
+
+test("settings page with a tooltip open passes axe", async ({ page }) => {
+  await page.goto(`${baseURL}/settings`);
+  await page.getByRole("button", { name: "About spec stage" }).click();
+  await expect(page.getByRole("tooltip")).toBeVisible();
+  const results = await new AxeBuilder({ page }).analyze();
+  // Same gate as the suite's other axe checks: serious/critical must be clean.
+  const serious = results.violations.filter(
+    (v) => v.impact === "serious" || v.impact === "critical",
+  );
+  expect(serious).toEqual([]);
 });

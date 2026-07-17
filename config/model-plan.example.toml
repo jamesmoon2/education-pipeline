@@ -1,22 +1,36 @@
-provider = "manual"
+provider = "claude-code"
 
 [stages.profile]
 recommendation = "fast_or_strong_summary"
+model = "sonnet-5"
+effort = "medium"
 
 [stages.spec]
 recommendation = "strong_contract_design"
+model = "fable-5"
+effort = "high"
 
 [stages.outline]
 recommendation = "premium_reasoning"
+model = "opus-4-8"
+effort = "high"
 
 [stages.draft]
 recommendation = "strong_longform_generation"
+model = "opus-4-8"
+effort = "medium"
 
 [stages.qa]
 recommendation = "fast_cheap_check"
+model = "haiku-4-5"
+effort = "medium"
 
 [stages.repair]
 recommendation = "strong_or_premium_repair"
+model = "opus-4-8"
+effort = "medium"
 
 [stages.audit]
 recommendation = "strong_personalization_audit"
+model = "opus-4-8"
+effort = "medium"

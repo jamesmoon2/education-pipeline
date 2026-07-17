@@ -2,6 +2,7 @@ import { useState } from "react";
 import { downloadExport, downloadFinal, postExport } from "../api/client";
 import type { ExportFormat } from "../api/types";
 import { useAction } from "../hooks/useAction";
+import InfoTip from "./InfoTip";
 
 export default function ExportControls({ topicId, guideV1 = false }: { topicId: string; guideV1?: boolean }) {
   const [format, setFormat] = useState<ExportFormat>("html");
@@ -18,6 +19,10 @@ export default function ExportControls({ topicId, guideV1 = false }: { topicId: 
           {!guideV1 && <option value="markdown">markdown</option>}
         </select>
       </label>{" "}
+      <InfoTip
+        label="Export"
+        text="Export writes the finished guide into the course's folder in the chosen format — html is a single self-contained file you can open or share anywhere. The download buttons save a copy through your browser."
+      />{" "}
       <button
         disabled={busy}
         onClick={() =>

@@ -159,6 +159,22 @@ describe("StageViewerPage", () => {
     expect(screen.getByText("(no approved yet)")).toBeInTheDocument();
   });
 
+  it("explains the prompt/response/approved workflow with an InfoTip", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "draft",
+      prompt: "# the prompt",
+      response: null,
+      approved: null,
+      response_sha256: null,
+      content_type: "text/markdown",
+    });
+    renderAt("/topics/t/stages/draft");
+    expect(
+      await screen.findByRole("button", { name: "About Stage tabs" }),
+    ).toBeInTheDocument();
+  });
+
   it("offers Paste response when no response exists", async () => {
     vi.mocked(getStageContent).mockResolvedValue({
       topic_id: "t",

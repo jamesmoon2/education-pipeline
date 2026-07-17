@@ -120,6 +120,47 @@ describe("ProfileForm", () => {
     expect(latest.metadata.cohort).toEqual(expect.objectContaining({ year: expect.objectContaining({ text: "9223372036854775807", kind: "integer" }) }));
   });
 
+  it("renders an info tip for every labeled field", () => {
+    render(<ProfileForm value={profile} onChange={vi.fn()} sensitivity={{}} />);
+    for (const label of [
+      "Target learner",
+      "Prior education",
+      "Adjacent domains",
+      "Learning goals",
+      "Math comfort",
+      "Reading level",
+      "Pace",
+      "Preferred modalities",
+      "Jurisdiction",
+      "Private by default",
+      "Publishable summary",
+    ]) {
+      expect(
+        screen.getByRole("button", { name: `About ${label}` }),
+      ).toBeInTheDocument();
+    }
+  });
+
+  it("free-text fields are textareas and normalize newlines to spaces", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    function Harness() {
+      const [value, setValue] = useState<LearnerProfile>({ ...profile, math_comfort: undefined });
+      return <ProfileForm value={value} onChange={(next) => { onChange(next); setValue(next); }} sensitivity={{}} />;
+    }
+    render(<Harness />);
+    const mathComfort = screen.getByLabelText("Math comfort");
+    expect(mathComfort.tagName).toBe("TEXTAREA");
+    await user.type(mathComfort, "algebra fine{enter}no proofs");
+    const last = onChange.mock.lastCall![0];
+    expect(last.math_comfort).toBe("algebra fine no proofs");
+  });
+
+  it("profile id stays a single-line input", () => {
+    render(<ProfileForm value={profile} onChange={vi.fn()} sensitivity={{}} />);
+    expect(screen.getByLabelText("Profile id").tagName).toBe("INPUT");
+  });
+
   it("gives repeated metadata actions contextual accessible names", () => {
     render(<ProfileForm value={profile} onChange={vi.fn()} sensitivity={{}} />);
     expect(screen.getByRole("button", { name: "Remove metadata cohort.labels.1" })).toBeInTheDocument();

@@ -5,6 +5,7 @@ import type {
   ValidationReport,
   Waiver,
 } from "../api/types";
+import InfoTip from "./InfoTip";
 
 type Phase = "draft" | "final";
 type ValidationState = "missing" | "current" | "stale";
@@ -261,11 +262,17 @@ export default function ValidationFindingsPanel({
                       Open source at {finding.path}
                     </a>
                     {!auditFinding && finding.waivable && !waived && state === "current" && (
-                      <button type="button" onClick={() => {
-                        setWaiverFinding(finding);
-                        setReason("");
-                        setFeedback(null);
-                      }}>Waive…</button>
+                      <>
+                        <button type="button" onClick={() => {
+                          setWaiverFinding(finding);
+                          setReason("");
+                          setFeedback(null);
+                        }}>Waive…</button>
+                        <InfoTip
+                          label="Waive"
+                          text="Waiving a finding accepts it as-is: it stops blocking finalize but stays recorded with your reason."
+                        />
+                      </>
                     )}
                     {!auditFinding && waived && state === "current" && (
                       <button

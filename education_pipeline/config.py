@@ -14,6 +14,9 @@ REQUIRED_STAGES = ("spec", "outline", "draft", "qa", "repair")
 OPTIONAL_STAGES = ("audit",)
 SUPPORTED_STAGES = REQUIRED_STAGES + OPTIONAL_STAGES
 
+PRESET_STAGES = ("profile",) + SUPPORTED_STAGES
+_EFFORT_VALUES = frozenset({"low", "medium", "high"})
+
 # Complete model-plan topology. Profile remains model-configurable even though
 # it is not part of a run's required stage state; finalize/export remain local.
 STAGE_ORDER = ("profile",) + SUPPORTED_STAGES + ("finalize", "export")
@@ -62,10 +65,29 @@ class Provider:
 
 
 @dataclass(frozen=True)
+class PresetStage:
+    """One stage's model choice inside a recommended preset."""
+
+    model: str
+    effort: str | None = None
+
+
+@dataclass(frozen=True)
+class Preset:
+    """A named per-stage recommendation, mapped per provider."""
+
+    id: str
+    label: str
+    description: str = ""
+    stages: Mapping[str, Mapping[str, PresetStage]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ModelCatalog:
     """Provider catalog loaded from ``model-catalog.toml``."""
 
     providers: Mapping[str, Provider]
+    presets: tuple[Preset, ...] = ()
 
     def require_provider(self, provider_id: str) -> Provider:
         try:
@@ -141,7 +163,8 @@ def parse_model_catalog(data: Mapping[str, Any]) -> ModelCatalog:
             models=models,
         )
 
-    return ModelCatalog(providers=providers)
+    presets = _parse_presets(data, providers)
+    return ModelCatalog(providers=providers, presets=presets)
 
 
 def parse_model_plan(
@@ -409,6 +432,76 @@ def _parse_models(raw_provider: Mapping[str, Any], provider_id: str) -> Mapping[
         )
 
     return models
+
+
+def _parse_presets(
+    data: Mapping[str, Any], providers: Mapping[str, Provider]
+) -> tuple[Preset, ...]:
+    raw_presets = data.get("presets", [])
+    if raw_presets is None:
+        raw_presets = []
+    if not isinstance(raw_presets, list):
+        raise ConfigError("presets must use [[presets]] tables")
+
+    presets: list[Preset] = []
+    seen: set[str] = set()
+    for index, raw_preset in enumerate(raw_presets, start=1):
+        if not isinstance(raw_preset, Mapping):
+            raise ConfigError(f"preset entry #{index} must be a table")
+        preset_id = _required_string(raw_preset, "id", f"preset entry #{index}")
+        if preset_id in seen:
+            raise ConfigError(f"duplicate preset id {preset_id!r}")
+        seen.add(preset_id)
+        context = f"preset {preset_id!r}"
+        label = _optional_string(raw_preset, "label", preset_id, context)
+        description = _optional_string(raw_preset, "description", "", context)
+        raw_stage_maps = raw_preset.get("stages")
+        if not isinstance(raw_stage_maps, Mapping) or not raw_stage_maps:
+            raise ConfigError(
+                f"{context} must define at least one [presets.stages.<provider>] table"
+            )
+        stage_maps: dict[str, Mapping[str, PresetStage]] = {}
+        for provider_id, raw_map in raw_stage_maps.items():
+            if provider_id not in providers:
+                raise ConfigError(f"{context} references unknown provider {provider_id!r}")
+            if not isinstance(raw_map, Mapping):
+                raise ConfigError(f"{context} stages for {provider_id!r} must be a table")
+            unknown = sorted(set(raw_map) - set(PRESET_STAGES))
+            if unknown:
+                raise ConfigError(
+                    f"{context} names unknown stage {unknown[0]!r} for provider {provider_id!r}"
+                )
+            stage_map: dict[str, PresetStage] = {}
+            for stage_name in PRESET_STAGES:
+                raw_stage = raw_map.get(stage_name)
+                if raw_stage is None:
+                    raise ConfigError(
+                        f"{context} is missing stage {stage_name!r} for provider {provider_id!r}"
+                    )
+                if not isinstance(raw_stage, Mapping):
+                    raise ConfigError(
+                        f"{context} stage {stage_name!r} for {provider_id!r} must be a table"
+                    )
+                stage_context = f"{context} stage {stage_name!r} ({provider_id!r})"
+                model_id = _required_string(raw_stage, "model", stage_context)
+                if model_id not in providers[provider_id].models:
+                    raise ConfigError(
+                        f"{stage_context} references unknown model {model_id!r}"
+                    )
+                effort = _optional_string(raw_stage, "effort", None, stage_context)
+                if effort is not None and effort not in _EFFORT_VALUES:
+                    raise ConfigError(
+                        f"{stage_context} effort must be one of low, medium, high"
+                    )
+                extra = sorted(set(raw_stage) - {"model", "effort"})
+                if extra:
+                    raise ConfigError(f"{stage_context} has unknown key {extra[0]!r}")
+                stage_map[stage_name] = PresetStage(model=model_id, effort=effort)
+            stage_maps[provider_id] = stage_map
+        presets.append(
+            Preset(id=preset_id, label=label, description=description, stages=stage_maps)
+        )
+    return tuple(presets)
 
 
 def _required_string(data: Mapping[str, Any], key: str, context: str) -> str:

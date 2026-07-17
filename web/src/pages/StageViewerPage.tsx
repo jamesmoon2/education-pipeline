@@ -10,6 +10,7 @@ import {
   postApprove,
 } from "../api/client";
 import DiffView from "../components/DiffView";
+import InfoTip from "../components/InfoTip";
 import ModuleRepairControl from "../components/ModuleRepairControl";
 import ResponseEditor from "../components/ResponseEditor";
 import ResponseForm from "../components/ResponseForm";
@@ -128,6 +129,10 @@ function StageViewerForRoute({
           </button>
         ))}
       </nav>
+      <InfoTip
+        label="Stage tabs"
+        text="Each stage keeps three artifacts on disk: the prompt to give a model, the response that came back, and the approved copy that later stages build on. Approving a response is what lets the run move forward."
+      />
       <div className="view-toggles">
         <button onClick={() => setCompare((c) => !c)}>
           {compare ? "Single pane" : "Compare prompt ↔ response"}

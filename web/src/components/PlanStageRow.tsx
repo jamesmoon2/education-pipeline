@@ -1,14 +1,18 @@
+import { useId } from "react";
 import type {
   CatalogProvider,
   PlanStage,
   ProviderAvailability,
   StageOverride,
 } from "../api/types";
+import InfoTip from "./InfoTip";
+import { EFFORT_HELP, PROVIDER_HELP, STAGE_HELP } from "../lib/planHelp";
 
 export interface PlanStageRowProps {
   stage: PlanStage;
   catalog: CatalogProvider[];
   providers: ProviderAvailability[];
+  resetValue: StageOverride | null;
   onChange(stage: string, override: StageOverride | null): void;
 }
 
@@ -23,8 +27,16 @@ export default function PlanStageRow({
   stage,
   catalog,
   providers,
+  resetValue,
   onChange,
 }: PlanStageRowProps) {
+  // Explicit label/select association. The InfoTip trigger is a labelable
+  // <button>, so it lives on the heading line beside the label, never inside
+  // it — otherwise the label would associate with the button, not the select.
+  const providerSelectId = useId();
+  const modelSelectId = useId();
+  const effortSelectId = useId();
+
   if (LOCAL_ONLY_STAGES.has(stage.stage)) {
     return (
       <div className="plan-stage-row plan-stage-row--local" data-stage={stage.stage}>
@@ -56,14 +68,24 @@ export default function PlanStageRow({
       effort: value === "default" ? undefined : value,
     });
   };
-  const useRecommended = () => onChange(stage.stage, null);
+  const resetToDefault = () =>
+    onChange(stage.stage, resetValue ? { ...resetValue } : null);
 
   return (
     <div className="plan-stage-row" data-stage={stage.stage}>
-      <span className="plan-stage-name">{stage.stage}</span>
-      <label>
-        {`Provider for ${stage.stage}`}
+      <span className="plan-stage-name">
+        {stage.stage}
+        {STAGE_HELP[stage.stage] && (
+          <InfoTip label={`${stage.stage} stage`} text={STAGE_HELP[stage.stage]} />
+        )}
+      </span>
+      <div className="plan-stage-field">
+        <span className="plan-stage-field-label">
+          <label htmlFor={providerSelectId}>{`Provider for ${stage.stage}`}</label>
+          <InfoTip label={`provider for ${stage.stage}`} text={PROVIDER_HELP} />
+        </span>
         <select
+          id={providerSelectId}
           value={currentProviderId}
           onChange={(e) => handleProviderChange(e.target.value)}
         >
@@ -85,10 +107,16 @@ export default function PlanStageRow({
             <option value={MANUAL_PROVIDER}>manual</option>
           )}
         </select>
-      </label>
-      <label>
-        {`Model for ${stage.stage}`}
-        <select value={stage.model ?? ""} onChange={(e) => handleModelChange(e.target.value)}>
+      </div>
+      <div className="plan-stage-field">
+        <span className="plan-stage-field-label">
+          <label htmlFor={modelSelectId}>{`Model for ${stage.stage}`}</label>
+        </span>
+        <select
+          id={modelSelectId}
+          value={stage.model ?? ""}
+          onChange={(e) => handleModelChange(e.target.value)}
+        >
           <option value="">(provider default)</option>
           {models.map((model) => (
             <option key={model.id} value={model.id}>
@@ -96,10 +124,17 @@ export default function PlanStageRow({
             </option>
           ))}
         </select>
-      </label>
-      <label>
-        {`Effort for ${stage.stage}`}
-        <select value={stage.effort ?? "default"} onChange={(e) => handleEffortChange(e.target.value)}>
+      </div>
+      <div className="plan-stage-field">
+        <span className="plan-stage-field-label">
+          <label htmlFor={effortSelectId}>{`Effort for ${stage.stage}`}</label>
+          <InfoTip label={`effort for ${stage.stage}`} text={EFFORT_HELP} />
+        </span>
+        <select
+          id={effortSelectId}
+          value={stage.effort ?? "default"}
+          onChange={(e) => handleEffortChange(e.target.value)}
+        >
           <option value="default">default</option>
           {EFFORT_OPTIONS.map((effort) => (
             <option key={effort} value={effort}>
@@ -107,9 +142,9 @@ export default function PlanStageRow({
             </option>
           ))}
         </select>
-      </label>
-      <button type="button" onClick={useRecommended}>
-        Use recommended
+      </div>
+      <button type="button" onClick={resetToDefault}>
+        Reset to default
       </button>
       {stage.warning && (
         <p role="alert" className="plan-stage-warning">

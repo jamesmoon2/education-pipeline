@@ -12,6 +12,7 @@ import GuidePreviewFrame, {
   isGuidePreviewEvidence,
   type GuidePreviewFrameHandle,
 } from "./GuidePreviewFrame";
+import InfoTip from "./InfoTip";
 
 export interface CanonicalGuidePreviewHandle {
   revealEvidence(evidence: PersonalizationEvidence): boolean;
@@ -106,6 +107,10 @@ const CanonicalGuidePreview = forwardRef<
   return (
     <section className="canonical-guide-preview" aria-labelledby="canonical-guide-preview-heading">
       <h3 id="canonical-guide-preview-heading">Guide preview</h3>
+      <InfoTip
+        label="Canonical guide"
+        text="The cleaned-up, validated version of the draft that finalize will publish."
+      />
       <p>Approved repair / final source</p>
       {loading && <p role="status">Loading guide preview…</p>}
       {missing && <p>No approved repair guide is available yet.</p>}
