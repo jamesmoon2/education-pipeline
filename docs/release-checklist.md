@@ -28,9 +28,8 @@ interactive parts need one human pass per supported OS:
       (`topic import` → `advance`/`approve` → `export`); exported guide
       opens in Edge. The daemon/cockpit run on Windows and are covered
       by the packaging smoke (`lifecycle.is_pid_alive` uses a ctypes
-      `OpenProcess` probe there). **Known limitation:** cancelling a job
-      only terminates the provider's root process, not its process tree
-      (issue #23).
+      `OpenProcess` probe there). Cancelling a job tears down the full
+      provider process tree via `taskkill /T` (issue #23).
 
 **Resolved (PRD §15 open question 5):** the lifecycle liveness probe is
 portable and the daemon smoke runs on all three OSes in CI; Windows is

@@ -187,28 +187,37 @@ def popen_kwargs() -> dict:
     return {"start_new_session": True}
 
 
-def terminate_process(proc: subprocess.Popen, *, grace: float = 5.0) -> None:
-    """Terminate a spawned provider process portably: TERM then KILL.
+def _taskkill_tree(pid: int) -> None:  # pragma: no cover - exercised on Windows CI
+    """Force-kill a Windows process and all of its descendants.
 
-    On POSIX the whole session/process-group is signalled (the child was spawned
-    with ``start_new_session=True``); on Windows ``Popen.terminate()`` /
-    ``kill()`` are used (no SIGTERM semantics).
+    ``Popen.terminate()``/``os.kill`` on Windows only signal the root
+    process, so a provider that spawns helper children would leak them.
+    ``taskkill /T`` walks and kills the whole tree; it ships with every
+    supported Windows.
+    """
+
+    subprocess.run(
+        ["taskkill", "/T", "/F", "/PID", str(pid)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def terminate_process(proc: subprocess.Popen, *, grace: float = 5.0) -> None:
+    """Terminate a spawned provider and its process tree portably.
+
+    On POSIX the whole session/process-group is signalled TERM then KILL (the
+    child was spawned with ``start_new_session=True``); on Windows the tree is
+    force-killed via ``taskkill /T`` (there are no SIGTERM semantics), with
+    ``Popen.kill()`` kept as a fallback for the root.
     """
 
     if proc.poll() is not None:
         return
     try:
         if sys.platform == "win32":  # pragma: no cover - exercised on Windows CI
-            # KNOWN LIMITATION: this only signals the root process. Unlike the
-            # POSIX branch (which kills the whole process group via
-            # start_new_session=True + os.killpg), Popen.terminate()/kill() on
-            # Windows do not tear down a child-spawned process tree. A
-            # provider that forks its own children can leave them running. A
-            # full fix needs a Job Object (CreateJobObject +
-            # AssignProcessToJobObject with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
-            # or shelling out to `taskkill /T /F /PID <pid>`. Not implemented;
-            # this platform is not covered by CI.
-            proc.terminate()
+            _taskkill_tree(proc.pid)
         else:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
@@ -633,7 +642,7 @@ def _pid_plausibly_alive(pid: int) -> bool:
 def _best_effort_kill(pid: int) -> None:
     try:
         if sys.platform == "win32":  # pragma: no cover - Windows CI
-            os.kill(pid, signal.SIGTERM)
+            _taskkill_tree(pid)
         else:
             os.killpg(os.getpgid(pid), signal.SIGTERM)
     except OSError:
