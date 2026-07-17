@@ -6,6 +6,7 @@ input must never reach the spawned command line.
 """
 
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -163,5 +164,5 @@ class TestOpenInFileManager:
     def test_successful_opener_returns_none(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("EP_REVEAL_OPENER", "/bin/true")
+        monkeypatch.setenv("EP_REVEAL_OPENER", shutil.which("true"))
         assert reveal.open_in_file_manager(tmp_path) is None
