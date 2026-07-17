@@ -120,6 +120,27 @@ describe("ProfileForm", () => {
     expect(latest.metadata.cohort).toEqual(expect.objectContaining({ year: expect.objectContaining({ text: "9223372036854775807", kind: "integer" }) }));
   });
 
+  it("renders an info tip for every labeled field", () => {
+    render(<ProfileForm value={profile} onChange={vi.fn()} sensitivity={{}} />);
+    for (const label of [
+      "Target learner",
+      "Prior education",
+      "Adjacent domains",
+      "Learning goals",
+      "Math comfort",
+      "Reading level",
+      "Pace",
+      "Preferred modalities",
+      "Jurisdiction",
+      "Private by default",
+      "Publishable summary",
+    ]) {
+      expect(
+        screen.getByRole("button", { name: `About ${label}` }),
+      ).toBeInTheDocument();
+    }
+  });
+
   it("gives repeated metadata actions contextual accessible names", () => {
     render(<ProfileForm value={profile} onChange={vi.fn()} sensitivity={{}} />);
     expect(screen.getByRole("button", { name: "Remove metadata cohort.labels.1" })).toBeInTheDocument();

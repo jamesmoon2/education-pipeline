@@ -6,6 +6,8 @@ import type {
 } from "../api/types";
 import { isMetadataNumber, metadataNumber, metadataNumberValidationMessage } from "../api/types";
 import SensitivityBadge from "./SensitivityBadge";
+import InfoTip from "./InfoTip";
+import { PROFILE_HELP } from "../lib/profileHelp";
 
 interface ProfileFormProps {
   value: LearnerProfile;
@@ -26,13 +28,16 @@ function Field({
   sensitivity: ProfileSensitivity;
   children: React.ReactElement<{ "aria-label"?: string }>;
 }) {
+  // A <div>, not a <label>: the InfoTip button would otherwise become the
+  // label's implicitly associated control. The input is named via aria-label.
   return (
-    <label className="profile-field">
+    <div className="profile-field">
       <span className="profile-field-label">
         {label} <SensitivityBadge tier={sensitivity[path]} />
+        {PROFILE_HELP[path] && <InfoTip label={label} text={PROFILE_HELP[path]} />}
       </span>
       {cloneElement(children, { "aria-label": label })}
-    </label>
+    </div>
   );
 }
 
@@ -256,7 +261,8 @@ export default function ProfileForm({ value, onChange, sensitivity, idLocked = f
         <Field label="Include summary in published output" path="privacy.include_in_published_output" sensitivity={sensitivity}><input type="checkbox" disabled={disabled} checked={value.privacy.include_in_published_output} onChange={(event) => privacy("include_in_published_output", event.target.checked)} /></Field>
         <Field label="Publishable summary" path="privacy.publishable_summary" sensitivity={sensitivity}><textarea rows={4} disabled={disabled} value={value.privacy.publishable_summary ?? ""} onChange={(event) => privacy("publishable_summary", event.target.value.trim() ? event.target.value : undefined)} /></Field>
       </div>
-        <div className="metadata-editor"><h4>Metadata <SensitivityBadge tier={sensitivity["metadata.*"]} /></h4><p className="field-help">Tables and lists may be nested. Values retain their selected TOML-compatible type.</p><MetadataTable value={value.metadata} path={[]} disabled={disabled} onChange={(metadata) => set("metadata", metadata)} /></div>
+        <div className="metadata-editor"><h4>Metadata <SensitivityBadge tier={sensitivity["metadata.*"]} />
+<InfoTip label="Metadata" text={PROFILE_HELP["metadata.*"]} /></h4><p className="field-help">Tables and lists may be nested. Values retain their selected TOML-compatible type.</p><MetadataTable value={value.metadata} path={[]} disabled={disabled} onChange={(metadata) => set("metadata", metadata)} /></div>
       </section>
     </div>
   );
