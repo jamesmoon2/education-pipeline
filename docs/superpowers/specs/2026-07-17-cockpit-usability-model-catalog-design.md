@@ -43,18 +43,22 @@ carries the real CLI id.
 
 | id | label | argv_model | quality | default_effort |
 |---|---|---|---|---|
-| `fable-5` | Fable 5 | `claude-fable-5` | flagship | high |
+| `fable-5` | Fable 5 | `claude-fable-5` | premium | high |
 | `opus-4-8` | Opus 4.8 | `claude-opus-4-8` | premium | high |
-| `sonnet-5` | Sonnet 5 | `claude-sonnet-5` | balanced | medium |
+| `sonnet-5` | Sonnet 5 | `claude-sonnet-5` | strong | medium |
 | `haiku-4-5` | Haiku 4.5 | `claude-haiku-4-5` | fast | low |
 
 **Codex** (`codex`):
 
 | id | label | argv_model | quality | default_effort |
 |---|---|---|---|---|
-| `sol` | GPT-5.6 Sol | `gpt-5.6-sol` | flagship | high |
-| `terra` | GPT-5.6 Terra | `gpt-5.6-terra` | balanced | medium |
+| `sol` | GPT-5.6 Sol | `gpt-5.6-sol` | premium | high |
+| `terra` | GPT-5.6 Terra | `gpt-5.6-terra` | strong | medium |
 | `luna` | GPT-5.6 Luna | `gpt-5.6-luna` | fast | low |
+
+Quality values stay within the catalog's ranked vocabulary
+(`fast` < `strong` < `premium`) so `weak_stage_warning` keeps working;
+novel tier names would silently rank as "strong" and defeat the warning.
 
 **Manual** stays, relabeled: label "Manual copy/paste", description
 "No CLI required — copy each stage prompt into any model UI, then paste the
