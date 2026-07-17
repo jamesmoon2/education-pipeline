@@ -21,6 +21,16 @@ type TopicMode = "describe" | "toml";
 const STEP_ORDER = ["learner", "topic", "blueprint", "plan", "confirm"] as const;
 type Step = (typeof STEP_ORDER)[number];
 
+// Learner-language step labels (design system §3.4); the keys stay the
+// structural step ids.
+const STEP_LABELS: Record<Step, string> = {
+  learner: "Learner",
+  topic: "Topic",
+  blueprint: "Blueprint",
+  plan: "Model plan",
+  confirm: "Review",
+};
+
 export default function NewRunPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("learner");
@@ -177,7 +187,7 @@ export default function NewRunPage() {
       <ol className="wizard-steps" aria-label="Wizard steps">
         {STEP_ORDER.map((name) => (
           <li key={name} aria-current={step === name ? "step" : undefined}>
-            {name}
+            {STEP_LABELS[name]}
           </li>
         ))}
       </ol>

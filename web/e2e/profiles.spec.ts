@@ -100,7 +100,7 @@ test("profiles cockpit: create, edit, duplicate, attach, immutable snapshot, and
   );
 
   // Attach from the topic list and inspect the fixture workspace bytes directly.
-  await page.getByRole("link", { name: "Education Pipeline Cockpit", exact: true }).click();
+  await page.getByRole("link", { name: "Education Pipeline", exact: true }).click();
   const topicRow = page.getByRole("row").filter({ hasText: TOPIC_ID });
   await topicRow.getByLabel(`Attach profile to ${TOPIC_ID}`, { exact: true }).selectOption(COPY_ID);
   await topicRow.getByRole("button", { name: "Attach", exact: true }).click();

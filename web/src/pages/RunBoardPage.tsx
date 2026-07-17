@@ -14,6 +14,7 @@ import RunPlanPanel from "../components/RunPlanPanel";
 import ValidationFindingsPanel from "../components/ValidationFindingsPanel";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
+import { stageStateLabel } from "../lib/labels";
 
 // The latest provenance entry per stage — a stage can be re-run, so multiple
 // entries may share a stage name; the most recently recorded one wins.
@@ -245,7 +246,7 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
               <tr key={s.stage}>
                 <td>{s.stage}</td>
                 <td>
-                  <span className={`state state-${s.state}`}>{s.state}</span>
+                  <span className={`state state-${s.state}`}>{stageStateLabel(s.state)}</span>
                   {provenance && <p className="stage-provenance">{formatProvenance(provenance)}</p>}
                 </td>
                 <td>

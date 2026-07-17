@@ -352,7 +352,7 @@ describe("RunBoardPage", () => {
     renderAt("/topics/t");
 
     expect(await screen.findByText(/Run the outline prompt/)).toBeInTheDocument();
-    expect(screen.getByText("approved")).toBeInTheDocument();
+    expect(screen.getByText("Complete")).toBeInTheDocument();
     const stageLink = screen.getAllByRole("link", { name: "view" })[0];
     expect(stageLink).toHaveAttribute("href", "/topics/t/stages/spec");
     expect(await screen.findByText("20260710T000000Z-abcd")).toBeInTheDocument();

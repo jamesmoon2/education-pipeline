@@ -133,7 +133,7 @@ describe("NewRunPage wizard structure", () => {
     renderWizard();
 
     // Step 1: learner
-    expect(await screen.findByText("Learner")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Learner" })).toBeInTheDocument();
     await userEvent.selectOptions(screen.getByLabelText("Learner profile"), "p1");
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
@@ -141,7 +141,7 @@ describe("NewRunPage wizard structure", () => {
     await fillTopicStep("t1", "T1");
 
     // Step 3: read-only plan review with a Settings link
-    expect(await screen.findByText(/Model plan/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Model plan" })).toBeInTheDocument();
     expect(screen.getAllByText("claude-code").length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: /adjust in Settings/i })).toHaveAttribute(
       "href",
@@ -172,7 +172,7 @@ describe("NewRunPage wizard structure", () => {
     vi.mocked(getRunStatus).mockResolvedValue(makeRunStatus("t2"));
 
     renderWizard();
-    await screen.findByText("Learner");
+    await screen.findByRole("heading", { name: "Learner" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await fillTopicStep("t2", "T2");
     await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
@@ -199,7 +199,7 @@ describe("NewRunPage wizard structure", () => {
     vi.mocked(getRunStatus).mockResolvedValue(makeRunStatus("sys"));
 
     renderWizard();
-    await screen.findByText("Learner");
+    await screen.findByRole("heading", { name: "Learner" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.type(screen.getByLabelText("Topic id"), "sys");
     await userEvent.type(screen.getByLabelText("Title"), "Systems");
@@ -227,7 +227,7 @@ describe("NewRunPage wizard structure", () => {
     vi.mocked(getRunStatus).mockResolvedValue(makeRunStatus("n1"));
 
     renderWizard();
-    await screen.findByText("Learner");
+    await screen.findByRole("heading", { name: "Learner" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.click(screen.getByRole("radio", { name: "Paste TOML" }));
     await userEvent.type(screen.getByLabelText("Topic TOML"), 'id = "n1"');
@@ -249,7 +249,7 @@ describe("NewRunPage wizard structure", () => {
     vi.mocked(postAdvance).mockRejectedValue(new Error("run init failed: boom"));
 
     renderWizard();
-    await screen.findByText("Learner");
+    await screen.findByRole("heading", { name: "Learner" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await fillTopicStep("t3", "T3");
     await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
@@ -267,7 +267,7 @@ describe("NewRunPage wizard structure", () => {
   it("supports going back to earlier steps without losing input", async () => {
     vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
     renderWizard();
-    await screen.findByText("Learner");
+    await screen.findByRole("heading", { name: "Learner" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.type(screen.getByLabelText("Topic id"), "keep-me");
     await userEvent.click(screen.getByRole("button", { name: "Back" }));
@@ -279,7 +279,7 @@ describe("NewRunPage wizard structure", () => {
   it("preselects the recommendation with its rationale on the blueprint step", async () => {
     vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
     renderWizard();
-    await screen.findByText("Learner");
+    await screen.findByRole("heading", { name: "Learner" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.type(screen.getByLabelText("Topic id"), "b1");
     await userEvent.type(screen.getByLabelText("Title"), "B1");
@@ -302,7 +302,7 @@ describe("NewRunPage wizard structure", () => {
     vi.mocked(getRunStatus).mockResolvedValue(makeRunStatus("b2"));
 
     renderWizard();
-    await screen.findByText("Learner");
+    await screen.findByRole("heading", { name: "Learner" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.type(screen.getByLabelText("Topic id"), "b2");
     await userEvent.type(screen.getByLabelText("Title"), "B2");
@@ -328,7 +328,7 @@ describe("NewRunPage wizard structure", () => {
     vi.mocked(getRunStatus).mockResolvedValue(makeRunStatus("tb"));
 
     renderWizard();
-    await screen.findByText("Learner");
+    await screen.findByRole("heading", { name: "Learner" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.type(screen.getByLabelText("Topic id"), "tb");
     await userEvent.type(screen.getByLabelText("Title"), "TB");
@@ -354,7 +354,7 @@ describe("NewRunPage wizard structure", () => {
     vi.mocked(getRunStatus).mockResolvedValue(makeRunStatus("b3"));
 
     renderWizard();
-    await screen.findByText("Learner");
+    await screen.findByRole("heading", { name: "Learner" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.type(screen.getByLabelText("Topic id"), "b3");
     await userEvent.type(screen.getByLabelText("Title"), "B3");
