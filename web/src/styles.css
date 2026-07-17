@@ -404,6 +404,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--ep-color-accen
 }
 .new-run-page input:not([type="checkbox"]):not([type="radio"]),
 .new-run-page textarea { width: 100%; }
+/* A field whose label carries an InfoTip: the tip button must sit outside the
+   <label> (it is itself labelable and its open bubble would pollute the
+   label's text), so the pair lives in a block wrapper styled like a label. */
+.new-run-page .wizard-field { margin: var(--ep-space-3) 0; max-width: 42rem; }
+.new-run-page .wizard-field label { display: inline; margin: 0; }
 .new-run-page section > p:has(input[type="radio"]) label { display: inline-flex; gap: 0.4rem; margin-right: var(--ep-space-4); }
 
 /* --------------------------------------------------------------- tables */

@@ -109,6 +109,13 @@ beforeEach(() => {
   vi.mocked(recommendBlueprints).mockResolvedValue(blueprintsPayload);
 });
 
+async function renderAtTopicStep() {
+  vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+  renderWizard();
+  await screen.findByRole("heading", { name: "Learner" });
+  await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+}
+
 async function fillTopicStep(id: string, title: string) {
   await userEvent.type(screen.getByLabelText("Topic id"), id);
   await userEvent.type(screen.getByLabelText("Title"), title);
@@ -344,6 +351,31 @@ describe("NewRunPage wizard structure", () => {
       title: "TB",
       time_budget_minutes: 90,
     });
+  });
+
+  it("shows help for the brief and topic id", async () => {
+    const user = userEvent.setup();
+    await renderAtTopicStep();
+    await user.click(screen.getByRole("button", { name: "About Topic id" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/intro-to-sql/);
+    expect(screen.getByLabelText("Topic id")).toHaveAttribute(
+      "placeholder",
+      "intro-to-sql",
+    );
+  });
+
+  it("rejects a malformed topic id before continuing", async () => {
+    const user = userEvent.setup();
+    await renderAtTopicStep();
+    await user.type(screen.getByLabelText("Topic id"), "bad id!");
+    await user.type(screen.getByLabelText("Title"), "A Title");
+    expect(
+      screen.getByText(/letters, digits, dots, dashes/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    await user.clear(screen.getByLabelText("Topic id"));
+    await user.type(screen.getByLabelText("Topic id"), "intro-to-sql");
+    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
   });
 
   it("proceeds past an unavailable blueprint registry without blocking creation", async () => {

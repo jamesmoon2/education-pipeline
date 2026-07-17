@@ -60,7 +60,9 @@ test("new-run wizard: learner, topic, plan review, confirm, land on the run boar
   await page.getByRole("button", { name: "Continue" }).click();
 
   // Step 2: topic + brief.
-  await page.getByLabel("Topic id").fill("wizard-topic");
+  // exact: the "About Topic id" InfoTip trigger would otherwise also match
+  // Playwright's substring-based getByLabel.
+  await page.getByLabel("Topic id", { exact: true }).fill("wizard-topic");
   await page.getByLabel("Title").fill("Wizard Topic");
   await page.getByRole("button", { name: "Continue" }).click();
 
