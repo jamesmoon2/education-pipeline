@@ -168,6 +168,50 @@ def test_extract_spec_contract_rejects_duplicate_outcome_id() -> None:
 # --- extract_outline_contract ----------------------------------------------
 
 
+def test_extract_spec_contract_without_expected_blueprint_is_unchanged() -> None:
+    """No expected blueprint keeps today's free-text-string behavior."""
+
+    contract = dict(VALID_SPEC_CONTRACT, blueprint="a-blueprint-nobody-registered")
+    assert extract_spec_contract(_spec_markdown(contract))["blueprint"] == (
+        "a-blueprint-nobody-registered"
+    )
+
+
+def test_extract_spec_contract_enforces_blueprint_echo() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+
+    blueprint = get_blueprint("casebook")
+    contract = dict(
+        VALID_SPEC_CONTRACT,
+        blueprint="casebook",
+        required_interactions=["scenario", "reflection", "knowledge_check"],
+    )
+
+    extracted = extract_spec_contract(
+        _spec_markdown(contract), expected_blueprint=blueprint
+    )
+    assert extracted["blueprint"] == "casebook"
+
+    with pytest.raises(ContractError, match="must echo the configured blueprint"):
+        extract_spec_contract(
+            _spec_markdown(VALID_SPEC_CONTRACT), expected_blueprint=blueprint
+        )
+
+
+def test_extract_spec_contract_enforces_required_interaction_superset() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+
+    blueprint = get_blueprint("casebook")  # minimum: scenario, reflection
+    contract = dict(
+        VALID_SPEC_CONTRACT,
+        blueprint="casebook",
+        required_interactions=["scenario", "knowledge_check"],
+    )
+
+    with pytest.raises(ContractError, match="superset"):
+        extract_spec_contract(_spec_markdown(contract), expected_blueprint=blueprint)
+
+
 def test_extract_outline_contract_returns_validated_dict() -> None:
     data = extract_outline_contract(_outline_markdown())
     assert data == VALID_OUTLINE_CONTRACT

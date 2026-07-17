@@ -211,6 +211,12 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
   return (
     <div>
       <h2>{status.topic_id}</h2>
+      {status.blueprint && (
+        <p className="blueprint-line">
+          Blueprint: <strong>{status.blueprint.id}</strong> ({status.blueprint.source})
+          {status.blueprint.rationale ? <> — {status.blueprint.rationale}</> : null}
+        </p>
+      )}
       <p className="next-action">
         <strong>Next:</strong> {status.next_action.detail}
       </p>

@@ -345,6 +345,12 @@ def _make_handler(context: DaemonContext):
                 )
             if self.path == "/v1/runs":
                 return self._send(200, read_api.list_runs(context.runs))
+            m = re.match(r"^/v1/blueprints(?:\?topic=([^&]+))?$", self.path)
+            if m:
+                return self._send(
+                    200,
+                    read_api.blueprints_payload(context.topics, m.group(1)),
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/manifest$", self.path)
             if m:
                 return self._send(
@@ -355,6 +361,11 @@ def _make_handler(context: DaemonContext):
                 return self._send(
                     200,
                     read_api.personalization_payload(context.runs, m.group(1)),
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/repair/modules$", self.path)
+            if m:
+                return self._send(
+                    200, read_api.repair_modules_payload(context.runs, m.group(1))
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)$", self.path)
             if m:
@@ -458,6 +469,9 @@ def _make_handler(context: DaemonContext):
                 return self._last_resort(exc)
 
         def _api_post_routes(self):
+            if self.path == "/v1/blueprints/recommend":
+                body = self._read_body()
+                return self._send(200, read_api.recommend_blueprint_payload(body))
             if self.path == "/v1/profiles/preview":
                 body = self._read_body()
                 unknown = sorted(set(body) - {"profile"})
@@ -566,9 +580,29 @@ def _make_handler(context: DaemonContext):
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/advance$", self.path)
             if m:
-                self._read_body()  # enforce the JSON/size rules even for an empty body
+                body = self._read_body()
+                unknown = sorted(set(body) - {"blueprint", "repair_module"})
+                if unknown:
+                    raise ConfigError(
+                        "unknown advance field(s): " + ", ".join(unknown)
+                    )
+                for field in ("blueprint", "repair_module"):
+                    value = body.get(field)
+                    if value is not None and (
+                        not isinstance(value, str) or not value.strip()
+                    ):
+                        raise ConfigError(
+                            f"body field {field!r} must be a non-empty string when set"
+                        )
                 return self._send(
-                    200, write_api.advance_run(context.runs, context.store, m.group(1))
+                    200,
+                    write_api.advance_run(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        blueprint=body.get("blueprint"),
+                        repair_module=body.get("repair_module"),
+                    ),
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/audit$", self.path)
             if m:

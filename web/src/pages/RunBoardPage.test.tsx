@@ -301,6 +301,34 @@ describe("RunBoardPage", () => {
     expect(screen.queryByRole("button", { name: /Open module/ })).not.toBeInTheDocument();
   });
 
+  it("shows the effective blueprint with its source and rationale", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      ...status,
+      blueprint: {
+        id: "exam-preparation",
+        source: "recommended",
+        rationale: "Recommended Exam preparation because the topic mentions 'exam'.",
+      },
+    });
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    expect(await screen.findByText("exam-preparation")).toBeInTheDocument();
+    expect(screen.getByText(/\(recommended\)/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/because the topic mentions 'exam'/),
+    ).toBeInTheDocument();
+  });
+
+  it("omits the blueprint line for runs without one", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({ ...status, blueprint: null });
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    await screen.findByText(/Run the outline prompt/);
+    expect(screen.queryByText(/Blueprint:/)).toBeNull();
+  });
+
   it("renders stages, next action, and jobs", async () => {
     vi.mocked(getRunStatus).mockResolvedValue(status);
     vi.mocked(getJobs).mockResolvedValue({

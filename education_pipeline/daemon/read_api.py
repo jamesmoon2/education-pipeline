@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import tomllib
 from pathlib import Path
 
 from education_pipeline.config import (
@@ -210,6 +212,107 @@ def _profile_warnings_payload(profile) -> list[dict]:
     ]
 
 
+def blueprints_payload(
+    topics: TopicStore, topic_id: str | None = None
+) -> dict:
+    """List the registered blueprints, plus a per-topic recommendation.
+
+    With ``topic_id`` naming a stored topic, ``recommendation`` carries the
+    deterministic recommendation and rationale and ``topic_blueprint`` the
+    topic's own declared blueprint (when set). Without it both are ``None``.
+    """
+
+    from education_pipeline.guides.blueprints import recommend_blueprint
+
+    recommendation = None
+    topic_blueprint = None
+    if topic_id is not None:
+        if not topics.topic_path(topic_id).is_file():
+            raise NotFoundError("no such topic")
+        topic = topics.load_topic(topic_id)
+        blueprint_id, rationale = recommend_blueprint(topic)
+        recommendation = {"id": blueprint_id, "rationale": rationale}
+        topic_blueprint = topic.blueprint
+    return {
+        "blueprints": _blueprint_entries(),
+        "recommendation": recommendation,
+        "topic_blueprint": topic_blueprint,
+    }
+
+
+def _blueprint_entries() -> list[dict]:
+    from education_pipeline.guides.blueprints import list_blueprints
+
+    return [
+        {
+            "id": blueprint.id,
+            "title": blueprint.title,
+            "summary": blueprint.summary,
+            "when_to_use": blueprint.when_to_use,
+            "required_interactions": sorted(blueprint.required_interactions),
+            "default_difficulty": blueprint.default_difficulty,
+        }
+        for blueprint in list_blueprints()
+    ]
+
+
+#: Topic fields the pre-creation recommend route accepts from the wizard.
+_RECOMMEND_BODY_KEYS = {
+    "id",
+    "title",
+    "brief",
+    "audience",
+    "goals",
+    "scope_includes",
+    "scope_excludes",
+    "key_questions",
+    "prerequisites",
+    "constraints",
+    "tags",
+    "notes",
+    "blueprint",
+    "time_budget_minutes",
+}
+
+
+def recommend_blueprint_payload(body: object) -> dict:
+    """Recommend a blueprint for a not-yet-created topic (wizard body).
+
+    The New Course wizard collects topic fields before anything is stored,
+    so the recommendation must run over the in-progress fields — either the
+    describe-mode field object or ``{"toml": ...}`` for paste mode. Same
+    payload shape as :func:`blueprints_payload`, always with a
+    recommendation. Pure read: nothing is written.
+    """
+
+    from education_pipeline.guides.blueprints import recommend_blueprint
+    from education_pipeline.topics import parse_topic
+
+    if not isinstance(body, dict):
+        raise ConfigError("body must be an object")
+    if "toml" in body:
+        toml_text = body["toml"]
+        if not isinstance(toml_text, str) or not toml_text.strip():
+            raise ConfigError("body field 'toml' must be a non-empty string")
+        try:
+            data = tomllib.loads(toml_text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"invalid TOML in recommendation request: {exc}") from exc
+    else:
+        data = {key: value for key, value in body.items() if key in _RECOMMEND_BODY_KEYS}
+        # A stable id is not required to recommend; the wizard may not have
+        # settled one yet.
+        if not isinstance(data.get("id"), str) or not data["id"].strip():
+            data["id"] = "pending-topic"
+    topic = parse_topic(data)  # ConfigError on invalid field shapes -> 400
+    blueprint_id, rationale = recommend_blueprint(topic)
+    return {
+        "blueprints": _blueprint_entries(),
+        "recommendation": {"id": blueprint_id, "rationale": rationale},
+        "topic_blueprint": topic.blueprint,
+    }
+
+
 def run_status_payload(runs: RunStore, topic_id: str) -> dict:
     require_run(runs, topic_id)
     status = runs.run_status(topic_id)
@@ -223,6 +326,7 @@ def run_status_payload(runs: RunStore, topic_id: str) -> dict:
         "topic_id": status.topic_id,
         "finalized": status.finalized,
         "content_contract": contract.to_manifest(),
+        "blueprint": runs.blueprint_config(topic_id),
         "stage_provenance": manifest.get("stage_provenance", []),
         "validations": validations,
         "stages": [
@@ -339,6 +443,64 @@ def personalization_payload(runs: RunStore, topic_id: str) -> dict:
     }
 
 
+def repair_modules_payload(runs: RunStore, topic_id: str) -> dict:
+    """List the approved draft's modules with open finding counts and scope.
+
+    Candidates for module-scoped regeneration: every module of the approved
+    draft, with the number of current-report findings located inside it
+    (draft and final phases, current reports only), plus the pending scoped
+    repair's target when one is set.
+    """
+
+    from education_pipeline.guides import normalize_guide, parse_guide
+
+    require_run(runs, topic_id)
+    if runs.content_contract(topic_id).kind != "interactive_guide":
+        raise ConfigError("module-scoped repair applies only to interactive-guide runs")
+    draft_path = runs.stage_paths(topic_id, "draft").approved_path
+    if not draft_path.is_file():
+        raise ConfigError(
+            f"no approved draft for {topic_id!r}; modules are not known yet"
+        )
+    parsed = parse_guide(draft_path.read_text(encoding="utf-8"))
+    if not parsed.ok:
+        raise ConfigError(
+            f"approved draft for {topic_id!r} is too malformed to list modules"
+        )
+    guide = normalize_guide(parsed)
+    counts = {module.id: 0 for module in guide.modules}
+    for phase in ("draft", "final"):
+        if runs.report_state(topic_id, phase) != "current":
+            continue
+        report_path = (
+            runs.draft_report_path(topic_id)
+            if phase == "draft"
+            else runs.final_report_path(topic_id)
+        )
+        try:
+            findings = json.loads(report_path.read_text(encoding="utf-8")).get(
+                "findings", []
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        for finding in findings:
+            path = finding.get("path", "") if isinstance(finding, dict) else ""
+            match = re.match(r"^/modules/(\d+)(?:/|$)", path)
+            if match:
+                index = int(match.group(1))
+                if index < len(guide.modules):
+                    counts[guide.modules[index].id] += 1
+    scope = runs.repair_scope(topic_id)
+    return {
+        "topic_id": topic_id,
+        "modules": [
+            {"id": module.id, "title": module.title, "open_findings": counts[module.id]}
+            for module in guide.modules
+        ],
+        "repair_scope": {"module_id": scope} if scope is not None else None,
+    }
+
+
 def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
     require_run(runs, topic_id)
     paths = runs.stage_paths(topic_id, stage)  # ConfigError on bad stage -> 400
@@ -351,7 +513,7 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
         if paths.response_path.is_file()
         else None
     )
-    return {
+    payload = {
         "topic_id": paths.topic_id,
         "stage": paths.stage,
         "prompt": _read(paths.prompt_path),
@@ -360,6 +522,15 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
         "response_sha256": response_sha256,
         "content_type": paths.content_type,
     }
+    if (
+        paths.stage == "repair"
+        and runs.content_contract(topic_id).kind == "interactive_guide"
+    ):
+        scope = runs.repair_scope(topic_id)
+        payload["repair_scope"] = (
+            {"module_id": scope} if scope is not None else None
+        )
+    return payload
 
 
 def _validation_summary(runs: RunStore, topic_id: str, phase: str) -> dict:

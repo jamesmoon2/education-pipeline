@@ -587,11 +587,36 @@ map to user-directed recovery actions.
 
 ### P1 — Blueprint-driven pedagogy
 
+**Status: Delivered 2026-07-16** (closeout evidence in
+[`docs/superpowers/plans/2026-07-16-blueprint-pedagogy.md`](superpowers/plans/2026-07-16-blueprint-pedagogy.md)
+Wave Log; engine acceptance in `tests/test_release_gate_acceptance.py` and
+`tests/test_guide_blueprints.py`; browser acceptance in
+`web/e2e/blueprints.spec.ts`). The delivered implementation starts with
+Wave 0 commit `2808a84`; the complete per-wave commit list is recorded in
+that Wave Log. Accepted limitations are recorded in the post-milestone audit
+named by the closeout plan.
+
+Milestone specification:
+
+- [`docs/superpowers/specs/2026-07-16-blueprint-pedagogy-design.md`](superpowers/specs/2026-07-16-blueprint-pedagogy-design.md)
+
 - Ship the initial blueprint set and selection guidance.
 - Add blueprint-specific prompt and QA requirements.
 - Add section-level regeneration so one weak lesson does not require rebuilding
   the full draft.
 - Add time-budget and difficulty calibration checks.
+
+**Exit evidence:** the application owns a six-blueprint registry with a
+deterministic, explainable recommender; the user's blueprint choice is
+recorded immutably on the run and measurably changes every stage prompt and
+the model-QA rubric (with `blueprint is None` prompts pinned byte-identical
+to the pre-blueprint surface); the spec contract must echo the configured
+blueprint and cover its interaction minimum; deterministic time-budget and
+difficulty calibration checks warn at the responsible stage without blocking
+and never carry profile values; and a QA-flagged module regenerates in place
+through a module-scoped repair whose deterministic splice preserves every
+other module byte-for-byte, with renames and id collisions refused. No
+guide-schema, runtime-asset, or spec-contract field changed.
 
 ### P2 — Public `v0.1` release
 

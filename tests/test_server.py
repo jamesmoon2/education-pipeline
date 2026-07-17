@@ -934,6 +934,213 @@ def test_advance_writes_spec_prompt_and_returns_status(server):
     assert body["status"]["next_action"]["stage"] == "spec"
 
 
+def test_blueprints_endpoint_lists_registry(server):
+    status, body = _req(server, "GET", "/v1/blueprints")
+    assert status == 200
+    ids = [entry["id"] for entry in body["blueprints"]]
+    assert ids == [
+        "conceptual-foundations",
+        "procedural-skill",
+        "casebook",
+        "quantitative-scientific",
+        "exam-preparation",
+        "project-based",
+    ]
+    first = body["blueprints"][0]
+    assert set(first) == {
+        "id",
+        "title",
+        "summary",
+        "when_to_use",
+        "required_interactions",
+        "default_difficulty",
+    }
+    assert body["recommendation"] is None
+    assert body["topic_blueprint"] is None
+
+
+def test_blueprints_endpoint_recommends_for_topic(server):
+    status, body = _req(server, "GET", "/v1/blueprints?topic=g")
+    assert status == 200
+    assert body["recommendation"]["id"] == "conceptual-foundations"
+    assert body["recommendation"]["rationale"].strip()
+    assert body["topic_blueprint"] is None
+
+
+def test_blueprints_endpoint_unknown_topic_is_404(server):
+    status, _ = _req(server, "GET", "/v1/blueprints?topic=missing-topic")
+    assert status == 404
+
+
+def test_blueprints_recommend_route_works_before_the_topic_exists(server):
+    """The wizard recommends from in-progress fields, pre-topic-creation."""
+
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/blueprints/recommend",
+        body={"id": "draft-topic", "title": "Certification exam readiness"},
+    )
+    assert status == 200
+    assert body["recommendation"]["id"] == "exam-preparation"
+    assert body["recommendation"]["rationale"].strip()
+    assert [entry["id"] for entry in body["blueprints"]][0] == "conceptual-foundations"
+    assert body["topic_blueprint"] is None
+
+    # TOML mode carries the topic's own blueprint field through.
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/blueprints/recommend",
+        body={"toml": 'id = "t2"\ntitle = "Anything"\nblueprint = "casebook"\n'},
+    )
+    assert status == 200
+    assert body["topic_blueprint"] == "casebook"
+
+    status, _ = _req(server, "POST", "/v1/blueprints/recommend", body={"toml": "not = toml ="})
+    assert status == 400
+
+    status, _ = _req(server, "POST", "/v1/blueprints/recommend", body={"id": "x"})
+    assert status == 400
+
+
+def test_create_topic_accepts_blueprint_and_time_budget(server):
+    status, _ = _req(
+        server,
+        "POST",
+        "/v1/topics",
+        body={
+            "id": "budgeted",
+            "title": "Budgeted Topic",
+            "blueprint": "casebook",
+            "time_budget_minutes": 90,
+        },
+    )
+    assert status == 200
+    status, body = _req(server, "GET", "/v1/topics/budgeted")
+    assert status == 200
+    assert 'blueprint = "casebook"' in body["toml"]
+    assert "time_budget_minutes = 90" in body["toml"]
+
+    status, _ = _req(
+        server,
+        "POST",
+        "/v1/topics",
+        body={"id": "bad-budget", "title": "X", "time_budget_minutes": 2},
+    )
+    assert status == 400
+
+
+def test_run_status_payload_includes_blueprint(server):
+    # Run "g" was created before its topic existed, so it has no record.
+    status, body = _req(server, "GET", "/v1/runs/g")
+    assert status == 200
+    assert body["blueprint"] is None
+
+    # An explicit choice via the advance body records the blueprint.
+    status, body = _req(
+        server, "POST", "/v1/runs/g/advance", body={"blueprint": "casebook"}
+    )
+    assert status == 200
+    assert body["status"]["blueprint"] == {"id": "casebook", "source": "user"}
+
+
+def test_advance_rejects_unknown_blueprint(server):
+    status, body = _req(
+        server, "POST", "/v1/runs/g/advance", body={"blueprint": "socratic-method"}
+    )
+    assert status == 400
+    assert "unregistered blueprint" in body["error"]["message"]
+
+
+def _drive_guide_through_qa_http(context, topic_id="scoped-topic"):
+    topic_toml = test_runs.TOPIC_TOML.replace(
+        'id = "systems-thinking"', f'id = "{topic_id}"'
+    )
+    TopicStore(context.root).save_topic_toml(topic_id, topic_toml)
+    runs = context.runs
+    runs.create_run(topic_id)
+    test_runs._drive_guide_through_qa(runs, topic_id)
+    return runs
+
+
+def test_advance_with_repair_module_writes_scoped_prompt(server_with_context):
+    port, context = server_with_context
+    runs = _drive_guide_through_qa_http(context)
+
+    status, body = _req(
+        port,
+        "POST",
+        "/v1/runs/scoped-topic/advance",
+        body={"repair_module": "loop-basics"},
+    )
+
+    assert status == 200
+    assert body["performed"] == "write_prompt"
+    assert runs.repair_scope("scoped-topic") == "loop-basics"
+
+
+def test_advance_with_unknown_repair_module_is_400(server_with_context):
+    port, context = server_with_context
+    _drive_guide_through_qa_http(context)
+
+    status, body = _req(
+        port,
+        "POST",
+        "/v1/runs/scoped-topic/advance",
+        body={"repair_module": "no-such-module"},
+    )
+
+    assert status == 400
+    assert "no-such-module" in body["error"]["message"]
+
+
+def test_repair_modules_payload_lists_candidates_with_finding_counts(
+    server_with_context,
+):
+    port, context = server_with_context
+    _drive_guide_through_qa_http(context)
+
+    status, body = _req(port, "GET", "/v1/runs/scoped-topic/repair/modules")
+
+    assert status == 200
+    modules = {entry["id"]: entry for entry in body["modules"]}
+    assert set(modules) == {"loop-basics", "intervention-practice"}
+    assert modules["loop-basics"]["title"]
+    assert isinstance(modules["loop-basics"]["open_findings"], int)
+    assert body["repair_scope"] is None
+
+    _req(
+        port,
+        "POST",
+        "/v1/runs/scoped-topic/advance",
+        body={"repair_module": "loop-basics"},
+    )
+    status, body = _req(port, "GET", "/v1/runs/scoped-topic/repair/modules")
+    assert status == 200
+    assert body["repair_scope"] == {"module_id": "loop-basics"}
+
+
+def test_repair_stage_content_carries_the_scope(server_with_context):
+    port, context = server_with_context
+    _drive_guide_through_qa_http(context)
+    _req(
+        port,
+        "POST",
+        "/v1/runs/scoped-topic/advance",
+        body={"repair_module": "loop-basics"},
+    )
+
+    status, body = _req(port, "GET", "/v1/runs/scoped-topic/stages/repair")
+
+    assert status == 200
+    assert body["repair_scope"] == {"module_id": "loop-basics"}
+
+    status, body = _req(port, "GET", "/v1/runs/scoped-topic/stages/draft")
+    assert status == 200
+    assert "repair_scope" not in body
+
+
 def _ready_audit_http_run(context, topic_id="audit-topic"):
     topic_toml = test_runs.TOPIC_TOML.replace(
         'id = "systems-thinking"', f'id = "{topic_id}"'

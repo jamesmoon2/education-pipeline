@@ -29,7 +29,13 @@ _TOP_LEVEL_KEYS = {
     "tags",
     "notes",
     "metadata",
+    "blueprint",
+    "time_budget_minutes",
 }
+
+#: Inclusive bounds for the optional per-topic time budget, matching the
+#: spec-contract ``estimated_minutes`` range.
+TIME_BUDGET_MINUTES_RANGE = (5, 10_000)
 
 
 @dataclass(frozen=True)
@@ -50,6 +56,11 @@ class Topic:
     tags: tuple[str, ...] = ()
     notes: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    #: Optional pedagogical blueprint id. Registered-id validation happens at
+    #: run-creation time, not here, so existing topic files are never
+    #: retroactively invalidated by registry changes.
+    blueprint: str | None = None
+    time_budget_minutes: int | None = None
 
 
 def load_topic(path: str | Path) -> Topic:
@@ -103,6 +114,8 @@ def parse_topic(data: Mapping[str, Any]) -> Topic:
         tags=_string_tuple(data, "tags", "topic"),
         notes=_optional_string(data, "notes", "topic"),
         metadata=MappingProxyType(dict(metadata)),
+        blueprint=_optional_string(data, "blueprint", "topic"),
+        time_budget_minutes=_optional_time_budget(data),
     )
 
 
@@ -123,6 +136,10 @@ def emit_topic_toml(topic: Topic) -> str:
         lines.append(f"brief = {q(topic.brief)}")
     if topic.audience:
         lines.append(f"audience = {q(topic.audience)}")
+    if topic.blueprint:
+        lines.append(f"blueprint = {q(topic.blueprint)}")
+    if topic.time_budget_minutes is not None:
+        lines.append(f"time_budget_minutes = {topic.time_budget_minutes}")
 
     def array(key: str, values: tuple[str, ...]) -> None:
         if values:
@@ -150,6 +167,20 @@ def emit_topic_toml(topic: Topic) -> str:
                 lines.append(f"{key} = {json.dumps(value)}")
 
     return "\n".join(lines) + "\n"
+
+
+def _optional_time_budget(data: Mapping[str, Any]) -> int | None:
+    if "time_budget_minutes" not in data:
+        return None
+    value = data["time_budget_minutes"]
+    if value is None:
+        return None
+    low, high = TIME_BUDGET_MINUTES_RANGE
+    if not isinstance(value, int) or isinstance(value, bool) or not (low <= value <= high):
+        raise ConfigError(
+            f"topic field 'time_budget_minutes' must be an integer between {low} and {high}"
+        )
+    return value
 
 
 def _required_string(data: Mapping[str, Any], key: str, context: str) -> str:

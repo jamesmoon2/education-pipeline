@@ -52,6 +52,7 @@ from education_pipeline.guides import (
 from education_pipeline.guide_runtime import load_runtime_assets
 from education_pipeline.guide_runtime import RuntimeAssets
 from education_pipeline.guides.validation import (
+    CalibrationContext,
     PersonalizationValidationContext,
     validation_guide_sha256,
 )
@@ -80,6 +81,7 @@ from education_pipeline.prompts import (
     SpecPromptInput,
     compile_draft_prompt,
     compile_guide_v1_draft_prompt,
+    compile_guide_v1_module_repair_prompt,
     compile_guide_v1_outline_prompt,
     compile_guide_v1_qa_prompt,
     compile_guide_v1_repair_prompt,
@@ -90,6 +92,12 @@ from education_pipeline.prompts import (
     compile_repair_prompt,
     compile_spec_prompt,
     compile_topic_spec_prompt,
+)
+from education_pipeline.guides.canonical import SpliceError, splice_module
+from education_pipeline.guides.blueprints import (
+    Blueprint,
+    get_blueprint,
+    recommend_blueprint,
 )
 from education_pipeline.workspace import ProfileStore, TopicStore
 
@@ -435,6 +443,7 @@ class RunStore:
         topic_id: str,
         *,
         content_contract: ContentContract | None = None,
+        blueprint: str | None = None,
     ) -> Path:
         """Create the run directory tree and initialize a manifest if needed.
 
@@ -447,6 +456,17 @@ class RunStore:
         without a ``content_contract`` field, which still read as legacy). When
         a contract is provided against an existing run, it must match the
         immutable recorded contract.
+
+        For interactive-guide runs the effective pedagogical blueprint is
+        resolved when the manifest is first created — explicit ``blueprint``
+        argument, else the stored topic's ``blueprint`` field, else the
+        deterministic recommendation over the stored topic — and recorded
+        immutably as ``manifest["blueprint"] = {id, source, rationale?}``.
+        Runs with no stored topic and no explicit choice record nothing and
+        keep today's blueprint-free behavior. An explicit ``blueprint`` may
+        also be recorded, once, on an existing guide manifest that has no
+        record yet; a conflicting re-record raises. Legacy Markdown runs never
+        record a blueprint.
         """
 
         run = self.run_dir(topic_id)
@@ -472,15 +492,99 @@ class RunStore:
                     "events": [],
                     "content_contract": requested.to_manifest(),
                 }
-                _write_manifest(manifest_path, manifest)
-            elif content_contract is not None:
-                _validate_content_contract(content_contract)
-                if self.content_contract(run.name) != content_contract:
+                if requested.kind == "interactive_guide":
+                    record = self._resolve_blueprint_record(run.name, blueprint)
+                    if record is not None:
+                        manifest["blueprint"] = record
+                elif blueprint is not None:
                     raise ConfigError(
-                        f"run {run.name!r} already has immutable content contract "
-                        f"{self.content_contract(run.name)!r}; requested {content_contract!r}"
+                        f"run {run.name!r} is a legacy Markdown run; "
+                        "legacy runs do not support blueprints"
                     )
+                _write_manifest(manifest_path, manifest)
+            else:
+                if content_contract is not None:
+                    _validate_content_contract(content_contract)
+                    if self.content_contract(run.name) != content_contract:
+                        raise ConfigError(
+                            f"run {run.name!r} already has immutable content contract "
+                            f"{self.content_contract(run.name)!r}; requested {content_contract!r}"
+                        )
+                if blueprint is not None:
+                    self._record_blueprint_locked(run.name, blueprint)
         return run
+
+    def _resolve_blueprint_record(
+        self, topic_id: str, explicit: str | None
+    ) -> dict | None:
+        """Resolve the effective blueprint record: user > topic > recommended.
+
+        An unregistered explicit or topic-declared blueprint id raises; a
+        missing or malformed stored topic degrades to no record (legacy
+        behavior) rather than failing run creation.
+        """
+
+        if explicit is not None:
+            get_blueprint(explicit)
+            return {"id": explicit, "source": "user"}
+        try:
+            topic = TopicStore(self.root).load_topic(topic_id)
+        except ConfigError:
+            return None
+        if topic.blueprint is not None:
+            get_blueprint(topic.blueprint)
+            return {"id": topic.blueprint, "source": "topic"}
+        blueprint_id, rationale = recommend_blueprint(topic)
+        return {"id": blueprint_id, "source": "recommended", "rationale": rationale}
+
+    def _record_blueprint_locked(self, topic_id: str, blueprint: str) -> None:
+        """Record an explicit blueprint on an existing manifest, immutably.
+
+        Caller must already hold ``_manifest_write_lock(topic_id)``. Recording
+        the already-recorded id is a no-op; a different id raises; legacy
+        Markdown runs are refused.
+        """
+
+        if self.content_contract(topic_id).kind != "interactive_guide":
+            raise ConfigError(
+                f"run {topic_id!r} is a legacy Markdown run; "
+                "legacy runs do not support blueprints"
+            )
+        get_blueprint(blueprint)
+        manifest = self.read_manifest(topic_id)
+        existing = manifest.get("blueprint")
+        if isinstance(existing, dict):
+            if existing.get("id") != blueprint:
+                raise ConfigError(
+                    f"run {topic_id!r} already has immutable blueprint "
+                    f"{existing.get('id')!r}; requested {blueprint!r}"
+                )
+            return
+        manifest["blueprint"] = {"id": blueprint, "source": "user"}
+        _write_manifest(self.manifest_path(topic_id), manifest)
+
+    def blueprint_config(self, topic_id: str) -> dict | None:
+        """Return the run's recorded blueprint ``{id, source, rationale?}``.
+
+        ``None`` when the run has no manifest, records no blueprint (legacy
+        and pre-blueprint runs), or the record is unreadable.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        if not self.manifest_path(safe_id).exists():
+            return None
+        record = self.read_manifest(safe_id).get("blueprint")
+        if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+            return None
+        return dict(record)
+
+    def run_blueprint(self, topic_id: str) -> Blueprint | None:
+        """Resolve the run's recorded blueprint through the registry."""
+
+        config = self.blueprint_config(topic_id)
+        if config is None:
+            return None
+        return get_blueprint(config["id"])
 
     def list_run_ids(self) -> tuple[str, ...]:
         """List topic ids that have a started run (an initialized manifest)."""
@@ -917,6 +1021,11 @@ class RunStore:
         text = paths.response_path.read_text(encoding="utf-8")
         if self._is_guide_v1(paths.topic_id) and paths.stage in {"spec", "outline"}:
             self._validate_guide_approval(paths.topic_id, paths.stage, text)
+        scope: str | None = None
+        if self._is_guide_v1(paths.topic_id) and paths.stage == "repair":
+            scope = self.repair_scope(paths.topic_id)
+            if scope is not None:
+                text = self._spliced_scoped_repair(paths.topic_id, scope, text)
         _write_text(paths.approved_path, text, overwrite=overwrite)
         files: dict[str, Path] = {
             "prompt_file": paths.prompt_path,
@@ -931,8 +1040,61 @@ class RunStore:
             stage=paths.stage,
             action="response_approved",
             files=files,
+            extra={"repair_module": scope} if scope is not None else None,
         )
         return paths.approved_path
+
+    def repair_scope(self, topic_id: str) -> str | None:
+        """The target module id of the pending scoped repair, if any.
+
+        Derived from the latest repair ``prompt_written`` event: a scoped
+        prompt records its module; a later whole-guide repair prompt clears
+        the scope.
+        """
+
+        event = self._latest_stage_event(topic_id, "repair", "prompt_written")
+        if event is None:
+            return None
+        scope = event.get("repair_module")
+        return scope if isinstance(scope, str) else None
+
+    def _spliced_scoped_repair(
+        self, topic_id: str, module_id: str, response_text: str
+    ) -> str:
+        """Merge a scoped repair response into the approved draft, fail-closed.
+
+        The scoped response is keyed to the exact base draft the prompt was
+        built from: a drifted draft raises :class:`StaleContentError`, and any
+        splice violation (module rename, element-id collision, out-of-contract
+        reference) refuses the approval — never a silent fix.
+        """
+
+        prompt_event = self._latest_stage_event(topic_id, "repair", "prompt_written")
+        draft_path = self.stage_paths(topic_id, "draft").approved_path
+        if not draft_path.is_file():
+            raise ConfigError(
+                f"approved draft not found for {topic_id!r}; a scoped repair needs its base draft"
+            )
+        draft_bytes = draft_path.read_bytes()
+        recorded = (
+            prompt_event.get("source_draft_file_sha256")
+            if prompt_event is not None
+            else None
+        )
+        if recorded != hashlib.sha256(draft_bytes).hexdigest():
+            raise StaleContentError(
+                f"the approved draft for {topic_id!r} changed since the scoped repair "
+                "prompt was written; rebuild the scoped repair prompt and re-run it"
+            )
+        try:
+            merged = splice_module(
+                draft_bytes.decode("utf-8"), module_id, response_text
+            )
+        except SpliceError as exc:
+            raise ConfigError(
+                f"cannot approve module-scoped repair for guide run {topic_id!r}: {exc}"
+            ) from exc
+        return merged.decode("utf-8")
 
     def ingest_response(
         self, topic_id: str, stage: str, text: str, *, force: bool = False
@@ -1500,6 +1662,7 @@ class RunStore:
                         goal.goal_id for goal in authoritative_goals(profile)
                     ) if profile else (),
                 ),
+                self._calibration_context(safe_id, profile),
             )
             waiver_set = self._load_waiver_set(safe_id)
             report, _, guide = self._validated_final(
@@ -1806,6 +1969,7 @@ class RunStore:
                     goal.goal_id for goal in authoritative_goals(profile)
                 ) if profile else (),
             ),
+            self._calibration_context(topic_id, profile),
         )
         waiver_set = self._load_waiver_set(topic_id)
         report, document, guide = self._validated_final(
@@ -2179,7 +2343,10 @@ class RunStore:
         topic_id: str,
         source_text: str,
         *,
-        validation_inputs: tuple[tuple[str, ...], PersonalizationValidationContext] | None = None,
+        validation_inputs: tuple[
+            tuple[str, ...], PersonalizationValidationContext, CalibrationContext
+        ]
+        | None = None,
         assets: RuntimeAssets | None = None,
     ) -> tuple[ValidationReport, str | None, Guide | None]:
         """Validate final-phase content with computed static checks.
@@ -2192,7 +2359,7 @@ class RunStore:
         reuse the single parse instead of re-parsing the source.
         """
 
-        private_values, personalization_context = (
+        private_values, personalization_context, calibration_context = (
             validation_inputs
             if validation_inputs is not None
             else self._profile_validation_inputs(topic_id)
@@ -2206,6 +2373,7 @@ class RunStore:
                 phase="final",
                 private_values=private_values,
                 personalization_context=personalization_context,
+                calibration_context=calibration_context,
             ), None, None
         parsed = parse_guide(source_text)
         if not parsed.ok:
@@ -2214,6 +2382,7 @@ class RunStore:
                 phase="final",
                 private_values=private_values,
                 personalization_context=personalization_context,
+                calibration_context=calibration_context,
             ), None, None
         guide = normalize_guide(parsed)
         result = (
@@ -2231,6 +2400,7 @@ class RunStore:
             context=result.context,
             private_values=private_values,
             personalization_context=personalization_context,
+            calibration_context=calibration_context,
         )
         return report, result.document, guide
 
@@ -2248,8 +2418,8 @@ class RunStore:
 
     def _profile_validation_inputs(
         self, topic_id: str
-    ) -> tuple[tuple[str, ...], PersonalizationValidationContext]:
-        """Load one snapshot for both profile presence and protected values."""
+    ) -> tuple[tuple[str, ...], PersonalizationValidationContext, CalibrationContext]:
+        """Load one snapshot for profile presence, protected values, and calibration."""
 
         snapshot = self._read_attached_profile_snapshot(topic_id)
         profile = snapshot[0] if snapshot is not None else None
@@ -2260,6 +2430,33 @@ class RunStore:
                 authoritative_goal_ids=tuple(
                     goal.goal_id for goal in authoritative_goals(profile)
                 ) if profile is not None else (),
+            ),
+            self._calibration_context(topic_id, profile),
+        )
+
+    def _calibration_context(self, topic_id: str, profile) -> CalibrationContext:
+        """Build the run's calibration inputs from topic, manifest, and profile.
+
+        A missing or malformed stored topic degrades to no topic-derived
+        checks. Only field presence and declared configuration cross into the
+        context; finding messages never carry profile values.
+        """
+
+        config = self.blueprint_config(topic_id)
+        time_budget = None
+        try:
+            time_budget = TopicStore(self.root).load_topic(topic_id).time_budget_minutes
+        except ConfigError:
+            pass
+        return CalibrationContext(
+            configured_blueprint=config["id"] if config is not None else None,
+            time_budget_minutes=time_budget,
+            attention_constraints_present=bool(
+                profile is not None
+                and profile.learning_preferences.attention_constraints
+            ),
+            learner_skill_level=(
+                profile.current_skill_level if profile is not None else None
             ),
         )
 
@@ -2301,12 +2498,17 @@ class RunStore:
                 goal.goal_id for goal in authoritative_goals(profile)
             ) if profile is not None else (),
         )
+        calibration_context = self._calibration_context(safe_id, profile)
         guide: Guide | None = None
         if phase == "final":
             report, _, guide = self._validated_final(
                 safe_id,
                 source_text,
-                validation_inputs=(private_values, personalization_context),
+                validation_inputs=(
+                    private_values,
+                    personalization_context,
+                    calibration_context,
+                ),
             )
         else:
             report = validate_guide(
@@ -2314,6 +2516,7 @@ class RunStore:
                 phase=phase,
                 private_values=private_values,
                 personalization_context=personalization_context,
+                calibration_context=calibration_context,
             )
             if len(source_text.encode("utf-8")) <= MAX_GUIDE_SOURCE_BYTES:
                 parsed = parse_guide(source_text)
@@ -2487,6 +2690,7 @@ class RunStore:
             artifact = compile_guide_v1_spec_prompt(
                 spec_input,
                 guide_schema_version=self.content_contract(safe_id).schema_version or "1.0",
+                blueprint=self.run_blueprint(safe_id),
             )
         else:
             artifact = compile_spec_prompt(spec_input)
@@ -2520,6 +2724,7 @@ class RunStore:
                     profile=profile,
                 ),
                 guide_schema_version=self.content_contract(safe_id).schema_version or "1.0",
+                blueprint=self.run_blueprint(safe_id),
             )
         else:
             artifact = compile_topic_spec_prompt(topic, profile)
@@ -2549,6 +2754,7 @@ class RunStore:
                 approved_spec,
                 profile,
                 guide_schema_version=self.content_contract(safe_id).schema_version or "1.0",
+                blueprint=self.run_blueprint(safe_id),
             )
             extra_files = {
                 "source_spec_file": self.stage_paths(safe_id, "spec").approved_path,
@@ -2580,7 +2786,11 @@ class RunStore:
             self.create_run(safe_id)
             contract_bytes = self._write_guide_contract(safe_id, profile=profile, overwrite=overwrite)
             artifact = compile_guide_v1_draft_prompt(
-                topic, approved_outline, contract_bytes, profile
+                topic,
+                approved_outline,
+                contract_bytes,
+                profile,
+                blueprint=self.run_blueprint(safe_id),
             )
             extra_files = {
                 "source_outline_file": self.stage_paths(safe_id, "outline").approved_path,
@@ -2638,6 +2848,7 @@ class RunStore:
                 draft_guide_json=draft_guide_json,
                 draft_findings_json=draft_findings_json,
                 profile=profile,
+                blueprint=self.run_blueprint(safe_id),
             )
             extra_files = {
                 "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
@@ -2705,6 +2916,7 @@ class RunStore:
                 draft_findings_json=draft_findings_json,
                 guide_contract=contract_path.read_bytes(),
                 profile=profile,
+                blueprint=self.run_blueprint(safe_id),
             )
             extra_files = {
                 "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
@@ -2723,12 +2935,91 @@ class RunStore:
         )
         return self._write_prompt(artifact, overwrite=overwrite)
 
+    def write_module_repair_prompt(
+        self,
+        topic_id: str,
+        module_id: str,
+        *,
+        overwrite: bool = False,
+    ) -> PromptFile:
+        """Compile and write the module-scoped variant of the repair prompt.
+
+        Available whenever repair is the run's active stage (QA approved, or
+        re-entry after final validation found problems). The scope and the
+        exact base-draft hash are recorded on the ``prompt_written`` event so
+        approval can key the scoped response to the draft it patches. An
+        unknown module id is a usage error.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        if not self._is_guide_v1(safe_id):
+            raise ConfigError(
+                f"module-scoped repair applies only to interactive-guide runs; "
+                f"{safe_id!r} is a legacy Markdown run"
+            )
+        if not self.stage_paths(safe_id, "qa").approved_path.is_file():
+            raise ConfigError(
+                f"module-scoped repair for {safe_id!r} is available only when repair "
+                "is the run's active stage; approve the qa stage first"
+            )
+        topic = TopicStore(self.root).load_topic(safe_id)
+        approved_draft = self.read_approved(safe_id, "draft")
+        approved_qa = self.read_approved(safe_id, "qa")
+        profile = self._load_attached_profile(safe_id)
+        state = self.report_state(safe_id, "draft")
+        if state != "current":
+            if state == "missing":
+                raise ConfigError(
+                    f"draft validation is required before repair for {safe_id!r}; "
+                    "run draft validation first"
+                )
+            raise ConfigError(
+                f"draft validation is stale for {safe_id!r}; "
+                "the draft changed and must be revalidated before repair"
+            )
+        contract_path = self._guide_contract_path(safe_id)
+        if not contract_path.is_file():
+            raise ConfigError(
+                f"guide contract not found for {safe_id!r}: {contract_path}"
+            )
+        parsed = parse_guide(approved_draft)
+        if not parsed.ok:
+            raise ConfigError(
+                f"approved draft for {safe_id!r} is too malformed for repair; "
+                "correct and reapprove the draft response"
+            )
+        draft_guide_json = canonical_guide_bytes(normalize_guide(parsed)).decode("utf-8")
+        draft_findings_json = self.draft_report_path(safe_id).read_text(encoding="utf-8")
+        artifact = compile_guide_v1_module_repair_prompt(
+            topic,
+            module_id=module_id,
+            draft_guide_json=draft_guide_json,
+            qa_findings_markdown=approved_qa,
+            draft_findings_json=draft_findings_json,
+            guide_contract=contract_path.read_bytes(),
+            profile=profile,
+            blueprint=self.run_blueprint(safe_id),
+        )
+        extra_files = {
+            "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
+            "source_qa_file": self.stage_paths(safe_id, "qa").approved_path,
+            "draft_report_file": self.draft_report_path(safe_id),
+            "contract_file": contract_path,
+        }
+        return self._write_prompt(
+            artifact,
+            overwrite=overwrite,
+            extra_event_files=extra_files,
+            extra_event={"repair_module": module_id},
+        )
+
     def _write_prompt(
         self,
         artifact: PromptArtifact,
         *,
         overwrite: bool,
         extra_event_files: dict[str, Path] | None = None,
+        extra_event: dict[str, object] | None = None,
     ) -> PromptFile:
         paths = self.stage_paths(artifact.topic_id, artifact.stage)
         self.create_run(artifact.topic_id)
@@ -2748,6 +3039,7 @@ class RunStore:
             stage=paths.stage,
             action="prompt_written",
             files=files,
+            extra=extra_event,
         )
         return PromptFile(
             stage=paths.stage,
@@ -2769,7 +3061,10 @@ class RunStore:
 
         try:
             if stage == "spec":
-                spec_contract = extract_spec_contract(response_text)
+                spec_contract = extract_spec_contract(
+                    response_text,
+                    expected_blueprint=self.run_blueprint(topic_id),
+                )
                 expected_version = self.content_contract(topic_id).schema_version
                 if spec_contract["guide_schema_version"] != expected_version:
                     raise ContractError(

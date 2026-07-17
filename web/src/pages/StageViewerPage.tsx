@@ -10,6 +10,7 @@ import {
   postApprove,
 } from "../api/client";
 import DiffView from "../components/DiffView";
+import ModuleRepairControl from "../components/ModuleRepairControl";
 import ResponseEditor from "../components/ResponseEditor";
 import ResponseForm from "../components/ResponseForm";
 import { useAction } from "../hooks/useAction";
@@ -192,6 +193,19 @@ function StageViewerForRoute({
           </button>
         )}
       </div>
+      {data.stage === "repair" && data.repair_scope?.module_id && (
+        <p className="warning" role="status">
+          The pending repair is scoped to module{" "}
+          <code>{data.repair_scope.module_id}</code>: the response must be that
+          single module's JSON, and approval splices it into the approved
+          draft.
+        </p>
+      )}
+      {data.stage === "repair" &&
+        run?.content_contract.kind === "interactive_guide" &&
+        !finalized && (
+          <ModuleRepairControl topicId={topicId} onPrepared={refresh} />
+        )}
       {isAudit && needsApproval && tab !== "response" && (
         <p className="warning">Review the pending audit response before approval.</p>
       )}

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, replace
 
 from education_pipeline.config import ConfigError
+from education_pipeline.guides.blueprints import Blueprint
 from education_pipeline.guides.personalization import (
     active_personalization_facets,
     authoritative_goals,
@@ -494,6 +496,59 @@ _GUIDE_REPAIR_OUTPUT_AND_QUALITY_LINES = (
     "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in the JSON.",
 )
 
+def _blueprint_contract_lines(
+    blueprint: Blueprint | None, stage_lines_name: str
+) -> tuple[str, ...]:
+    """The binding ``## Blueprint Contract`` section for authoring stages.
+
+    Empty when no blueprint is configured, so legacy prompts stay
+    byte-identical.
+    """
+
+    if blueprint is None:
+        return ()
+    stage_lines: tuple[str, ...] = getattr(blueprint, stage_lines_name)
+    minimums = ", ".join(f"`{name}`" for name in sorted(blueprint.required_interactions))
+    return (
+        "## Blueprint Contract",
+        f"This course follows the {blueprint.title} blueprint. The requirements in "
+        "this section are binding: they rank with the authoring contract, above "
+        "topic requirements and learner profile context.",
+        *(f"- {line}" for line in stage_lines),
+        f"- Minimum required interaction types (binding): {minimums}.",
+        f"- Default source policy: {blueprint.source_policy}",
+    )
+
+
+def _blueprint_rubric_lines(blueprint: Blueprint | None) -> tuple[str, ...]:
+    """The ``## Blueprint Rubric`` section for the QA stage."""
+
+    if blueprint is None:
+        return ()
+    return (
+        "## Blueprint Rubric",
+        f"This course follows the {blueprint.title} blueprint. Evaluate the draft "
+        "against each rubric item below in addition to the specification and "
+        "outline. Record a finding for each rubric item the draft does not meet.",
+        *(f"- {line}" for line in blueprint.qa_rubric_lines),
+    )
+
+
+def _blueprint_spec_contract_requirement_lines(
+    blueprint: Blueprint | None,
+) -> tuple[str, ...]:
+    """Extra contract-block instructions stating the configured values."""
+
+    if blueprint is None:
+        return ()
+    minimums = json.dumps(sorted(blueprint.required_interactions))
+    return (
+        f'The `blueprint` value must be exactly "{blueprint.id}".',
+        f"The `required_interactions` list must include at least {minimums}; "
+        "add further interaction types only when the course needs them.",
+    )
+
+
 _SUPPORTED_GUIDE_SCHEMA_VERSIONS = frozenset({"1.0", "1.1"})
 _ACTIVE_FACET_PROMPT_INSTRUCTIONS = {
     "prior_knowledge": "Calibrate prerequisites and remediation to the learner's existing knowledge.",
@@ -628,12 +683,17 @@ def compile_guide_v1_spec_prompt(
     spec_input: SpecPromptInput,
     *,
     guide_schema_version: str = "1.0",
+    blueprint: Blueprint | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 spec-stage prompt.
 
     Keeps the existing Markdown response format and additionally requires
     exactly one fenced ``education-pipeline-contract+json`` block at the end
-    of the response containing the machine-readable course contract.
+    of the response containing the machine-readable course contract. With a
+    configured ``blueprint``, the prompt gains a binding blueprint-contract
+    section and the contract-block instructions state the required
+    ``blueprint`` and minimum ``required_interactions`` values; with ``None``
+    the output is byte-identical to the blueprint-free prompt.
     """
 
     guide_schema_version = _guide_schema_version(guide_schema_version)
@@ -648,6 +708,8 @@ def compile_guide_v1_spec_prompt(
     if spec_input.topic_brief is not None:
         topic_lines.append(f"- Topic brief: {_required_text(spec_input.topic_brief, 'topic_brief')}")
 
+    blueprint_lines = _blueprint_contract_lines(blueprint, "spec_lines")
+    blueprint_prefix = (*blueprint_lines, "") if blueprint_lines else ()
     personalization_lines = _private_personalization_lines(
         spec_input.profile, guide_schema_version
     )
@@ -657,11 +719,13 @@ def compile_guide_v1_spec_prompt(
     lines = [
         *_SPEC_HEADER_LINES,
         "",
+        *blueprint_prefix,
         *topic_lines,
         "",
         *_SPEC_OUTPUT_AND_QUALITY_LINES,
         "",
         *_guide_spec_contract_lines(guide_schema_version),
+        *_blueprint_spec_contract_requirement_lines(blueprint),
         *personalization_suffix,
     ]
     return _finalize(
@@ -680,6 +744,7 @@ def compile_guide_v1_outline_prompt(
     profile: LearnerProfile | None = None,
     *,
     guide_schema_version: str = "1.0",
+    blueprint: Blueprint | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 outline-stage prompt.
 
@@ -698,6 +763,7 @@ def compile_guide_v1_outline_prompt(
     )
     return _compile_upstream_prompt(
         stage="outline",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "outline_lines"),
         header_lines=_OUTLINE_HEADER_LINES,
         upstream_heading="## Approved Specification",
         upstream_note="The following specification was approved upstream. Treat it as the binding contract for scope and outcomes.",
@@ -719,6 +785,8 @@ def compile_guide_v1_draft_prompt(
     approved_outline: str,
     guide_contract: bytes,
     profile: LearnerProfile | None = None,
+    *,
+    blueprint: Blueprint | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 draft-stage prompt requesting complete guide JSON only.
 
@@ -736,6 +804,7 @@ def compile_guide_v1_draft_prompt(
     )
     return _compile_stage_prompt(
         stage="draft",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "draft_lines"),
         header_lines=_DRAFT_HEADER_LINES,
         sections=(
             (
@@ -770,6 +839,7 @@ def compile_guide_v1_qa_prompt(
     draft_guide_json: str,
     draft_findings_json: str,
     profile: LearnerProfile | None = None,
+    blueprint: Blueprint | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 QA-stage prompt.
 
@@ -783,6 +853,7 @@ def compile_guide_v1_qa_prompt(
     _required_block(draft_findings_json, "draft findings")
     return _compile_stage_prompt(
         stage="qa",
+        pre_topic_lines=_blueprint_rubric_lines(blueprint),
         header_lines=_QA_HEADER_LINES,
         sections=(
             (
@@ -824,6 +895,7 @@ def compile_guide_v1_repair_prompt(
     draft_findings_json: str,
     guide_contract: bytes,
     profile: LearnerProfile | None = None,
+    blueprint: Blueprint | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 repair-stage prompt.
 
@@ -849,6 +921,7 @@ def compile_guide_v1_repair_prompt(
     )
     return _compile_stage_prompt(
         stage="repair",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "repair_lines"),
         header_lines=_REPAIR_HEADER_LINES,
         sections=(
             (
@@ -882,6 +955,238 @@ def compile_guide_v1_repair_prompt(
             ),
             *personalization_suffix,
         ),
+        topic=topic,
+        profile=_profile_without_authoritative_goals(profile, guide_schema_version),
+    )
+
+
+_MODULE_REPAIR_HEADER_LINES = (
+    "# Repair Stage Prompt (Module Scope)",
+    "",
+    "You are regenerating exactly one module of a course draft for a local-first education pipeline.",
+    "Apply the in-scope findings to the module below and return the revised module in full.",
+    "Change only what the findings require; preserve everything the review did not flag.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The in-scope findings, which define the required fixes.",
+    "4. The module to regenerate, which is the base to revise.",
+    "5. Topic requirements.",
+    "6. Learner profile context.",
+)
+
+_MODULE_REPAIR_QUALITY_LINES = (
+    "## Quality Bar",
+    "- Resolve every in-scope blocking deterministic finding and every in-scope blocker or major "
+    "model-QA finding.",
+    "- Do not fix out-of-scope findings; they are context so cross-references stay coherent.",
+    "- Preserve stable IDs and valid unflagged structure inside the module; change only what the "
+    "findings require.",
+    "- Keep `outcome_ids` references within the guide contract's outcomes.",
+    "- Any new element id must be globally unique across the whole course, not just this module.",
+    "- Use only the registered keys and the six registered block types; never invent new keys or "
+    "block types.",
+    "- Never include private learner-profile values in the module JSON.",
+    "- Use Markdown only inside the designated `markdown` fields.",
+    "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in "
+    "the JSON.",
+)
+
+_QA_FINDINGS_HEADING_RE = re.compile(r"(?m)^##\s+Findings\s*$")
+_QA_SECTION_HEADING_RE = re.compile(r"(?m)^##\s+")
+_QA_ITEM_RE = re.compile(r"(?m)^\s*\d+\.\s")
+
+
+def _split_qa_finding_items(qa_markdown: str) -> list[str]:
+    """Split the numbered items of a QA report's ``## Findings`` section.
+
+    Deterministic text processing only. A response without a recognizable
+    findings section yields no items (everything becomes out-of-scope
+    context).
+    """
+
+    heading = _QA_FINDINGS_HEADING_RE.search(qa_markdown)
+    if heading is None:
+        return []
+    rest = qa_markdown[heading.end() :]
+    next_heading = _QA_SECTION_HEADING_RE.search(rest)
+    section = rest[: next_heading.start()] if next_heading else rest
+    starts = [match.start() for match in _QA_ITEM_RE.finditer(section)]
+    items = []
+    for position, start in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else len(section)
+        item = section[start:end].strip()
+        if item:
+            items.append(item)
+    return items
+
+
+def compile_guide_v1_module_repair_prompt(
+    topic: Topic,
+    *,
+    module_id: str,
+    draft_guide_json: str,
+    qa_findings_markdown: str,
+    draft_findings_json: str,
+    guide_contract: bytes,
+    profile: LearnerProfile | None = None,
+    blueprint: Blueprint | None = None,
+) -> PromptArtifact:
+    """Compile the module-scoped variant of the guide-v1 repair prompt.
+
+    Embeds the guide contract, only the findings whose location falls inside
+    the target module (deterministic findings filtered by ``/modules/<index>``
+    path prefix; model-QA items filtered by module id/title mention, with the
+    unmatchable rest listed as out-of-scope context), the single module's JSON
+    as the base to revise, and a compact summary of the rest of the course.
+    Output contract: exactly one module object with the same ``id``.
+    """
+
+    from education_pipeline.guides.canonical import guide_to_dict
+    from education_pipeline.guides.parse import normalize_guide, parse_guide
+
+    _required_block(draft_guide_json, "draft guide JSON")
+    _required_block(qa_findings_markdown, "QA findings")
+    _required_block(draft_findings_json, "draft findings")
+    contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
+
+    parsed = parse_guide(draft_guide_json)
+    if not parsed.ok:
+        raise ConfigError(
+            "draft guide JSON must be a valid guide document for a module-scoped repair"
+        )
+    guide = normalize_guide(parsed)
+    module_index = next(
+        (
+            position
+            for position, module in enumerate(guide.modules)
+            if module.id == module_id
+        ),
+        None,
+    )
+    if module_index is None:
+        known = ", ".join(module.id for module in guide.modules)
+        raise ConfigError(
+            f"module {module_id!r} is not present in the approved draft; "
+            f"known modules: {known}"
+        )
+    module = guide.modules[module_index]
+    module_text = json.dumps(
+        guide_to_dict(module), ensure_ascii=False, indent=2, sort_keys=True
+    )
+
+    try:
+        findings_payload = json.loads(draft_findings_json)
+    except json.JSONDecodeError as exc:
+        raise ConfigError("draft findings must be valid JSON") from exc
+    all_findings = (
+        findings_payload.get("findings", [])
+        if isinstance(findings_payload, dict)
+        else []
+    )
+    prefix = f"/modules/{module_index}"
+    in_module_findings = [
+        finding
+        for finding in all_findings
+        if isinstance(finding, dict)
+        and isinstance(finding.get("path"), str)
+        and (
+            finding["path"] == prefix or finding["path"].startswith(prefix + "/")
+        )
+    ]
+    scoped_findings_text = json.dumps(
+        {"findings": in_module_findings}, ensure_ascii=False, indent=2
+    )
+
+    qa_items = _split_qa_finding_items(qa_findings_markdown)
+    needles = (module_id.casefold(), module.title.casefold())
+    in_scope_items = [
+        item for item in qa_items if any(needle in item.casefold() for needle in needles)
+    ]
+    out_of_scope_items = [item for item in qa_items if item not in in_scope_items]
+
+    summary_lines = [
+        f"- {other.id}: {other.title} (outcomes: {', '.join(other.outcome_ids)})"
+        for other in guide.modules
+        if other.id != module_id
+    ] or ["- (this module is the only module in the course)"]
+
+    personalization_lines = _private_personalization_lines(
+        profile, guide_schema_version
+    )
+    personalization_suffix = (
+        ("", *personalization_lines) if personalization_lines else ()
+    )
+    output_lines = (
+        "## Output Format",
+        "Return exactly one JSON object: the revised module, in the same module shape as the "
+        "guide schema's `modules` entries -- never the whole guide, a diff, or a partial patch. "
+        f"Keep the same `id` (`{module_id}`). Do not return the whole guide. Do not wrap the "
+        "object in Markdown fences and do not add commentary before or after it.",
+        "",
+        "### Schema Reference",
+        *_versioned_lines(_GUIDE_SCHEMA_REFERENCE_LINES, guide_schema_version),
+        "",
+        *_guide_json_output_lines(_MODULE_REPAIR_QUALITY_LINES, guide_schema_version),
+        *personalization_suffix,
+    )
+    return _compile_stage_prompt(
+        stage="repair",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "repair_lines"),
+        header_lines=_MODULE_REPAIR_HEADER_LINES,
+        sections=(
+            (
+                "## Guide Contract",
+                "The following machine-readable contract was derived from the approved "
+                "specification and outline. Its constraints are binding; the regenerated module "
+                "must not drift outside them.",
+                "guide contract",
+                contract_text,
+            ),
+            (
+                "## Approved Model-QA Findings (This Module)",
+                "The in-scope model-QA fixes for this module. Resolve every blocker and major "
+                "finding.",
+                "qa findings",
+                _untrusted_block(
+                    "in-scope model-QA findings",
+                    "\n".join(in_scope_items) if in_scope_items else "(none)",
+                ),
+            ),
+            (
+                "## Out-Of-Scope Findings (Context Only)",
+                "Findings that could not be matched to this module. Do not fix them here; they "
+                "are context only.",
+                "out-of-scope findings",
+                _untrusted_block(
+                    "out-of-scope model-QA findings",
+                    "\n".join(out_of_scope_items) if out_of_scope_items else "(none)",
+                ),
+            ),
+            (
+                "## Deterministic Draft Findings (This Module)",
+                "Machine-generated validation findings located inside this module. Resolve every "
+                "blocking finding.",
+                "draft findings",
+                _untrusted_block("deterministic draft findings", scoped_findings_text),
+            ),
+            (
+                "## Module To Regenerate",
+                "The base module JSON to revise. Preserve stable IDs and valid unflagged "
+                "structure.",
+                "module",
+                _untrusted_block("module JSON", module_text),
+            ),
+            (
+                "## Rest Of The Course (Context Only)",
+                "The other modules' ids, titles, and outcome ids, so cross-references stay "
+                "coherent. Do not modify them.",
+                "course summary",
+                "\n".join(summary_lines),
+            ),
+        ),
+        output_and_quality_lines=output_lines,
         topic=topic,
         profile=_profile_without_authoritative_goals(profile, guide_schema_version),
     )
@@ -985,6 +1290,7 @@ def _compile_upstream_prompt(
     output_and_quality_lines: tuple[str, ...],
     topic: Topic,
     profile: LearnerProfile | None,
+    pre_topic_lines: tuple[str, ...] = (),
 ) -> PromptArtifact:
     """Build a stage prompt that embeds one approved upstream artifact."""
 
@@ -995,6 +1301,7 @@ def _compile_upstream_prompt(
         output_and_quality_lines=output_and_quality_lines,
         topic=topic,
         profile=profile,
+        pre_topic_lines=pre_topic_lines,
     )
 
 
@@ -1006,15 +1313,21 @@ def _compile_stage_prompt(
     output_and_quality_lines: tuple[str, ...],
     topic: Topic,
     profile: LearnerProfile | None,
+    pre_topic_lines: tuple[str, ...] = (),
 ) -> PromptArtifact:
     """Build a stage prompt that embeds one or more approved artifacts.
 
     Each section is ``(heading, note, label, text)``; ``label`` names the
-    artifact in validation errors.
+    artifact in validation errors. ``pre_topic_lines`` (e.g. the blueprint
+    contract) sit with the authoring contract, directly after the header and
+    above topic requirements; empty means byte-identical legacy output.
     """
 
     topic_id, topic_lines = _topic_section_lines(topic)
-    lines = [*header_lines, "", *topic_lines]
+    lines = [*header_lines, ""]
+    if pre_topic_lines:
+        lines.extend([*pre_topic_lines, ""])
+    lines.extend(topic_lines)
     for heading, note, label, text in sections:
         body = _required_block(text, f"approved {label}")
         lines.extend(["", heading, note, "", body.rstrip()])

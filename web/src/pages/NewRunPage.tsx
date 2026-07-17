@@ -7,16 +7,18 @@ import {
   getProfiles,
   importTopic,
   postAdvance,
+  recommendBlueprints,
 } from "../api/client";
+import BlueprintPicker from "../components/BlueprintPicker";
 import ErrorNotice from "../components/ErrorNotice";
 import { usePolling } from "../hooks/usePolling";
-import type { PlanPayload } from "../api/types";
+import type { BlueprintsPayload, PlanPayload } from "../api/types";
 
 type TopicMode = "describe" | "toml";
 
-// Step order is deliberately structural (spec §6): a blueprint-selection
-// step can slot in between "topic" and "plan" without reworking navigation.
-const STEP_ORDER = ["learner", "topic", "plan", "confirm"] as const;
+// Step order is deliberately structural (spec §6); the blueprint-selection
+// step slots in between "topic" and "plan" exactly as anticipated.
+const STEP_ORDER = ["learner", "topic", "blueprint", "plan", "confirm"] as const;
 type Step = (typeof STEP_ORDER)[number];
 
 export default function NewRunPage() {
@@ -34,6 +36,13 @@ export default function NewRunPage() {
 
   // "Paste TOML" field
   const [toml, setToml] = useState("");
+
+  // Blueprint step state: the registry + recommendation for the in-progress
+  // topic, and the user's (possibly overridden) selection.
+  const [blueprints, setBlueprints] = useState<BlueprintsPayload | null>(null);
+  const [blueprintsError, setBlueprintsError] = useState<unknown>(null);
+  const [selectedBlueprint, setSelectedBlueprint] = useState("");
+  const [timeBudget, setTimeBudget] = useState("");
 
   const [plan, setPlan] = useState<PlanPayload | null>(null);
   const [planError, setPlanError] = useState<unknown>(null);
@@ -73,6 +82,40 @@ export default function NewRunPage() {
     if (index < STEP_ORDER.length - 1) setStep(STEP_ORDER[index + 1]);
   };
 
+  // The blueprint the daemon would resolve on its own (the topic's own
+  // field, else the recommendation). The advance body carries the selection
+  // only when the user overrides it, so an accepted recommendation keeps
+  // its "recommended" provenance in the run manifest.
+  const defaultBlueprintId =
+    blueprints?.topic_blueprint ?? blueprints?.recommendation?.id ?? null;
+  const blueprintOverride =
+    selectedBlueprint && selectedBlueprint !== defaultBlueprintId
+      ? selectedBlueprint
+      : undefined;
+
+  const enterBlueprintStep = async () => {
+    setBlueprintsError(null);
+    try {
+      const payload = await recommendBlueprints(
+        mode === "describe" ? describeFields() : { toml },
+      );
+      setBlueprints(payload);
+      setSelectedBlueprint(
+        payload.topic_blueprint ??
+          payload.recommendation?.id ??
+          payload.blueprints[0]?.id ??
+          "",
+      );
+    } catch (err) {
+      // Selection is an enhancement: with the registry unavailable the
+      // wizard still proceeds and the daemon records its own recommendation.
+      setBlueprints(null);
+      setSelectedBlueprint("");
+      setBlueprintsError(err);
+    }
+    goNext();
+  };
+
   const topicReady =
     mode === "describe" ? id.trim().length > 0 && title.trim().length > 0 : toml.trim().length > 0;
 
@@ -81,13 +124,21 @@ export default function NewRunPage() {
       .split("\n")
       .map((g) => g.trim())
       .filter((g) => g.length > 0);
-    const fields: { id: string; title: string; brief?: string; audience?: string; goals?: string[] } = {
+    const fields: {
+      id: string;
+      title: string;
+      brief?: string;
+      audience?: string;
+      goals?: string[];
+      time_budget_minutes?: number;
+    } = {
       id: id.trim(),
       title: title.trim(),
     };
     if (brief.trim()) fields.brief = brief.trim();
     if (audience.trim()) fields.audience = audience.trim();
     if (parsedGoals.length > 0) fields.goals = parsedGoals;
+    if (timeBudget.trim()) fields.time_budget_minutes = Number(timeBudget.trim());
     return fields;
   };
 
@@ -106,7 +157,10 @@ export default function NewRunPage() {
         await attachProfile(topicId, profileId);
         setAttached(true);
       }
-      await postAdvance(topicId);
+      await postAdvance(
+        topicId,
+        blueprintOverride ? { blueprint: blueprintOverride } : undefined,
+      );
       navigate(`/topics/${topicId}`);
     } catch (err) {
       setCreateError(err);
@@ -202,6 +256,16 @@ export default function NewRunPage() {
                 Goals (one per line)
                 <textarea value={goals} onChange={(e) => setGoals(e.target.value)} rows={4} />
               </label>
+              <label>
+                Time budget (minutes, optional)
+                <input
+                  type="number"
+                  min={5}
+                  max={10000}
+                  value={timeBudget}
+                  onChange={(e) => setTimeBudget(e.target.value)}
+                />
+              </label>
             </div>
           ) : (
             <div>
@@ -213,9 +277,33 @@ export default function NewRunPage() {
           )}
           <p>
             <button onClick={goBack}>Back</button>{" "}
-            <button disabled={!topicReady} onClick={goNext}>
+            <button disabled={!topicReady} onClick={() => void enterBlueprintStep()}>
               Continue
             </button>
+          </p>
+        </section>
+      )}
+
+      {step === "blueprint" && (
+        <section aria-labelledby="new-run-blueprint-heading">
+          <h3 id="new-run-blueprint-heading">Choose a blueprint</h3>
+          {blueprintsError ? (
+            <ErrorNotice
+              prefix="Blueprint recommendations are unavailable; the daemon will still record its own recommendation"
+              error={blueprintsError}
+            />
+          ) : blueprints ? (
+            <BlueprintPicker
+              payload={blueprints}
+              value={selectedBlueprint}
+              onChange={setSelectedBlueprint}
+            />
+          ) : (
+            <p>Loading blueprints…</p>
+          )}
+          <p>
+            <button onClick={goBack}>Back</button>{" "}
+            <button onClick={goNext}>Continue</button>
           </p>
         </section>
       )}
@@ -269,6 +357,12 @@ export default function NewRunPage() {
             <dd>{profileId || "No profile (generic course)"}</dd>
             <dt>Topic</dt>
             <dd>{mode === "describe" ? `${summaryTopicId} — ${title.trim()}` : summaryTopicId}</dd>
+            <dt>Blueprint</dt>
+            <dd>
+              {selectedBlueprint
+                ? `${selectedBlueprint}${blueprintOverride ? "" : " (recommended)"}`
+                : "recommended default"}
+            </dd>
             <dt>Estimated stages</dt>
             <dd>
               {(plan?.stages.map((stage) => stage.stage) ?? [

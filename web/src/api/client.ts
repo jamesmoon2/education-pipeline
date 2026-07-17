@@ -1,5 +1,7 @@
 import type {
   AdvanceResult,
+  BlueprintsPayload,
+  RepairModulesPayload,
   ApproveResult,
   AttachProfileResult,
   CatalogProvider,
@@ -310,8 +312,36 @@ export const duplicateProfile = (id: string, newId: string) =>
     new_id: newId,
   });
 
-export const postAdvance = (topicId: string) =>
-  apiPost<AdvanceResult>(`/v1/runs/${encodeURIComponent(topicId)}/advance`, {});
+export const recommendBlueprints = (
+  body:
+    | { toml: string }
+    | {
+        id?: string;
+        title: string;
+        brief?: string;
+        audience?: string;
+        goals?: string[];
+        time_budget_minutes?: number;
+      },
+) => apiPost<BlueprintsPayload>("/v1/blueprints/recommend", body);
+export const getBlueprints = (topicId?: string) =>
+  api<BlueprintsPayload>(
+    topicId
+      ? `/v1/blueprints?topic=${encodeURIComponent(topicId)}`
+      : "/v1/blueprints",
+  );
+export const getRepairModules = (topicId: string) =>
+  api<RepairModulesPayload>(
+    `/v1/runs/${encodeURIComponent(topicId)}/repair/modules`,
+  );
+export const postAdvance = (
+  topicId: string,
+  options?: { blueprint?: string; repairModule?: string },
+) =>
+  apiPost<AdvanceResult>(`/v1/runs/${encodeURIComponent(topicId)}/advance`, {
+    ...(options?.blueprint ? { blueprint: options.blueprint } : {}),
+    ...(options?.repairModule ? { repair_module: options.repairModule } : {}),
+  });
 export const prepareAudit = (topicId: string, rebuild = false) =>
   apiPost<AuditPreparationResult>(
     `/v1/runs/${encodeURIComponent(topicId)}/audit`,
@@ -406,7 +436,15 @@ export const revealTarget = (target: RevealTarget, topicId: string) =>
 export const importTopic = (toml: string, overwrite = false) =>
   apiPost<ImportTopicResult>("/v1/topics", { toml, overwrite });
 export const createTopic = (
-  fields: { id: string; title: string; brief?: string; audience?: string; goals?: string[] },
+  fields: {
+    id: string;
+    title: string;
+    brief?: string;
+    audience?: string;
+    goals?: string[];
+    blueprint?: string;
+    time_budget_minutes?: number;
+  },
   overwrite = false,
 ) => apiPost<{ id: string; title: string }>("/v1/topics", { ...fields, overwrite });
 export const importProfile = (toml: string, overwrite = false) =>

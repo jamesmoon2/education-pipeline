@@ -281,13 +281,39 @@ def check_contract_conflict(spec_contract: Mapping[str, Any], outline_contract: 
         )
 
 
-def extract_spec_contract(markdown_text: str) -> dict[str, Any]:
-    """Extract and validate the spec-contract fenced block from a Markdown response."""
+def extract_spec_contract(
+    markdown_text: str, *, expected_blueprint: Any | None = None
+) -> dict[str, Any]:
+    """Extract and validate the spec-contract fenced block from a Markdown response.
+
+    When ``expected_blueprint`` (a registered
+    :class:`~education_pipeline.guides.blueprints.Blueprint`) is supplied, the
+    contract's ``blueprint`` must echo its id exactly and
+    ``required_interactions`` must be a superset of its minimum set — a
+    mismatch is a :class:`ContractError`, same as any other contract defect.
+    Without it, behavior is unchanged: ``blueprint`` stays a free-text
+    non-empty string (old workspaces and direct library use are never
+    retroactively invalidated).
+    """
 
     data = _require_object(
         _extract_fenced_block(markdown_text, SPEC_CONTRACT_INFO_STRING), SPEC_CONTRACT_INFO_STRING
     )
     validate_spec_contract(data)
+    if expected_blueprint is not None:
+        if data["blueprint"] != expected_blueprint.id:
+            raise ContractError(
+                "spec contract blueprint must echo the configured blueprint "
+                f"{expected_blueprint.id!r} exactly, got {data['blueprint']!r}"
+            )
+        missing = expected_blueprint.required_interactions - set(
+            data["required_interactions"]
+        )
+        if missing:
+            raise ContractError(
+                "spec contract required_interactions must be a superset of the "
+                f"configured blueprint's minimum set; missing {sorted(missing)}"
+            )
     return dict(data)
 
 

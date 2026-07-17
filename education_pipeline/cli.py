@@ -123,7 +123,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="create a legacy Markdown run instead of interactive_guide 1.0",
     )
+    p.add_argument(
+        "--blueprint",
+        default=None,
+        help="pedagogical blueprint id (default: the topic's blueprint, else the recommendation)",
+    )
     p.set_defaults(func=_cmd_create)
+
+    sub.add_parser(
+        "blueprints", help="list the registered pedagogical blueprints"
+    ).set_defaults(func=_cmd_blueprints)
 
     p = sub.add_parser("status", help="show a run's progress and next step")
     p.add_argument("topic_id")
@@ -131,6 +140,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("advance", help="perform the run's next machine step")
     p.add_argument("topic_id")
+    p.add_argument(
+        "--repair-module",
+        default=None,
+        metavar="MODULE_ID",
+        help="write a module-scoped repair prompt instead (repair stage only)",
+    )
     p.set_defaults(func=_cmd_advance)
 
     p = sub.add_parser("audit", help="prepare or rebuild the optional personalization audit")
@@ -310,14 +325,32 @@ def _cmd_profile_attach(args: argparse.Namespace) -> int:
 def _cmd_create(args: argparse.Namespace) -> int:
     store = RunStore(_root(args))
     if args.legacy_markdown:
+        if args.blueprint is not None:
+            raise ConfigError("legacy Markdown runs do not support blueprints")
         run = store.create_run(
             args.topic_id, content_contract=ContentContract.legacy_markdown()
         )
         print(f"created run {args.topic_id} (legacy_markdown)")
     else:
-        run = store.create_run(args.topic_id)
+        run = store.create_run(args.topic_id, blueprint=args.blueprint)
         print(f"created run {args.topic_id} (interactive_guide 1.0)")
+        config = store.blueprint_config(args.topic_id)
+        if config is not None:
+            line = f"blueprint: {config['id']} ({config['source']})"
+            if config.get("rationale"):
+                line += f" - {config['rationale']}"
+            print(line)
     print(run)
+    return 0
+
+
+def _cmd_blueprints(args: argparse.Namespace) -> int:
+    from education_pipeline.guides.blueprints import list_blueprints
+
+    for blueprint in list_blueprints():
+        print(f"{blueprint.id}: {blueprint.title}")
+        print(f"  {blueprint.summary}")
+        print(f"  {blueprint.when_to_use}")
     return 0
 
 
@@ -332,7 +365,28 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_advance(args: argparse.Namespace) -> int:
-    result = RunStore(_root(args)).advance(args.topic_id)
+    runs = RunStore(_root(args))
+    if args.repair_module is not None:
+        # A scoped repair request outside the repair stage or naming an
+        # unknown module is a usage error (exit 2), distinct from ordinary
+        # run failures.
+        try:
+            prompt_exists = runs.stage_paths(
+                args.topic_id, "repair"
+            ).prompt_path.exists()
+            prompt = runs.write_module_repair_prompt(
+                args.topic_id, args.repair_module, overwrite=prompt_exists
+            )
+        except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(
+            f"Performed: write_prompt (repair scoped to module {args.repair_module})"
+        )
+        print(f"  prompt: {prompt.prompt_path}")
+        _print_next(runs.run_status(args.topic_id).next_action)
+        return 0
+    result = runs.advance(args.topic_id)
     print(f"Performed: {result.performed or 'nothing (waiting on you)'}")
     _print_next(result.status.next_action)
     return 0

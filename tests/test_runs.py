@@ -426,6 +426,376 @@ def _first_waivable_blocking_finding_id(runs: RunStore, topic_id: str, phase: st
     raise AssertionError("fixture produced no waivable blocking finding")
 
 
+def test_create_run_records_recommended_blueprint_for_stored_topic(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+
+    config = runs.blueprint_config("systems-thinking")
+    assert config is not None
+    assert config["id"] == "conceptual-foundations"
+    assert config["source"] == "recommended"
+    assert config["rationale"].strip()
+    blueprint = runs.run_blueprint("systems-thinking")
+    assert blueprint is not None and blueprint.id == "conceptual-foundations"
+
+
+def test_create_run_explicit_blueprint_wins_over_topic_and_recommendation(
+    tmp_path: Path,
+) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "casebook"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking", blueprint="procedural-skill")
+
+    config = runs.blueprint_config("systems-thinking")
+    assert config == {"id": "procedural-skill", "source": "user"}
+
+
+def test_create_run_topic_blueprint_wins_over_recommendation(tmp_path: Path) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "casebook"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+
+    assert runs.blueprint_config("systems-thinking") == {
+        "id": "casebook",
+        "source": "topic",
+    }
+
+
+def test_create_run_rejects_unregistered_explicit_blueprint(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+
+    with pytest.raises(ConfigError, match="unregistered blueprint"):
+        runs.create_run("systems-thinking", blueprint="socratic-method")
+
+
+def test_create_run_rejects_unregistered_topic_blueprint(tmp_path: Path) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "socratic-method"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+
+    with pytest.raises(ConfigError, match="unregistered blueprint"):
+        runs.create_run("systems-thinking")
+
+
+def test_create_run_without_topic_or_choice_records_no_blueprint(tmp_path: Path) -> None:
+    runs = RunStore(tmp_path)
+    runs.create_run("no-topic-run")
+
+    assert runs.blueprint_config("no-topic-run") is None
+    assert runs.run_blueprint("no-topic-run") is None
+    assert "blueprint" not in runs.read_manifest("no-topic-run")
+
+
+def test_legacy_markdown_runs_never_record_a_blueprint(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    runs.create_run(
+        "systems-thinking", content_contract=ContentContract.legacy_markdown()
+    )
+
+    assert runs.blueprint_config("systems-thinking") is None
+    with pytest.raises(ConfigError, match="legacy"):
+        runs.create_run(
+            "systems-thinking",
+            content_contract=ContentContract.legacy_markdown(),
+            blueprint="casebook",
+        )
+
+
+def test_blueprint_record_is_immutable_once_written(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+
+    # Re-recording the same id is a no-op; a different id is refused.
+    runs.create_run("systems-thinking", blueprint="conceptual-foundations")
+    with pytest.raises(ConfigError, match="immutable"):
+        runs.create_run("systems-thinking", blueprint="casebook")
+    assert runs.blueprint_config("systems-thinking") == {
+        "id": "conceptual-foundations",
+        "source": "recommended",
+        "rationale": runs.blueprint_config("systems-thinking")["rationale"],
+    }
+
+
+def test_explicit_blueprint_can_be_recorded_on_existing_guide_run_without_one(
+    tmp_path: Path,
+) -> None:
+    runs = RunStore(tmp_path)
+    runs.create_run(
+        "no-topic-run", content_contract=ContentContract.interactive_guide_v1()
+    )
+    assert runs.blueprint_config("no-topic-run") is None
+
+    runs.create_run("no-topic-run", blueprint="quantitative-scientific")
+
+    assert runs.blueprint_config("no-topic-run") == {
+        "id": "quantitative-scientific",
+        "source": "user",
+    }
+
+
+def test_create_run_tolerates_malformed_stored_topic(tmp_path: Path) -> None:
+    """A malformed topic file degrades to no blueprint record, not a failure."""
+
+    topics_dir = tmp_path / "topics"
+    topics_dir.mkdir(parents=True)
+    (topics_dir / "broken-topic.toml").write_text("not = 'a topic'", encoding="utf-8")
+    runs = RunStore(tmp_path)
+
+    runs.create_run("broken-topic")
+
+    assert runs.blueprint_config("broken-topic") is None
+
+
+def test_blueprint_run_prompts_carry_the_blueprint_contract(tmp_path: Path) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "procedural-skill"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+
+    prompt = runs.write_topic_spec_prompt("systems-thinking")
+
+    assert "## Blueprint Contract" in prompt.artifact.text
+    assert "Procedural skill" in prompt.artifact.text
+
+
+def test_runs_without_blueprint_record_produce_unchanged_prompts(tmp_path: Path) -> None:
+    """Old workspaces (no manifest blueprint) keep byte-identical prompts."""
+
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking", content_contract=ContentContract.interactive_guide_v1())
+    # Simulate a pre-blueprint workspace: strip the recorded blueprint.
+    manifest_path = runs.manifest_path("systems-thinking")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("blueprint", None)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    prompt = runs.write_topic_spec_prompt("systems-thinking")
+
+    assert "## Blueprint Contract" not in prompt.artifact.text
+
+
+def test_spec_approval_rejects_wrong_blueprint_echo(tmp_path: Path) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "procedural-skill"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+    prompt = runs.write_topic_spec_prompt("systems-thinking")
+    prompt.response_path.write_text(_guide_spec_response(), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="must echo the configured blueprint"):
+        runs.approve_stage("systems-thinking", "spec")
+
+
+def test_spec_approval_rejects_missing_blueprint_minimum_interactions(
+    tmp_path: Path,
+) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "casebook"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+    prompt = runs.write_topic_spec_prompt("systems-thinking")
+    contract = dict(
+        VALID_SPEC_CONTRACT,
+        blueprint="casebook",
+        required_interactions=["scenario", "knowledge_check"],
+    )
+    prompt.response_path.write_text(_guide_spec_response(contract), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="superset"):
+        runs.approve_stage("systems-thinking", "spec")
+
+
+def test_spec_approval_accepts_matching_blueprint_echo(tmp_path: Path) -> None:
+    topic_toml = TOPIC_TOML + 'blueprint = "casebook"\n'
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking")
+    prompt = runs.write_topic_spec_prompt("systems-thinking")
+    contract = dict(
+        VALID_SPEC_CONTRACT,
+        blueprint="casebook",
+        required_interactions=["scenario", "reflection", "knowledge_check"],
+    )
+    prompt.response_path.write_text(_guide_spec_response(contract), encoding="utf-8")
+
+    runs.approve_stage("systems-thinking", "spec")
+
+    assert runs.stage_status("systems-thinking", "spec").approved
+
+
+def test_validate_run_includes_time_budget_calibration_findings(tmp_path: Path) -> None:
+    topic_toml = TOPIC_TOML + "time_budget_minutes = 10\n"
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking", content_contract=ContentContract.interactive_guide_v1())
+    _drive_guide_to_draft_approved(runs, "systems-thinking")
+
+    gate = runs.validate_and_gate("systems-thinking", "draft")
+
+    report = json.loads(
+        runs.draft_report_path("systems-thinking").read_text(encoding="utf-8")
+    )
+    rule_ids = {finding["rule_id"] for finding in report["findings"]}
+    assert "time.budget_exceeded" in rule_ids
+    exceeded = next(
+        finding
+        for finding in report["findings"]
+        if finding["rule_id"] == "time.budget_exceeded"
+    )
+    assert exceeded["stage"] == "outline"
+    assert not exceeded["blocking"]
+    # Calibration warnings never close the gate on their own.
+    assert gate.gate_open
+
+
+def test_validate_run_flags_blueprint_contract_mismatch_in_draft(tmp_path: Path) -> None:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking", blueprint="procedural-skill")
+    spec_contract = dict(VALID_SPEC_CONTRACT, blueprint="procedural-skill")
+    prompt = runs.write_topic_spec_prompt("systems-thinking")
+    prompt.response_path.write_text(_guide_spec_response(spec_contract), encoding="utf-8")
+    runs.approve_stage("systems-thinking", "spec")
+    _drive_guide_outline_to_approved(runs, "systems-thinking")
+    draft = runs.write_draft_prompt("systems-thinking")
+    draft.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    runs.approve_stage("systems-thinking", "draft")
+
+    gate = runs.validate_and_gate("systems-thinking", "draft")
+
+    report = json.loads(
+        runs.draft_report_path("systems-thinking").read_text(encoding="utf-8")
+    )
+    mismatch = next(
+        finding
+        for finding in report["findings"]
+        if finding["rule_id"] == "blueprint.contract_mismatch"
+    )
+    assert mismatch["blocking"] and mismatch["waivable"]
+    assert not gate.gate_open
+
+
+def _revised_module_json(module_index: int = 0, **changes) -> str:
+    """One revised module from the guide fixture, as a JSON fragment."""
+
+    data = json.loads(GUIDE_FIXTURE)
+    module = data["modules"][module_index]
+    module.update(changes)
+    return json.dumps(module, ensure_ascii=False)
+
+
+def test_write_module_repair_prompt_scopes_and_records_the_module(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_qa(runs, "systems-thinking")
+
+    prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+
+    assert prompt.stage == "repair"
+    assert "## Module To Regenerate" in prompt.artifact.text
+    assert runs.repair_scope("systems-thinking") == "loop-basics"
+    event = next(
+        event
+        for event in reversed(runs.read_manifest("systems-thinking")["events"])
+        if event.get("stage") == "repair" and event.get("action") == "prompt_written"
+    )
+    assert event["repair_module"] == "loop-basics"
+    assert isinstance(event.get("source_draft_file_sha256"), str)
+
+
+def test_write_module_repair_prompt_rejects_unknown_module(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_qa(runs, "systems-thinking")
+
+    with pytest.raises(ConfigError, match="no-such-module"):
+        runs.write_module_repair_prompt("systems-thinking", "no-such-module")
+
+
+def test_write_module_repair_prompt_requires_approved_qa(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_to_draft_approved(runs, "systems-thinking")
+    runs.validate_run("systems-thinking", "draft")
+
+    with pytest.raises(ConfigError, match="repair"):
+        runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+
+
+def test_scoped_repair_approval_splices_and_preserves_other_modules(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_qa(runs, "systems-thinking")
+    prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+    prompt.response_path.write_text(
+        _revised_module_json(0, title="Loop Basics, Regenerated"), encoding="utf-8"
+    )
+
+    approved_path = runs.approve_stage("systems-thinking", "repair")
+
+    merged = json.loads(approved_path.read_text(encoding="utf-8"))
+    assert merged["modules"][0]["title"] == "Loop Basics, Regenerated"
+    base = json.loads(
+        canonical_guide_bytes(normalize_guide(parse_guide(GUIDE_FIXTURE)))
+    )
+    assert json.dumps(merged["modules"][1], sort_keys=True) == json.dumps(
+        base["modules"][1], sort_keys=True
+    )
+    # The approval event records the scope.
+    approval = next(
+        event
+        for event in reversed(runs.read_manifest("systems-thinking")["events"])
+        if event.get("stage") == "repair" and event.get("action") == "response_approved"
+    )
+    assert approval["repair_module"] == "loop-basics"
+
+    # The merged whole guide flows through the ordinary final gates.
+    runs.validate_run("systems-thinking", "final")
+    assert runs.report_state("systems-thinking", "final") == "current"
+
+
+def test_scoped_repair_approval_refuses_splice_violations(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_qa(runs, "systems-thinking")
+    prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+    prompt.response_path.write_text(
+        _revised_module_json(0, id="loop-basics-renamed"), encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigError, match="rename"):
+        runs.approve_stage("systems-thinking", "repair")
+    assert not runs.stage_paths("systems-thinking", "repair").approved_path.exists()
+
+
+def test_scoped_repair_approval_refuses_a_drifted_draft(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_qa(runs, "systems-thinking")
+    prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+    prompt.response_path.write_text(_revised_module_json(0), encoding="utf-8")
+
+    # The approved draft changes underneath the pending scoped repair.
+    draft_path = runs.stage_paths("systems-thinking", "draft").approved_path
+    data = json.loads(draft_path.read_text(encoding="utf-8"))
+    data["course"]["description"] = "Edited after the scoped prompt was written."
+    draft_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(StaleContentError, match="scoped repair"):
+        runs.approve_stage("systems-thinking", "repair")
+
+
+def test_whole_guide_repair_approval_is_unchanged_after_a_scoped_retry(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_qa(runs, "systems-thinking")
+    # A scoped prompt is written first, then replaced by a whole-guide prompt.
+    runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+    prompt = runs.write_repair_prompt("systems-thinking", overwrite=True)
+    assert runs.repair_scope("systems-thinking") is None
+    prompt.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+
+    approved_path = runs.approve_stage("systems-thinking", "repair")
+
+    assert approved_path.read_text(encoding="utf-8") == GUIDE_FIXTURE
+
+
 def test_run_store_creates_run_directories(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
 

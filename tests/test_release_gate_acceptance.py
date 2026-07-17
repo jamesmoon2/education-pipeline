@@ -248,3 +248,75 @@ def test_export_refuses_after_unwaive_following_finalize(tmp_path: Path) -> None
 
     assert not runs.export_path(tid, "html").exists()
     assert not runs.export_report_path(tid).exists()
+
+
+def test_contrasting_blueprint_drives_divergent_prompts_and_contract_gates(
+    tmp_path: Path,
+) -> None:
+    """Blueprint acceptance: the same topic under `quantitative-scientific`
+    produces different spec/QA prompts than `conceptual-foundations`, the
+    spec echo enforces the configured blueprint and its interaction minimum,
+    and a matching run proceeds normally."""
+
+    from education_pipeline import RunStore, TopicStore
+
+    tid = "systems-thinking"
+    TopicStore(tmp_path).save_topic_toml(tid, test_runs.TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    runs.create_run(tid, blueprint="quantitative-scientific")
+
+    spec_prompt = runs.write_topic_spec_prompt(tid)
+    text = spec_prompt.artifact.text
+    assert "## Blueprint Contract" in text
+    assert "Quantitative and scientific practice" in text
+    assert '"quantitative-scientific"' in text
+    assert "units carried" in text
+
+    # The conceptual-foundations echo the fixture contract carries is refused.
+    spec_prompt.response_path.write_text(
+        test_runs._guide_spec_response(), encoding="utf-8"
+    )
+    with pytest.raises(ConfigError, match="must echo the configured blueprint"):
+        runs.approve_stage(tid, "spec")
+
+    # An echo missing the blueprint's interaction minimum is refused too.
+    missing_minimum = dict(
+        test_runs.VALID_SPEC_CONTRACT,
+        blueprint="quantitative-scientific",
+        required_interactions=["knowledge_check", "scenario"],
+    )
+    runs.ingest_response(
+        tid, "spec", test_runs._guide_spec_response(missing_minimum), force=True
+    )
+    with pytest.raises(ConfigError, match="superset"):
+        runs.approve_stage(tid, "spec")
+
+    # A matching echo proceeds, and the QA prompt carries the divergent rubric.
+    matching = dict(
+        test_runs.VALID_SPEC_CONTRACT, blueprint="quantitative-scientific"
+    )
+    runs.ingest_response(
+        tid, "spec", test_runs._guide_spec_response(matching), force=True
+    )
+    runs.approve_stage(tid, "spec")
+    test_runs._drive_guide_outline_to_approved(runs, tid)
+    draft = runs.write_draft_prompt(tid)
+    draft.response_path.write_text(test_runs.GUIDE_FIXTURE, encoding="utf-8")
+    runs.approve_stage(tid, "draft")
+    runs.validate_run(tid, "draft")
+    qa_prompt = runs.write_qa_prompt(tid)
+    assert "## Blueprint Rubric" in qa_prompt.artifact.text
+    assert (
+        "Every computation is worked step by step with units carried through."
+        in qa_prompt.artifact.text
+    )
+
+    # The draft still declares conceptual-foundations, so the deterministic
+    # mismatch gate closes until repaired or waived.
+    report = json.loads(runs.draft_report_path(tid).read_text(encoding="utf-8"))
+    mismatch = next(
+        finding
+        for finding in report["findings"]
+        if finding["rule_id"] == "blueprint.contract_mismatch"
+    )
+    assert mismatch["blocking"] and mismatch["waivable"]

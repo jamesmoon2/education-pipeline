@@ -64,15 +64,23 @@ test("new-run wizard: learner, topic, plan review, confirm, land on the run boar
   await page.getByLabel("Title").fill("Wizard Topic");
   await page.getByRole("button", { name: "Continue" }).click();
 
-  // Step 3: read-only model-plan review with a Settings link.
+  // Step 3: blueprint selection with the recommendation pre-selected.
+  await expect(page.getByRole("heading", { name: "Choose a blueprint" })).toBeVisible();
+  await expect(
+    page.getByRole("radio", { name: /Conceptual foundations/ }),
+  ).toBeChecked();
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  // Step 4: read-only model-plan review with a Settings link.
   await expect(page.getByRole("heading", { name: "Model plan" })).toBeVisible();
   await expect(page.getByRole("link", { name: /Adjust in Settings/i })).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
 
-  // Step 4: confirm preview (learner/topic pairing + estimated stages).
+  // Step 5: confirm preview (learner/topic pairing + estimated stages).
   await expect(page.getByRole("heading", { name: "Confirm" })).toBeVisible();
   await expect(page.getByText("No profile (generic course)")).toBeVisible();
   await expect(page.getByText(/wizard-topic — Wizard Topic/)).toBeVisible();
+  await expect(page.getByText(/conceptual-foundations \(recommended\)/)).toBeVisible();
   await expect(page.getByText(/spec → outline → draft/)).toBeVisible();
   await page.getByRole("button", { name: "Create course" }).click();
 

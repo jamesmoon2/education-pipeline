@@ -28,7 +28,7 @@ from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
 from education_pipeline.runs import RunStore, StaleContentError
-from education_pipeline.topics import Topic, emit_topic_toml
+from education_pipeline.topics import TIME_BUDGET_MINUTES_RANGE, Topic, emit_topic_toml
 from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
 
 
@@ -94,9 +94,32 @@ def unarchive_run(runs: RunStore, topic_id: str) -> dict:
     return {"topic_id": topic_id, "archived": False}
 
 
-def advance_run(runs: RunStore, jobs: JobStore, topic_id: str) -> dict:
+def advance_run(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    *,
+    blueprint: str | None = None,
+    repair_module: str | None = None,
+) -> dict:
     _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
+    if blueprint is not None:
+        # An explicit user selection (e.g. the New Run wizard's blueprint
+        # step) is recorded before the advance step runs, so the spec prompt
+        # it writes already carries the blueprint contract.
+        runs.create_run(topic_id, blueprint=blueprint)
+    if repair_module is not None:
+        # A scoped repair prepares (or rebuilds) the repair prompt for one
+        # module instead of performing the generic next step.
+        prompt_exists = runs.stage_paths(topic_id, "repair").prompt_path.exists()
+        runs.write_module_repair_prompt(
+            topic_id, repair_module, overwrite=prompt_exists
+        )
+        return {
+            "performed": "write_prompt",
+            "status": read_api.run_status_payload(runs, topic_id),
+        }
     result = runs.advance(topic_id)
     return {
         "performed": result.performed,
@@ -454,6 +477,18 @@ def _optional_body_string_tuple(body: dict, key: str) -> tuple[str, ...]:
     return tuple(strings)
 
 
+def _optional_body_time_budget(body: dict) -> int | None:
+    if "time_budget_minutes" not in body or body["time_budget_minutes"] is None:
+        return None
+    value = body["time_budget_minutes"]
+    low, high = TIME_BUDGET_MINUTES_RANGE
+    if not isinstance(value, int) or isinstance(value, bool) or not (low <= value <= high):
+        raise ConfigError(
+            f"body field 'time_budget_minutes' must be an integer between {low} and {high}"
+        )
+    return value
+
+
 def create_topic(topics: TopicStore, body: dict, *, overwrite: bool = False) -> dict:
     topic_id = _require_body_string(body, "id")
     title = _require_body_string(body, "title")
@@ -470,6 +505,8 @@ def create_topic(topics: TopicStore, body: dict, *, overwrite: bool = False) -> 
         constraints=_optional_body_string_tuple(body, "constraints"),
         tags=_optional_body_string_tuple(body, "tags"),
         notes=_optional_body_string(body, "notes"),
+        blueprint=_optional_body_string(body, "blueprint"),
+        time_budget_minutes=_optional_body_time_budget(body),
     )
     if topics.topic_path(topic_id).is_file() and not overwrite:
         raise ConflictError(

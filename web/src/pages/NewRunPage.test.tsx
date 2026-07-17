@@ -16,6 +16,7 @@ vi.mock("../api/client", async () => {
     postAdvance: vi.fn(),
     getRunStatus: vi.fn(),
     getConfigPlan: vi.fn(),
+    recommendBlueprints: vi.fn(),
   };
 });
 
@@ -27,7 +28,34 @@ import {
   getRunStatus,
   importTopic,
   postAdvance,
+  recommendBlueprints,
 } from "../api/client";
+
+const blueprintsPayload = {
+  blueprints: [
+    {
+      id: "conceptual-foundations",
+      title: "Conceptual foundations",
+      summary: "Builds a mental model of core concepts.",
+      when_to_use: "Choose for understanding ideas.",
+      required_interactions: ["knowledge_check", "reflection"],
+      default_difficulty: "introductory",
+    },
+    {
+      id: "exam-preparation",
+      title: "Exam preparation",
+      summary: "Prepares for a specific assessment.",
+      when_to_use: "Choose when success is measured by an exam.",
+      required_interactions: ["knowledge_check", "worked_reveal"],
+      default_difficulty: "intermediate",
+    },
+  ],
+  recommendation: {
+    id: "conceptual-foundations",
+    rationale: "Recommended Conceptual foundations for a general conceptual topic.",
+  },
+  topic_blueprint: null,
+};
 
 function makePlan(): PlanPayload {
   return {
@@ -78,11 +106,15 @@ function renderWizard() {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getConfigPlan).mockResolvedValue(makePlan());
+  vi.mocked(recommendBlueprints).mockResolvedValue(blueprintsPayload);
 });
 
 async function fillTopicStep(id: string, title: string) {
   await userEvent.type(screen.getByLabelText("Topic id"), id);
   await userEvent.type(screen.getByLabelText("Title"), title);
+  await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+  // The blueprint step sits between topic and plan; accept the default.
+  await screen.findByText("Choose a blueprint");
   await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 }
 
@@ -129,7 +161,7 @@ describe("NewRunPage wizard structure", () => {
 
     expect(createTopic).toHaveBeenCalledWith({ id: "t1", title: "T1" });
     expect(attachProfile).toHaveBeenCalledWith("t1", "p1");
-    expect(postAdvance).toHaveBeenCalledWith("t1");
+    expect(postAdvance).toHaveBeenCalledWith("t1", undefined);
     expect(await screen.findByText("RUN BOARD DESTINATION")).toBeInTheDocument();
   });
 
@@ -176,6 +208,8 @@ describe("NewRunPage wizard structure", () => {
       "Understand feedback loops\nSee the system, not the event",
     );
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByText("Choose a blueprint");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
     await userEvent.click(await screen.findByRole("button", { name: "Create course" }));
 
@@ -197,6 +231,9 @@ describe("NewRunPage wizard structure", () => {
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.click(screen.getByRole("radio", { name: "Paste TOML" }));
     await userEvent.type(screen.getByLabelText("Topic TOML"), 'id = "n1"');
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByText("Choose a blueprint");
+    expect(recommendBlueprints).toHaveBeenCalledWith({ toml: 'id = "n1"' });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
     await userEvent.click(await screen.findByRole("button", { name: "Create course" }));
@@ -237,5 +274,98 @@ describe("NewRunPage wizard structure", () => {
     expect(await screen.findByText(/No profiles yet/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(screen.getByLabelText("Topic id")).toHaveValue("keep-me");
+  });
+
+  it("preselects the recommendation with its rationale on the blueprint step", async () => {
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderWizard();
+    await screen.findByText("Learner");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.type(screen.getByLabelText("Topic id"), "b1");
+    await userEvent.type(screen.getByLabelText("Title"), "B1");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await screen.findByText("Choose a blueprint");
+    expect(recommendBlueprints).toHaveBeenCalledWith({ id: "b1", title: "B1" });
+    expect(
+      screen.getByRole("radio", { name: /Conceptual foundations/ }),
+    ).toBeChecked();
+    expect(
+      screen.getByText(/general conceptual topic/),
+    ).toBeInTheDocument();
+  });
+
+  it("passes a blueprint override to the run only when the user changes the selection", async () => {
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    vi.mocked(createTopic).mockResolvedValue({ id: "b2", title: "B2" });
+    vi.mocked(postAdvance).mockResolvedValue({ performed: "write_prompt", status: makeRunStatus("b2") });
+    vi.mocked(getRunStatus).mockResolvedValue(makeRunStatus("b2"));
+
+    renderWizard();
+    await screen.findByText("Learner");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.type(screen.getByLabelText("Topic id"), "b2");
+    await userEvent.type(screen.getByLabelText("Title"), "B2");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await screen.findByText("Choose a blueprint");
+    await userEvent.click(screen.getByRole("radio", { name: /Exam preparation/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
+
+    // The confirm preview names the chosen blueprint.
+    expect(await screen.findByText("Confirm")).toBeInTheDocument();
+    expect(screen.getByText("exam-preparation")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Create course" }));
+
+    expect(postAdvance).toHaveBeenCalledWith("b2", { blueprint: "exam-preparation" });
+  });
+
+  it("sends the optional time budget with the topic", async () => {
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    vi.mocked(createTopic).mockResolvedValue({ id: "tb", title: "TB" });
+    vi.mocked(postAdvance).mockResolvedValue({ performed: "write_prompt", status: makeRunStatus("tb") });
+    vi.mocked(getRunStatus).mockResolvedValue(makeRunStatus("tb"));
+
+    renderWizard();
+    await screen.findByText("Learner");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.type(screen.getByLabelText("Topic id"), "tb");
+    await userEvent.type(screen.getByLabelText("Title"), "TB");
+    await userEvent.type(screen.getByLabelText("Time budget (minutes, optional)"), "90");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByText("Choose a blueprint");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Create course" }));
+
+    expect(createTopic).toHaveBeenCalledWith({
+      id: "tb",
+      title: "TB",
+      time_budget_minutes: 90,
+    });
+  });
+
+  it("proceeds past an unavailable blueprint registry without blocking creation", async () => {
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    vi.mocked(recommendBlueprints).mockRejectedValue(new Error("registry down"));
+    vi.mocked(createTopic).mockResolvedValue({ id: "b3", title: "B3" });
+    vi.mocked(postAdvance).mockResolvedValue({ performed: "write_prompt", status: makeRunStatus("b3") });
+    vi.mocked(getRunStatus).mockResolvedValue(makeRunStatus("b3"));
+
+    renderWizard();
+    await screen.findByText("Learner");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.type(screen.getByLabelText("Topic id"), "b3");
+    await userEvent.type(screen.getByLabelText("Title"), "B3");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByText("Choose a blueprint")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/unavailable/i);
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Create course" }));
+
+    expect(postAdvance).toHaveBeenCalledWith("b3", undefined);
   });
 });

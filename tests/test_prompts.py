@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -554,6 +555,248 @@ GUIDE_DRAFT_JSON = (
 )
 
 GUIDE_DRAFT_FINDINGS_JSON = '{"report_schema_version": 1, "findings": []}'
+
+
+# Pinned output of every guide-v1 compile function with no blueprint,
+# computed from the pre-blueprint code. The frozen prompt surface only
+# changes where explicitly authorized: `blueprint=None` (legacy runs, old
+# workspaces, direct library use) must stay byte-identical forever.
+_GUIDE_V1_NO_BLUEPRINT_PROMPT_TEXT_SHA256 = {
+    "spec": "8bda2c7da9c54a659d7ec6125dda3f04ee3783581c31a6e4ace97b2987cb8b92",
+    "outline": "6c6a7b251879bc454eb34a2285a77a003cbc566122ace26d93463973da630b7b",
+    "draft": "e8886ffad44f2b0a0728d839940011f5cd1db170430be1f70efc0192381f064c",
+    "qa": "99f98dd7a9bb931630c87e483834b2361c1cfaffa7183a9c320d17d86f62b857",
+    "repair": "da669344e07242f7950de75115bff9c6981832f54b56c01565d7a2e33171f76b",
+}
+
+
+def _compile_guide_v1_prompts(blueprint=None) -> dict[str, str]:
+    topic = Topic(id="systems-thinking", title="Systems Thinking", brief="A brief.")
+    contract = build_guide_contract(GUIDE_SPEC_CONTRACT, GUIDE_OUTLINE_CONTRACT)
+    kwargs = {} if blueprint is None else {"blueprint": blueprint}
+    return {
+        "spec": compile_guide_v1_spec_prompt(
+            SpecPromptInput(
+                topic_id="systems-thinking",
+                title="Systems Thinking",
+                topic_brief="A brief.",
+            ),
+            **kwargs,
+        ).text,
+        "outline": compile_guide_v1_outline_prompt(topic, APPROVED_SPEC, **kwargs).text,
+        "draft": compile_guide_v1_draft_prompt(
+            topic, APPROVED_OUTLINE, contract, **kwargs
+        ).text,
+        "qa": compile_guide_v1_qa_prompt(
+            topic,
+            approved_spec=APPROVED_SPEC,
+            approved_outline=APPROVED_OUTLINE,
+            draft_guide_json=GUIDE_DRAFT_JSON,
+            draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
+            **kwargs,
+        ).text,
+        "repair": compile_guide_v1_repair_prompt(
+            topic,
+            draft_guide_json=GUIDE_DRAFT_JSON,
+            qa_findings_markdown="# QA Report: Systems Thinking\n\n## Verdict\nrevise\n",
+            draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
+            guide_contract=build_guide_contract(GUIDE_SPEC_CONTRACT, GUIDE_OUTLINE_CONTRACT),
+            **kwargs,
+        ).text,
+    }
+
+
+def test_guide_v1_prompts_without_blueprint_are_byte_identical_to_accepted_base() -> None:
+    """The required `blueprint is None` byte-identity regression.
+
+    These hashes were computed from the unmodified pre-blueprint compilers
+    and must never change: prompts only differ when a blueprint is
+    explicitly configured.
+    """
+
+    texts = _compile_guide_v1_prompts()
+    for stage, expected in _GUIDE_V1_NO_BLUEPRINT_PROMPT_TEXT_SHA256.items():
+        assert _sha256_text(texts[stage]) == expected, stage
+
+
+def test_blueprint_prompts_add_contract_sections_and_rubric() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+
+    blueprint = get_blueprint("procedural-skill")
+    texts = _compile_guide_v1_prompts(blueprint)
+
+    for stage in ("spec", "outline", "draft", "repair"):
+        text = texts[stage]
+        assert "## Blueprint Contract" in text, stage
+        assert "Procedural skill" in text, stage
+        assert "worked_reveal" in text and "knowledge_check" in text, stage
+        assert blueprint.source_policy in text, stage
+        # The blueprint contract belongs with the authoring contract, above
+        # topic requirements.
+        assert text.index("## Blueprint Contract") < text.index("## Topic"), stage
+    for line in blueprint.spec_lines:
+        assert line in texts["spec"]
+    for line in blueprint.outline_lines:
+        assert line in texts["outline"]
+    for line in blueprint.draft_lines:
+        assert line in texts["draft"]
+    for line in blueprint.repair_lines:
+        assert line in texts["repair"]
+
+    qa_text = texts["qa"]
+    assert "## Blueprint Rubric" in qa_text
+    assert "## Blueprint Contract" not in qa_text
+    for line in blueprint.qa_rubric_lines:
+        assert line in qa_text
+    assert "Record a finding for each rubric item the draft does not meet." in qa_text
+
+
+def test_two_blueprints_produce_visibly_different_prompts() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+
+    casebook = _compile_guide_v1_prompts(get_blueprint("casebook"))
+    quantitative = _compile_guide_v1_prompts(get_blueprint("quantitative-scientific"))
+
+    for stage in ("spec", "outline", "draft", "qa", "repair"):
+        assert casebook[stage] != quantitative[stage], stage
+
+
+def test_blueprint_spec_prompt_states_required_contract_values() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+
+    blueprint = get_blueprint("casebook")
+    text = _compile_guide_v1_prompts(blueprint)["spec"]
+    contract_section = text[text.index("## Machine-Readable Course Contract") :]
+
+    assert '"casebook"' in contract_section
+    # The minimum required interactions are stated as binding values, in
+    # sorted order, rather than left to the model's judgment.
+    assert '"reflection"' in contract_section
+    assert '"scenario"' in contract_section
+
+
+_MODULE_REPAIR_FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.guide.json"
+
+_MODULE_REPAIR_QA = """\
+# QA Report: Thinking in Feedback Loops
+
+## Verdict
+revise - one weak module.
+
+## Findings
+1. major - loop-basics: the worked example skips the middle steps.
+2. minor - intervention-practice: the scenario debrief is thin.
+
+## Repair Instructions
+Fix the findings above.
+"""
+
+_MODULE_REPAIR_DRAFT_FINDINGS = json.dumps(
+    {
+        "report_schema_version": 3,
+        "findings": [
+            {
+                "id": "worked_reveal.too_few_steps:seed-growth",
+                "rule_id": "worked_reveal.too_few_steps",
+                "severity": "error",
+                "blocking": True,
+                "waivable": True,
+                "path": "/modules/0/sections/1/blocks/0",
+                "message": "Worked reveal has fewer than two steps.",
+                "remediation": "Provide at least two reveal steps.",
+                "stage": "draft",
+            },
+            {
+                "id": "content.placeholder:other",
+                "rule_id": "content.placeholder",
+                "severity": "error",
+                "blocking": True,
+                "waivable": True,
+                "path": "/modules/1/sections/0/blocks/0",
+                "message": "Content contains placeholder language.",
+                "remediation": "Replace placeholder text.",
+                "stage": "draft",
+            },
+        ],
+    }
+)
+
+
+def _compile_module_repair(module_id: str = "loop-basics", **kwargs):
+    from education_pipeline.guides import canonical_guide_bytes, normalize_guide, parse_guide
+    from education_pipeline.prompts import compile_guide_v1_module_repair_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking", brief="A brief.")
+    draft = canonical_guide_bytes(
+        normalize_guide(parse_guide(_MODULE_REPAIR_FIXTURE.read_text(encoding="utf-8")))
+    ).decode("utf-8")
+    return compile_guide_v1_module_repair_prompt(
+        topic,
+        module_id=module_id,
+        draft_guide_json=draft,
+        qa_findings_markdown=_MODULE_REPAIR_QA,
+        draft_findings_json=_MODULE_REPAIR_DRAFT_FINDINGS,
+        guide_contract=build_guide_contract(
+            dict(
+                GUIDE_SPEC_CONTRACT,
+                outcomes=[
+                    {"id": "identify-loop", "text": "Identify feedback."},
+                    {"id": "map-loop", "text": "Map a loop."},
+                    {"id": "choose-intervention", "text": "Choose an intervention."},
+                ],
+            ),
+            GUIDE_OUTLINE_CONTRACT,
+        ),
+        **kwargs,
+    )
+
+
+def test_module_repair_prompt_scopes_findings_and_requests_one_module() -> None:
+    artifact = _compile_module_repair()
+    text = artifact.text
+
+    assert artifact.stage == "repair"
+    # The scoped base to revise is the single module, not the whole guide.
+    assert "## Module To Regenerate" in text
+    assert '"id": "loop-basics"' in text
+    assert "How loops behave" in text
+
+    # The guide contract is embedded and binding.
+    assert "## Guide Contract" in text
+
+    # In-module deterministic findings are included; other modules' are not.
+    assert "worked_reveal.too_few_steps" in text
+    assert "content.placeholder:other" not in text
+
+    # QA items naming the module are in scope; the rest is explicit context.
+    scoped = text.index("loop-basics: the worked example skips the middle steps")
+    out_of_scope_heading = text.index("## Out-Of-Scope Findings")
+    assert scoped < out_of_scope_heading
+    assert "intervention-practice: the scenario debrief is thin" in text[out_of_scope_heading:]
+
+    # Compact course summary keeps cross-references coherent.
+    assert "## Rest Of The Course" in text
+    assert "intervention-practice" in text
+
+    # Output contract: exactly one module object with the same id.
+    assert "exactly one JSON object" in text
+    assert "same `id` (`loop-basics`)" in text
+    assert "Do not return the whole guide" in text
+
+
+def test_module_repair_prompt_rejects_unknown_module() -> None:
+    with pytest.raises(ConfigError, match="no-such-module"):
+        _compile_module_repair("no-such-module")
+
+
+def test_module_repair_prompt_composes_blueprint_lines() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+
+    blueprint = get_blueprint("procedural-skill")
+    text = _compile_module_repair(blueprint=blueprint).text
+    assert "## Blueprint Contract" in text
+    for line in blueprint.repair_lines:
+        assert line in text
 
 
 def _compile_personalized_1_1_prompts(tmp_path: Path, profile_toml: str) -> dict[str, str]:

@@ -55,6 +55,49 @@ class PersonalizationValidationContext:
     authoritative_goal_ids: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class CalibrationContext:
+    """Run-owned blueprint/time/difficulty inputs for calibration checks.
+
+    Standalone validation omits this context and produces no calibration
+    findings, so old workspaces and direct library use are unchanged. All
+    fields reference declared run configuration or profile-field *presence*;
+    finding messages never echo profile values.
+    """
+
+    configured_blueprint: str | None = None
+    time_budget_minutes: int | None = None
+    attention_constraints_present: bool = False
+    learner_skill_level: str | None = None
+
+
+#: Deterministic reading-time model constants, pinned by tests so calibration
+#: only changes deliberately.
+READING_TIME_WPM = 200
+READING_TIME_BLOCK_SECONDS = {
+    "rich_text": 0,
+    "callout": 0,
+    "knowledge_check": 45,
+    "worked_reveal": 90,
+    "scenario": 60,
+    "reflection": 60,
+}
+
+#: Mechanical mapping between declared course difficulty and the free-text
+#: profile skill level. ``mixed`` difficulty and unmappable or ambiguous
+#: skill text never fire the mismatch rule.
+DIFFICULTY_LEVELS = {"introductory": 0, "intermediate": 1, "advanced": 2}
+SKILL_LEVEL_KEYWORDS = {
+    "beginner": 0,
+    "novice": 0,
+    "introductory": 0,
+    "intermediate": 1,
+    "advanced": 2,
+    "expert": 2,
+    "experienced": 2,
+}
+
+
 RULES = {
     "json.invalid": Rule("blocker", True, False, "Provide one valid UTF-8 JSON object.", "draft"),
     "json.invalid_utf8": Rule("blocker", True, False, "Encode the guide as UTF-8.", "draft"),
@@ -108,6 +151,13 @@ RULES = {
     "a11y.control_label_missing": Rule("blocker", True, False, "Provide a visible control label.", "repair"),
     "a11y.heading_order": Rule("error", True, True, "Use a logical heading order.", "repair"),
     "a11y.color_only_instruction": Rule("error", True, True, "Describe the cue without relying on color alone.", "repair"),
+    "blueprint.unknown": Rule("warning", False, False, "Use a registered blueprint id.", "draft"),
+    "blueprint.contract_mismatch": Rule("error", True, True, "Match the run's configured blueprint.", "draft"),
+    "time.budget_exceeded": Rule("warning", False, False, "Trim the course toward the stated time budget.", "outline"),
+    "time.budget_underrun": Rule("info", False, False, "Consider whether the course fills the stated time budget.", "outline"),
+    "time.estimate_implausible": Rule("warning", False, False, "Align the declared estimate with the actual content volume.", "draft"),
+    "time.module_overrun": Rule("warning", False, False, "Split the module into shorter sittings.", "outline"),
+    "difficulty.learner_mismatch": Rule("warning", False, False, "Align the declared difficulty with the learner's level.", "outline"),
 }
 
 _PLACEHOLDER = re.compile(r"\b(?:todo|tbd|lorem ipsum|insert (?:text|content) here)\b", re.I)
@@ -392,6 +442,151 @@ def _personalization_findings(
     return tuple(findings)
 
 
+def estimated_reading_minutes(guide: Guide) -> float:
+    """Deterministic reading-time estimate over the public guide projection.
+
+    Words per minute over every learner-facing text field plus fixed
+    per-interaction constants; see the pinned tables above.
+    """
+
+    checked = public_guide_projection(guide)
+    words = sum(len(text.split()) for _, text in _text_fields(checked))
+    seconds = words / READING_TIME_WPM * 60
+    for module in checked.modules:
+        for section in module.sections:
+            for block in section.blocks:
+                seconds += READING_TIME_BLOCK_SECONDS.get(block.type, 0)
+    return seconds / 60
+
+
+def _mapped_skill_level(value: str) -> int | None:
+    """Map free-text profile skill wording to a difficulty level, or None.
+
+    Ambiguous text (keywords from more than one level) and text with no
+    known keyword are unmappable and never fire the mismatch rule.
+    """
+
+    words = re.findall(r"[a-z]+", value.casefold())
+    levels = {SKILL_LEVEL_KEYWORDS[word] for word in words if word in SKILL_LEVEL_KEYWORDS}
+    if len(levels) != 1:
+        return None
+    return next(iter(levels))
+
+
+def _calibration_findings(
+    guide: Guide, context: CalibrationContext
+) -> tuple[Finding, ...]:
+    """Blueprint/time/difficulty calibration checks over declared intent.
+
+    Heuristics, not structural defects: everything except
+    ``blueprint.contract_mismatch`` is nonblocking and non-waivable. Messages
+    reference profile-field presence only, never profile values.
+    """
+
+    from .blueprints import list_blueprints
+
+    registered_ids = {blueprint.id for blueprint in list_blueprints()}
+    course = guide.course
+    findings: list[Finding] = []
+
+    if context.configured_blueprint is None:
+        if course.blueprint not in registered_ids:
+            findings.append(
+                _finding(
+                    "blueprint.unknown",
+                    "/course/blueprint",
+                    f"Course blueprint {course.blueprint!r} is not a registered blueprint.",
+                    course.id,
+                    (course.id,),
+                )
+            )
+    elif course.blueprint != context.configured_blueprint:
+        findings.append(
+            _finding(
+                "blueprint.contract_mismatch",
+                "/course/blueprint",
+                f"Course blueprint {course.blueprint!r} does not match the run's "
+                f"configured blueprint {context.configured_blueprint!r}.",
+                course.id,
+                (course.id,),
+            )
+        )
+
+    estimate = course.estimated_minutes
+    budget = context.time_budget_minutes
+    if budget is not None:
+        if estimate > budget * 1.1:
+            findings.append(
+                _finding(
+                    "time.budget_exceeded",
+                    "/course/estimated_minutes",
+                    f"Course estimate of {estimate} minutes exceeds the stated time "
+                    f"budget of {budget} minutes by more than 10%.",
+                    course.id,
+                    (course.id,),
+                )
+            )
+        elif estimate < budget * 0.5:
+            findings.append(
+                _finding(
+                    "time.budget_underrun",
+                    "/course/estimated_minutes",
+                    f"Course estimate of {estimate} minutes is under half the stated "
+                    f"time budget of {budget} minutes.",
+                    course.id,
+                    (course.id,),
+                )
+            )
+
+    model_minutes = estimated_reading_minutes(guide)
+    if model_minutes > 0 and (
+        estimate > 2 * model_minutes or estimate < model_minutes / 2
+    ):
+        findings.append(
+            _finding(
+                "time.estimate_implausible",
+                "/course/estimated_minutes",
+                f"Declared course estimate of {estimate} minutes disagrees with the "
+                f"deterministic reading-time estimate of about "
+                f"{max(1, round(model_minutes))} minutes by more than a factor of two.",
+                course.id,
+                (course.id,),
+            )
+        )
+
+    if context.attention_constraints_present:
+        for index, module in enumerate(guide.modules):
+            if module.estimated_minutes > 45:
+                findings.append(
+                    _finding(
+                        "time.module_overrun",
+                        f"/modules/{index}/estimated_minutes",
+                        f"Module runs {module.estimated_minutes} minutes while the "
+                        "attached learner profile declares attention constraints.",
+                        module.id,
+                        (module.id,),
+                    )
+                )
+
+    if context.learner_skill_level is not None:
+        skill = _mapped_skill_level(context.learner_skill_level)
+        declared = DIFFICULTY_LEVELS.get(course.difficulty)
+        if skill is not None and declared is not None and abs(declared - skill) >= 2:
+            findings.append(
+                _finding(
+                    "difficulty.learner_mismatch",
+                    "/course/difficulty",
+                    f"Declared course difficulty {course.difficulty!r} is two or more "
+                    "levels away from the skill level declared in the attached "
+                    "learner profile.",
+                    course.id,
+                    (course.id,),
+                )
+            )
+
+    return tuple(findings)
+
+
 def validation_guide_sha256(value: Guide | str | bytes) -> str:
     """Hash the exact fail-closed guide projection used by validation."""
 
@@ -423,6 +618,7 @@ def validate_guide(
     private_values: Iterable[str] = (),
     context: ValidationContext = ValidationContext(),
     personalization_context: PersonalizationValidationContext | None = None,
+    calibration_context: CalibrationContext | None = None,
 ) -> ValidationReport:
     """Return a canonical, timestamp-free report for a guide or raw guide JSON."""
     normalized_private = tuple(_normalize_validation_text(item) for item in private_values)
@@ -557,6 +753,8 @@ def validate_guide(
     for passed, rule_id, message in static_checks:
         if not passed:
             findings.append(_finding(rule_id, "/modules", message))
+    if calibration_context is not None:
+        findings.extend(_calibration_findings(checked_guide, calibration_context))
     return _validation_report(
         guide.schema_version,
         phase,

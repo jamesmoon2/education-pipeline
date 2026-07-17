@@ -114,6 +114,61 @@ def _toml(text: str) -> dict:
     return tomllib.loads(text)
 
 
+def test_parse_topic_reads_optional_blueprint_and_time_budget() -> None:
+    topic = parse_topic(
+        {
+            "id": "x",
+            "title": "X",
+            "blueprint": "procedural-skill",
+            "time_budget_minutes": 90,
+        }
+    )
+
+    assert topic.blueprint == "procedural-skill"
+    assert topic.time_budget_minutes == 90
+
+
+def test_parse_topic_defaults_blueprint_and_time_budget_to_none() -> None:
+    topic = parse_topic(_toml(MINIMAL_TOPIC_TOML))
+
+    assert topic.blueprint is None
+    assert topic.time_budget_minutes is None
+
+
+def test_parse_topic_rejects_invalid_blueprint_shape() -> None:
+    with pytest.raises(ConfigError, match="'blueprint' must be a non-empty string"):
+        parse_topic({"id": "x", "title": "X", "blueprint": "  "})
+
+
+@pytest.mark.parametrize("value", [4, 10_001, "90", True])
+def test_parse_topic_rejects_out_of_range_time_budget(value: object) -> None:
+    with pytest.raises(ConfigError, match="time_budget_minutes"):
+        parse_topic({"id": "x", "title": "X", "time_budget_minutes": value})
+
+
+def test_emit_topic_toml_round_trips_blueprint_and_time_budget() -> None:
+    topic = Topic(
+        id="budgeted-topic",
+        title="Budgeted Topic",
+        blueprint="exam-preparation",
+        time_budget_minutes=120,
+    )
+
+    toml_text = emit_topic_toml(topic)
+    round_tripped = parse_topic(tomllib.loads(toml_text))
+
+    assert round_tripped == topic
+    assert 'blueprint = "exam-preparation"' in toml_text
+    assert "time_budget_minutes = 120" in toml_text
+
+
+def test_emit_topic_toml_omits_absent_blueprint_and_time_budget() -> None:
+    toml_text = emit_topic_toml(Topic(id="minimal-topic", title="Minimal Topic"))
+
+    assert "blueprint" not in toml_text
+    assert "time_budget_minutes" not in toml_text
+
+
 def test_topic_store_saves_lists_and_loads_topics(tmp_path: Path) -> None:
     store = TopicStore(tmp_path)
 
