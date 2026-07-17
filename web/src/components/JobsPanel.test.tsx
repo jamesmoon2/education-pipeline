@@ -37,6 +37,14 @@ function makeJob(id: string, status: Job["status"]): Job {
   };
 }
 
+describe("JobsPanel help", () => {
+  it("explains jobs with an InfoTip near the heading", async () => {
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    render(<JobsPanel topicId="t" />);
+    expect(await screen.findByRole("button", { name: "About Jobs" })).toBeInTheDocument();
+  });
+});
+
 describe("JobsPanel cancel", () => {
   it("cancels an active job", async () => {
     vi.mocked(getJobs).mockResolvedValue({ jobs: [makeJob("j1", "running")] });

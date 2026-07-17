@@ -126,6 +126,17 @@ describe("SettingsPage", () => {
     expect(screen.getByText(/codex CLI not found on PATH/)).toBeInTheDocument();
   });
 
+  it("explains what provider availability means in learner language", async () => {
+    setup();
+    await screen.findByLabelText("Provider for outline");
+    expect(
+      screen.getByText(/Available means the provider's CLI was found on this machine/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/switch that stage to Manual copy\/paste to run it by hand instead/),
+    ).toBeInTheDocument();
+  });
+
   it("renders the weak-configuration warning for a stage whose payload carries one", async () => {
     setup();
     await screen.findByLabelText("Provider for outline");

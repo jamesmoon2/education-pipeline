@@ -41,6 +41,14 @@ test.afterAll(() => {
   handle?.daemon?.kill();
 });
 
+test("axe passes on the profile editor with a field tooltip open", async ({ page }) => {
+  await page.goto(`${baseURL}/profiles/new`);
+  await expect(page.getByRole("heading", { name: "Create learner profile", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "About Target learner", exact: true }).click();
+  await expect(page.getByRole("tooltip")).toBeVisible();
+  await expectNoSeriousAxeViolations(page);
+});
+
 test("profiles cockpit: create, edit, duplicate, attach, immutable snapshot, and conflict recovery", async ({ page }) => {
   test.setTimeout(120_000);
 

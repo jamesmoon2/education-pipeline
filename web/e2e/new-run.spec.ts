@@ -99,3 +99,18 @@ test("has no serious or critical automated accessibility violations on /new", as
   );
   expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
 });
+
+// The Task-11 axe test above scans /new with every tooltip closed; this one
+// re-scans with the Brief InfoTip bubble open so the tooltip pattern itself
+// (trigger + role="tooltip" + aria-describedby) is inside the audited DOM.
+test("axe passes on the topic step with the Brief tooltip open", async ({ page }) => {
+  await page.goto(`${baseURL}/new`);
+  await page.getByRole("button", { name: "Continue" }).click(); // learner → topic step
+  await page.getByRole("button", { name: "About Brief", exact: true }).click();
+  await expect(page.getByRole("tooltip")).toBeVisible();
+  const results = await new AxeBuilder({ page }).analyze();
+  const serious = results.violations.filter(
+    (v) => v.impact === "serious" || v.impact === "critical",
+  );
+  expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
+});

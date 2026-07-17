@@ -7,6 +7,7 @@ import CanonicalGuidePreview, {
   type CanonicalGuidePreviewHandle,
 } from "../components/CanonicalGuidePreview";
 import ErrorNotice from "../components/ErrorNotice";
+import InfoTip from "../components/InfoTip";
 import JobsPanel from "../components/JobsPanel";
 import PersonalizationPanel from "../components/PersonalizationPanel";
 import PrimaryAction from "../components/PrimaryAction";
@@ -140,6 +141,10 @@ function InteractiveGuidePanels({
       </section>
       <section aria-labelledby="validation-heading">
         <h3 id="validation-heading">Validation milestones</h3>
+        <InfoTip
+          label="Validation"
+          text="Automatic checks of the guide's structure and content — no model involved. The draft phase checks the approved draft; the final phase checks the repaired guide. Blocking findings must be fixed or waived before finalize."
+        />
         <table>
           <thead><tr><th>Phase</th><th>State</th><th>Blocking</th><th>Errors</th><th>Warnings</th></tr></thead>
           <tbody>
@@ -194,6 +199,10 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
         >
           Advance
         </button>
+        <InfoTip
+          label="Start a run"
+          text="Advance starts the run by writing the first stage's prompt into the course folder. Nothing is sent to a model until that prompt is run, and every stage waits for your approval before the next one begins."
+        />
         {start.feedback && (
           <p className={start.isError ? "error" : "success"}>{start.feedback}</p>
         )}
@@ -260,7 +269,13 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
           })}
         </tbody>
       </table>
-      <p>Finalized: {status.finalized ? "yes" : "no"}</p>
+      <p>
+        Finalized: {status.finalized ? "yes" : "no"}{" "}
+        <InfoTip
+          label="Finalized"
+          text="Finalize locks the approved content into the published guide once every blocking finding is resolved; export then writes the shareable file."
+        />
+      </p>
       {status.content_contract.kind === "interactive_guide" && (
         <InteractiveGuidePanels
           status={status}

@@ -2,6 +2,7 @@ import type {
   PersonalizationEvidence,
   PersonalizationPayload,
 } from "../api/types";
+import InfoTip from "./InfoTip";
 
 function traceMessage(state: PersonalizationPayload["trace"]["state"]): string {
   if (state === "missing") return "Personalization trace is not available yet.";
@@ -52,6 +53,10 @@ export default function PersonalizationPanel({
             <>
               <div>
                 <h4>Active facets</h4>
+                <InfoTip
+                  label="Active facets"
+                  text="The parts of the attached learner profile that actually shaped this guide — signals like pacing or prior knowledge that the course design drew on."
+                />
                 {personalization.trace.facets.length === 0 ? (
                   <p>No active profile facets.</p>
                 ) : (
@@ -97,6 +102,10 @@ export default function PersonalizationPanel({
 
       <div>
         <h4>Optional audit</h4>
+        <InfoTip
+          label="Optional audit"
+          text="An extra model pass that checks how well the finished guide serves the attached learner's goals. It is optional and never blocks finalize; its findings appear alongside the validation findings below."
+        />
         <p className={personalization.audit.state === "current" ? "success" : "warning"}>
           {auditMessage(personalization.audit.state)}
         </p>

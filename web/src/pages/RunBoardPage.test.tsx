@@ -173,6 +173,7 @@ describe("RunBoardPage", () => {
     expect(screen.getByText("Optional audit has not been run.")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Optional personalization audit" })).toBeInTheDocument();
     expect(screen.getByText("Approved repair / final source")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "About Validation" })).toBeInTheDocument();
   });
 
   it("keeps the durable preview available while personalization is loading or unavailable", async () => {
@@ -357,6 +358,7 @@ describe("RunBoardPage", () => {
     expect(stageLink).toHaveAttribute("href", "/topics/t/stages/spec");
     expect(await screen.findByText("20260710T000000Z-abcd")).toBeInTheDocument();
     expect(screen.getByText("running")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "About Finalized" })).toBeInTheDocument();
     expect(getPersonalization).not.toHaveBeenCalled();
   });
 
@@ -388,6 +390,7 @@ describe("RunBoardPage", () => {
     vi.mocked(postAdvance).mockResolvedValue({ performed: "write_prompt", status });
     renderAt("/topics/t");
     const advance = await screen.findByRole("button", { name: "Advance" });
+    expect(screen.getByRole("button", { name: "About Start a run" })).toBeInTheDocument();
     await userEvent.click(advance);
     expect(postAdvance).toHaveBeenCalledWith("t");
   });

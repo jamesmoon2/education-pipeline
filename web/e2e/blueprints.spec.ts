@@ -77,7 +77,9 @@ async function walkWizardToBlueprint(page: Page, id: string, title: string) {
   await page.goto(`${baseURL}/new`);
   // Learner step (empty workspace) -> topic step.
   await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel("Topic id").fill(id);
+  // exact: the "About Topic id" InfoTip trigger would otherwise also match
+  // Playwright's substring-based getByLabel.
+  await page.getByLabel("Topic id", { exact: true }).fill(id);
   await page.getByLabel("Title").fill(title);
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Choose a blueprint" })).toBeVisible();
@@ -199,7 +201,7 @@ test("one weak module regenerates in place without touching its siblings", async
 
   await page.goto(`${baseURL}/topics/bp-splice`);
   await page.getByRole("button", { name: "Run final validation" }).click();
-  await expect(page.getByRole("button", { name: "Finalize" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Finalize", exact: true })).toBeVisible();
 });
 
 test("a blown time budget warns at the responsible stage", async ({ page }) => {

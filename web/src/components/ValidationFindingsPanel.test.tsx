@@ -135,6 +135,12 @@ describe("ValidationFindingsPanel", () => {
     expect(screen.getByText("Unsafe content.")).toBeInTheDocument();
   });
 
+  it("explains what waiving means beside the waive control", async () => {
+    renderPanel();
+    await screen.findByRole("button", { name: "Waive…" });
+    expect(screen.getByRole("button", { name: "About Waive" })).toBeInTheDocument();
+  });
+
   it("shows stale findings distinctly and never offers a stale waiver", async () => {
     vi.mocked(getValidation).mockResolvedValue({ state: "stale", report });
     renderPanel("stale");

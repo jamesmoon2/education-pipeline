@@ -184,7 +184,7 @@ test("release gate: finding → repair → re-run → waive → export", async (
   await expect(
     finalPanel(page).getByText(/markdown\.invalid_heading_level/),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: "Finalize" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Finalize", exact: true })).toHaveCount(0);
 
   // Waive the remaining finding with a reason through the final panel; this is
   // what opens the export gate.
@@ -196,7 +196,7 @@ test("release gate: finding → repair → re-run → waive → export", async (
   await dialog.getByRole("button", { name: "Confirm waiver" }).click();
 
   // Gate open -> finalize -> export.
-  await page.getByRole("button", { name: "Finalize" }).click();
+  await page.getByRole("button", { name: "Finalize", exact: true }).click();
   await page.getByRole("button", { name: "Export", exact: true }).click();
   await expect(page.getByText("Exported html.")).toBeVisible();
 
@@ -247,11 +247,13 @@ test("release gate: a waiver can be removed from the cockpit", async ({ page }) 
     .getByLabel("Reason")
     .fill("Intentional level-1 heading in the intro callout; accepted for this release.");
   await dialog.getByRole("button", { name: "Confirm waiver" }).click();
-  await expect(page.getByRole("button", { name: "Finalize" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Finalize", exact: true })).toBeVisible();
 
   // Remove the waiver from the cockpit: the gate re-closes.
   await finalPanel(page).getByRole("button", { name: /unwaive/i }).click();
-  await expect(finalPanel(page).getByRole("button", { name: /waive/i })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Finalize" })).toHaveCount(0);
+  // Anchored: the "About Waive" InfoTip trigger beside the control would
+  // otherwise also match a bare /waive/i.
+  await expect(finalPanel(page).getByRole("button", { name: /^waive/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Finalize", exact: true })).toHaveCount(0);
   await expect(finalPanel(page).getByText(/1 blocking .* 0 waived/)).toBeVisible();
 });

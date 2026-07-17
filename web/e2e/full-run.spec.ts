@@ -59,7 +59,7 @@ test("full write flow: import → advance/paste/approve ×5 → finalize → exp
     await page.getByRole("button", { name: `Approve ${stage}` }).click();
   }
 
-  await page.getByRole("button", { name: "Finalize" }).click();
+  await page.getByRole("button", { name: "Finalize", exact: true }).click();
   await page.getByRole("button", { name: "Export", exact: true }).click();
   await expect(page.getByText("Exported html.")).toBeVisible();
 
@@ -114,7 +114,7 @@ test("guide-v1 fixture reaches validation, finalize, export, and mixed-workspace
   await page.getByRole("button", { name: "Save response" }).click();
   await page.getByRole("button", { name: "Approve repair" }).click();
   await page.getByRole("button", { name: "Run final validation" }).click();
-  await page.getByRole("button", { name: "Finalize" }).click();
+  await page.getByRole("button", { name: "Finalize", exact: true }).click();
   await page.getByRole("button", { name: "Export", exact: true }).click();
   await expect(page.getByText("Exported html.")).toBeVisible();
 

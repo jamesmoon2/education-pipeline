@@ -178,6 +178,12 @@ export default function SettingsPage() {
       <h2>Settings</h2>
       <section aria-labelledby="providers-heading">
         <h3 id="providers-heading">Provider availability</h3>
+        <p className="field-help">
+          Available means the provider's CLI was found on this machine. You can still save a
+          plan that uses an unavailable provider, but running one of its stages will fail
+          until the CLI is installed — switch that stage to Manual copy/paste to run it by
+          hand instead.
+        </p>
         <ul>
           {providers.map((p) => (
             <li key={p.id}>

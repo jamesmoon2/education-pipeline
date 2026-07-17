@@ -87,7 +87,9 @@ test("edit → save → re-approve → finalize entirely in the browser", async 
 
   // back to the run board: finalize the edited run
   await page.getByRole("link", { name: /back to w/ }).click();
-  await page.getByRole("button", { name: "Finalize" }).click();
+  // exact: the run board's "About Finalized" InfoTip trigger would otherwise
+  // also substring-match this locator.
+  await page.getByRole("button", { name: "Finalize", exact: true }).click();
   await expect(page.getByText("Finalized: yes")).toBeVisible();
 
   // the edited content is what got finalized

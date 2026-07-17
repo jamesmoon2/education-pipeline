@@ -4,6 +4,7 @@ import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 import JobLogView from "./JobLogView";
 import ErrorNotice from "./ErrorNotice";
+import InfoTip from "./InfoTip";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 
@@ -19,6 +20,10 @@ export default function JobsPanel({ topicId }: { topicId: string }) {
   return (
     <section>
       <h3>Jobs</h3>
+      <InfoTip
+        label="Jobs"
+        text="Background runs of stage prompts through a provider CLI. Each job's log captures the provider's live output (audit jobs redact their log to protect learner privacy)."
+      />
       {data.jobs.length === 0 ? (
         <p>
           No jobs yet — the next action is shown above; run it with a configured
