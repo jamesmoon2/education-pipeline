@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
+import socketserver
 import sys
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -125,9 +126,22 @@ class DaemonContext:
         return job
 
 
+class _LoopbackHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind resolves the bound address with
+        # socket.getfqdn(), a reverse-DNS lookup that can stall for many
+        # seconds on macOS (mDNS) and push startup past the client's
+        # readiness timeout. The daemon binds loopback only and never
+        # serves its FQDN, so bind without touching DNS.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def build_server(context: DaemonContext) -> ThreadingHTTPServer:
     handler = _make_handler(context)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
     return server
 
 

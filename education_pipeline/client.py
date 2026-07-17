@@ -91,17 +91,23 @@ def _live_record(root: str | Path) -> dict | None:
     return record
 
 
-def ensure_daemon(root: str | Path, *, autostart: bool = True, timeout: float = 15.0) -> DaemonClient:
+def ensure_daemon(root: str | Path, *, autostart: bool = True, timeout: float = 30.0) -> DaemonClient:
     record = _live_record(root)
     if record is not None:
         return DaemonClient(root, record)
     if not autostart:
         raise DaemonError("no daemon running; start one with 'daemon start'")
-    subprocess.Popen(
-        [sys.executable, "-m", "education_pipeline.daemon", str(root)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    # Startup failures must stay diagnosable: the daemon is detached, so its
+    # stderr goes to a per-workspace log (truncated on each autostart) rather
+    # than /dev/null. The child keeps its own duplicate of the handle.
+    log_path = lifecycle.discovery_dir(root) / "daemon.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("wb") as log:
+        subprocess.Popen(
+            [sys.executable, "-m", "education_pipeline.daemon", str(root)],
+            stdout=subprocess.DEVNULL,
+            stderr=log,
+        )
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         record = _live_record(root)
@@ -113,7 +119,9 @@ def ensure_daemon(root: str | Path, *, autostart: bool = True, timeout: float = 
             except DaemonError:
                 pass
         time.sleep(0.1)
-    raise DaemonError("daemon did not become ready in time")
+    raise DaemonError(
+        f"daemon did not become ready in time; startup log: {log_path}"
+    )
 
 
 def daemon_status(root: str | Path) -> dict:
