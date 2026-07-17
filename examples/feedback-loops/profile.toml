@@ -1,0 +1,21 @@
+# A fully synthetic learner profile. "Rowan Vale" is not a real person.
+# Everything in this file is private by default: the pipeline uses it to
+# tailor the course, but none of these values may appear in the exported
+# guide (tests/test_example_project.py asserts exactly that).
+schema_version = 1
+id = "example-learner"
+target_learner = "Rowan Vale, a project manager who spends weekends tending a vegetable garden"
+professional_experience = "eight years coordinating software delivery projects"
+learning_goals = [
+  "Recognize reinforcing and balancing feedback in everyday projects",
+  "Choose interventions that account for delays instead of overcorrecting",
+  "Model loops quantitatively with stock-and-flow diagrams",
+]
+
+[learning_preferences]
+preferred_visual_aids = ["concept maps"]
+
+[privacy]
+private_by_default = true
+include_in_published_output = false
+publishable_summary = "A project manager who values concrete gardening examples and scenario practice."
