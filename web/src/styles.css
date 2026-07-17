@@ -107,6 +107,9 @@
 /* ------------------------------------------------------------ base rules */
 * { box-sizing: border-box; }
 
+/* 18px root — the whole rem scale reads ~2px larger (usability audit). */
+html { font-size: 112.5%; }
+
 body {
   margin: 0;
   background: var(--ep-color-canvas);
@@ -240,14 +243,14 @@ code, pre, .technical {
   padding-top: var(--ep-space-4);
   border-top: 1px solid var(--ep-color-rail-border);
   color: var(--ep-color-rail-muted);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   line-height: 1.35;
 }
 .rail-footer strong {
   display: block;
   margin-bottom: var(--ep-space-1);
   color: var(--ep-color-rail-text);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
 }
 
 .workspace {
@@ -275,7 +278,7 @@ code, pre, .technical {
 .eyebrow {
   margin: 0 0 var(--ep-space-1);
   color: var(--ep-color-text-muted);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
@@ -416,7 +419,7 @@ th, td {
 }
 th {
   color: var(--ep-color-text-muted);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 650;
 }
 tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 55%, transparent); }
@@ -429,7 +432,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 650;
   color: var(--ep-color-text-muted);
   white-space: nowrap;
@@ -470,7 +473,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   border: 1px solid var(--ep-color-border-strong);
   border-radius: var(--ep-radius-control);
   color: var(--ep-color-text-muted);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 650;
 }
 
@@ -483,7 +486,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   border-radius: var(--ep-radius-control);
   background: var(--ep-color-warning-soft);
   color: var(--ep-color-warning);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 700;
 }
 
@@ -494,7 +497,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   border: 1px solid var(--ep-color-accent);
   border-radius: var(--ep-radius-control);
   color: var(--ep-color-accent);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 650;
 }
 
@@ -538,10 +541,10 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   margin: var(--ep-space-1) 0 0;
   color: var(--ep-color-text-muted);
   font-family: var(--ep-font-technical);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   white-space: normal;
 }
-.reveal-result code, .finding-location code { font-size: 0.8125rem; }
+.reveal-result code, .finding-location code { font-size: 0.875rem; }
 
 /* ------------------------------------------------------- library surface */
 .toolbar {
@@ -560,7 +563,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
 }
 .library-actions { white-space: nowrap; }
 .attached-profile { display: block; margin-bottom: var(--ep-space-1); font-weight: 650; }
-.library-actions button { min-height: 2rem; padding: 0.2rem 0.6rem; font-size: 0.8125rem; }
+.library-actions button { min-height: 2rem; padding: 0.2rem 0.6rem; font-size: 0.875rem; }
 .archived-row { color: var(--ep-color-text-muted); }
 .attach-profile select { max-width: 11rem; }
 
@@ -594,7 +597,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   padding: 0;
   list-style: none;
   color: var(--ep-color-text-muted);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 650;
 }
 .wizard-steps li {
@@ -641,7 +644,7 @@ pre.content, pre.log {
   background: var(--ep-color-surface);
   white-space: pre-wrap;
 }
-pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.8125rem; }
+pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.875rem; }
 
 .editor-panes { display: flex; gap: var(--ep-space-4); align-items: flex-start; }
 .editor-panes label { flex: 1; min-width: 0; }
@@ -664,7 +667,7 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.8125rem; }
 .diff {
   overflow-x: auto;
   font-family: var(--ep-font-technical);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   border: 1px solid var(--ep-color-border);
   border-radius: var(--ep-radius-control);
   background: var(--ep-color-surface);
@@ -905,7 +908,7 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.8125rem; }
 .blueprint-option .blueprint-when-to-use { color: var(--ep-color-text-muted); }
 .blueprint-recommended {
   color: var(--ep-color-success);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 700;
   margin-left: 0.4rem;
 }
