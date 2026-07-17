@@ -620,13 +620,37 @@ guide-schema, runtime-asset, or spec-contract field changed.
 
 ### P2 — Public `v0.1` release
 
+**Status: Engineering deliverables landed 2026-07-17** (spec
+[`docs/superpowers/specs/2026-07-17-public-v0-1-release-design.md`](superpowers/specs/2026-07-17-public-v0-1-release-design.md),
+plan
+[`docs/superpowers/plans/2026-07-17-public-v0-1-release.md`](superpowers/plans/2026-07-17-public-v0-1-release.md)).
+The remaining human steps — per-OS manual sign-off, the Windows-support
+decision (open question 5), distribution choice, demo recording, and the
+tag itself — are tracked in
+[`docs/release-checklist.md`](release-checklist.md); this item closes when
+`v0.1.0` is tagged.
+
 - Rewrite the README around installation and the first successful course.
+  — *Done; reference depth moved to `docs/`.*
 - Ship one polished synthetic example project and exported guide.
+  — *Done: `examples/feedback-loops/` with its offline export, rebuilt
+  deterministically by `scripts/build_example.py` and pinned by
+  `tests/test_example_project.py`.*
 - Verify package installation on supported operating systems.
-- Document provider authentication, privacy, local trust, troubleshooting, and
-  backup/migration.
+  — *CI packaging smoke now runs on Linux, macOS, and Windows; a known
+  Windows daemon gap (`os.kill(pid, 0)` liveness probe) is recorded in the
+  release checklist for an owner decision. Manual interactive sign-off per
+  OS remains on the checklist.*
+- Document provider authentication, privacy, local trust, troubleshooting,
+  and backup/migration.
+  — *Done: `docs/providers.md`, `docs/privacy-and-local-trust.md`,
+  `docs/troubleshooting.md` (test-synced to the error catalog),
+  `docs/backup-and-migration.md`, plus
+  `docs/install-and-first-course.md` as the canonical walkthrough.*
 - Complete dependency, asset, font, and copied-material provenance review.
+  — *Done: `docs/provenance-review.md`, no blocking findings.*
 - Record a short local demo and tag the release.
+  — *Owner action; scripted in the release checklist.*
 
 ## 11. `v0.1` release criteria
 
