@@ -3112,6 +3112,54 @@ def test_final_validation_size_limit_applies_before_parsing(tmp_path: Path) -> N
     assert store.report_state(tid, "final") == "current"
 
 
+def test_report_state_is_current_for_crlf_final_source(tmp_path: Path) -> None:
+    """validate_run and report_state must hash the same bytes for a CRLF source.
+
+    A Windows-edited (or text-mode-written) approved source contains \\r\\n.
+    The fail-closed oversized path hashes the raw source, so if one side reads
+    bytes and the other reads with universal newlines, the same file hashes
+    differently and the report is permanently "stale".
+    """
+    tid = "systems-thinking"
+    store = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_qa(store, tid)
+    oversized_crlf = (GUIDE_FIXTURE + " " * 2_000_001).replace("\n", "\r\n")
+    repair = store.write_repair_prompt(tid)
+    repair.response_path.write_bytes(oversized_crlf.encode("utf-8"))
+    store.approve_stage(tid, "repair")
+    approved = store.stage_paths(tid, "repair").approved_path
+    approved.write_bytes(oversized_crlf.encode("utf-8"))
+
+    store.validate_run(tid, "final")
+    assert store.report_state(tid, "final") == "current"
+
+
+def test_write_bytes_atomic_retries_replace_on_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows sharing semantics: os.replace onto a file another process (or
+    # thread) holds open for reading fails with PermissionError. Manifest
+    # readers are transient, so the atomic writer must retry, not crash.
+    import os
+
+    from education_pipeline import runs as runs_mod
+
+    real_replace = os.replace
+    calls = {"count": 0}
+
+    def flaky_replace(src, dst):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise PermissionError("sharing violation")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    target = tmp_path / "manifest.json"
+    runs_mod._write_bytes_atomic(target, b"{}\n")
+    assert calls["count"] == 2
+    assert target.read_bytes() == b"{}\n"
+
+
 def test_export_writes_exactly_the_checked_document(tmp_path: Path) -> None:
     tid = "systems-thinking"
     store = _create_guide_run(tmp_path, tid)

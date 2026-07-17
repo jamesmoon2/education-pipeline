@@ -483,7 +483,10 @@ class JobRunner:
         stdout_reader.join(timeout=1)
         stderr_reader.join(timeout=1)
         return (
-            stdout_capture.decode("utf-8", errors="replace"),
+            # Provider CLIs on Windows emit \r\n; responses are sha-keyed
+            # byte-exact artifacts, so normalize the platform newline noise
+            # before the response is parsed and ingested.
+            stdout_capture.decode("utf-8", errors="replace").replace("\r\n", "\n"),
             stdout_truncated,
             exit_code,
             timed_out,

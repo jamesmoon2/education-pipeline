@@ -17,7 +17,11 @@ def main() -> int:
         time.sleep(delay)
     if os.environ.get("FAKE_STDERR"):
         sys.stderr.write(os.environ["FAKE_STDERR"])
-    sys.stdout.write(os.environ.get("FAKE_STDOUT", "fake response body\n"))
+    # Bytes, not text: Windows text-mode stdout would rewrite \n to \r\n,
+    # making the canned output platform-dependent.
+    sys.stdout.buffer.write(
+        os.environ.get("FAKE_STDOUT", "fake response body\n").encode("utf-8")
+    )
     return int(os.environ.get("FAKE_EXIT", "0"))
 
 

@@ -399,7 +399,11 @@ def _cmd_audit(args: argparse.Namespace) -> int:
         args.topic_id, overwrite=prompt_exists
     )
     prompt_path = prepared.prompt_path.relative_to(runs.run_dir(args.topic_id))
-    response_path = prepared.response_path.relative_to(runs.run_dir(args.topic_id))
+    # as_posix: the workspace-relative artifact notation is /-separated
+    # everywhere (manifest, API payloads), including in Windows output.
+    response_path = prepared.response_path.relative_to(
+        runs.run_dir(args.topic_id)
+    ).as_posix()
     force = " --force" if prepared.response_path.exists() else ""
     print(f"prepared audit: {prompt_path}")
     print(f"Next (manual): save the response to {response_path}")

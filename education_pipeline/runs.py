@@ -2265,7 +2265,10 @@ class RunStore:
         recorded = report.get("guide_sha256")
         if not isinstance(recorded, str):
             return "stale"
-        source_text = source_path.read_text(encoding="utf-8")
+        # Decode from bytes, exactly as _compute_phase_report reads the same
+        # file: read_text's universal newlines would strip \r and make a CRLF
+        # source hash differently here than at validation time.
+        source_text = source_path.read_bytes().decode("utf-8")
         if recorded != _guide_source_sha(source_text):
             return "stale"
 
@@ -3703,7 +3706,9 @@ def _write_text(path: Path, text: str, *, overwrite: bool) -> None:
     if path.exists() and not overwrite:
         raise ConfigError(f"refusing to overwrite existing file: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    # newline="": artifacts are sha-keyed and byte-compared, so Windows
+    # text-mode \n -> \r\n translation must never rewrite them.
+    path.write_text(text, encoding="utf-8", newline="")
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
@@ -3713,13 +3718,24 @@ def _write_text_atomic(path: Path, text: str) -> None:
 def _write_bytes_atomic(path: Path, data: bytes) -> None:
     import os
     import tempfile
+    import time
 
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=path.suffix)
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
-        os.replace(tmp, path)
+        # Windows sharing semantics: replacing a file another process or
+        # thread holds open for reading fails with PermissionError. Readers
+        # (manifest polls, API reads) are transient, so retry briefly.
+        for attempt in range(10):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.05)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)

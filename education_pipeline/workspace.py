@@ -531,7 +531,9 @@ def _write_text(path: Path, text: str, *, overwrite: bool) -> None:
     if path.exists() and not overwrite:
         raise ConfigError(f"refusing to overwrite existing file: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    # newline="": topic/profile TOMLs feed canonical-bytes comparisons, so
+    # Windows text-mode \n -> \r\n translation must never rewrite them.
+    path.write_text(text, encoding="utf-8", newline="")
 
 
 def _read_bytes(path: Path, context: str) -> bytes:
