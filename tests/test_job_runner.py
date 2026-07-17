@@ -86,6 +86,20 @@ def test_execute_success_ingests_response(tmp_path, monkeypatch):
     assert "recorded_at" in entry
 
 
+def test_execute_normalizes_provider_crlf_output(tmp_path, monkeypatch):
+    # Windows provider CLIs write \r\n to stdout; responses are sha-keyed
+    # byte-exact artifacts, so the platform newline convention must be
+    # normalized out before ingestion.
+    monkeypatch.setenv("FAKE_STDOUT", "LINE ONE\r\nLINE TWO\r\n")
+    runs, catalog, plan, store = _setup(tmp_path)
+    job = store.create("t", "draft", "fake", "m", None)
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(
+        job, threading.Event()
+    )
+    assert done.status == "succeeded"
+    assert runs.response_path("t", "draft").read_bytes() == b"LINE ONE\nLINE TWO\n"
+
+
 @pytest.mark.parametrize("prompt_state", ["missing", "stale"])
 def test_execute_audit_stage_refuses_unready_prompt_before_provider_build(
     tmp_path, monkeypatch, prompt_state

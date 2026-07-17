@@ -29,6 +29,39 @@ def test_read_discovery_absent_is_none(tmp_path):
     assert lifecycle.read_discovery(tmp_path) is None
 
 
+def test_read_discovery_tolerates_transient_permission_error(tmp_path, monkeypatch):
+    # Windows sharing semantics: reading daemon.json at the moment the daemon
+    # os.replace()s it can raise PermissionError. A poll loop must see "not
+    # ready yet" (None), not crash.
+    lifecycle.write_discovery(tmp_path, pid=1, port=1, token="t", version="0.1.0")
+
+    def _sharing_violation(*args, **kwargs):
+        raise PermissionError("sharing violation")
+
+    monkeypatch.setattr(lifecycle.Path, "read_text", _sharing_violation)
+    assert lifecycle.read_discovery(tmp_path) is None
+
+
+def test_write_discovery_retries_replace_on_permission_error(tmp_path, monkeypatch):
+    # Windows sharing semantics: os.replace onto a file another process holds
+    # open for reading fails with PermissionError. A concurrent reader is
+    # transient (the client polls every 100ms), so the write must retry
+    # instead of crashing the daemon at startup.
+    real_replace = os.replace
+    calls = {"count": 0}
+
+    def flaky_replace(src, dst):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise PermissionError("sharing violation")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(lifecycle.os, "replace", flaky_replace)
+    lifecycle.write_discovery(tmp_path, pid=1, port=7777, token="t", version="0.1.0")
+    assert calls["count"] == 2
+    assert lifecycle.read_discovery(tmp_path)["port"] == 7777
+
+
 def test_is_pid_alive_for_self_and_dead():
     assert lifecycle.is_pid_alive(os.getpid()) is True
     assert lifecycle.is_pid_alive(999999) is False

@@ -46,9 +46,11 @@ def test_traversal_is_rejected(dist, tmp_path):
 
 
 def test_symlink_escape_is_rejected(dist, tmp_path):
+    from conftest import symlink_or_skip
+
     outside = tmp_path / "outside.txt"
     outside.write_text("s", encoding="utf-8")
-    (dist / "link.txt").symlink_to(outside)
+    symlink_or_skip(dist / "link.txt", outside)
     assert resolve_static(dist, "/link.txt") is None
 
 

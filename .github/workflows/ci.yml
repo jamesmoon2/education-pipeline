@@ -11,12 +11,24 @@ permissions:
 
 jobs:
   test:
-    name: test (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12"]
+        include:
+          # One representative Python per extra OS keeps the matrix small
+          # while covering platform-specific behavior.
+          - os: macos-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.12"
+    defaults:
+      run:
+        # bash exists on all three runners; keeps the steps single-source.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -158,14 +170,7 @@ jobs:
           "$VENV_PY" -m education_pipeline --help > /dev/null
           "$VENV_PY" -m education_pipeline blueprints > /dev/null
 
-      # Known v0.1 gap: the daemon cannot run on Windows —
-      # lifecycle.is_pid_alive probes with os.kill(pid, 0), which on Windows
-      # unconditionally terminates the target process, so any liveness check
-      # would kill the daemon it is checking. The manual CLI path works on
-      # Windows; daemon/cockpit support is tracked in
-      # docs/release-checklist.md (PRD §15 open question 5).
       - name: Launch ui headless and assert the cockpit index is served
-        if: runner.os != 'Windows'
         run: |
           mkdir -p "$RUNNER_TEMP/smoke-ws"
           "$VENV_PY" -m education_pipeline ui --workspace "$RUNNER_TEMP/smoke-ws" --no-browser

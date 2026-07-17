@@ -26,16 +26,15 @@ interactive parts need one human pass per supported OS:
       Chromium-family browser.
 - [ ] **Windows:** wheel install and the **manual CLI workflow** work
       (`topic import` → `advance`/`approve` → `export`); exported guide
-      opens in Edge. **Known gap:** the daemon/cockpit cannot run on
-      Windows — `lifecycle.is_pid_alive` probes with `os.kill(pid, 0)`,
-      which on Windows unconditionally terminates the probed process
-      (see the note in `.github/workflows/ci.yml`).
+      opens in Edge. The daemon/cockpit run on Windows and are covered
+      by the packaging smoke (`lifecycle.is_pid_alive` uses a ctypes
+      `OpenProcess` probe there). **Known limitation:** cancelling a job
+      only terminates the provider's root process, not its process tree
+      (issue #23).
 
-**Owner decision needed (PRD §15 open question 5):** either declare
-Windows "CLI + exported guides only" for `v0.1` and say so in the README,
-or schedule the lifecycle liveness fix (a portable
-`is_pid_alive` — e.g. `psutil`-free `OpenProcess` via `ctypes` on
-Windows) as a release blocker before tagging.
+**Resolved (PRD §15 open question 5):** the lifecycle liveness probe is
+portable and the daemon smoke runs on all three OSes in CI; Windows is
+not restricted to "CLI + exported guides only".
 
 ## 3. Decide distribution
 

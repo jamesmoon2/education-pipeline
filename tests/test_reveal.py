@@ -6,10 +6,12 @@ input must never reach the spawned command line.
 """
 
 import os
-import shutil
+import sys
 from pathlib import Path
 
 import pytest
+
+from conftest import symlink_or_skip
 
 from education_pipeline.config import ConfigError
 from education_pipeline.daemon import reveal
@@ -78,7 +80,7 @@ class TestResolveRevealTarget:
         runs = RunStore(ws)
         topics = TopicStore(ws)
         (ws / "runs").mkdir(exist_ok=True)
-        (ws / "runs" / "esc").symlink_to(outside, target_is_directory=True)
+        symlink_or_skip(ws / "runs" / "esc", outside, target_is_directory=True)
         (outside / "manifest.json").write_text("{}", encoding="utf-8")
         with pytest.raises(ConfigError, match="outside the workspace"):
             reveal.resolve_reveal_target(runs, topics, "run", "esc")
@@ -90,7 +92,7 @@ class TestResolveRevealTarget:
         secret.write_text('schema_version = 1\nid = "esc"\n', encoding="utf-8")
         ws = tmp_path / "ws"
         (ws / "topics").mkdir(parents=True)
-        (ws / "topics" / "esc.toml").symlink_to(secret)
+        symlink_or_skip(ws / "topics" / "esc.toml", secret)
         runs = RunStore(ws)
         topics = TopicStore(ws)
         with pytest.raises(ConfigError, match="outside the workspace"):
@@ -147,12 +149,17 @@ class TestOpenerArgv:
 
 
 class TestOpenInFileManager:
+    # The opener is invoked as ``$EP_REVEAL_OPENER <path>``, so the Python
+    # interpreter doubles as a portable opener: handed a script path it runs
+    # it, and its exit status is the script's — no /bin/true|false needed.
     def test_failing_opener_raises_reveal_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("EP_REVEAL_OPENER", "/bin/false")
+        target = tmp_path / "fail.py"
+        target.write_text("raise SystemExit(3)\n", encoding="utf-8")
+        monkeypatch.setenv("EP_REVEAL_OPENER", sys.executable)
         with pytest.raises(reveal.RevealError):
-            reveal.open_in_file_manager(tmp_path)
+            reveal.open_in_file_manager(target)
 
     def test_missing_opener_raises_reveal_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -164,5 +171,7 @@ class TestOpenInFileManager:
     def test_successful_opener_returns_none(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("EP_REVEAL_OPENER", shutil.which("true"))
-        assert reveal.open_in_file_manager(tmp_path) is None
+        target = tmp_path / "ok.py"
+        target.write_text("", encoding="utf-8")
+        monkeypatch.setenv("EP_REVEAL_OPENER", sys.executable)
+        assert reveal.open_in_file_manager(target) is None

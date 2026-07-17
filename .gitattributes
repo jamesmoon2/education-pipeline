@@ -1,0 +1,5 @@
+# Artifacts in this repo are byte-exact: prompts and responses are
+# sha256-keyed, and the committed example export is compared byte-for-byte
+# against a regeneration in CI. Checkout must therefore never rewrite line
+# endings — force LF for all text files on every platform.
+* text=auto eol=lf
