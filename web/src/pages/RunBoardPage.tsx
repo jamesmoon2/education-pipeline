@@ -222,13 +222,6 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
         <strong>Next:</strong> {status.next_action.detail}
       </p>
       <PrimaryAction status={status} onChanged={refresh} />
-      {status.content_contract.kind === "interactive_guide" && (
-        <InteractiveGuidePanels
-          status={status}
-          mutationGeneration={contentGeneration}
-          onStatusChanged={refreshStatus}
-        />
-      )}
       <table>
         <thead>
           <tr>
@@ -268,6 +261,13 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
         </tbody>
       </table>
       <p>Finalized: {status.finalized ? "yes" : "no"}</p>
+      {status.content_contract.kind === "interactive_guide" && (
+        <InteractiveGuidePanels
+          status={status}
+          mutationGeneration={contentGeneration}
+          onStatusChanged={refreshStatus}
+        />
+      )}
       <RunPlanPanel topicId={status.topic_id} nextStage={status.next_action.stage} />
       <JobsPanel topicId={status.topic_id} />
     </div>

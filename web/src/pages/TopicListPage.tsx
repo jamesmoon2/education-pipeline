@@ -273,6 +273,11 @@ export default function TopicListPage() {
                       : "—"}
                   </td>
                   <td>
+                    {t.profile_id && (
+                      <>
+                        <span className="attached-profile">{t.profile_id}</span>{" "}
+                      </>
+                    )}
                     <AttachProfileControl topicId={t.id} profiles={profiles} onDone={refresh} />
                   </td>
                   <td className="library-actions">

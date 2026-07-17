@@ -17,6 +17,62 @@ in any browser — a complete synthetic example course, with every
 intermediate artifact that produced it committed alongside in
 [`examples/feedback-loops/`](examples/feedback-loops/).
 
+## What it looks like
+
+All screenshots show a demo workspace with synthetic courses and learners.
+
+The **course library** is home base: every course with its next action,
+completion, and attached learner. Everything lives in plain files on your
+machine.
+
+![Course library with four courses in different states](docs/screenshots/course-library.png)
+
+**New course** is a short guided sequence — learner, topic, pedagogical
+blueprint, model plan, review. The blueprint step shapes what kind of
+teaching the course does, with a recommendation explained in plain
+language.
+
+![New course wizard on the blueprint step](docs/screenshots/new-course.png)
+
+The **run board** drives a course through
+`spec → outline → draft → qa → repair`. Each stage shows its state in
+plain words; the next sound move is always the highlighted action.
+Nothing advances without your approval.
+
+![Run board mid-run with the draft response awaiting review](docs/screenshots/run-board.png)
+
+Once a run completes, the run board becomes the quality record: validation
+milestones, personalization fit against the attached learner profile, a
+live guide preview, and one-click export.
+
+![Run board for a completed course with export controls and guide preview](docs/screenshots/run-board-complete.png)
+
+The **stage viewer** shows each stage's prompt, response, and approved
+artifact — with compare and diff views, in-browser editing, and provider
+rerun.
+
+![Stage viewer showing an approved outline response](docs/screenshots/stage-viewer.png)
+
+**Settings** holds provider availability and the default per-stage model
+plan: run every stage manually, through Claude Code or Codex, or mix
+providers per stage.
+
+![Settings with provider availability and the per-stage model plan](docs/screenshots/settings.png)
+
+**Learner profiles** personalize courses without leaking. Every field
+carries a sensitivity marker, and the live privacy preview shows exactly
+what reaches prompts versus what could ever reach a published guide.
+
+![Profile editor with sensitivity labels and the privacy preview](docs/screenshots/profile-editor.png)
+
+The **exported guide** is a single offline HTML file: readable typography,
+knowledge checks, worked reveals, scenarios, reflections, progress that
+stays in the browser, and a built-in light/dark theme.
+
+![Exported guide in light theme showing the course header and first section](docs/screenshots/guide-light.png)
+
+![Exported guide in dark theme showing a knowledge check](docs/screenshots/guide-dark.png)
+
 ## Install
 
 Python 3.11+ and a modern browser. No model provider required — every
