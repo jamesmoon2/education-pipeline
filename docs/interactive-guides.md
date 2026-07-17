@@ -75,6 +75,49 @@ If validation fails after an edit, the recovery loop is: edit the stage
 response → re-approve → revalidate → finalize. The cockpit coordinates these
 steps and explains which downstream artifacts each edit invalidated.
 
+### Gate commands and exit codes
+
+Five CLI commands manage the gate:
+
+```bash
+education-pipeline -C ./workspace validate <topic> --phase final
+education-pipeline -C ./workspace findings <topic> --phase final --blocking
+education-pipeline -C ./workspace report <topic>
+education-pipeline -C ./workspace waive <topic> <finding-id> --reason "..."
+education-pipeline -C ./workspace unwaive <topic> <finding-id>
+```
+
+All five share one exit-code contract: `0` = open/success, `1` = gate
+blocked, `2` = usage/config error (nonexistent run, bad `--phase`, no report
+on disk yet) — so a script can always tell "no such run" apart from "gate
+blocked" by exit code alone.
+
+- `validate <topic> [--phase draft|final]` runs deterministic validation and
+  reports the gate.
+- `findings <topic> [--phase] [--blocking]` lists a validation report's
+  findings as tab-separated `severity  rule_id  stage  path  message`
+  (listing is not a gate: exit 0 on success, 2 if no report exists yet).
+- `report <topic>` prints the export sidecar quality report verbatim if one
+  exists, otherwise the final validation report; its exit code tracks
+  `gate.open`. It reflects the **export-time** state frozen in the sidecar,
+  while `validate` recomputes the **current** state; the two can disagree
+  after content changes without a re-export, and `findings`/`report` warn on
+  stderr when the on-disk report is stale.
+- `waive <topic> <finding-id> --reason "..."` and `unwaive <topic>
+  <finding-id>` record or remove a waiver. Usage errors (bad finding id,
+  non-waivable rule, empty reason) exit 2, distinct from the gate's blocked
+  exit 1. Removing the last waiver deletes the waivers file.
+
+### Export sidecar quality report
+
+Every HTML export also writes `guide.report.json` next to `guide.html` —
+canonical, timestamp-free JSON that is byte-identical on re-export of
+unchanged content. It carries `quality_report_schema_version`, the `gate`
+decision, the full `report`, the `waivers` actually applied (plus
+rejected/orphaned and staleness), and `export` fingerprints (file hash,
+runtime version, runtime asset hashes). Its hash is recorded in the run
+manifest's `exported` event.
+
 ## Preview isolation
 
 The cockpit previews guides in a sandboxed iframe served by the loopback-only
