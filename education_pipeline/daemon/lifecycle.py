@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,7 +36,17 @@ def write_discovery(root: str | Path, *, pid: int, port: int, token: str, versio
         os.chmod(tmp, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(record, handle, indent=2)
-        os.replace(tmp, target)
+        # Windows sharing semantics: replacing a file another process holds
+        # open for reading fails with PermissionError. Concurrent readers are
+        # transient (clients poll this file), so retry briefly.
+        for attempt in range(10):
+            try:
+                os.replace(tmp, target)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.05)
         os.chmod(target, 0o600)
     except BaseException:
         if os.path.exists(tmp):
@@ -44,9 +55,11 @@ def write_discovery(root: str | Path, *, pid: int, port: int, token: str, versio
 
 
 def read_discovery(root: str | Path) -> dict | None:
+    # PermissionError: Windows raises it for a read that races the daemon's
+    # os.replace of this file; treat it like "not ready yet", same as absent.
     try:
         return json.loads(discovery_path(root).read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, PermissionError, json.JSONDecodeError):
         return None
 
 
