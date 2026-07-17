@@ -1,55 +1,148 @@
-# Example model catalog. Real defaults should be reviewed before release.
-
-[[providers]]
-id = "manual"
-label = "Manual prompt workflow"
-description = "Copy prompts into any model UI, then paste or import responses."
-
-[[providers.models]]
-id = "prompt-only"
-label = "Prompt-only handoff"
-description = "No automated execution. The user chooses the model outside this tool."
-quality = "manual"
+# Default model catalog. A workspace may override this by writing its own
+# config/model-catalog.toml; these are the shipped defaults.
 
 [[providers]]
 id = "claude-code"
 label = "Claude Code"
-description = "Run configured stages through Claude Code CLI when available."
+description = "Run stages through the Claude Code CLI installed on this machine."
 
 [[providers.models]]
-id = "balanced"
-label = "Balanced"
-description = "Project-local alias for the default balanced Claude Code model."
-quality = "balanced"
+id = "fable-5"
+label = "Fable 5"
+description = "Deepest reasoning for course design; slowest and most expensive."
+quality = "premium"
+default_effort = "high"
+argv_model = "claude-fable-5"
+
+[[providers.models]]
+id = "opus-4-8"
+label = "Opus 4.8"
+description = "Strong long-form writing and revision; the workhorse for content stages."
+quality = "premium"
+default_effort = "high"
+argv_model = "claude-opus-4-8"
+
+[[providers.models]]
+id = "sonnet-5"
+label = "Sonnet 5"
+description = "Near-Opus quality at lower cost; good balance for most stages."
+quality = "strong"
 default_effort = "medium"
 argv_model = "claude-sonnet-5"
 
 [[providers.models]]
-id = "premium-reasoning"
-label = "Premium reasoning"
-description = "Project-local alias for harder outline, repair, and design stages."
-quality = "premium"
-default_effort = "high"
-argv_model = "claude-opus-4-8"
-extra_args = ["--reasoning", "high"]
+id = "haiku-4-5"
+label = "Haiku 4.5"
+description = "Fast and inexpensive; best for mechanical checks and summaries."
+quality = "fast"
+default_effort = "low"
+argv_model = "claude-haiku-4-5"
 
 [[providers]]
 id = "codex"
 label = "Codex"
-description = "Run configured stages through Codex when available."
+description = "Run stages through the Codex CLI installed on this machine."
 
 [[providers.models]]
-id = "balanced"
-label = "Balanced"
-description = "Project-local alias for the default balanced Codex model."
-quality = "balanced"
+id = "sol"
+label = "GPT-5.6 Sol"
+description = "OpenAI's flagship tier; deepest reasoning in the GPT-5.6 family."
+quality = "premium"
+default_effort = "high"
+argv_model = "gpt-5.6-sol"
+
+[[providers.models]]
+id = "terra"
+label = "GPT-5.6 Terra"
+description = "Balanced tier; strong everyday quality at mid cost."
+quality = "strong"
 default_effort = "medium"
-argv_model = "gpt-5.4-codex"
+argv_model = "gpt-5.6-terra"
 
 [[providers.models]]
-id = "fast-check"
-label = "Fast check"
-description = "Project-local alias for inexpensive mechanical review stages."
+id = "luna"
+label = "GPT-5.6 Luna"
+description = "Fast, low-cost tier; best for mechanical checks and summaries."
 quality = "fast"
 default_effort = "low"
-argv_model = "gpt-5.4-codex-mini"
+argv_model = "gpt-5.6-luna"
+
+[[providers]]
+id = "manual"
+label = "Manual copy/paste"
+description = "No CLI required — copy each stage prompt into any model UI, then paste the response back."
+
+[[providers.models]]
+id = "prompt-only"
+label = "Prompt-only handoff"
+description = "You choose and run the model yourself; this tool only prepares prompts and ingests responses."
+quality = "manual"
+
+[[presets]]
+id = "max-quality"
+label = "Max quality"
+description = "The strongest model at every step. Slowest and most expensive."
+
+[presets.stages.claude-code]
+profile = { model = "opus-4-8", effort = "medium" }
+spec = { model = "fable-5", effort = "high" }
+outline = { model = "fable-5", effort = "high" }
+draft = { model = "opus-4-8", effort = "high" }
+qa = { model = "opus-4-8", effort = "medium" }
+repair = { model = "opus-4-8", effort = "high" }
+audit = { model = "opus-4-8", effort = "high" }
+
+[presets.stages.codex]
+profile = { model = "sol", effort = "medium" }
+spec = { model = "sol", effort = "high" }
+outline = { model = "sol", effort = "high" }
+draft = { model = "sol", effort = "high" }
+qa = { model = "sol", effort = "medium" }
+repair = { model = "sol", effort = "high" }
+audit = { model = "sol", effort = "high" }
+
+[[presets]]
+id = "balanced"
+label = "Balanced"
+description = "Deep design where it counts, fast models for mechanical steps."
+
+[presets.stages.claude-code]
+profile = { model = "sonnet-5", effort = "medium" }
+spec = { model = "fable-5", effort = "high" }
+outline = { model = "opus-4-8", effort = "high" }
+draft = { model = "opus-4-8", effort = "medium" }
+qa = { model = "haiku-4-5", effort = "medium" }
+repair = { model = "opus-4-8", effort = "medium" }
+audit = { model = "opus-4-8", effort = "medium" }
+
+[presets.stages.codex]
+profile = { model = "terra", effort = "medium" }
+spec = { model = "sol", effort = "high" }
+outline = { model = "sol", effort = "high" }
+draft = { model = "sol", effort = "medium" }
+qa = { model = "luna", effort = "medium" }
+repair = { model = "sol", effort = "medium" }
+audit = { model = "sol", effort = "medium" }
+
+[[presets]]
+id = "cost-efficient"
+label = "Cost efficient"
+description = "Capable mid-tier models throughout; cheapest way to a full course."
+
+[presets.stages.claude-code]
+profile = { model = "haiku-4-5", effort = "low" }
+spec = { model = "sonnet-5", effort = "medium" }
+outline = { model = "sonnet-5", effort = "medium" }
+draft = { model = "sonnet-5", effort = "medium" }
+qa = { model = "haiku-4-5", effort = "low" }
+repair = { model = "sonnet-5", effort = "medium" }
+audit = { model = "sonnet-5", effort = "medium" }
+
+[presets.stages.codex]
+profile = { model = "luna", effort = "low" }
+spec = { model = "terra", effort = "medium" }
+outline = { model = "terra", effort = "medium" }
+draft = { model = "terra", effort = "medium" }
+qa = { model = "luna", effort = "low" }
+repair = { model = "terra", effort = "medium" }
+audit = { model = "terra", effort = "medium" }

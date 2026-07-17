@@ -76,15 +76,21 @@ def test_model_plan_parses_and_overrides_audit_stage() -> None:
     assert reset.stage("audit").model is None
 
 
-def test_loads_example_catalog_and_plan() -> None:
-    root = Path(__file__).resolve().parents[1]
+EXAMPLE_CATALOG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "model-catalog.example.toml"
+)
+EXAMPLE_PLAN_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "model-plan.example.toml"
+)
 
-    catalog = load_model_catalog(root / "config" / "model-catalog.example.toml")
-    plan = load_model_plan(root / "config" / "model-plan.example.toml", catalog=catalog)
+
+def test_loads_example_catalog_and_plan() -> None:
+    catalog = load_model_catalog(EXAMPLE_CATALOG_PATH)
+    plan = load_model_plan(EXAMPLE_PLAN_PATH, catalog=catalog)
 
     assert set(catalog.providers) == {"manual", "claude-code", "codex"}
     assert catalog.providers["manual"].models["prompt-only"].quality == "manual"
-    assert plan.provider == "manual"
+    assert plan.provider == "claude-code"
     assert tuple(plan.stages) == STAGE_ORDER
     assert plan.stage("outline").recommendation == "premium_reasoning"
     assert plan.stage("finalize").recommendation == "local_only"
@@ -581,3 +587,52 @@ def test_preset_rejects_unknown_stage_and_bad_effort() -> None:
     data = _catalog_data_with_preset({"id": "p", "stages": {"claude-code": stages}})
     with pytest.raises(ConfigError, match="effort"):
         parse_model_catalog(data)
+
+
+def test_example_catalog_ships_real_models_and_three_presets() -> None:
+    catalog = load_model_catalog(EXAMPLE_CATALOG_PATH)
+    claude = catalog.providers["claude-code"]
+    assert {m.id for m in claude.models.values()} == {
+        "fable-5", "opus-4-8", "sonnet-5", "haiku-4-5",
+    }
+    assert claude.models["fable-5"].argv_model == "claude-fable-5"
+    assert claude.models["opus-4-8"].argv_model == "claude-opus-4-8"
+    assert claude.models["sonnet-5"].argv_model == "claude-sonnet-5"
+    assert claude.models["haiku-4-5"].argv_model == "claude-haiku-4-5"
+    codex = catalog.providers["codex"]
+    assert {m.id for m in codex.models.values()} == {"sol", "terra", "luna"}
+    assert codex.models["sol"].argv_model == "gpt-5.6-sol"
+    assert codex.models["terra"].argv_model == "gpt-5.6-terra"
+    assert codex.models["luna"].argv_model == "gpt-5.6-luna"
+    assert catalog.providers["manual"].label == "Manual copy/paste"
+    assert [p.id for p in catalog.presets] == [
+        "max-quality", "balanced", "cost-efficient",
+    ]
+    for preset in catalog.presets:
+        assert set(preset.stages) == {"claude-code", "codex"}
+
+
+def test_example_plan_defaults_to_claude_code_balanced() -> None:
+    catalog = load_model_catalog(EXAMPLE_CATALOG_PATH)
+    plan = load_model_plan(EXAMPLE_PLAN_PATH, catalog)
+    assert plan.provider == "claude-code"
+    balanced = {p.id: p for p in catalog.presets}["balanced"].stages["claude-code"]
+    for stage_name in PRESET_STAGES:
+        stage = plan.stage(stage_name)
+        assert stage.model == balanced[stage_name].model, stage_name
+        assert stage.effort == balanced[stage_name].effort, stage_name
+
+
+def test_example_plan_has_no_weak_stage_warnings() -> None:
+    catalog = load_model_catalog(EXAMPLE_CATALOG_PATH)
+    plan = load_model_plan(EXAMPLE_PLAN_PATH, catalog)
+    for stage_name in PRESET_STAGES:
+        stage = plan.stage(stage_name)
+        effective = StageModelPlan(
+            stage=stage.stage,
+            recommendation=stage.recommendation,
+            model=stage.model,
+            effort=stage.effort,
+            provider=stage.provider or plan.provider,
+        )
+        assert weak_stage_warning(catalog, effective) is None, stage_name
