@@ -962,3 +962,11 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.875rem; }
   line-height: 1.45;
   box-shadow: 0 2px 8px rgb(0 0 0 / 0.15);
 }
+/* ------------------------------------------------------------ preset picker */
+.preset-picker { margin: var(--ep-space-3) 0; }
+.preset-provider-toggle { border: none; padding: 0; margin: 0 0 var(--ep-space-2); display: flex; gap: var(--ep-space-3); align-items: center; }
+.preset-provider-toggle legend { float: left; margin-right: var(--ep-space-3); color: var(--ep-color-text-muted); }
+.preset-buttons { display: flex; gap: var(--ep-space-2); flex-wrap: wrap; }
+.preset-buttons button { display: flex; flex-direction: column; align-items: flex-start; gap: var(--ep-space-1); text-align: left; max-width: 18rem; }
+.preset-label { font-weight: 600; }
+.preset-description { font-size: 0.875rem; color: var(--ep-color-text-muted); }

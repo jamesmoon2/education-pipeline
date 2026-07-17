@@ -144,7 +144,7 @@ describe("RunBoardPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getConfigProviders).mockResolvedValue({ providers: planProviders });
-    vi.mocked(getConfigCatalog).mockResolvedValue({ providers: planCatalog });
+    vi.mocked(getConfigCatalog).mockResolvedValue({ providers: planCatalog, presets: [] });
     vi.mocked(getRunPlan).mockResolvedValue(makePlan());
     vi.mocked(getPersonalization).mockResolvedValue(personalization);
     vi.mocked(getStageContent).mockResolvedValue({

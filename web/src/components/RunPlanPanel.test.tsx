@@ -59,7 +59,7 @@ function makePlan(overrides: Partial<Record<string, unknown>> = {}): PlanPayload
 
 function setup(plan: PlanPayload = makePlan(), nextStage: string | null = "draft") {
   vi.mocked(getConfigProviders).mockResolvedValue({ providers });
-  vi.mocked(getConfigCatalog).mockResolvedValue({ providers: catalog });
+  vi.mocked(getConfigCatalog).mockResolvedValue({ providers: catalog, presets: [] });
   vi.mocked(getRunPlan).mockResolvedValue(plan);
   return render(<RunPlanPanel topicId="t" nextStage={nextStage} />);
 }

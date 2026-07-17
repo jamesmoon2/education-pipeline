@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CatalogProvider, PlanPayload, ProviderAvailability } from "../api/types";
+import type { CatalogPreset, CatalogProvider, PlanPayload, ProviderAvailability } from "../api/types";
 import SettingsPage from "./SettingsPage";
 
 vi.mock("../api/client", async () => {
@@ -50,6 +50,34 @@ const catalog: CatalogProvider[] = [
   },
 ];
 
+const presets: CatalogPreset[] = [
+  {
+    id: "balanced",
+    label: "Balanced",
+    description: "Deep design where it counts.",
+    stages: {
+      "claude-code": {
+        profile: { model: "sonnet", effort: "medium" },
+        spec: { model: "sonnet", effort: "high" },
+        outline: { model: "sonnet", effort: "high" },
+        draft: { model: "sonnet", effort: "medium" },
+        qa: { model: "sonnet", effort: "medium" },
+        repair: { model: "sonnet", effort: "medium" },
+        audit: { model: "sonnet", effort: "medium" },
+      },
+      codex: {
+        profile: { model: "gpt", effort: "medium" },
+        spec: { model: "gpt", effort: "high" },
+        outline: { model: "gpt", effort: "high" },
+        draft: { model: "gpt", effort: "medium" },
+        qa: { model: "gpt", effort: "medium" },
+        repair: { model: "gpt", effort: "medium" },
+        audit: { model: "gpt", effort: "medium" },
+      },
+    },
+  },
+];
+
 const STAGES = ["profile", "spec", "outline", "draft", "qa", "repair", "audit", "finalize", "export"];
 
 function makePlan(overrides: Partial<Record<string, unknown>> = {}): PlanPayload {
@@ -71,7 +99,7 @@ function makePlan(overrides: Partial<Record<string, unknown>> = {}): PlanPayload
 
 function setup(plan: PlanPayload = makePlan()) {
   vi.mocked(getConfigProviders).mockResolvedValue({ providers });
-  vi.mocked(getConfigCatalog).mockResolvedValue({ providers: catalog });
+  vi.mocked(getConfigCatalog).mockResolvedValue({ providers: catalog, presets });
   vi.mocked(getConfigPlan).mockResolvedValue(plan);
   return render(<SettingsPage />);
 }
@@ -186,6 +214,61 @@ describe("SettingsPage", () => {
     expect(screen.getByLabelText("Provider for outline")).toHaveValue("claude-code");
     expect(screen.getByLabelText("Model for outline")).toHaveValue("");
     expect(screen.getByLabelText("Effort for outline")).toHaveValue("default");
+  });
+
+  it("applies a preset to every stage row for the selected provider", async () => {
+    const user = userEvent.setup();
+    setup();
+    await screen.findByText("Default model plan");
+    await user.click(screen.getByRole("button", { name: /Balanced/ }));
+    const specRow = document.querySelector('[data-stage="spec"]')!;
+    expect(
+      within(specRow as HTMLElement).getByLabelText("Model for spec"),
+    ).toHaveValue("sonnet");
+    expect(
+      within(specRow as HTMLElement).getByLabelText("Effort for spec"),
+    ).toHaveValue("high");
+  });
+
+  it("applies the codex mapping when the preset provider toggle is switched", async () => {
+    const user = userEvent.setup();
+    setup();
+    await screen.findByText("Default model plan");
+    await user.click(screen.getByRole("radio", { name: "Codex" }));
+    await user.click(screen.getByRole("button", { name: /Balanced/ }));
+    const qaRow = document.querySelector('[data-stage="qa"]')!;
+    expect(
+      within(qaRow as HTMLElement).getByLabelText("Provider for qa"),
+    ).toHaveValue("codex");
+    expect(
+      within(qaRow as HTMLElement).getByLabelText("Model for qa"),
+    ).toHaveValue("gpt");
+  });
+
+  it("falls back to a provider that has presets when the plan provider has none", async () => {
+    const user = userEvent.setup();
+    const codexOnly = [{ ...presets[0], stages: { codex: presets[0].stages.codex } }];
+    vi.mocked(getConfigProviders).mockResolvedValue({ providers });
+    vi.mocked(getConfigCatalog).mockResolvedValue({ providers: catalog, presets: codexOnly });
+    vi.mocked(getConfigPlan).mockResolvedValue(makePlan()); // plan provider: claude-code
+    render(<SettingsPage />);
+    await screen.findByText("Default model plan");
+    await user.click(screen.getByRole("button", { name: /Balanced/ }));
+    const specRow = document.querySelector('[data-stage="spec"]')!;
+    expect(
+      within(specRow as HTMLElement).getByLabelText("Provider for spec"),
+    ).toHaveValue("codex");
+  });
+
+  it("saves preset-applied overrides through putConfigPlan", async () => {
+    const user = userEvent.setup();
+    vi.mocked(putConfigPlan).mockResolvedValue(makePlan());
+    setup();
+    await screen.findByText("Default model plan");
+    await user.click(screen.getByRole("button", { name: /Balanced/ }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const [, , stages] = vi.mocked(putConfigPlan).mock.calls[0];
+    expect(stages.spec).toEqual({ provider: "claude-code", model: "sonnet", effort: "high" });
   });
 
   it("surfaces the reload affordance on a 409 stale_content from save", async () => {

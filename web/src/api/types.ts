@@ -505,6 +505,18 @@ export interface CatalogProvider {
   models: CatalogModel[];
 }
 
+export interface PresetStagePayload {
+  model: string;
+  effort: string | null;
+}
+
+export interface CatalogPreset {
+  id: string;
+  label: string;
+  description: string;
+  stages: Record<string, Record<string, PresetStagePayload>>;
+}
+
 export interface PlanStage {
   stage: string;
   provider: string | null;

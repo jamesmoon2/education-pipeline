@@ -4,6 +4,7 @@ import type {
   RepairModulesPayload,
   ApproveResult,
   AttachProfileResult,
+  CatalogPreset,
   CatalogProvider,
   EditResponseResult,
   ExportFormat,
@@ -474,7 +475,7 @@ export const downloadExport = (topicId: string, format: ExportFormat) =>
 export const getConfigProviders = () =>
   api<{ providers: ProviderAvailability[] }>("/v1/config/providers");
 export const getConfigCatalog = () =>
-  api<{ providers: CatalogProvider[] }>("/v1/config/catalog");
+  api<{ providers: CatalogProvider[]; presets: CatalogPreset[] }>("/v1/config/catalog");
 export const getConfigPlan = () => api<PlanPayload>("/v1/config/plan");
 export const putConfigPlan = (
   baseSha256: string,
