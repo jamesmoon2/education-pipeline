@@ -1,6 +1,7 @@
 import hashlib
 import http.client
 import json
+import shutil
 import sys
 import threading
 import tomllib
@@ -3457,7 +3458,7 @@ def test_duplicate_route_creates_copy(server):
 
 def test_reveal_route_success_returns_path(server_with_context, monkeypatch):
     port, context = server_with_context
-    monkeypatch.setenv("EP_REVEAL_OPENER", "/bin/true")
+    monkeypatch.setenv("EP_REVEAL_OPENER", shutil.which("true"))
     status, body = _req(
         port, "POST", "/v1/reveal", body={"target": "run", "topic_id": "t"}
     )
@@ -3469,7 +3470,7 @@ def test_reveal_route_failure_is_reveal_unsupported_with_path(
     server_with_context, monkeypatch
 ):
     port, context = server_with_context
-    monkeypatch.setenv("EP_REVEAL_OPENER", "/bin/false")
+    monkeypatch.setenv("EP_REVEAL_OPENER", shutil.which("false"))
     status, body = _req(
         port, "POST", "/v1/reveal", body={"target": "run", "topic_id": "t"}
     )
@@ -3479,7 +3480,7 @@ def test_reveal_route_failure_is_reveal_unsupported_with_path(
 
 
 def test_reveal_route_rejects_unknown_target(server, monkeypatch):
-    monkeypatch.setenv("EP_REVEAL_OPENER", "/bin/true")
+    monkeypatch.setenv("EP_REVEAL_OPENER", shutil.which("true"))
     status, body = _req(
         server, "POST", "/v1/reveal", body={"target": "responses", "topic_id": "t"}
     )
