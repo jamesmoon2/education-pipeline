@@ -26,7 +26,7 @@ from education_pipeline.config import (
 )
 from education_pipeline.daemon import read_api, reveal, write_api
 from education_pipeline.daemon.jobs import Job, JobStore, Worker
-from education_pipeline.daemon.static import resolve_static
+from education_pipeline.daemon.static import cockpit_build_report, resolve_static
 from education_pipeline.export import render_html_body
 from education_pipeline.guides import (
     ContractError,
@@ -319,7 +319,13 @@ def _make_handler(context: DaemonContext):
         def _api_get_routes(self):
             if self.path.startswith("/v1/health"):
                 return self._send(
-                    200, {"version": context.version, "started_at": None, "ok": True}
+                    200,
+                    {
+                        "version": context.version,
+                        "started_at": None,
+                        "ok": True,
+                        "cockpit_build": cockpit_build_report(context.web_dist),
+                    },
                 )
             if self.path == "/v1/workspace":
                 return self._send(
