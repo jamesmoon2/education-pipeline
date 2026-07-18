@@ -122,16 +122,52 @@ def extract_toml(text: str) -> str:
 
     Providers are told to answer with bare TOML, but a fenced code block —
     possibly with a sentence around it — is common enough to tolerate. When
-    fences are present the longest block wins; otherwise the trimmed response
-    is taken as-is and left for the TOML parser to judge.
+    fences are present the LAST block wins: a model that echoes the prompt's
+    schema example before its answer must not have the placeholder schema
+    (which would validate!) picked over the actual profile it generated.
     """
 
     fenced = _FENCE_RE.findall(text)
-    body = max(fenced, key=len) if fenced else text
+    body = fenced[-1] if fenced else text
     body = body.strip()
     if not body:
         raise ConfigError("provider response contained no TOML")
     return body + "\n"
+
+
+def _run_provider(
+    argv: list[str],
+    *,
+    input: bytes,
+    capture_output: bool = True,
+    timeout: float,
+    env: dict,
+) -> subprocess.CompletedProcess:
+    """subprocess.run-alike that kills the whole provider tree on timeout.
+
+    Provider CLIs spawn helper children; a bare ``subprocess.run(timeout=…)``
+    only reaps the direct child, leaving helpers running (and consuming
+    tokens) after the HTTP request has already failed. Reuse the job worker's
+    process-group spawn + terminate machinery so a timeout tears down the
+    entire tree, exactly as stage-job cancellation does.
+    """
+
+    from education_pipeline.daemon.jobs import popen_kwargs, terminate_process
+
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        **popen_kwargs(),
+    )
+    try:
+        stdout, stderr = proc.communicate(input=input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        terminate_process(proc)
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
 def draft_profile_toml(
@@ -143,7 +179,7 @@ def draft_profile_toml(
     model: str | None = None,
     effort: str | None = None,
     timeout: float = PROFILE_DRAFT_TIMEOUT_SECONDS,
-    run_process: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    run_process: Callable[..., subprocess.CompletedProcess] | None = None,
 ) -> dict:
     """Run the drafting prompt through a provider and validate the result.
 
@@ -153,7 +189,13 @@ def draft_profile_toml(
     the daemon maps it to HTTP 400.
     """
 
+    if run_process is None:
+        run_process = _run_provider
     provider_id = provider or plan.provider
+    # Gate on the workspace catalog before anything runs: a provider the
+    # Settings catalog deliberately omits must not be reachable through
+    # drafting even though a runner for it is registered in-process.
+    catalog_provider = catalog.require_provider(provider_id)
     runner = get_runner(provider_id)
     if not runner.executable:
         raise ConfigError(
@@ -164,9 +206,20 @@ def draft_profile_toml(
         raise ConfigError(f"provider {provider_id!r} is not available on PATH")
 
     if model is None:
+        # Fall back to the configured profile-stage plan (Settings' "model
+        # for profile" row) rather than the provider CLI's own default — but
+        # only when that row targets the provider actually being used.
+        stage_defaults = plan.stages.get("profile")
+        if stage_defaults is not None and (
+            (stage_defaults.provider or plan.provider) == provider_id
+        ):
+            model = stage_defaults.model
+            if effort is None:
+                effort = stage_defaults.effort
+
+    if model is None:
         model_option = ModelOption(id="", label="")
     else:
-        catalog_provider = catalog.require_provider(provider_id)
         try:
             model_option = catalog_provider.models[model]
         except KeyError as exc:

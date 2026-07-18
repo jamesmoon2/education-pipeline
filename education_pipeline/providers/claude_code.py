@@ -37,6 +37,11 @@ class ClaudeCodeRunner:
             # requested content, which breaks stage ingestion.
             "--tools",
             "",
+            # `--tools` governs built-in tools only; a user's configured MCP
+            # servers would still be offered. With no --mcp-config given,
+            # strict mode loads zero MCP servers, so no external tool can
+            # read or mutate state during a stage run.
+            "--strict-mcp-config",
         ]
         if model.argv_model:
             argv += ["--model", model.argv_model]

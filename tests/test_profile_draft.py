@@ -1,10 +1,20 @@
+import os
 import subprocess
+import sys
+import time
 
 import pytest
 
 from education_pipeline import ConfigError
-from education_pipeline.config import ModelCatalog, ModelOption, ModelPlan, Provider
+from education_pipeline.config import (
+    ModelCatalog,
+    ModelOption,
+    ModelPlan,
+    Provider,
+    StageModelPlan,
+)
 from education_pipeline.profile_draft import (
+    _run_provider,
     build_profile_draft_prompt,
     draft_profile_toml,
     extract_toml,
@@ -22,13 +32,16 @@ def _catalog(provider_id="fake-draft"):
     option = ModelOption(id="fast", label="Fast", argv_model="fast-1")
     return ModelCatalog(
         providers={
-            provider_id: Provider(id=provider_id, label="Fake", models={"fast": option})
+            provider_id: Provider(
+                id=provider_id, label="Fake", models={"fast": option}
+            ),
+            "manual": Provider(id="manual", label="Manual"),
         }
     )
 
 
-def _plan(provider_id="fake-draft"):
-    return ModelPlan(provider=provider_id, stages={})
+def _plan(provider_id="fake-draft", stages=None):
+    return ModelPlan(provider=provider_id, stages=stages or {})
 
 
 class FakeRunner:
@@ -88,6 +101,17 @@ class TestExtractToml:
         with pytest.raises(ConfigError):
             extract_toml("   \n")
 
+    def test_multiple_fences_prefers_the_last_block(self):
+        # A model that echoes the prompt's schema example before answering
+        # must not have the placeholder picked over the actual profile —
+        # the placeholder would parse and validate, silently winning.
+        schema_echo = 'id = "example-learner"\ntarget_learner = "..."\n'
+        text = (
+            "Restating the schema:\n```toml\n" + schema_echo + "```\n"
+            "Here is the profile:\n```toml\n" + VALID_TOML + "```"
+        )
+        assert extract_toml(text) == VALID_TOML
+
 
 class TestDraftProfileToml:
     def test_happy_path_returns_validated_toml_and_id(self):
@@ -126,6 +150,68 @@ class TestDraftProfileToml:
         assert result["model"] is None
         model_option, _ = runner.built_with
         assert model_option.id == ""
+
+    def test_inherits_profile_stage_model_and_effort_from_plan(self):
+        # Settings' "model for profile" row governs drafting when the caller
+        # leaves the model unset, instead of the provider CLI's own default.
+        runner = FakeRunner()
+        register_runner(runner)
+        plan = _plan(
+            stages={
+                "profile": StageModelPlan(
+                    stage="profile", recommendation="x", model="fast", effort="medium"
+                )
+            }
+        )
+        result = draft_profile_toml(
+            _catalog(), plan, "desc", run_process=lambda *a, **k: _completed()
+        )
+        assert result["model"] == "fast"
+        assert result["effort"] == "medium"
+        model_option, stage_plan = runner.built_with
+        assert model_option.id == "fast"
+        assert stage_plan.effort == "medium"
+
+    def test_ignores_profile_stage_model_for_a_different_provider(self):
+        # The profile row's model id is meaningless on another provider's
+        # catalog; an explicit provider choice falls back to that CLI's own
+        # default rather than borrowing a foreign model id.
+        runner = FakeRunner()
+        register_runner(runner)
+        plan = _plan(
+            provider_id="fake-draft",
+            stages={
+                "profile": StageModelPlan(
+                    stage="profile",
+                    recommendation="x",
+                    model="other-model",
+                    provider="codex",
+                )
+            },
+        )
+        result = draft_profile_toml(
+            _catalog(),
+            plan,
+            "desc",
+            provider="fake-draft",
+            run_process=lambda *a, **k: _completed(),
+        )
+        assert result["model"] is None
+        model_option, _ = runner.built_with
+        assert model_option.id == ""
+
+    def test_provider_missing_from_catalog_is_rejected(self):
+        # A runner being registered in-process is not enough: the workspace
+        # catalog is the policy boundary, exactly as it is for stage jobs.
+        register_runner(FakeRunner())
+        empty_catalog = ModelCatalog(providers={})
+        with pytest.raises(ConfigError, match="unknown provider"):
+            draft_profile_toml(
+                empty_catalog,
+                _plan(),
+                "desc",
+                run_process=lambda *a, **k: _completed(),
+            )
 
     def test_unavailable_provider_raises(self):
         register_runner(FakeRunner(available=False))
@@ -175,6 +261,23 @@ class TestDraftProfileToml:
             draft_profile_toml(
                 _catalog(), _plan(), "desc", timeout=1, run_process=run_process
             )
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    def test_default_runner_terminates_a_hung_provider_on_timeout(self):
+        # The default runner spawns in its own process group and tears the
+        # whole tree down on timeout (same machinery as stage-job cancel),
+        # so a hung provider cannot outlive the failed HTTP request.
+        start = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            _run_provider(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                input=b"",
+                timeout=0.5,
+                env=dict(os.environ),
+            )
+        # terminate_process gives a grace period; well under the sleep proves
+        # the child was killed rather than waited for.
+        assert time.monotonic() - start < 30
 
     def test_invalid_toml_from_model_raises(self):
         register_runner(FakeRunner())

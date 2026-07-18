@@ -20,6 +20,9 @@ export default function ProfileDraftPanel({
   const tomlId = useId();
   const [providers, setProviders] = useState<ProviderAvailability[] | null>(null);
   const [catalog, setCatalog] = useState<CatalogProvider[] | null>(null);
+  // "" = the workspace's configured default provider: the request omits the
+  // field so the daemon resolves plan.provider, rather than this panel
+  // second-guessing Settings with whatever provider happens to be installed.
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
   const [description, setDescription] = useState("");
@@ -36,10 +39,6 @@ export default function ProfileDraftPanel({
         if (cancelled) return;
         setProviders(providersResp.providers);
         setCatalog(catalogResp.providers);
-        const usable = providersResp.providers.find(
-          (item) => item.executable && item.available,
-        );
-        if (usable) setProvider((current) => current || usable.id);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -134,6 +133,7 @@ export default function ProfileDraftPanel({
               setModel("");
             }}
           >
+            <option value="">(workspace default)</option>
             {executable.map((item) => (
               <option key={item.id} value={item.id} disabled={!item.available}>
                 {item.id}

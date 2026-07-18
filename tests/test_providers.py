@@ -72,6 +72,9 @@ def test_claude_build_invocation_composes_model_and_extra_args():
     assert inv.argv[inv.argv.index("--model") + 1] == "claude-opus-4-8"
     # tools disabled and prompt fed via stdin
     assert inv.argv[inv.argv.index("--tools") + 1] == ""
+    # --tools only governs built-ins; strict MCP mode (with no --mcp-config)
+    # keeps user-configured MCP servers out of the session as well.
+    assert "--strict-mcp-config" in inv.argv
     assert "--reasoning" in inv.argv and "high" in inv.argv
     assert inv.stdin is None  # worker pipes the prompt file itself
 

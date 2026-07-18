@@ -55,6 +55,7 @@ describe("ProfileDraftPanel", () => {
       await screen.findByLabelText("Learner description"),
       "A nurse returning to statistics.",
     );
+    await userEvent.selectOptions(screen.getByLabelText("Provider"), "claude-code");
     await userEvent.selectOptions(screen.getByLabelText("Model"), "sonnet");
     await userEvent.click(screen.getByRole("button", { name: "Draft profile TOML" }));
 
@@ -69,6 +70,22 @@ describe("ProfileDraftPanel", () => {
     expect(importProfile).toHaveBeenCalledWith(draftResult.toml);
     expect(await screen.findByText('Profile "drafted-learner" created.')).toBeInTheDocument();
     expect(onCreated).toHaveBeenCalledWith("drafted-learner");
+  });
+
+  it("leaves the provider to the workspace default unless explicitly changed", async () => {
+    vi.mocked(draftProfile).mockResolvedValue(draftResult);
+    render(<ProfileDraftPanel />);
+
+    const providerSelect = await screen.findByLabelText("Provider");
+    expect(providerSelect).toHaveValue("");
+    await userEvent.type(screen.getByLabelText("Learner description"), "desc");
+    await userEvent.click(screen.getByRole("button", { name: "Draft profile TOML" }));
+    // No provider/model fields in the request: the daemon resolves the
+    // configured plan default instead of this panel picking one.
+    expect(draftProfile).toHaveBeenCalledWith("desc", {
+      provider: undefined,
+      model: undefined,
+    });
   });
 
   it("imports the edited TOML, not the original draft", async () => {

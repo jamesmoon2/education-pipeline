@@ -14,7 +14,6 @@ carry a precise conflict code; the store call remains the authority and its
 from __future__ import annotations
 
 import hashlib
-import subprocess
 import tomllib
 from pathlib import Path
 from dataclasses import replace
@@ -587,7 +586,7 @@ def draft_profile(
     body: dict,
     *,
     timeout: float = PROFILE_DRAFT_TIMEOUT_SECONDS,
-    run_process=subprocess.run,
+    run_process=None,
 ) -> dict:
     """Draft learner-profile TOML from a free-text description via a provider.
 
