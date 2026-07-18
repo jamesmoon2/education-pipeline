@@ -191,3 +191,45 @@ def test_fresh_build_prints_no_warning(tmp_path: Path, capsys: pytest.CaptureFix
     deps, calls = make_deps(tmp_path)
     assert run_ui(str(tmp_path / "ws"), deps=deps) == 0
     assert "cockpit_build_stale" not in capsys.readouterr().err
+
+
+def test_rebuild_runs_npm_then_launches(tmp_path):
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    built = []
+    deps, calls = make_deps(
+        tmp_path,
+        repo_web_dir=lambda: web_dir,
+        npm_build=lambda d: built.append(d) or 0,
+    )
+    assert run_ui(str(tmp_path / "ws"), rebuild=True, deps=deps) == 0
+    assert built == [web_dir]
+    assert calls["opened"]
+
+
+def test_rebuild_outside_checkout_errors(tmp_path, capsys):
+    deps, calls = make_deps(tmp_path, repo_web_dir=lambda: None)
+    assert run_ui(str(tmp_path / "ws"), rebuild=True, deps=deps) == 1
+    assert "cockpit_rebuild_unavailable" in capsys.readouterr().err
+    assert not calls["ensure"]  # no daemon was started
+
+
+def test_rebuild_without_npm_errors(tmp_path, capsys):
+    deps, calls = make_deps(
+        tmp_path,
+        repo_web_dir=lambda: tmp_path / "web",
+        npm_build=lambda d: None,
+    )
+    assert run_ui(str(tmp_path / "ws"), rebuild=True, deps=deps) == 1
+    assert "npm_missing" in capsys.readouterr().err
+
+
+def test_rebuild_failure_stops_launch(tmp_path, capsys):
+    deps, calls = make_deps(
+        tmp_path,
+        repo_web_dir=lambda: tmp_path / "web",
+        npm_build=lambda d: 2,
+    )
+    assert run_ui(str(tmp_path / "ws"), rebuild=True, deps=deps) == 1
+    assert "cockpit_build_failed" in capsys.readouterr().err
+    assert not calls["ensure"]

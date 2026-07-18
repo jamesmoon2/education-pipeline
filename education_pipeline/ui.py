@@ -11,6 +11,8 @@ This is the only surface that consults the user-level workspace registry
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 import webbrowser
 from dataclasses import dataclass
@@ -20,7 +22,11 @@ from typing import Callable
 from education_pipeline import registry
 from education_pipeline.client import ensure_daemon
 from education_pipeline.daemon import lifecycle
-from education_pipeline.daemon.static import cockpit_build_report, default_web_dist
+from education_pipeline.daemon.static import (
+    cockpit_build_report,
+    default_web_dist,
+    repo_web_dir,
+)
 from education_pipeline.errors import ERROR_CATALOG
 from education_pipeline.workspace import fix_workspace, validate_workspace
 
@@ -33,6 +39,15 @@ def _default_open_browser(url: str) -> bool:
     return webbrowser.open(url)
 
 
+def _default_npm_build(web_dir: Path) -> int | None:
+    """Run `npm run build` in ``web_dir``; None when npm is not installed."""
+
+    npm = shutil.which("npm")
+    if npm is None:
+        return None
+    return subprocess.call([npm, "run", "build"], cwd=web_dir)
+
+
 @dataclass(frozen=True)
 class UiDeps:
     """Injectable collaborators for :func:`run_ui`."""
@@ -41,6 +56,8 @@ class UiDeps:
     read_discovery: Callable = lifecycle.read_discovery
     web_dist: Callable = default_web_dist
     build_report: Callable = cockpit_build_report
+    repo_web_dir: Callable = repo_web_dir
+    npm_build: Callable = _default_npm_build
     open_browser: Callable = _default_open_browser
     is_interactive: Callable = _default_is_interactive
     prompt: Callable[[str], str] = input
@@ -51,6 +68,7 @@ def run_ui(
     workspace: str | None,
     *,
     no_browser: bool = False,
+    rebuild: bool = False,
     deps: UiDeps | None = None,
 ) -> int:
     """Launch the cockpit; returns a process exit code."""
@@ -73,6 +91,19 @@ def run_ui(
                 file=sys.stderr,
             )
         return 1
+
+    if rebuild:
+        web_dir = deps.repo_web_dir()
+        if web_dir is None:
+            _print_error("cockpit_rebuild_unavailable")
+            return 1
+        code = deps.npm_build(web_dir)
+        if code is None:
+            _print_error("npm_missing")
+            return 1
+        if code != 0:
+            _print_error("cockpit_build_failed")
+            return 1
 
     dist = deps.web_dist()
     if dist is None:
