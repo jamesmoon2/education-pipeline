@@ -541,3 +541,14 @@ export interface StageOverride {
   effort?: string;
   recommendation?: string;
 }
+
+export interface CockpitBuild {
+  status: "ok" | "stale" | "missing";
+  build_id: string | null;
+}
+
+export interface HealthPayload {
+  version: string;
+  ok: boolean;
+  cockpit_build: CockpitBuild;
+}

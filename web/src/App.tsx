@@ -1,4 +1,5 @@
 import { Link, NavLink, Route, Routes } from "react-router-dom";
+import BuildFreshnessBanner from "./components/BuildFreshnessBanner";
 import NewRunPage from "./pages/NewRunPage";
 import RunBoardPage from "./pages/RunBoardPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -35,6 +36,7 @@ export default function App() {
         </p>
       </header>
       <main className="workspace">
+        <BuildFreshnessBanner />
         <Routes>
           <Route path="/" element={<TopicListPage />} />
           <Route path="/new" element={<NewRunPage />} />
