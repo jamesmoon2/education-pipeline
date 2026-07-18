@@ -1,4 +1,4 @@
-import { cloneElement } from "react";
+import { cloneElement, useEffect, useState } from "react";
 import type {
   LearnerProfile,
   ProfileMetadataValue,
@@ -48,6 +48,45 @@ const lines = (value: string) =>
     .filter(Boolean);
 
 const singleLine = (value: string) => value.replace(/\s*\n\s*/g, " ");
+
+// One-item-per-line editor. The parsed value drops blank/whitespace lines,
+// so a controlled textarea bound directly to `items.join("\n")` would erase
+// the hard return the user just typed the moment onChange normalizes it.
+// Keep the raw text as local state and only resync from the outside when the
+// external value no longer matches what this text parses to (e.g. a reload
+// or a programmatic edit elsewhere).
+function LinesTextarea({
+  rows,
+  disabled,
+  items,
+  onItems,
+  "aria-label": ariaLabel,
+}: {
+  rows: number;
+  disabled?: boolean;
+  items: string[];
+  onItems: (items: string[]) => void;
+  "aria-label"?: string;
+}) {
+  const [text, setText] = useState(items.join("\n"));
+  useEffect(() => {
+    setText((current) =>
+      lines(current).join("\n") === items.join("\n") ? current : items.join("\n"),
+    );
+  }, [items]);
+  return (
+    <textarea
+      rows={rows}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      value={text}
+      onChange={(event) => {
+        setText(event.target.value);
+        onItems(lines(event.target.value));
+      }}
+    />
+  );
+}
 
 function metadataKind(value: ProfileMetadataValue): "string" | "boolean" | "integer" | "float" | "list" | "table" {
   if (isMetadataNumber(value)) return value.kind;
@@ -208,7 +247,6 @@ function MetadataTable({
 export default function ProfileForm({ value, onChange, sensitivity, idLocked = false, disabled = false }: ProfileFormProps) {
   const set = <K extends keyof LearnerProfile>(key: K, next: LearnerProfile[K]) => onChange({ ...value, [key]: next });
   const optional = (key: keyof LearnerProfile, text: string) => set(key, (text.trim() ? text : undefined) as never);
-  const arrayField = (key: keyof LearnerProfile, text: string) => set(key, lines(text) as never);
   const preference = <K extends keyof LearnerProfile["learning_preferences"]>(key: K, next: LearnerProfile["learning_preferences"][K]) =>
     set("learning_preferences", { ...value.learning_preferences, [key]: next });
   const localization = <K extends keyof LearnerProfile["localization"]>(key: K, next: LearnerProfile["localization"][K]) =>
@@ -242,7 +280,7 @@ export default function ProfileForm({ value, onChange, sensitivity, idLocked = f
   );
   const textarea = (label: string, key: keyof LearnerProfile, path = String(key)) => (
     <Field label={label} path={path} sensitivity={sensitivity}>
-      <textarea rows={3} disabled={disabled} value={(value[key] as string[]).join("\n")} onChange={(event) => arrayField(key, event.target.value)} />
+      <LinesTextarea rows={3} disabled={disabled} items={value[key] as string[]} onItems={(items) => set(key, items as never)} />
     </Field>
   );
   const preferenceInput = (label: string, key: keyof LearnerProfile["learning_preferences"]) => (
@@ -260,7 +298,7 @@ export default function ProfileForm({ value, onChange, sensitivity, idLocked = f
   );
   const preferenceArray = (label: string, key: keyof LearnerProfile["learning_preferences"]) => (
     <Field label={label} path={`learning_preferences.${String(key)}`} sensitivity={sensitivity}>
-      <textarea rows={3} disabled={disabled} value={(value.learning_preferences[key] as string[]).join("\n")} onChange={(event) => preference(key, lines(event.target.value) as never)} />
+      <LinesTextarea rows={3} disabled={disabled} items={value.learning_preferences[key] as string[]} onItems={(items) => preference(key, items as never)} />
     </Field>
   );
   const localizationInput = (label: string, key: keyof LearnerProfile["localization"]) => (

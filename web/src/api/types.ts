@@ -280,6 +280,14 @@ export interface ImportProfileResult {
   id: string;
 }
 
+export interface ProfileDraftResult {
+  toml: string;
+  profile_id: string;
+  provider: string;
+  model: string | null;
+  effort: string | null;
+}
+
 export interface AttachProfileResult {
   profile_id: string;
   topic_id: string;

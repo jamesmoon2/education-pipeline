@@ -12,6 +12,7 @@ import type {
   FinalizeResult,
   ImportProfileResult,
   ImportTopicResult,
+  ProfileDraftResult,
   Job,
   GuidePreviewResult,
   LogChunk,
@@ -450,6 +451,10 @@ export const createTopic = (
 ) => apiPost<{ id: string; title: string }>("/v1/topics", { ...fields, overwrite });
 export const importProfile = (toml: string, overwrite = false) =>
   apiPost<ImportProfileResult>("/v1/profiles", { toml, overwrite });
+export const draftProfile = (
+  text: string,
+  options?: { provider?: string; model?: string },
+) => apiPost<ProfileDraftResult>("/v1/profiles/draft", { text, ...options });
 export const attachProfile = (topicId: string, profileId: string) =>
   apiPost<AttachProfileResult>(`/v1/topics/${encodeURIComponent(topicId)}/profile`, {
     profile_id: profileId,

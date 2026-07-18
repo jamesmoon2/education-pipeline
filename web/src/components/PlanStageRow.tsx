@@ -12,6 +12,8 @@ export interface PlanStageRowProps {
   stage: PlanStage;
   catalog: CatalogProvider[];
   providers: ProviderAvailability[];
+  /** Show the "overridden" tag on this row (run-level override in effect). */
+  overridden?: boolean;
   resetValue: StageOverride | null;
   onChange(stage: string, override: StageOverride | null): void;
 }
@@ -27,6 +29,7 @@ export default function PlanStageRow({
   stage,
   catalog,
   providers,
+  overridden = false,
   resetValue,
   onChange,
 }: PlanStageRowProps) {
@@ -73,11 +76,16 @@ export default function PlanStageRow({
 
   return (
     <div className="plan-stage-row" data-stage={stage.stage}>
+      {/* The "overridden" tag lives inside the fixed-width name column so
+          toggling an override never shifts the select columns sideways. */}
       <span className="plan-stage-name">
-        {stage.stage}
-        {STAGE_HELP[stage.stage] && (
-          <InfoTip label={`${stage.stage} stage`} text={STAGE_HELP[stage.stage]} />
-        )}
+        <span className="plan-stage-name-text">
+          {stage.stage}
+          {STAGE_HELP[stage.stage] && (
+            <InfoTip label={`${stage.stage} stage`} text={STAGE_HELP[stage.stage]} />
+          )}
+        </span>
+        {overridden && <span className="plan-stage-badge">overridden</span>}
       </span>
       <div className="plan-stage-field">
         <span className="plan-stage-field-label">

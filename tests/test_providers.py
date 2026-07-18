@@ -71,8 +71,22 @@ def test_claude_build_invocation_composes_model_and_extra_args():
     assert "--output-format" in inv.argv and "json" in inv.argv
     assert inv.argv[inv.argv.index("--model") + 1] == "claude-opus-4-8"
     # tools disabled and prompt fed via stdin
+    assert inv.argv[inv.argv.index("--tools") + 1] == ""
     assert "--reasoning" in inv.argv and "high" in inv.argv
     assert inv.stdin is None  # worker pipes the prompt file itself
+
+
+def test_claude_build_invocation_never_uses_plan_mode():
+    """Plan mode makes headless Claude emit a plan (or write it to a file)
+    instead of the stage content itself — the run then stalls with an
+    unusable response. Pure generation must disable tools via --tools,
+    never via --permission-mode plan."""
+
+    runner = get_runner("claude-code")
+    option = ModelOption(id="premium", label="Premium", argv_model="claude-opus-4-8")
+    inv = runner.build_invocation(option, _plan(), Path("/ws/prompt.md"))
+    assert "plan" not in inv.argv
+    assert "--permission-mode" not in inv.argv
 
 
 def test_claude_parse_response_extracts_result_field():

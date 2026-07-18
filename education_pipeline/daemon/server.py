@@ -732,6 +732,13 @@ def _make_handler(context: DaemonContext):
                         overwrite=bool(body.get("overwrite")),
                     ),
                 )
+            if self.path == "/v1/profiles/draft":
+                # Runs the configured provider CLI synchronously; the cockpit
+                # holds the request open while the draft generates.
+                return self._send(
+                    200,
+                    write_api.draft_profile(context.config, self._read_body()),
+                )
             if self.path == "/v1/profiles":
                 body = self._read_body()
                 return self._send(

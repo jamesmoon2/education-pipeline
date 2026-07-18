@@ -463,6 +463,19 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   border-bottom: 9px solid currentColor;
   transform: translateY(-2px);
 }
+/* A provider job is actively working: filled accent square that pulses.
+ * The word ("Running with …") still carries the meaning without color or
+ * motion; prefers-reduced-motion collapses the animation globally. */
+.state-running { color: var(--ep-color-accent); }
+.state-running::before {
+  background: currentColor;
+  animation: ep-running-pulse 1.4s ease-in-out infinite;
+}
+@keyframes ep-running-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 .state-approved { color: var(--ep-color-success); }
 .state-approved::before {
   width: 9px;
@@ -539,6 +552,17 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   background: var(--ep-color-accent-soft);
 }
 .primary-action { margin: 0 0 var(--ep-space-6); }
+.active-job-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ep-space-2);
+  margin: 0;
+  padding: var(--ep-space-3) var(--ep-space-4);
+  border-left: 3px solid var(--ep-color-accent);
+  border-radius: 0 var(--ep-radius-control) var(--ep-radius-control) 0;
+  background: var(--ep-color-accent-soft);
+}
 .blocked-reason { color: var(--ep-color-warning); font-weight: 600; }
 
 .action-feedback { padding: 0.65rem 0.8rem; border-left: 3px solid currentColor; }
@@ -729,10 +753,14 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.875rem; }
   border-top: 3px solid var(--ep-color-accent);
 }
 
-.run-plan-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ep-space-2); }
+/* Every stage row shares one fixed grid template, so the provider/model/
+ * effort columns line up across rows no matter how wide a row's labels are
+ * (label text like "Effort for outline" vs "Effort for spec" must not
+ * stagger the selects), and the fixed-width name column absorbs the
+ * "overridden" tag without shifting anything sideways. */
 .plan-stage-row {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 7.5rem repeat(3, minmax(8rem, 14rem)) max-content;
   align-items: end;
   gap: var(--ep-space-3);
   padding: var(--ep-space-2) 0;
@@ -741,11 +769,27 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.875rem; }
 .plan-stage-row label { font-size: 0.875rem; }
 /* Uniform column: heading line (label + info tip) over the control, so every
  * heading and every select lines up across the row. */
-.plan-stage-field { display: flex; flex-direction: column; }
+.plan-stage-field { display: flex; flex-direction: column; min-width: 0; }
 .plan-stage-field-label { display: flex; align-items: center; min-height: 1.5rem; }
-.plan-stage-field select { display: block; margin-top: var(--ep-space-1); }
-.plan-stage-name { min-width: 5rem; font-family: var(--ep-font-technical); font-size: 0.875rem; }
+.plan-stage-field select { display: block; width: 100%; margin-top: var(--ep-space-1); }
+.plan-stage-name {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ep-space-1);
+  align-self: center;
+  font-family: var(--ep-font-technical);
+  font-size: 0.875rem;
+}
+.plan-stage-row--local .plan-stage-local { grid-column: 2 / -1; }
+.plan-stage-row > .plan-stage-warning,
+.plan-stage-row > .plan-stage-override-error { grid-column: 1 / -1; margin: 0; }
 .plan-stage-local, .plan-stage-warning { color: var(--ep-color-text-muted); font-size: 0.875rem; }
+@media (max-width: 48rem) {
+  .plan-stage-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .plan-stage-row--local { grid-template-columns: 7.5rem 1fr; }
+  .plan-stage-name { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: var(--ep-space-2); }
+}
 .plan-stage-override-error { color: var(--ep-color-danger); font-size: 0.875rem; }
 .run-plan-next { padding: var(--ep-space-2) var(--ep-space-3); background: var(--ep-color-surface-subtle); border-radius: var(--ep-radius-control); }
 
@@ -899,6 +943,30 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.875rem; }
   max-width: 24rem;
   margin-bottom: 0.65rem;
 }
+
+/* -------------------------------------------------- profile draft intake */
+.profile-draft-panel {
+  max-width: 46rem;
+  margin-top: var(--ep-space-8);
+  padding: var(--ep-space-4);
+  border: 1px solid var(--ep-color-border);
+  border-radius: var(--ep-radius-surface);
+  background: var(--ep-color-surface);
+}
+.profile-draft-panel h3 { display: inline-block; margin: 0 0 var(--ep-space-2); }
+.profile-draft-panel > textarea { width: 100%; margin-top: var(--ep-space-1); }
+.profile-draft-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--ep-space-3);
+  margin: var(--ep-space-3) 0;
+}
+.profile-draft-field { display: flex; flex-direction: column; gap: 0.3rem; }
+.profile-draft-field label { font-size: 0.875rem; }
+.profile-draft-review { display: grid; gap: var(--ep-space-2); margin-top: var(--ep-space-3); }
+.profile-draft-review textarea { font-family: var(--ep-font-technical); font-size: 0.875rem; }
+.profile-draft-review button { justify-self: start; }
 
 /* ------------------------------------------------------------ blueprints */
 .blueprint-picker {

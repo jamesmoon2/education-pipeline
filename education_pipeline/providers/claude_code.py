@@ -30,10 +30,12 @@ class ClaudeCodeRunner:
             "-p",
             "--output-format",
             "json",
-            # Content-only generation: the model must not edit files.
-            "--permission-mode",
-            "plan",
-            "--allowedTools",
+            # Content-only generation: remove every tool from the session so
+            # the model can only answer with text. Never use
+            # `--permission-mode plan` here — plan mode instructs the model
+            # to produce a *plan* (and write it to a file) instead of the
+            # requested content, which breaks stage ingestion.
+            "--tools",
             "",
         ]
         if model.argv_model:

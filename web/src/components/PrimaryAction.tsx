@@ -7,22 +7,45 @@ import {
   postFinalize,
   postValidate,
 } from "../api/client";
-import type { RunStatus } from "../api/types";
+import type { Job, RunStatus } from "../api/types";
 import { useAction } from "../hooks/useAction";
 import ExportControls from "./ExportControls";
 import ResponseForm from "./ResponseForm";
 
 export default function PrimaryAction({
   status,
+  activeJob = null,
   onChanged,
 }: {
   status: RunStatus;
+  /** A queued/running provider job for this topic, if any. While one is
+   *  active every mutating action would 409, so the action area shows live
+   *  progress instead of a button that still says "ready to run". */
+  activeJob?: Job | null;
   onChanged: () => void;
 }) {
   const { busy, feedback, isError, run } = useAction(onChanged);
   const [pasteOpen, setPasteOpen] = useState(false);
   const { topic_id: topicId, next_action: next } = status;
   const stage = next.stage;
+
+  if (activeJob) {
+    const verb = activeJob.status === "queued" ? "queued" : "running";
+    return (
+      <div className="primary-action">
+        <p className="active-job-status" role="status">
+          <span className="state state-running">
+            {activeJob.status === "queued" ? "Queued" : "Running"}
+          </span>
+          <span>
+            The {activeJob.stage} stage is {verb} with {activeJob.provider}
+            {activeJob.model ? ` / ${activeJob.model}` : ""}. The board updates
+            automatically; the live log is in Jobs below.
+          </span>
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="primary-action">
