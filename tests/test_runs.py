@@ -3160,6 +3160,31 @@ def test_write_bytes_atomic_retries_replace_on_permission_error(
     assert target.read_bytes() == b"{}\n"
 
 
+def test_read_manifest_retries_read_on_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows sharing semantics: reading manifest.json at the moment a writer
+    # os.replace()s it fails with PermissionError. The replace is transient,
+    # so the read must retry instead of crashing a concurrent reader.
+    tid = "systems-thinking"
+    store = _create_guide_run(tmp_path, tid)
+    path = store.manifest_path(tid)
+
+    real_read_text = Path.read_text
+    calls = {"count": 0}
+
+    def flaky_read_text(self, *args, **kwargs):
+        if self == path:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise PermissionError("sharing violation")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    assert store.read_manifest(tid)["topic_id"] == tid
+    assert calls["count"] == 2
+
+
 def test_export_writes_exactly_the_checked_document(tmp_path: Path) -> None:
     tid = "systems-thinking"
     store = _create_guide_run(tmp_path, tid)
