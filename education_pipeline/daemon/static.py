@@ -63,6 +63,83 @@ def default_web_dist() -> Path | None:
     return None
 
 
+def _newest_input_mtime_ns(web_dir: Path) -> int | None:
+    """Newest mtime across the cockpit's build inputs (spec §1)."""
+
+    candidates: list[Path] = [
+        web_dir / "index.html",
+        web_dir / "package.json",
+        web_dir / "package-lock.json",
+    ]
+    candidates.extend(web_dir.glob("tsconfig*.json"))
+    candidates.extend(web_dir.glob("vite.config.*"))
+    src = web_dir / "src"
+    if src.is_dir():
+        candidates.extend(p for p in src.rglob("*") if p.is_file())
+    newest: int | None = None
+    for path in candidates:
+        try:
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            continue
+        if newest is None or mtime > newest:
+            newest = mtime
+    return newest
+
+
+def cockpit_build_status(web_dir: Path) -> str:
+    """``ok``/``stale``/``missing`` for a dev checkout's built cockpit.
+
+    ``stale`` means some build input under ``web_dir`` is newer than
+    ``web_dir/dist/index.html``. mtime (not a git SHA) so it needs no git
+    and catches uncommitted edits; the outcome is only ever a warning, so
+    a rare false positive is harmless.
+    """
+
+    try:
+        built_ns = (web_dir / "dist" / "index.html").stat().st_mtime_ns
+    except OSError:
+        return "missing"
+    newest = _newest_input_mtime_ns(web_dir)
+    if newest is not None and newest > built_ns:
+        return "stale"
+    return "ok"
+
+
+def repo_web_dir() -> Path | None:
+    """The repo ``web/`` dir when running from a dev checkout, else None.
+
+    A wheel install has no ``web/src`` next to the package, so this is the
+    scope guard that keeps every freshness surface silent for wheels.
+    """
+
+    web_dir = _REPO_WEB_DIST.parent
+    return web_dir if (web_dir / "src").is_dir() else None
+
+
+def cockpit_build_report(dist: Path | None) -> dict:
+    """Freshness payload for ``dist``: ``{"status", "build_id"}``.
+
+    Anything other than the dev-checkout fallback — packaged ``_webdist``,
+    an ``$EP_WEB_DIST`` override, or no dist at all — reports ``ok`` so
+    wheel users never see a warning. ``build_id`` identifies the current
+    build (dist index.html mtime) so the cockpit can key banner dismissal
+    to it.
+    """
+
+    if os.environ.get("EP_WEB_DIST"):
+        return {"status": "ok", "build_id": None}
+    web_dir = repo_web_dir()
+    if web_dir is None or dist is None or Path(dist) != _REPO_WEB_DIST:
+        return {"status": "ok", "build_id": None}
+    status = cockpit_build_status(web_dir)
+    try:
+        build_id = str((web_dir / "dist" / "index.html").stat().st_mtime_ns)
+    except OSError:
+        build_id = None
+    return {"status": status, "build_id": build_id}
+
+
 def resolve_static(dist: Path, url_path: str) -> StaticFile | None:
     relative = unquote(url_path.split("?", 1)[0].split("#", 1)[0]).lstrip("/")
     if relative == "":
