@@ -28,6 +28,8 @@ export default function BuildFreshnessBanner() {
   }, []);
 
   if (build === null || build.status !== "stale") return null;
+  // build_id is always non-null once status is "stale" (the same stat()
+  // that proves staleness yields it); the fallback is defensive only.
   const key = build.build_id ?? "unknown";
   if (dismissed || localStorage.getItem(STORAGE_KEY) === key) return null;
 

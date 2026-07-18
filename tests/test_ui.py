@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from education_pipeline import ui as ui_module
 from education_pipeline.registry import load_registry, record_workspace
 from education_pipeline.ui import UiDeps, run_ui
 
@@ -233,3 +234,20 @@ def test_rebuild_failure_stops_launch(tmp_path, capsys):
     assert run_ui(str(tmp_path / "ws"), rebuild=True, deps=deps) == 1
     assert "cockpit_build_failed" in capsys.readouterr().err
     assert not calls["ensure"]
+
+
+def test_default_npm_build_returns_none_when_npm_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(ui_module.shutil, "which", lambda name: None)
+    assert ui_module._default_npm_build(tmp_path) is None
+
+
+def test_default_npm_build_returns_nonzero_on_spawn_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(ui_module.shutil, "which", lambda name: "/usr/bin/npm")
+
+    def _raise(*args, **kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(ui_module.subprocess, "call", _raise)
+    code = ui_module._default_npm_build(tmp_path)
+    assert isinstance(code, int)
+    assert code != 0

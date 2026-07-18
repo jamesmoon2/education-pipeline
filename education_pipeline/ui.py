@@ -40,12 +40,20 @@ def _default_open_browser(url: str) -> bool:
 
 
 def _default_npm_build(web_dir: Path) -> int | None:
-    """Run `npm run build` in ``web_dir``; None when npm is not installed."""
+    """Run `npm run build` in ``web_dir``.
+
+    Returns the process exit code, a non-zero int if the ``npm`` process
+    could not be spawned (e.g. a broken install or permission error), or
+    ``None`` when npm is not installed.
+    """
 
     npm = shutil.which("npm")
     if npm is None:
         return None
-    return subprocess.call([npm, "run", "build"], cwd=web_dir)
+    try:
+        return subprocess.call([npm, "run", "build"], cwd=web_dir)
+    except OSError:
+        return 1
 
 
 @dataclass(frozen=True)

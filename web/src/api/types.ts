@@ -550,5 +550,6 @@ export interface CockpitBuild {
 export interface HealthPayload {
   version: string;
   ok: boolean;
+  started_at: string | null;
   cockpit_build: CockpitBuild;
 }
