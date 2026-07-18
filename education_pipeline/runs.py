@@ -977,11 +977,22 @@ class RunStore:
         return datetime.fromtimestamp(newest, timezone.utc).isoformat()
 
     def read_manifest(self, topic_id: str) -> dict:
+        import time
+
         path = self.manifest_path(topic_id)
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError as exc:
-            raise ConfigError(f"run manifest not found: {path}") from exc
+        # Windows sharing semantics: reading manifest.json at the moment a
+        # writer os.replace()s it fails with PermissionError. The replace is
+        # transient, so retry briefly instead of crashing a concurrent reader.
+        for attempt in range(10):
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError as exc:
+                raise ConfigError(f"run manifest not found: {path}") from exc
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.05)
+        raise AssertionError("unreachable")
 
     def has_ingested_response(self, topic_id: str, stage: str) -> bool:
         """Return True only when a real (non-stub) response file is present."""

@@ -60,6 +60,79 @@ def test_active_for_finds_only_non_terminal(tmp_path):
     assert "succeeded" in TERMINAL_STATUSES
 
 
+def test_jobstore_save_retries_replace_on_permission_error(tmp_path, monkeypatch):
+    # Windows sharing semantics: os.replace onto job.json while an API reader
+    # holds it open fails with PermissionError. Readers are transient, so the
+    # save must retry instead of crashing the worker.
+    import os
+
+    store = JobStore(tmp_path)
+    job = store.create("t", "draft", "codex", "balanced", None)
+
+    real_replace = os.replace
+    calls = {"count": 0}
+
+    def flaky_replace(src, dst):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise PermissionError("sharing violation")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    store.save(job)
+    assert calls["count"] == 2
+    assert store.load("t", job.id).id == job.id
+
+
+def test_jobstore_load_retries_read_on_permission_error(tmp_path, monkeypatch):
+    # Windows sharing semantics: reading job.json at the moment the worker
+    # os.replace()s it fails with PermissionError. The replace is transient,
+    # so the read must retry instead of surfacing a daemon 500.
+    from pathlib import Path
+
+    store = JobStore(tmp_path)
+    job = store.create("t", "draft", "codex", "balanced", None)
+    store.save(job)
+
+    real_read_text = Path.read_text
+    calls = {"count": 0}
+
+    def flaky_read_text(self, *args, **kwargs):
+        if self.name == "job.json":
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise PermissionError("sharing violation")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    assert store.load("t", job.id).id == job.id
+    assert calls["count"] == 2
+
+
+def test_jobstore_find_retries_read_on_permission_error(tmp_path, monkeypatch):
+    # find() scans every job.json via all_jobs(); a scan that races a worker's
+    # os.replace must retry the affected record, not crash the request.
+    from pathlib import Path
+
+    store = JobStore(tmp_path)
+    job = store.create("t", "draft", "codex", "balanced", None)
+    store.save(job)
+
+    real_read_text = Path.read_text
+    calls = {"count": 0}
+
+    def flaky_read_text(self, *args, **kwargs):
+        if self.name == "job.json":
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise PermissionError("sharing violation")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    assert store.find(job.id).id == job.id
+    assert calls["count"] == 2
+
+
 def test_read_log_returns_bytes_from_offset(tmp_path):
     store = JobStore(tmp_path)
     job = store.create("t", "draft", "codex", "balanced", None)
