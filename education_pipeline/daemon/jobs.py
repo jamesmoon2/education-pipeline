@@ -76,6 +76,31 @@ class Job:
         return cls(**fields)
 
 
+# Windows sharing semantics make the job.json atomic-replace race with its
+# readers: os.replace needs delete access the reader's open handle denies,
+# and a reader opening mid-replace can hit ERROR_ACCESS_DENIED while the old
+# file is delete-pending. Both surface as PermissionError, both clear within
+# milliseconds; retry briefly instead of turning a benign race into a failed
+# save or an HTTP 500. POSIX rename is atomic and never takes this path.
+_SHARING_RETRY_ATTEMPTS = 10
+_SHARING_RETRY_DELAY_SECONDS = 0.01
+
+
+def _retry_on_sharing_violation(operation: Callable[[], "object"]):
+    for attempt in range(_SHARING_RETRY_ATTEMPTS - 1):
+        try:
+            return operation()
+        except PermissionError:
+            time.sleep(_SHARING_RETRY_DELAY_SECONDS * (attempt + 1))
+    return operation()
+
+
+def _read_job_json(path: Path) -> dict:
+    return json.loads(
+        _retry_on_sharing_violation(lambda: path.read_text(encoding="utf-8"))
+    )
+
+
 class JobStore:
     """Read and write job records under a workspace's ``runs`` tree."""
 
@@ -124,14 +149,14 @@ class JobStore:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(job.to_dict(), handle, indent=2)
-            os.replace(tmp, target)
+            _retry_on_sharing_violation(lambda: os.replace(tmp, target))
         except BaseException:
             if os.path.exists(tmp):
                 os.unlink(tmp)
             raise
 
     def load(self, topic_id: str, job_id: str) -> Job:
-        data = json.loads(self._job_json(topic_id, job_id).read_text(encoding="utf-8"))
+        data = _read_job_json(self._job_json(topic_id, job_id))
         return Job.from_dict(data)
 
     def all_jobs(self) -> list[Job]:
@@ -142,7 +167,7 @@ class JobStore:
             for job_dir in jobs_dir.iterdir():
                 record = job_dir / "job.json"
                 if record.is_file():
-                    jobs.append(Job.from_dict(json.loads(record.read_text(encoding="utf-8"))))
+                    jobs.append(Job.from_dict(_read_job_json(record)))
         return jobs
 
     def list(self, topic_id: str | None = None) -> list[Job]:
