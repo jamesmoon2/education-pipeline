@@ -6,7 +6,8 @@ import JobLogView from "./JobLogView";
 import ErrorNotice from "./ErrorNotice";
 import InfoTip from "./InfoTip";
 
-const ACTIVE_STATUSES = new Set(["queued", "running"]);
+export const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
+const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
 
 export default function JobsPanel({ topicId }: { topicId: string }) {
   const fetchJobs = useCallback(() => getJobs(topicId), [topicId]);

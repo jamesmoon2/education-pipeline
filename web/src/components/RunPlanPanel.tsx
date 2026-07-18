@@ -89,16 +89,15 @@ export default function RunPlanPanel({
       )}
       {rowError && <p className="error">{rowError}</p>}
       {plan.stages.map((stage) => (
-        <div key={stage.stage} className="run-plan-row">
-          {stage.source === "override" && <span className="plan-stage-badge">overridden</span>}
-          <PlanStageRow
-            stage={stage}
-            catalog={catalog}
-            providers={providers}
-            resetValue={null}
-            onChange={(s, o) => void handleRowChange(s, o)}
-          />
-        </div>
+        <PlanStageRow
+          key={stage.stage}
+          stage={stage}
+          catalog={catalog}
+          providers={providers}
+          overridden={stage.source === "override"}
+          resetValue={null}
+          onChange={(s, o) => void handleRowChange(s, o)}
+        />
       ))}
     </section>
   );

@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { getProfiles } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
 import ErrorNotice from "../components/ErrorNotice";
+import ProfileDraftPanel from "../components/ProfileDraftPanel";
 
 export default function ProfilesPage() {
   const { data, error, refresh } = usePolling(getProfiles, 30_000);
@@ -33,6 +34,7 @@ export default function ProfilesPage() {
           ))}
         </ul>
       )}
+      <ProfileDraftPanel onCreated={refresh} />
     </div>
   );
 }

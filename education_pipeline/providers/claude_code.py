@@ -30,11 +30,18 @@ class ClaudeCodeRunner:
             "-p",
             "--output-format",
             "json",
-            # Content-only generation: the model must not edit files.
-            "--permission-mode",
-            "plan",
-            "--allowedTools",
+            # Content-only generation: remove every tool from the session so
+            # the model can only answer with text. Never use
+            # `--permission-mode plan` here — plan mode instructs the model
+            # to produce a *plan* (and write it to a file) instead of the
+            # requested content, which breaks stage ingestion.
+            "--tools",
             "",
+            # `--tools` governs built-in tools only; a user's configured MCP
+            # servers would still be offered. With no --mcp-config given,
+            # strict mode loads zero MCP servers, so no external tool can
+            # read or mutate state during a stage run.
+            "--strict-mcp-config",
         ]
         if model.argv_model:
             argv += ["--model", model.argv_model]

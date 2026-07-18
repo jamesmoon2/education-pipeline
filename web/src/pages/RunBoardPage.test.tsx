@@ -362,6 +362,49 @@ describe("RunBoardPage", () => {
     expect(getPersonalization).not.toHaveBeenCalled();
   });
 
+  it("surfaces a running job at the top of the board instead of 'ready to run'", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue(status);
+    vi.mocked(getJobs).mockResolvedValue({
+      jobs: [
+        {
+          id: "20260710T000000Z-abcd",
+          topic_id: "t",
+          stage: "outline",
+          provider: "claude-code",
+          model: "sonnet",
+          effort: null,
+          status: "running",
+          created_at: "2026-07-10T00:00:00Z",
+          started_at: "2026-07-10T00:00:01Z",
+          ended_at: null,
+          exit_code: null,
+          error: null,
+        },
+      ],
+    });
+    renderAt("/topics/t");
+
+    // Action area: live progress replaces the enqueue button (any mutation
+    // would 409 while the job runs anyway).
+    expect(
+      await screen.findByText(/outline stage is running with claude-code/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run with provider" })).not.toBeInTheDocument();
+    // Stage table: the outline row reports the run, not "Ready to run".
+    const outlineRow = screen.getByRole("row", { name: /outline.*Running with claude-code/ });
+    expect(within(outlineRow).getByText(/Running with claude-code/)).toBeInTheDocument();
+    expect(screen.queryByText("Ready to run")).not.toBeInTheDocument();
+  });
+
+  it("keeps the action buttons when no job is active", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue(status);
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    expect(await screen.findByRole("button", { name: "Run with provider" })).toBeInTheDocument();
+    expect(screen.queryByText(/is running with/)).not.toBeInTheDocument();
+  });
+
   it("shows a friendly message when no run exists", async () => {
     vi.mocked(getRunStatus).mockRejectedValue(
       new ApiRequestError(404, "not_found", "no run started for topic: t"),

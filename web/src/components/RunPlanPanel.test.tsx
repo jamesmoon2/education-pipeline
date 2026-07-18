@@ -72,10 +72,14 @@ describe("RunPlanPanel", () => {
   it("renders rows from getRunPlan and tags overridden rows", async () => {
     setup();
     expect(await screen.findByLabelText("Provider for outline")).toBeInTheDocument();
-    const draftRow = screen.getByLabelText("Provider for draft").closest(".run-plan-row")!;
+    const draftRow = screen.getByLabelText("Provider for draft").closest(".plan-stage-row")!;
     expect(draftRow).toHaveTextContent(/overridden/i);
-    const outlineRow = screen.getByLabelText("Provider for outline").closest(".run-plan-row")!;
+    const outlineRow = screen.getByLabelText("Provider for outline").closest(".plan-stage-row")!;
     expect(outlineRow).not.toHaveTextContent(/overridden/i);
+    // The tag must live inside the name column, not as a leading sibling
+    // that would push the whole row's selects out of alignment.
+    const badge = draftRow.querySelector(".plan-stage-badge")!;
+    expect(badge.closest(".plan-stage-name")).not.toBeNull();
   });
 
   it("fires putRunPlan with the stage override when a row's model changes", async () => {

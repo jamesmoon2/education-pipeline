@@ -18,6 +18,11 @@ import tomllib
 from pathlib import Path
 from dataclasses import replace
 
+from education_pipeline.profile_draft import (
+    PROFILE_DRAFT_TIMEOUT_SECONDS,
+    draft_profile_toml,
+)
+
 from education_pipeline.config import (
     ConfigError,
     apply_overrides_lenient,
@@ -574,6 +579,38 @@ def _allocate_copy_id(topics: TopicStore, topic_id: str) -> str:
             raise ConfigError(f"no free duplicate id for topic {topic_id!r}")
         candidate = f"{topic_id}-copy-{suffix}"
     return candidate
+
+
+def draft_profile(
+    config,
+    body: dict,
+    *,
+    timeout: float = PROFILE_DRAFT_TIMEOUT_SECONDS,
+    run_process=None,
+) -> dict:
+    """Draft learner-profile TOML from a free-text description via a provider.
+
+    Deliberately does NOT save anything: the response carries the validated
+    TOML for the cockpit to show, edit, and import through the ordinary
+    profile import endpoint — the same review gate every stage response has.
+    """
+
+    _reject_profile_request_keys(body, {"text", "provider", "model", "effort"})
+    text = _require_body_string(body, "text")
+    provider = _optional_body_string(body, "provider")
+    model = _optional_body_string(body, "model")
+    effort = _optional_body_string(body, "effort")
+    catalog, plan = config.load()
+    return draft_profile_toml(
+        catalog,
+        plan,
+        text,
+        provider=provider,
+        model=model,
+        effort=effort,
+        timeout=timeout,
+        run_process=run_process,
+    )
 
 
 def import_profile(profiles: ProfileStore, toml_text: str, *, overwrite: bool = False) -> dict:

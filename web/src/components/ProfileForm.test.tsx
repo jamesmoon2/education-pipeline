@@ -141,6 +141,41 @@ describe("ProfileForm", () => {
     }
   });
 
+  it("one-item-per-line fields keep the newline the user just typed", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    function Harness() {
+      const [value, setValue] = useState(profile);
+      return <ProfileForm value={value} onChange={(next) => { onChange(next); setValue(next); }} sensitivity={{}} />;
+    }
+    render(<Harness />);
+    const goals = screen.getByLabelText("Learning goals") as HTMLTextAreaElement;
+    await user.clear(goals);
+    await user.type(goals, "First goal{enter}");
+    // The trailing hard return must survive the parse -> re-render cycle so
+    // the user can keep typing the next item on a fresh line.
+    expect(goals.value).toBe("First goal\n");
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ learning_goals: ["First goal"] }),
+    );
+    await user.type(goals, "Second goal");
+    expect(goals.value).toBe("First goal\nSecond goal");
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ learning_goals: ["First goal", "Second goal"] }),
+    );
+  });
+
+  it("one-item-per-line fields resync when the profile changes externally", () => {
+    function Harness({ value }: { value: LearnerProfile }) {
+      return <ProfileForm value={value} onChange={vi.fn()} sensitivity={{}} />;
+    }
+    const { rerender } = render(<Harness value={profile} />);
+    const goals = screen.getByLabelText("Learning goals") as HTMLTextAreaElement;
+    expect(goals.value).toBe("Model feedback");
+    rerender(<Harness value={{ ...profile, learning_goals: ["Fresh goal"] }} />);
+    expect(goals.value).toBe("Fresh goal");
+  });
+
   it("free-text fields are textareas and normalize newlines to spaces", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

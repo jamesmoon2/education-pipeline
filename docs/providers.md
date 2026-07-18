@@ -42,12 +42,15 @@ the output to the printed response path, and `approve` the stage.
 What the adapter actually runs:
 
 ```
-claude -p --output-format json --permission-mode plan --allowedTools "" [--model <argv_model>] [extra_args]
+claude -p --output-format json --tools "" --strict-mcp-config [--model <argv_model>] [extra_args]
 ```
 
-The prompt is piped via stdin. `--permission-mode plan` with an empty
-`--allowedTools` disables all tools: the model can only generate text — it
-cannot read or edit your files during a stage run. The JSON envelope's
+The prompt is piped via stdin. `--tools ""` removes every built-in tool from
+the session, and `--strict-mcp-config` (with no `--mcp-config` supplied)
+keeps any MCP servers you have configured out of it too: the model can only
+generate text — it cannot read or edit files or reach external tools during
+a stage run. (Plan mode is deliberately not used here: it would make the
+model produce a plan instead of the stage content.) The JSON envelope's
 `result` field becomes the stage response; reported cost and session id are
 kept as job metadata.
 

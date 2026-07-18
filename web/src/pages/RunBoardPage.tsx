@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiRequestError, getPersonalization, getRunStatus, postAdvance } from "../api/client";
-import type { RunStatus, StageProvenance } from "../api/types";
+import { ApiRequestError, getJobs, getPersonalization, getRunStatus, postAdvance } from "../api/client";
+import type { Job, RunStatus, StageProvenance } from "../api/types";
 import AuditControls from "../components/AuditControls";
 import CanonicalGuidePreview, {
   type CanonicalGuidePreviewHandle,
 } from "../components/CanonicalGuidePreview";
 import ErrorNotice from "../components/ErrorNotice";
 import InfoTip from "../components/InfoTip";
-import JobsPanel from "../components/JobsPanel";
+import JobsPanel, { ACTIVE_JOB_STATUSES } from "../components/JobsPanel";
 import PersonalizationPanel from "../components/PersonalizationPanel";
 import PrimaryAction from "../components/PrimaryAction";
 import RunPlanPanel from "../components/RunPlanPanel";
@@ -178,6 +178,13 @@ function InteractiveGuidePanels({
 function RunBoardForTopic({ topicId }: { topicId: string }) {
   const fetchStatus = useCallback(() => getRunStatus(topicId), [topicId]);
   const { data: status, error, refresh: refreshStatus } = usePolling(fetchStatus, 5_000);
+  // Poll jobs at the board level too (JobsPanel polls for its own table):
+  // a queued/running job must be visible at the TOP of the board — in the
+  // action area and on its stage row — not only after scrolling to Jobs.
+  const fetchJobs = useCallback(() => getJobs(topicId), [topicId]);
+  const { data: jobsData } = usePolling(fetchJobs, 2_000);
+  const activeJob: Job | null =
+    jobsData?.jobs.find((job) => ACTIVE_JOB_STATUSES.has(job.status)) ?? null;
   const [contentGeneration, setContentGeneration] = useState(0);
   const refresh = useCallback(() => {
     refreshStatus();
@@ -230,7 +237,7 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
       <p className="next-action">
         <strong>Next:</strong> {status.next_action.detail}
       </p>
-      <PrimaryAction status={status} onChanged={refresh} />
+      <PrimaryAction status={status} activeJob={activeJob} onChanged={refresh} />
       <table>
         <thead>
           <tr>
@@ -244,11 +251,20 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
           {status.stages.map((s) => {
             const provenance = provenanceByStage.get(s.stage);
             const findingsCount = findingsByStage[s.stage] ?? 0;
+            const stageJob = activeJob?.stage === s.stage ? activeJob : null;
             return (
               <tr key={s.stage}>
                 <td>{s.stage}</td>
                 <td>
-                  <span className={`state state-${s.state}`}>{stageStateLabel(s.state)}</span>
+                  {stageJob ? (
+                    <span className="state state-running">
+                      {stageJob.status === "queued"
+                        ? `Queued with ${stageJob.provider}`
+                        : `Running with ${stageJob.provider}…`}
+                    </span>
+                  ) : (
+                    <span className={`state state-${s.state}`}>{stageStateLabel(s.state)}</span>
+                  )}
                   {provenance && <p className="stage-provenance">{formatProvenance(provenance)}</p>}
                 </td>
                 <td>
