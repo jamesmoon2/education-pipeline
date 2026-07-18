@@ -172,3 +172,22 @@ def test_ui_is_idempotent_for_a_live_daemon(tmp_path: Path) -> None:
     # ensure_daemon owns reuse-vs-start; ui just calls it each time.
     assert calls["ensure"] == [(ws.resolve(), True)] * 2
     assert len(calls["opened"]) == 2
+
+
+def test_stale_build_warns_but_launches(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    deps, calls = make_deps(
+        tmp_path,
+        build_report=lambda dist: {"status": "stale", "build_id": "1000"},
+    )
+    assert run_ui(str(tmp_path / "ws"), deps=deps) == 0
+    err = capsys.readouterr().err
+    assert "warning [cockpit_build_stale]" in err
+    assert "npm run build" in err
+    assert "--rebuild" in err
+    assert calls["opened"]  # launch was not blocked
+
+
+def test_fresh_build_prints_no_warning(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    deps, calls = make_deps(tmp_path)
+    assert run_ui(str(tmp_path / "ws"), deps=deps) == 0
+    assert "cockpit_build_stale" not in capsys.readouterr().err

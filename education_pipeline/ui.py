@@ -20,7 +20,7 @@ from typing import Callable
 from education_pipeline import registry
 from education_pipeline.client import ensure_daemon
 from education_pipeline.daemon import lifecycle
-from education_pipeline.daemon.static import default_web_dist
+from education_pipeline.daemon.static import cockpit_build_report, default_web_dist
 from education_pipeline.errors import ERROR_CATALOG
 from education_pipeline.workspace import fix_workspace, validate_workspace
 
@@ -40,6 +40,7 @@ class UiDeps:
     ensure_daemon: Callable = ensure_daemon
     read_discovery: Callable = lifecycle.read_discovery
     web_dist: Callable = default_web_dist
+    build_report: Callable = cockpit_build_report
     open_browser: Callable = _default_open_browser
     is_interactive: Callable = _default_is_interactive
     prompt: Callable[[str], str] = input
@@ -73,9 +74,21 @@ def run_ui(
             )
         return 1
 
-    if deps.web_dist() is None:
+    dist = deps.web_dist()
+    if dist is None:
         _print_error("web_assets_missing")
         return 1
+    if deps.build_report(dist)["status"] == "stale":
+        print(
+            "warning [cockpit_build_stale]: the built cockpit is older than "
+            "its source; the browser may show old UI",
+            file=sys.stderr,
+        )
+        print(
+            "fix: rebuild with `cd web && npm run build`, or relaunch with "
+            "`education-pipeline ui --rebuild`",
+            file=sys.stderr,
+        )
 
     registry.record_workspace(root)
 
