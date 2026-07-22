@@ -10,6 +10,23 @@
   deterministic release gates
   ([`2026-07-12-deterministic-release-gates-design.md`](2026-07-12-deterministic-release-gates-design.md))
 
+## Summary
+
+Insert one new required model stage, `factcheck`, into the guide-v1 pipeline
+between `qa` and `repair`:
+
+```
+before:  spec → outline → draft → qa ───────────→ repair → finalize → export
+after:   spec → outline → draft → qa → factcheck → repair → finalize → export
+                                        (guide-v1 only; legacy unchanged)
+```
+
+It follows the exact lifecycle every model stage already has (prompt file →
+response file → explicit approval), so most of the work is mechanical stage
+insertion plus making stage-count consumers aware that guide-v1 and legacy
+runs now have different required paths. QA keeps pedagogy and scope; factcheck
+owns factual truth; repair consumes both reports.
+
 ## Goal
 
 Add a first-class model stage that adversarially verifies factual claims in
@@ -92,7 +109,20 @@ Legacy markdown (unchanged):
 
 `factcheck` is **required for guide-v1 only**, so it must not live only inside
 today’s single `REQUIRED_STAGES` tuple (that tuple is what legacy completion
-and `_next_action_legacy` use). Normative layout:
+and `_next_action_legacy` use).
+
+**Today the downstream constants are derived, not hand-written** — changing
+that chain carelessly is the main foot-gun in this section:
+
+```python
+# current config.py
+SUPPORTED_STAGES = REQUIRED_STAGES + OPTIONAL_STAGES
+PRESET_STAGES = ("profile",) + SUPPORTED_STAGES
+STAGE_ORDER = ("profile",) + SUPPORTED_STAGES + ("finalize", "export")
+```
+
+Normative layout — keep the derivation, rebased on the guide-v1 path (a
+strict superset of the legacy path, in pipeline order):
 
 ```python
 REQUIRED_STAGES = ("spec", "outline", "draft", "qa", "repair")  # legacy path
@@ -100,10 +130,10 @@ GUIDE_V1_REQUIRED_STAGES = (
     "spec", "outline", "draft", "qa", "factcheck", "repair"
 )
 OPTIONAL_STAGES = ("audit",)
-# Union in pipeline order (factcheck after qa, audit last):
-SUPPORTED_STAGES = (
-    "spec", "outline", "draft", "qa", "factcheck", "repair", "audit"
-)
+# Derivation chain preserved; factcheck lands after qa, audit stays last:
+SUPPORTED_STAGES = GUIDE_V1_REQUIRED_STAGES + OPTIONAL_STAGES
+PRESET_STAGES = ("profile",) + SUPPORTED_STAGES          # unchanged formula
+STAGE_ORDER = ("profile",) + SUPPORTED_STAGES + ("finalize", "export")  # unchanged formula
 ```
 
 | Symbol | Role |
@@ -111,24 +141,29 @@ SUPPORTED_STAGES = (
 | `REQUIRED_STAGES` | Unchanged meaning: legacy required path + shared base names |
 | `GUIDE_V1_REQUIRED_STAGES` | **New** constant: guide-v1 critical path including `factcheck` |
 | `OPTIONAL_STAGES` | Still `("audit",)` only — factcheck is not optional |
-| `SUPPORTED_STAGES` | All stages that accept prompt/response/approve/provider APIs |
-| `STAGE_ORDER` (model plan UI) | Insert `factcheck` after `qa` (before `repair` / `audit` / finalize / export) |
-| `DEFAULT_STAGE_RECOMMENDATIONS["factcheck"]` | New key, e.g. `strong_adversarial_check` — **not** `fast_cheap_check` |
-| `REASONING_STAGES` | Leave unchanged unless product wants effort hints on factcheck |
+| `SUPPORTED_STAGES` | All stages that accept prompt/response/approve/provider APIs; now derives from `GUIDE_V1_REQUIRED_STAGES` |
+| `PRESET_STAGES` / `STAGE_ORDER` | Formulas unchanged — they pick up `factcheck` automatically via `SUPPORTED_STAGES`; verify ordering tests still assert `factcheck` between `qa` and `repair` |
+| `DEFAULT_STAGE_RECOMMENDATIONS["factcheck"]` | New key, e.g. `strong_adversarial_check` — **not** `fast_cheap_check` (recommendations are free-form strings resolved per provider; no closed vocabulary to extend) |
+| `REASONING_STAGES` | Currently `frozenset({"spec", "outline", "repair"})` — `qa` is excluded, so excluding `factcheck` is consistent; leave unchanged unless product wants effort hints on factcheck |
 
 Call sites that currently assume `REQUIRED_STAGES` means “every run’s
-progress” must switch to a helper, e.g.
-`required_stages_for_run(is_guide_v1: bool) -> tuple[str, ...]`, returning
-`GUIDE_V1_REQUIRED_STAGES` or `REQUIRED_STAGES`.
+progress” must switch to a helper. Because `RunStore._is_guide_v1` is private
+and the daemon (`read_api.py`) imports from `education_pipeline.runs`, the
+helper must be reachable from outside `RunStore` internals — normative shape:
+a public `RunStore.required_stages(topic_id) -> tuple[str, ...]` returning
+`GUIDE_V1_REQUIRED_STAGES` when `content_contract(topic_id).kind ==
+"interactive_guide"`, else `REQUIRED_STAGES`.
 
 **Progress / completion:** topic list and run board must not use a single
 global `len(REQUIRED_STAGES)` for every run. Guide-v1 completion total is 6;
 legacy stays 5. Approved count only counts stages in that run’s required
 sequence.
 
-**Public export surface:** re-export any new constants from
-`education_pipeline/__init__.py` only if existing stage constants are already
-exported that way; do not invent a second public API surface.
+**Public export surface:** `education_pipeline/__init__.py` already imports
+and lists `REQUIRED_STAGES`, `OPTIONAL_STAGES`, `SUPPORTED_STAGES`,
+`STAGE_ORDER`, and `DEFAULT_STAGE_RECOMMENDATIONS` in `__all__`, so
+`GUIDE_V1_REQUIRED_STAGES` joins them there — same import, same `__all__`
+entry, no second public API surface.
 
 ### 2. On-disk layout and manifest
 
@@ -168,8 +203,13 @@ becomes stale and must be rebuilt.
 Stale detection (`_stage_upstream_stale`, `_stale_stage_rebuild_action`):
 
 - `factcheck` stale when draft and/or QA approved hashes drift from the
-  approval event.
-- `repair` stale when draft, QA, **or factcheck** approved hashes drift.
+  approval event. Both functions already compare the generic
+  `source_draft_file_sha256` / `source_qa_file_sha256` fields on the stage’s
+  own events, so factcheck staleness falls out of recording those two fields —
+  little or no new comparison code.
+- `repair` stale when draft, QA, **or factcheck** approved hashes drift. This
+  is the part that needs real code: both functions must learn the new
+  `source_factcheck_file_sha256` field (guide-v1 repair only).
 
 Module-scoped repair (`write_module_repair_prompt`) also embeds factcheck
 findings and records the same `source_factcheck_file` hash.
@@ -328,18 +368,20 @@ Legacy `compile_repair_prompt` unchanged (no factcheck input).
 | `RunStore.write_factcheck_prompt` | New; guide-v1 only |
 | `RunStore.approve_stage` / ingest | Generic paths; extend stale/hash bookkeeping for `factcheck` and repair |
 | Provider job execution | Any stage in `SUPPORTED_STAGES` already; ensure model-plan resolves `factcheck` |
-| Daemon read API completion | Guide-aware `stages_total` / approved count |
+| Daemon read API completion | `_completion_summary` (`daemon/read_api.py`) switches from module-level `REQUIRED_STAGES` to the public `RunStore.required_stages(topic_id)` helper (§1) for both the approved count and `stages_total` |
 | Daemon write API | No new routes if existing stage-parameterized write/approve/run cover it; verify stage allow-lists include `factcheck` |
 | CLI | Stage name accepted wherever stages are enumerated; `status` / `advance` follow `next_action` |
-| Cockpit run board / stage viewer | Show `factcheck` in guide-v1 stage rail; labels + `STAGE_HELP` entry |
+| Cockpit run board / stage viewer | Show `factcheck` in guide-v1 stage rail; labels + `STAGE_HELP` entry in `web/src/lib/planHelp.ts` |
+| Cockpit progress | **No web change** — `TopicListPage` / `RunBoardPage` already render API-provided `completion.stages_total`, so guide-aware totals arrive for free once the daemon is fixed |
 | Model plan / settings | New row after QA; recommendation `strong_adversarial_check` |
-| Catalog presets | Add per-provider factcheck mapping in packaged model catalog / presets (same files that map `qa` and `repair` today) |
+| Catalog presets | Add a `factcheck` row to each `[presets.stages.<provider>]` table in `config/model-catalog.example.toml` (the same tables that map `qa` and `repair` today) |
 
 **Cockpit copy (suggested):**
 
 - Stage help: “Adversarially checks factual claims in the draft. Findings go
   to repair along with model-QA findings.”
-- Repair help update: “Fixes problems found by model QA and fact-check.”
+- Repair help update: current `planHelp.ts` text “Fixes the problems QA
+  found.” becomes “Fixes the problems QA and fact-check found.”
 
 No new Playwright-critical UX chrome beyond stage appearance in the rail and
 next-action affordances already used for QA.
@@ -365,7 +407,7 @@ next-action affordances already used for QA.
 | In-flight guide-v1 run with repair already approved | **Grandfathered:** do not force factcheck retroactively (see normative rule below) |
 | In-flight guide-v1 run with repair prompt written but not approved | Prefer rebuild: repair prompt must include factcheck; if factcheck missing, `next_action` requires factcheck first and repair prompt is considered incomplete/stale |
 | Legacy runs | No factcheck; QA retains reduced accuracy duty via §4.2 legacy note |
-| Model plans missing `factcheck` row | Fall back to default recommendation / provider default when resolving plan for that stage (same pattern as other newly added plan stages if any); presets ship with explicit mapping |
+| Model plans missing `factcheck` row | **Verified safe:** `load_model_plan` iterates `STAGE_ORDER` and fills missing stages from `DEFAULT_STAGE_RECOMMENDATIONS`; it only rejects *unknown* stage names, never absent ones. Existing saved plan TOMLs keep loading unchanged, and `factcheck` resolves to its default recommendation until the user edits the plan. Presets ship with explicit mapping |
 
 **Grandfathering rule (normative):** For guide-v1, factcheck is required in
 `next_action` **iff** repair is not yet approved. Runs that already approved
@@ -381,7 +423,11 @@ Minimum suite expectations (names illustrative):
 
 - Stage topology: `factcheck` in `SUPPORTED_STAGES` and
   `GUIDE_V1_REQUIRED_STAGES`; not in legacy `REQUIRED_STAGES`; not in
-  `OPTIONAL_STAGES`.
+  `OPTIONAL_STAGES`; sits between `qa` and `repair` in `SUPPORTED_STAGES`,
+  `PRESET_STAGES`, and `STAGE_ORDER` (guards the derivation chain in §1).
+- Plan compatibility: a saved model plan TOML written before this feature
+  (no `factcheck` table) still loads, and the resolved plan gives `factcheck`
+  the default recommendation.
 - `write_factcheck_prompt` embeds draft, QA, draft findings; refuses without
   approved QA / current draft validation.
 - `next_action` after QA approve → factcheck write_prompt (guide-v1).
