@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client");
@@ -24,6 +24,10 @@ describe("BuildFreshnessBanner", () => {
     localStorage.clear();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("shows when the build is stale", async () => {
     vi.mocked(api).mockResolvedValue(healthWith("stale"));
     render(<BuildFreshnessBanner />);
@@ -32,6 +36,13 @@ describe("BuildFreshnessBanner", () => {
 
   it("stays hidden when the build is ok", async () => {
     vi.mocked(api).mockResolvedValue(healthWith("ok"));
+    render(<BuildFreshnessBanner />);
+    await waitFor(() => expect(api).toHaveBeenCalled());
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("treats an older daemon health payload without freshness as ok", async () => {
+    vi.mocked(api).mockResolvedValue({ version: "old", ok: true });
     render(<BuildFreshnessBanner />);
     await waitFor(() => expect(api).toHaveBeenCalled());
     expect(screen.queryByRole("status")).toBeNull();
@@ -56,6 +67,25 @@ describe("BuildFreshnessBanner", () => {
     vi.mocked(api).mockRejectedValue(new Error("down"));
     render(<BuildFreshnessBanner />);
     await waitFor(() => expect(api).toHaveBeenCalled());
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("still renders when localStorage reads are blocked", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    vi.mocked(api).mockResolvedValue(healthWith("stale"));
+    render(<BuildFreshnessBanner />);
+    expect(await screen.findByRole("status")).toBeInTheDocument();
+  });
+
+  it("dismisses for the session when localStorage writes are blocked", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    vi.mocked(api).mockResolvedValue(healthWith("stale"));
+    render(<BuildFreshnessBanner />);
+    await userEvent.click(await screen.findByRole("button", { name: /dismiss/i }));
     expect(screen.queryByRole("status")).toBeNull();
   });
 });

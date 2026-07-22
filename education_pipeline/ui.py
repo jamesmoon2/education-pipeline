@@ -100,6 +100,7 @@ def run_ui(
             )
         return 1
 
+    rebuilt_dist: Path | None = None
     if rebuild:
         web_dir = deps.repo_web_dir()
         if web_dir is None:
@@ -112,8 +113,9 @@ def run_ui(
         if code != 0:
             _print_error("cockpit_build_failed")
             return 1
+        rebuilt_dist = web_dir / "dist"
 
-    dist = deps.web_dist()
+    dist = rebuilt_dist or deps.web_dist()
     if dist is None:
         _print_error("web_assets_missing")
         return 1

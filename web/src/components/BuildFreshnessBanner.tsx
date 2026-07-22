@@ -17,7 +17,7 @@ export default function BuildFreshnessBanner() {
     let cancelled = false;
     api<HealthPayload>("/v1/health")
       .then((health) => {
-        if (!cancelled) setBuild(health.cockpit_build);
+        if (!cancelled) setBuild(health.cockpit_build ?? null);
       })
       .catch(() => {
         // Advisory banner: never surface an error for a health probe.
@@ -27,11 +27,26 @@ export default function BuildFreshnessBanner() {
     };
   }, []);
 
-  if (build === null || build.status !== "stale") return null;
+  // The daemon injects a bootstrap notice into index.html so even a bundle
+  // predating this component can warn. Avoid rendering a duplicate when that
+  // server-owned notice is present.
+  if (
+    document.getElementById("ep-cockpit-build-banner") !== null ||
+    build === null ||
+    build.status !== "stale"
+  ) {
+    return null;
+  }
   // build_id is always non-null once status is "stale" (the same stat()
   // that proves staleness yields it); the fallback is defensive only.
   const key = build.build_id ?? "unknown";
-  if (dismissed || localStorage.getItem(STORAGE_KEY) === key) return null;
+  let persistentlyDismissed = false;
+  try {
+    persistentlyDismissed = localStorage.getItem(STORAGE_KEY) === key;
+  } catch {
+    // Storage may be blocked; dismissal still works for this component mount.
+  }
+  if (dismissed || persistentlyDismissed) return null;
 
   return (
     <div className="build-banner" role="status">
@@ -44,7 +59,11 @@ export default function BuildFreshnessBanner() {
       <button
         type="button"
         onClick={() => {
-          localStorage.setItem(STORAGE_KEY, key);
+          try {
+            localStorage.setItem(STORAGE_KEY, key);
+          } catch {
+            // Session-only dismissal is sufficient when storage is blocked.
+          }
           setDismissed(true);
         }}
       >

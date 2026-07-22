@@ -19,7 +19,7 @@ from education_pipeline.topics import Topic, load_topic, parse_topic
 
 
 _ARTIFACT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_PROFILE_LOCKS: dict[Path, threading.Lock] = {}
+_PROFILE_LOCKS: dict[str, threading.Lock] = {}
 _PROFILE_LOCKS_GUARD = threading.Lock()
 
 #: Subdirectories every workspace must contain.
@@ -553,9 +553,36 @@ def _profile_record(profile: LearnerProfile) -> ProfileRecord:
 
 
 def _profile_lock(path: Path) -> threading.Lock:
-    key = path.resolve(strict=False)
+    key = _profile_lock_key(path)
     with _PROFILE_LOCKS_GUARD:
         return _PROFILE_LOCKS.setdefault(key, threading.Lock())
+
+
+def _profile_lock_key(path: Path) -> str:
+    """Return a stable key while still canonicalizing explicit path aliases.
+
+    ``Path.resolve(strict=False)`` is existence-sensitive on Windows: the
+    spelling of the same path can change between the pre-create and
+    post-create sides of a race, yielding two locks. Start with a lexical
+    absolute path, then resolve only components that are themselves symlinks
+    (or Windows junctions), so ordinary file creation cannot change the key.
+    """
+
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    parts = absolute.parts
+    current = Path(parts[0])
+    for part in parts[1:]:
+        current /= part
+        try:
+            is_alias = current.is_symlink()
+            is_junction = getattr(current, "is_junction", None)
+            if callable(is_junction):
+                is_alias = is_alias or is_junction()
+        except OSError:
+            is_alias = False
+        if is_alias:
+            current = Path(os.path.realpath(current))
+    return os.path.normcase(os.path.normpath(os.fspath(current)))
 
 
 def _atomic_replace_bytes(path: Path, content: bytes) -> None:

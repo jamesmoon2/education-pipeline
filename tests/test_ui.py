@@ -196,15 +196,20 @@ def test_fresh_build_prints_no_warning(tmp_path: Path, capsys: pytest.CaptureFix
 
 def test_rebuild_runs_npm_then_launches(tmp_path):
     web_dir = tmp_path / "web"
-    web_dir.mkdir()
+    (web_dir / "dist").mkdir(parents=True)
+    (web_dir / "dist" / "index.html").write_text("built", encoding="utf-8")
     built = []
+    reported = []
     deps, calls = make_deps(
         tmp_path,
         repo_web_dir=lambda: web_dir,
         npm_build=lambda d: built.append(d) or 0,
+        web_dist=lambda: tmp_path / "packaged-webdist",
+        build_report=lambda dist: reported.append(dist) or {"status": "ok"},
     )
     assert run_ui(str(tmp_path / "ws"), rebuild=True, deps=deps) == 0
     assert built == [web_dir]
+    assert reported == [web_dir / "dist"]
     assert calls["opened"]
 
 

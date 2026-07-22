@@ -238,7 +238,10 @@ def test_health_reports_stale_dev_checkout(tmp_path, monkeypatch):
     (web / "src").mkdir(parents=True)
     (web / "src" / "App.tsx").write_text("export {}", encoding="utf-8")
     (web / "dist").mkdir()
-    (web / "dist" / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    (web / "dist" / "index.html").write_text(
+        "<!doctype html><html><body><div id='root'></div></body></html>",
+        encoding="utf-8",
+    )
     import os as _os
 
     _os.utime(web / "dist" / "index.html", ns=(1_000, 1_000))
@@ -252,6 +255,10 @@ def test_health_reports_stale_dev_checkout(tmp_path, monkeypatch):
         assert status == 200
         assert body["cockpit_build"]["status"] == "stale"
         assert body["cockpit_build"]["build_id"] == "1000"
+        status, html, _headers = _raw_get(srv.server_port, "/")
+        assert status == 200
+        assert b'id="ep-cockpit-build-banner"' in html
+        assert b"education-pipeline ui --rebuild" in html
     finally:
         worker.stop()
         srv.shutdown()

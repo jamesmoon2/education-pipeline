@@ -8,6 +8,7 @@ from education_pipeline.daemon.static import (
     cockpit_build_report,
     cockpit_build_status,
     default_web_dist,
+    inject_cockpit_build_warning,
     repo_web_dir,
     resolve_static,
 )
@@ -88,6 +89,25 @@ def test_default_web_dist_prefers_packaged_then_repo(tmp_path, monkeypatch):
     assert static.default_web_dist() == packaged
 
 
+def test_default_web_dist_prefers_repo_dist_in_source_checkout(tmp_path, monkeypatch):
+    """A rebuilt dev cockpit must win over a stale packaged copy."""
+
+    from education_pipeline.daemon import static
+
+    monkeypatch.delenv("EP_WEB_DIST", raising=False)
+    packaged = tmp_path / "packaged"
+    web = tmp_path / "web"
+    repo = web / "dist"
+    (web / "src").mkdir(parents=True)
+    for candidate in (packaged, repo):
+        candidate.mkdir(parents=True, exist_ok=True)
+        (candidate / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    monkeypatch.setattr(static, "_PACKAGED_WEB_DIST", packaged)
+    monkeypatch.setattr(static, "_REPO_WEB_DIST", repo)
+
+    assert static.default_web_dist() == repo
+
+
 def test_default_web_dist_falls_back_to_repo_dist(tmp_path, monkeypatch):
     from education_pipeline.daemon import static
 
@@ -134,6 +154,7 @@ def _make_web_dir(tmp_path):
     _set_mtime(web / "index.html", ns=0)
     _set_mtime(web / "package.json", ns=0)
     _set_mtime(web / "dist" / "index.html", ns=0)
+    _set_mtime(web / "src", ns=0)
     return web
 
 
@@ -161,6 +182,15 @@ def test_build_status_stale_when_config_input_newer(tmp_path):
     _set_mtime(web / "dist" / "index.html", ns=1_000)
     _set_mtime(web / "src" / "App.tsx", ns=500)
     _set_mtime(web / "vite.config.ts", ns=2_000)
+    assert cockpit_build_status(web) == "stale"
+
+
+def test_build_status_stale_when_source_file_was_deleted(tmp_path):
+    web = _make_web_dir(tmp_path)
+    _set_mtime(web / "dist" / "index.html", ns=1_000)
+    (web / "src" / "App.tsx").unlink()
+    _set_mtime(web / "src", ns=2_000)
+
     assert cockpit_build_status(web) == "stale"
 
 
@@ -208,3 +238,26 @@ def test_build_report_silent_under_env_override(tmp_path, monkeypatch):
     monkeypatch.setattr(static_mod, "_REPO_WEB_DIST", web / "dist")
     monkeypatch.setenv("EP_WEB_DIST", str(web / "dist"))
     assert cockpit_build_report(web / "dist") == {"status": "ok", "build_id": None}
+
+
+def test_stale_warning_is_injected_without_relying_on_cockpit_javascript():
+    html = b"<!doctype html><html><body><div id='root'></div></body></html>"
+
+    rendered = inject_cockpit_build_warning(
+        html, {"status": "stale", "build_id": "1234"}
+    )
+
+    assert b'id="ep-cockpit-build-banner"' in rendered
+    assert b'role="status"' in rendered
+    assert b"education-pipeline ui --rebuild" in rendered
+    assert b'data-build-id="1234"' in rendered
+
+
+def test_fresh_or_unidentified_build_does_not_change_cockpit_html():
+    html = b"<html><body>cockpit</body></html>"
+    assert inject_cockpit_build_warning(
+        html, {"status": "ok", "build_id": None}
+    ) == html
+    assert inject_cockpit_build_warning(
+        html, {"status": "stale", "build_id": None}
+    ) == html
