@@ -234,6 +234,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the cockpit URL without opening a browser",
     )
+    p.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="rebuild the cockpit (npm run build in web/) before launching; "
+        "source checkouts only",
+    )
     p.set_defaults(func=_cmd_ui)
 
     workspace = sub.add_parser("workspace", help="manage the workspace itself").add_subparsers(
@@ -743,7 +749,7 @@ def _cmd_ui(args: argparse.Namespace) -> int:
     workspace = args.ui_workspace
     if workspace is None and args.workspace != ".":
         workspace = args.workspace
-    return run_ui(workspace, no_browser=args.no_browser)
+    return run_ui(workspace, no_browser=args.no_browser, rebuild=args.rebuild)
 
 
 def _cmd_workspace_check(args: argparse.Namespace) -> int:

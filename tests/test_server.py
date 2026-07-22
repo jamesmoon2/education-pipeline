@@ -226,6 +226,42 @@ def test_health_ok(server):
     status, body = _req(server, "GET", "/v1/health")
     assert status == 200
     assert body["version"] == "0.1.0"
+    # Freshness is always present; the test server's tmp dist is not the
+    # repo dev-checkout fallback, so it reports ok/None.
+    assert body["cockpit_build"] == {"status": "ok", "build_id": None}
+
+
+def test_health_reports_stale_dev_checkout(tmp_path, monkeypatch):
+    from education_pipeline.daemon import static as static_mod
+
+    web = tmp_path / "web"
+    (web / "src").mkdir(parents=True)
+    (web / "src" / "App.tsx").write_text("export {}", encoding="utf-8")
+    (web / "dist").mkdir()
+    (web / "dist" / "index.html").write_text(
+        "<!doctype html><html><body><div id='root'></div></body></html>",
+        encoding="utf-8",
+    )
+    import os as _os
+
+    _os.utime(web / "dist" / "index.html", ns=(1_000, 1_000))
+    _os.utime(web / "src" / "App.tsx", ns=(2_000, 2_000))
+    monkeypatch.setattr(static_mod, "_REPO_WEB_DIST", web / "dist")
+    monkeypatch.delenv("EP_WEB_DIST", raising=False)
+
+    srv, worker, _context = _start_server(tmp_path, monkeypatch, web_dist=web / "dist")
+    try:
+        status, body = _req(srv.server_port, "GET", "/v1/health")
+        assert status == 200
+        assert body["cockpit_build"]["status"] == "stale"
+        assert body["cockpit_build"]["build_id"] == "1000"
+        status, html, _headers = _raw_get(srv.server_port, "/")
+        assert status == 200
+        assert b'id="ep-cockpit-build-banner"' in html
+        assert b"education-pipeline ui --rebuild" in html
+    finally:
+        worker.stop()
+        srv.shutdown()
 
 
 def test_enqueue_runs_job_and_lands_response(server):

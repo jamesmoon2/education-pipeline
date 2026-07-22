@@ -26,7 +26,11 @@ from education_pipeline.config import (
 )
 from education_pipeline.daemon import read_api, reveal, write_api
 from education_pipeline.daemon.jobs import Job, JobStore, Worker
-from education_pipeline.daemon.static import resolve_static
+from education_pipeline.daemon.static import (
+    cockpit_build_report,
+    inject_cockpit_build_warning,
+    resolve_static,
+)
 from education_pipeline.export import render_html_body
 from education_pipeline.guides import (
     ContractError,
@@ -301,6 +305,10 @@ def _make_handler(context: DaemonContext):
             if static is None:
                 return self._error(404, "not_found", "unknown path")
             body = static.path.read_bytes()
+            if static.content_type.startswith("text/html"):
+                body = inject_cockpit_build_warning(
+                    body, cockpit_build_report(context.web_dist)
+                )
             self.send_response(200)
             self.send_header("Content-Type", static.content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -319,7 +327,13 @@ def _make_handler(context: DaemonContext):
         def _api_get_routes(self):
             if self.path.startswith("/v1/health"):
                 return self._send(
-                    200, {"version": context.version, "started_at": None, "ok": True}
+                    200,
+                    {
+                        "version": context.version,
+                        "started_at": None,
+                        "ok": True,
+                        "cockpit_build": cockpit_build_report(context.web_dist),
+                    },
                 )
             if self.path == "/v1/workspace":
                 return self._send(
