@@ -25,7 +25,14 @@ function renderInline(nodes: InlineNode[]): ReactNode {
 function renderBlock(block: MarkdownBlock, index: number): ReactNode {
   switch (block.kind) {
     case "heading":
-      return createElement(`h${block.level}`, { key: index }, renderInline(block.children));
+      // Artifact content renders beneath the stage page's own <h2> title, so
+      // its headings are offset to start at <h3> — a source "# h1" as a real
+      // <h1> would invert the document outline for screen readers.
+      return createElement(
+        `h${Math.min(6, block.level + 2)}`,
+        { key: index },
+        renderInline(block.children),
+      );
     case "paragraph":
       return <p key={index}>{renderInline(block.children)}</p>;
     case "code":
@@ -42,6 +49,27 @@ function renderBlock(block: MarkdownBlock, index: number): ReactNode {
     }
     case "blockquote":
       return <blockquote key={index}>{block.children.map(renderBlock)}</blockquote>;
+    case "table":
+      return (
+        <table key={index}>
+          <thead>
+            <tr>
+              {block.header.map((cell, cellIndex) => (
+                <th key={cellIndex}>{renderInline(cell)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {block.rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {row.map((cell, cellIndex) => (
+                  <td key={cellIndex}>{renderInline(cell)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
     case "hr":
       return <hr key={index} />;
   }

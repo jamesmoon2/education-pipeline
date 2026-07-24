@@ -25,7 +25,7 @@ export default function GlobalJobActivity({
   intervalMs?: number;
   successToastMs?: number;
 }) {
-  const { data } = usePolling(getJobs, intervalMs);
+  const { data, error } = usePolling(getJobs, intervalMs);
   const [toasts, setToasts] = useState<JobToast[]>([]);
   const seenStatus = useRef<Map<string, Job["status"]>>(new Map());
   const nextKey = useRef(0);
@@ -57,7 +57,13 @@ export default function GlobalJobActivity({
   const dismiss = (key: number) =>
     setToasts((current) => current.filter((t) => t.key !== key));
 
-  const active = data?.jobs.filter((job) => ACTIVE_JOB_STATUSES.has(job.status)) ?? [];
+  // While the poll is failing, usePolling keeps its last successful payload;
+  // presenting that snapshot as live would leave terminated jobs labeled
+  // "running" through a daemon outage. Suppress the rail until a fresh poll
+  // succeeds (error clears on the next successful tick).
+  const active = error
+    ? []
+    : (data?.jobs.filter((job) => ACTIVE_JOB_STATUSES.has(job.status)) ?? []);
 
   return (
     <>

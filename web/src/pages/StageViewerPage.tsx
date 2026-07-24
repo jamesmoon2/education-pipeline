@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   ApiRequestError,
@@ -58,6 +58,14 @@ function StageViewerForRoute({
   );
   const [pasteOpen, setPasteOpen] = useState(searchParams.get("paste") === "1");
   const [editing, setEditing] = useState(false);
+  // In-page navigation to the same stage with a ?tab= query (e.g. a job
+  // toast's "ready to review" link) must switch tabs: the route key doesn't
+  // change, so the mount-time initializer above never re-runs. Editing
+  // pins the current tab — the tab buttons are disabled then too.
+  useEffect(() => {
+    if (!TABS.includes(requestedTab as Tab) || editing) return;
+    setTab(requestedTab as Tab);
+  }, [requestedTab, editing]);
   const [compare, setCompare] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [draftApproved, setDraftApproved] = useState<string | null>(null);

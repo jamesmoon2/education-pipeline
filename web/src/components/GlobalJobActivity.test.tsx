@@ -53,6 +53,20 @@ describe("GlobalJobActivity rail indicator", () => {
     expect(screen.queryByLabelText("Active jobs")).not.toBeInTheDocument();
   });
 
+  it("suppresses the active-jobs rail while polling fails, restores on recovery", async () => {
+    vi.mocked(getJobs)
+      .mockResolvedValueOnce({ jobs: [makeJob("j1", "running")] })
+      .mockRejectedValueOnce(new Error("daemon unreachable"))
+      .mockResolvedValue({ jobs: [makeJob("j1", "running")] });
+    renderActivity();
+    await screen.findByLabelText("Active jobs");
+    // The failed poll must not keep presenting the stale "running" snapshot.
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Active jobs")).not.toBeInTheDocument(),
+    );
+    await screen.findByLabelText("Active jobs");
+  });
+
   it("lists active jobs across topics with links to their boards", async () => {
     vi.mocked(getJobs).mockResolvedValue({
       jobs: [

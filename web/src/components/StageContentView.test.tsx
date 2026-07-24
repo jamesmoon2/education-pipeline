@@ -17,6 +17,32 @@ describe("StageContentView", () => {
     expect(screen.queryByText("# Course Spec")).not.toBeInTheDocument();
   });
 
+  it("offsets artifact headings below the stage page's h2", () => {
+    render(
+      <StageContentView
+        label="prompt"
+        text={"# Top\n\n#### Deep\n\n###### Deepest"}
+        contentType="text/markdown"
+      />,
+    );
+    // Source h1 renders as h3 (the page title is an h2); deep levels clamp at h6.
+    expect(screen.getByRole("heading", { name: "Top", level: 3 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Deep", level: 6 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Deepest", level: 6 })).toBeInTheDocument();
+  });
+
+  it("renders pipe tables as real tables", () => {
+    render(
+      <StageContentView
+        label="response"
+        text={"| Loop | Effect |\n|---|---|\n| Reinforcing | amplifies |"}
+        contentType="text/markdown"
+      />,
+    );
+    expect(screen.getByRole("columnheader", { name: "Loop" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "amplifies" })).toBeInTheDocument();
+  });
+
   it("switches to the exact raw bytes and back", async () => {
     render(
       <StageContentView label="response" text={"# Raw Me"} contentType="text/markdown" />,

@@ -65,6 +65,40 @@ describe("parseMarkdown", () => {
     ]);
   });
 
+  it("parses a pipe table with a separator row", () => {
+    const blocks = parseMarkdown(
+      "| Loop | Effect |\n|------|--------|\n| Reinforcing | amplifies |\n| Balancing | steadies |",
+    );
+    expect(blocks).toEqual([
+      {
+        kind: "table",
+        header: [
+          [{ kind: "text", text: "Loop" }],
+          [{ kind: "text", text: "Effect" }],
+        ],
+        rows: [
+          [[{ kind: "text", text: "Reinforcing" }], [{ kind: "text", text: "amplifies" }]],
+          [[{ kind: "text", text: "Balancing" }], [{ kind: "text", text: "steadies" }]],
+        ],
+      },
+    ]);
+  });
+
+  it("keeps a lone pipe-bearing line as a paragraph", () => {
+    expect(parseMarkdown("a | b | c")).toEqual([
+      { kind: "paragraph", children: [{ kind: "text", text: "a | b | c" }] },
+    ]);
+  });
+
+  it("ends a paragraph where a table starts", () => {
+    const blocks = parseMarkdown("intro line\n| A | B |\n|---|---|\n| 1 | 2 |");
+    expect(blocks[0]).toEqual({
+      kind: "paragraph",
+      children: [{ kind: "text", text: "intro line" }],
+    });
+    expect(blocks[1]).toMatchObject({ kind: "table" });
+  });
+
   it("parses blockquotes recursively", () => {
     expect(parseMarkdown("> quoted line")).toEqual([
       {

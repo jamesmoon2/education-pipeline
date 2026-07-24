@@ -670,12 +670,12 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   font-family: var(--ep-font-reading);
   max-width: 46rem;
 }
-/* Artifact headings sit inside the page's own hierarchy: scale them below
- * the page h2 regardless of their source level. */
-.markdown-view h1 { font-size: 1.5rem; margin: var(--ep-space-4) 0 var(--ep-space-3); }
-.markdown-view h2 { font-size: 1.25rem; margin: var(--ep-space-4) 0 var(--ep-space-2); }
-.markdown-view h3 { font-size: 1.0625rem; margin: var(--ep-space-3) 0 var(--ep-space-2); }
-.markdown-view h4, .markdown-view h5, .markdown-view h6 { font-size: 1rem; margin: var(--ep-space-3) 0 var(--ep-space-1); }
+/* Artifact headings are offset in MarkdownView to start at h3 (the page
+ * title is an h2), so a source "# h1" arrives here as an h3. */
+.markdown-view h3 { font-size: 1.5rem; margin: var(--ep-space-4) 0 var(--ep-space-3); }
+.markdown-view h4 { font-size: 1.25rem; margin: var(--ep-space-4) 0 var(--ep-space-2); }
+.markdown-view h5 { font-size: 1.0625rem; margin: var(--ep-space-3) 0 var(--ep-space-2); }
+.markdown-view h6 { font-size: 1rem; margin: var(--ep-space-3) 0 var(--ep-space-1); }
 .markdown-view > :first-child { margin-top: 0; }
 .markdown-view blockquote {
   margin: var(--ep-space-3) 0;

@@ -19,6 +19,7 @@ export type MarkdownBlock =
   | { kind: "code"; language: string | null; text: string }
   | { kind: "list"; ordered: boolean; items: InlineNode[][] }
   | { kind: "blockquote"; children: MarkdownBlock[] }
+  | { kind: "table"; header: InlineNode[][]; rows: InlineNode[][][] }
   | { kind: "hr" };
 
 // Only link targets that cannot execute script; everything else renders as
@@ -88,6 +89,17 @@ const HR = /^(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const UNORDERED_ITEM = /^\s*[-*+]\s+(.*)$/;
 const ORDERED_ITEM = /^\s*\d+[.)]\s+(.*)$/;
 const QUOTE = /^>\s?(.*)$/;
+const TABLE_ROW = /^\s*\|.*\|\s*$/;
+const TABLE_SEPARATOR = /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/;
+
+function parseTableRow(line: string): InlineNode[][] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => parseInline(cell.trim()));
+}
 
 function startsBlock(line: string): boolean {
   return (
@@ -97,7 +109,8 @@ function startsBlock(line: string): boolean {
     HR.test(line) ||
     UNORDERED_ITEM.test(line) ||
     ORDERED_ITEM.test(line) ||
-    QUOTE.test(line)
+    QUOTE.test(line) ||
+    TABLE_ROW.test(line)
   );
 }
 
@@ -159,6 +172,19 @@ export function parseMarkdown(text: string): MarkdownBlock[] {
         ordered: itemRe === ORDERED_ITEM,
         items: items.map(parseInline),
       });
+      continue;
+    }
+    // A pipe row is a table only when followed by the |---|---| separator;
+    // a lone pipe-bearing line stays a paragraph.
+    if (TABLE_ROW.test(line) && i + 1 < lines.length && TABLE_SEPARATOR.test(lines[i + 1])) {
+      const header = parseTableRow(line);
+      i += 2; // past the header and separator
+      const rows: InlineNode[][][] = [];
+      while (i < lines.length && TABLE_ROW.test(lines[i]) && !TABLE_SEPARATOR.test(lines[i])) {
+        rows.push(parseTableRow(lines[i]));
+        i += 1;
+      }
+      blocks.push({ kind: "table", header, rows });
       continue;
     }
     if (QUOTE.test(line)) {
