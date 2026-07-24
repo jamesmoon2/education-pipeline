@@ -137,10 +137,8 @@ async function expectNoSeriousAxeViolations(page: Page, state: string) {
   expect(serious, `${state}: ${JSON.stringify(serious, null, 2)}`).toEqual([]);
 }
 
-function stagesTable(page: Page) {
-  return page.locator("table").filter({
-    has: page.getByRole("columnheader", { name: "Findings" }),
-  });
+function stageStep(page: Page, stage: string) {
+  return page.getByRole("listitem", { name: `${stage} stage` });
 }
 
 function validationPanel(page: Page, phase: "draft" | "final") {
@@ -290,8 +288,7 @@ test("personalization milestone: private profile through safe audited export", a
   await expect(page.getByRole("button", { name: "Finalize", exact: true })).toHaveCount(0);
 
   // Repair the leaking final source, reapprove it, and revalidate before release.
-  const repairRow = stagesTable(page).locator("tbody tr").filter({ hasText: /^repair/ });
-  await repairRow.getByRole("link", { name: "view", exact: true }).click();
+  await stageStep(page, "repair").getByRole("link", { name: "repair" }).click();
   await expect(page).toHaveURL(new RegExp(`/topics/${TOPIC}/stages/repair$`));
   await page.getByRole("tab", { name: /^response/ }).click();
   await page.getByRole("button", { name: "Edit", exact: true }).click();

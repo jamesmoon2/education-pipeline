@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   ApiRequestError,
@@ -14,6 +14,7 @@ import InfoTip from "../components/InfoTip";
 import ModuleRepairControl from "../components/ModuleRepairControl";
 import ResponseEditor from "../components/ResponseEditor";
 import ResponseForm from "../components/ResponseForm";
+import StageContentView from "../components/StageContentView";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 import ErrorNotice from "../components/ErrorNotice";
@@ -57,6 +58,21 @@ function StageViewerForRoute({
   );
   const [pasteOpen, setPasteOpen] = useState(searchParams.get("paste") === "1");
   const [editing, setEditing] = useState(false);
+  // In-page navigation to the same stage with a ?tab= query (e.g. a job
+  // toast's "ready to review" link) must switch tabs: the route key doesn't
+  // change, so the mount-time initializer above never re-runs. Editing
+  // pins the current tab — the tab buttons are disabled then too.
+  useEffect(() => {
+    if (!TABS.includes(requestedTab as Tab) || editing) return;
+    setTab(requestedTab as Tab);
+  }, [requestedTab, editing]);
+  // Same for ?paste=1 (e.g. AuditControls' "Paste audit response…" link):
+  // open the paste form on request, but never force it closed — the user
+  // may have dismissed it deliberately.
+  const pasteRequested = searchParams.get("paste") === "1";
+  useEffect(() => {
+    if (pasteRequested) setPasteOpen(true);
+  }, [pasteRequested]);
   const [compare, setCompare] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [draftApproved, setDraftApproved] = useState<string | null>(null);
@@ -264,7 +280,12 @@ function StageViewerForRoute({
           <pre className="content">{data.response ?? "(no response yet)"}</pre>
         </div>
       ) : (
-        <pre className="content">{data[tab] ?? `(no ${tab} yet)`}</pre>
+        <StageContentView
+          key={tab}
+          label={tab}
+          text={data[tab]}
+          contentType={tab === "prompt" ? "text/markdown" : data.content_type}
+        />
       )}
       {diffOpen && draftApproved !== null && (
         <DiffView a={draftApproved} b={data.response ?? ""} />

@@ -35,11 +35,13 @@ language.
 ![New course wizard on the blueprint step](docs/screenshots/new-course.png)
 
 The **run board** drives a course through
-`spec → outline → draft → qa → repair`. Each stage shows its state in
-plain words; the next sound move is always the highlighted action.
-Nothing advances without your approval.
+`spec → outline → draft → qa → repair`, drawn as a pipeline you can read
+at a glance. Each stage shows its state in plain words; the next sound
+move is always the highlighted action. Nothing advances without your
+approval, and provider jobs stay visible from every page with a
+notification when one finishes.
 
-![Run board mid-run with the draft response awaiting review](docs/screenshots/run-board.png)
+![Run board mid-run with the draft response awaiting review on the pipeline](docs/screenshots/run-board.png)
 
 Once a run completes, the run board becomes the quality record: validation
 milestones, personalization fit against the attached learner profile, a
@@ -48,10 +50,11 @@ live guide preview, and one-click export.
 ![Run board for a completed course with export controls and guide preview](docs/screenshots/run-board-complete.png)
 
 The **stage viewer** shows each stage's prompt, response, and approved
-artifact — with compare and diff views, in-browser editing, and provider
-rerun.
+artifact — markdown rendered as readable prose, guide JSON as a
+collapsible tree, with the exact raw bytes one click away — plus compare
+and diff views, in-browser editing, and provider rerun.
 
-![Stage viewer showing an approved outline response](docs/screenshots/stage-viewer.png)
+![Stage viewer showing an outline response rendered as prose](docs/screenshots/stage-viewer.png)
 
 **Settings** holds provider availability and the default per-stage model
 plan: run every stage manually, through Claude Code or Codex, or mix

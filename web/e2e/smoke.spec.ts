@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -57,6 +58,16 @@ test("read flow: topic list → run board → stage viewer", async ({ page }) =>
   await page.getByRole("link", { name: "t", exact: true }).click();
   // spec prompt written, no response → next action is save_response
   await expect(page.getByText(/Run the spec prompt/)).toBeVisible();
-  await page.getByRole("link", { name: "view" }).first().click();
+  await page.getByRole("listitem", { name: "spec stage" }).getByRole("link", { name: "spec" }).click();
+  // The prompt renders as prose by default; the Raw toggle shows the bytes.
+  await expect(page.getByRole("heading", { name: "spec prompt" })).toBeVisible();
+  // Accessibility gate over the rendered-markdown stage view (mode toggle,
+  // offset headings, prose markup).
+  const axe = await new AxeBuilder({ page }).analyze();
+  const serious = axe.violations.filter(
+    (v) => v.impact === "serious" || v.impact === "critical",
+  );
+  expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
+  await page.getByRole("button", { name: "Raw" }).click();
   await expect(page.getByText("# spec prompt")).toBeVisible();
 });
