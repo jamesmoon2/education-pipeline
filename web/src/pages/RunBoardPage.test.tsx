@@ -396,6 +396,41 @@ describe("RunBoardPage", () => {
     expect(screen.queryByText("Ready to run")).not.toBeInTheDocument();
   });
 
+  it("stops presenting a running job as live when the jobs poll starts failing", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue(status);
+    vi.mocked(getJobs)
+      .mockResolvedValueOnce({
+        jobs: [
+          {
+            id: "20260710T000000Z-abcd",
+            topic_id: "t",
+            stage: "outline",
+            provider: "claude-code",
+            model: "sonnet",
+            effort: null,
+            status: "running",
+            created_at: "2026-07-10T00:00:00Z",
+            started_at: "2026-07-10T00:00:01Z",
+            ended_at: null,
+            exit_code: null,
+            error: null,
+          },
+        ],
+      })
+      .mockRejectedValue(new Error("daemon unreachable"));
+    renderAt("/topics/t");
+
+    expect(
+      await screen.findByText(/outline stage is running with claude-code/),
+    ).toBeInTheDocument();
+    // The failed poll must not leave the stale "running" snapshot on screen.
+    await waitFor(
+      () => expect(screen.queryByText(/is running with/)).not.toBeInTheDocument(),
+      { timeout: 4_000 },
+    );
+    expect(screen.getByRole("button", { name: "Run with provider" })).toBeInTheDocument();
+  });
+
   it("keeps the action buttons when no job is active", async () => {
     vi.mocked(getRunStatus).mockResolvedValue(status);
     vi.mocked(getJobs).mockResolvedValue({ jobs: [] });

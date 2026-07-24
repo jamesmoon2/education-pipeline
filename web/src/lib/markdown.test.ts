@@ -37,9 +37,68 @@ describe("parseMarkdown", () => {
     expect(blocks[0]).toEqual({
       kind: "list",
       ordered: false,
-      items: [[{ kind: "text", text: "one" }], [{ kind: "text", text: "two" }]],
+      items: [
+        { content: [{ kind: "text", text: "one" }], sublist: null },
+        { content: [{ kind: "text", text: "two" }], sublist: null },
+      ],
     });
     expect(blocks[1]).toMatchObject({ kind: "list", ordered: true });
+  });
+
+  it("nests indented items as a sublist of the item above", () => {
+    const blocks = parseMarkdown(
+      "1. Top level\n   - nested one\n   - nested two\n2. Second top",
+    );
+    expect(blocks).toEqual([
+      {
+        kind: "list",
+        ordered: true,
+        items: [
+          {
+            content: [{ kind: "text", text: "Top level" }],
+            sublist: {
+              kind: "list",
+              ordered: false,
+              items: [
+                { content: [{ kind: "text", text: "nested one" }], sublist: null },
+                { content: [{ kind: "text", text: "nested two" }], sublist: null },
+              ],
+            },
+          },
+          { content: [{ kind: "text", text: "Second top" }], sublist: null },
+        ],
+      },
+    ]);
+  });
+
+  it("returns from a sublist to the parent level and nests multiple levels", () => {
+    const blocks = parseMarkdown(
+      "- a\n  - a1\n    - a1x\n- b",
+    );
+    expect(blocks[0]).toEqual({
+      kind: "list",
+      ordered: false,
+      items: [
+        {
+          content: [{ kind: "text", text: "a" }],
+          sublist: {
+            kind: "list",
+            ordered: false,
+            items: [
+              {
+                content: [{ kind: "text", text: "a1" }],
+                sublist: {
+                  kind: "list",
+                  ordered: false,
+                  items: [{ content: [{ kind: "text", text: "a1x" }], sublist: null }],
+                },
+              },
+            ],
+          },
+        },
+        { content: [{ kind: "text", text: "b" }], sublist: null },
+      ],
+    });
   });
 
   it("does not read a horizontal rule as a bullet", () => {
@@ -55,11 +114,14 @@ describe("parseMarkdown", () => {
         kind: "list",
         ordered: true,
         items: [
-          [
-            { kind: "strong", children: [{ kind: "text", text: "First" }] },
-            { kind: "text", text: " (7 min) — starts here and wraps onto this line." },
-          ],
-          [{ kind: "text", text: "Second item" }],
+          {
+            content: [
+              { kind: "strong", children: [{ kind: "text", text: "First" }] },
+              { kind: "text", text: " (7 min) — starts here and wraps onto this line." },
+            ],
+            sublist: null,
+          },
+          { content: [{ kind: "text", text: "Second item" }], sublist: null },
         ],
       },
     ]);

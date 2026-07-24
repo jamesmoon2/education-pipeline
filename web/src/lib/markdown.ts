@@ -13,11 +13,22 @@ export type InlineNode =
   | { kind: "em"; children: InlineNode[] }
   | { kind: "link"; href: string; children: InlineNode[] };
 
+export interface MarkdownListItem {
+  content: InlineNode[];
+  sublist: MarkdownList | null;
+}
+
+export interface MarkdownList {
+  kind: "list";
+  ordered: boolean;
+  items: MarkdownListItem[];
+}
+
 export type MarkdownBlock =
   | { kind: "heading"; level: 1 | 2 | 3 | 4 | 5 | 6; children: InlineNode[] }
   | { kind: "paragraph"; children: InlineNode[] }
   | { kind: "code"; language: string | null; text: string }
-  | { kind: "list"; ordered: boolean; items: InlineNode[][] }
+  | MarkdownList
   | { kind: "blockquote"; children: MarkdownBlock[] }
   | { kind: "table"; header: InlineNode[][]; rows: InlineNode[][][] }
   | { kind: "hr" };
@@ -101,6 +112,38 @@ function parseTableRow(line: string): InlineNode[][] {
     .map((cell) => parseInline(cell.trim()));
 }
 
+interface RawListItem {
+  indent: number;
+  ordered: boolean;
+  text: string;
+}
+
+// Assemble a flat run of indent-annotated items into nested lists: an item
+// indented deeper than the current level becomes a sublist of the item
+// before it. The cursor is shared across recursion levels so each item is
+// consumed exactly once.
+function buildList(
+  raw: RawListItem[],
+  cursor: { index: number },
+  indent: number,
+): MarkdownList {
+  const ordered = raw[cursor.index].ordered;
+  const items: MarkdownListItem[] = [];
+  while (cursor.index < raw.length) {
+    const item = raw[cursor.index];
+    if (item.indent < indent) break;
+    if (item.indent > indent) {
+      const sublist = buildList(raw, cursor, item.indent);
+      if (items.length > 0) items[items.length - 1].sublist = sublist;
+      else items.push({ content: [], sublist }); // over-indented first item
+      continue;
+    }
+    items.push({ content: parseInline(item.text), sublist: null });
+    cursor.index += 1;
+  }
+  return { kind: "list", ordered, items };
+}
+
 function startsBlock(line: string): boolean {
   return (
     line.trim() === "" ||
@@ -152,26 +195,27 @@ export function parseMarkdown(text: string): MarkdownBlock[] {
       continue;
     }
     // HR is checked before lists so "---" never reads as a "-" bullet.
-    const itemRe = UNORDERED_ITEM.test(line) ? UNORDERED_ITEM : ORDERED_ITEM.test(line) ? ORDERED_ITEM : null;
-    if (itemRe) {
-      const items: string[] = [];
+    if (UNORDERED_ITEM.test(line) || ORDERED_ITEM.test(line)) {
+      const raw: RawListItem[] = [];
       while (i < lines.length && !HR.test(lines[i])) {
-        const item = lines[i].match(itemRe);
+        const current = lines[i];
+        const unordered = current.match(UNORDERED_ITEM);
+        const item = unordered ?? current.match(ORDERED_ITEM);
         if (item) {
-          items.push(item[1]);
-        } else if (/^\s+\S/.test(lines[i])) {
+          raw.push({
+            indent: /^\s*/.exec(current)![0].length,
+            ordered: unordered === null,
+            text: item[1],
+          });
+        } else if (/^\s+\S/.test(current) && raw.length > 0) {
           // Indented continuation of the previous item (hard-wrapped source).
-          items[items.length - 1] += ` ${lines[i].trim()}`;
+          raw[raw.length - 1].text += ` ${current.trim()}`;
         } else {
           break;
         }
         i += 1;
       }
-      blocks.push({
-        kind: "list",
-        ordered: itemRe === ORDERED_ITEM,
-        items: items.map(parseInline),
-      });
+      blocks.push(buildList(raw, { index: 0 }, raw[0].indent));
       continue;
     }
     // A pipe row is a table only when followed by the |---|---| separator;

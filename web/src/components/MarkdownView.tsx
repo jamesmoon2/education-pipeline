@@ -1,5 +1,10 @@
 import { createElement, Fragment, type ReactNode } from "react";
-import { parseMarkdown, type InlineNode, type MarkdownBlock } from "../lib/markdown";
+import {
+  parseMarkdown,
+  type InlineNode,
+  type MarkdownBlock,
+  type MarkdownList,
+} from "../lib/markdown";
 
 function renderInline(nodes: InlineNode[]): ReactNode {
   return nodes.map((node, index) => {
@@ -22,6 +27,16 @@ function renderInline(nodes: InlineNode[]): ReactNode {
   });
 }
 
+function renderList(list: MarkdownList, key?: number): ReactNode {
+  const items = list.items.map((item, itemIndex) => (
+    <li key={itemIndex}>
+      {renderInline(item.content)}
+      {item.sublist && renderList(item.sublist)}
+    </li>
+  ));
+  return list.ordered ? <ol key={key}>{items}</ol> : <ul key={key}>{items}</ul>;
+}
+
 function renderBlock(block: MarkdownBlock, index: number): ReactNode {
   switch (block.kind) {
     case "heading":
@@ -41,12 +56,8 @@ function renderBlock(block: MarkdownBlock, index: number): ReactNode {
           {block.text}
         </pre>
       );
-    case "list": {
-      const items = block.items.map((item, itemIndex) => (
-        <li key={itemIndex}>{renderInline(item)}</li>
-      ));
-      return block.ordered ? <ol key={index}>{items}</ol> : <ul key={index}>{items}</ul>;
-    }
+    case "list":
+      return renderList(block, index);
     case "blockquote":
       return <blockquote key={index}>{block.children.map(renderBlock)}</blockquote>;
     case "table":

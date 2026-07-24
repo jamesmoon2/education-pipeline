@@ -163,9 +163,14 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
   // a queued/running job must be visible at the TOP of the board — in the
   // action area and on its stage row — not only after scrolling to Jobs.
   const fetchJobs = useCallback(() => getJobs(topicId), [topicId]);
-  const { data: jobsData } = usePolling(fetchJobs, 2_000);
-  const activeJob: Job | null =
-    jobsData?.jobs.find((job) => ACTIVE_JOB_STATUSES.has(job.status)) ?? null;
+  const { data: jobsData, error: jobsError } = usePolling(fetchJobs, 2_000);
+  // While the jobs poll is failing, usePolling keeps its last payload; a job
+  // that terminated during the outage would stay presented as "Running…" in
+  // the action area and on its stepper node. Treat the snapshot as unusable
+  // until a poll succeeds again (error clears on the next good tick).
+  const activeJob: Job | null = jobsError
+    ? null
+    : (jobsData?.jobs.find((job) => ACTIVE_JOB_STATUSES.has(job.status)) ?? null);
   const [contentGeneration, setContentGeneration] = useState(0);
   const refresh = useCallback(() => {
     refreshStatus();

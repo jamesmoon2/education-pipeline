@@ -158,6 +158,13 @@ test("release gate: finding → repair → re-run → waive → export", async (
   // placeholder-free guide, then re-approve.
   await draftRow.getByRole("link", { name: "draft" }).click();
   await page.getByRole("tab", { name: /^response/ }).click();
+  // Accessibility gate over the JSON-tree stage view before editing.
+  await expect(page.locator(".json-tree")).toBeVisible();
+  const axeViewer = await new AxeBuilder({ page }).analyze();
+  const seriousViewer = axeViewer.violations.filter(
+    (v) => v.impact === "serious" || v.impact === "critical",
+  );
+  expect(seriousViewer, JSON.stringify(seriousViewer, null, 2)).toEqual([]);
   await page.getByRole("button", { name: "Edit" }).click();
   await page.getByLabel("Edit response for draft").fill(DRAFT_V2);
   await page.getByRole("button", { name: "Save" }).click();

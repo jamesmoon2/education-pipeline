@@ -29,6 +29,13 @@ export default function GlobalJobActivity({
   const [toasts, setToasts] = useState<JobToast[]>([]);
   const seenStatus = useRef<Map<string, Job["status"]>>(new Map());
   const nextKey = useRef(0);
+  const dismissTimers = useRef<number[]>([]);
+  useEffect(() => {
+    const timers = dismissTimers.current;
+    return () => {
+      for (const timer of timers) window.clearTimeout(timer);
+    };
+  }, []);
 
   useEffect(() => {
     if (!data) return;
@@ -48,9 +55,11 @@ export default function GlobalJobActivity({
     setToasts((current) => [...current, ...finished]);
     for (const toast of finished) {
       if (toast.job.status !== "succeeded") continue;
-      window.setTimeout(() => {
-        setToasts((current) => current.filter((t) => t.key !== toast.key));
-      }, successToastMs);
+      dismissTimers.current.push(
+        window.setTimeout(() => {
+          setToasts((current) => current.filter((t) => t.key !== toast.key));
+        }, successToastMs),
+      );
     }
   }, [data, successToastMs]);
 

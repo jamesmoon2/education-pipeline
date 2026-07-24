@@ -66,6 +66,13 @@ function StageViewerForRoute({
     if (!TABS.includes(requestedTab as Tab) || editing) return;
     setTab(requestedTab as Tab);
   }, [requestedTab, editing]);
+  // Same for ?paste=1 (e.g. AuditControls' "Paste audit response…" link):
+  // open the paste form on request, but never force it closed — the user
+  // may have dismissed it deliberately.
+  const pasteRequested = searchParams.get("paste") === "1";
+  useEffect(() => {
+    if (pasteRequested) setPasteOpen(true);
+  }, [pasteRequested]);
   const [compare, setCompare] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [draftApproved, setDraftApproved] = useState<string | null>(null);

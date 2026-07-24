@@ -192,6 +192,32 @@ describe("StageViewerPage", () => {
     );
   });
 
+  it("opens the paste form on in-page navigation with ?paste=1", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "audit",
+      prompt: "# audit prompt",
+      response: '{"findings": []}',
+      approved: null,
+      response_sha256: "sha-1",
+      content_type: "application/json",
+    });
+    // AuditControls links to the audit stage with ?tab=response&paste=1;
+    // when that stage page is already open only the query changes.
+    render(
+      <MemoryRouter initialEntries={["/topics/t/stages/audit"]}>
+        <Link to="/topics/t/stages/audit?tab=response&paste=1">Paste audit response…</Link>
+        <Routes>
+          <Route path="/topics/:topicId/stages/:stage" element={<StageViewerPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await screen.findByRole("tab", { name: /^response/ });
+    expect(screen.queryByLabelText("Response for audit")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("link", { name: "Paste audit response…" }));
+    expect(await screen.findByLabelText("Response for audit")).toBeInTheDocument();
+  });
+
   it("explains the prompt/response/approved workflow with an InfoTip", async () => {
     vi.mocked(getStageContent).mockResolvedValue({
       topic_id: "t",
