@@ -404,16 +404,34 @@ next-action affordances already used for QA.
 | --- | --- |
 | New guide-v1 runs | Full sequence including factcheck |
 | In-flight guide-v1 run with QA approved, repair not started | `next_action` becomes write/run/approve factcheck before repair |
-| In-flight guide-v1 run with repair already approved | **Grandfathered:** do not force factcheck retroactively (see normative rule below) |
+| In-flight guide-v1 run with repair already approved | **Grandfathered:** do not force factcheck retroactively while that repair stays current (see normative rule below) |
+| Grandfathered run whose approved repair later goes stale | Factcheck is required again: the repair has to be rebuilt, and a rebuilt repair prompt cannot be compiled without an approved factcheck |
 | In-flight guide-v1 run with repair prompt written but not approved | Prefer rebuild: repair prompt must include factcheck; if factcheck missing, `next_action` requires factcheck first and repair prompt is considered incomplete/stale |
 | Legacy runs | No factcheck; QA retains reduced accuracy duty via §4.2 legacy note |
 | Model plans missing `factcheck` row | **Verified safe:** `load_model_plan` iterates `STAGE_ORDER` and fills missing stages from `DEFAULT_STAGE_RECOMMENDATIONS`; it only rejects *unknown* stage names, never absent ones. Existing saved plan TOMLs keep loading unchanged, and `factcheck` resolves to its default recommendation until the user edits the plan. Presets ship with explicit mapping |
 
 **Grandfathering rule (normative):** For guide-v1, factcheck is required in
-`next_action` **iff** repair is not yet approved. Runs that already approved
-repair before this feature shipped do not gain a blocking factcheck step.
+`next_action` **iff** repair is not yet approved, or its approved repair is
+stale. Runs that already approved repair before this feature shipped do not
+gain a blocking factcheck step — but the exemption ends the moment that repair
+goes stale, because the only way forward is a rebuilt repair prompt and
+`write_repair_prompt` requires an approved factcheck. Skipping factcheck there
+would advertise a next action the run cannot perform.
 Optional later: CLI flag or cockpit action “Run fact-check retroactively”
 without blocking finalize — out of scope.
+
+**Prompt-bound approval (normative):** For guide-v1 `qa`/`factcheck`/`repair`,
+the upstream hashes recorded on a `response_approved` event are copied from the
+stage's own `prompt_written` event, not recomputed from the files on disk at
+approval time. A response can only have seen the upstream bytes its prompt
+embedded, so an upstream stage reapproved between prompt and approval must
+leave the downstream stage stale.
+
+**Upstream freshness gate (normative):** The public prompt writers
+(`write_factcheck_prompt`, `write_repair_prompt`,
+`write_module_repair_prompt`) refuse to compile while an approved upstream
+stage they embed is stale. `next_action` already routes around this; the gate
+stops a direct caller from combining a fresh draft with superseded findings.
 
 ### 8. Testing strategy (TDD; tests before behavior)
 
@@ -437,7 +455,13 @@ Minimum suite expectations (names illustrative):
   repair stale.
 - Legacy `next_action` never asks for factcheck.
 - Grandfathering: repair already approved, no factcheck → finalize path still
-  reachable when final validation gates open.
+  reachable when final validation gates open; once that repair goes stale,
+  `next_action` asks for factcheck and the advertised action is performable.
+- Prompt-bound approval: reapproving factcheck between a repair prompt and its
+  approval leaves that repair stale (same for draft between qa prompt and
+  approval).
+- Freshness gate: `write_factcheck_prompt` / `write_repair_prompt` /
+  `write_module_repair_prompt` raise on stale approved upstream.
 - QA prompt compiler: no “Accuracy” deep-check section; factcheck compiler
   sections present.
 - Completion summary: guide-v1 total 6; legacy total 5.

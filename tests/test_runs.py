@@ -2931,6 +2931,122 @@ def test_grandfather_skips_factcheck_when_repair_already_approved(
     assert na.action in {"validate", "finalize", "resolve_findings", "done"}
 
 
+def _plant_pre_feature_repair(runs: RunStore, topic_id: str) -> None:
+    """Plant a pre-feature approved repair: no factcheck artifacts anywhere."""
+
+    repair_paths = runs.stage_paths(topic_id, "repair")
+    repair_paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    repair_paths.prompt_path.write_text("# planted repair prompt\n", encoding="utf-8")
+    repair_paths.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    repair_paths.approved_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    runs._append_event(
+        topic_id,
+        stage="repair",
+        action="response_approved",
+        files={
+            "prompt_file": repair_paths.prompt_path,
+            "approved_file": repair_paths.approved_path,
+            "source_draft_file": runs.stage_paths(topic_id, "draft").approved_path,
+            "source_qa_file": runs.stage_paths(topic_id, "qa").approved_path,
+        },
+    )
+
+
+def test_grandfathered_stale_repair_routes_through_factcheck(tmp_path: Path) -> None:
+    """A grandfathered repair that goes stale must not dead-end on rebuild.
+
+    ``write_repair_prompt`` requires an approved factcheck, so once the
+    pre-feature repair is stale the run has to earn one before rebuilding.
+    """
+
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_qa(runs, tid)
+    _plant_pre_feature_repair(runs, tid)
+
+    qa_paths = runs.stage_paths(tid, "qa")
+    qa_paths.response_path.write_text("# QA findings\n\nChanged.\n", encoding="utf-8")
+    runs.approve_stage(tid, "qa", overwrite=True)
+    assert runs.stage_status(tid, "repair").stale is True
+
+    na = runs.run_status(tid).next_action
+    assert (na.stage, na.action) == ("factcheck", "write_prompt")
+    # The advertised action is actually performable.
+    runs.write_factcheck_prompt(tid)
+
+
+def test_repair_approval_binds_factcheck_version_from_its_prompt(
+    tmp_path: Path,
+) -> None:
+    """Reapproving factcheck after a repair prompt leaves that repair stale."""
+
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_factcheck(runs, tid)
+    repair = runs.write_repair_prompt(tid)
+
+    fc = runs.stage_paths(tid, "factcheck")
+    fc.response_path.write_text(FACTCHECK_FIXTURE + "\n# later finding\n", encoding="utf-8")
+    runs.approve_stage(tid, "factcheck", overwrite=True)
+
+    repair.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    runs.approve_stage(tid, "repair")
+
+    assert runs.stage_status(tid, "repair").stale is True
+    na = runs.run_status(tid).next_action
+    assert (na.stage, na.action) == ("repair", "write_prompt")
+
+
+def test_qa_approval_binds_draft_version_from_its_prompt(tmp_path: Path) -> None:
+    """The same prompt/approval binding holds one stage up the chain."""
+
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_draft_approved(runs, tid)
+    runs.validate_run(tid, "draft")
+    qa = runs.write_qa_prompt(tid)
+
+    draft_paths = runs.stage_paths(tid, "draft")
+    draft_paths.response_path.write_text(GUIDE_FIXTURE + "\n", encoding="utf-8")
+    runs.approve_stage(tid, "draft", overwrite=True)
+
+    qa.response_path.write_text("# QA findings\n\nNo major issues.\n", encoding="utf-8")
+    runs.approve_stage(tid, "qa")
+
+    assert runs.stage_status(tid, "qa").stale is True
+
+
+def test_write_factcheck_prompt_rejects_stale_qa(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_qa(runs, tid)
+
+    draft_paths = runs.stage_paths(tid, "draft")
+    draft_paths.response_path.write_text(GUIDE_FIXTURE + "\n", encoding="utf-8")
+    runs.approve_stage(tid, "draft", overwrite=True)
+    runs.validate_run(tid, "draft")
+    assert runs.stage_status(tid, "qa").stale is True
+
+    with pytest.raises(ConfigError, match="qa.*stale|stale.*qa"):
+        runs.write_factcheck_prompt(tid)
+
+
+def test_write_repair_prompt_rejects_stale_upstream(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_factcheck(runs, tid)
+
+    draft_paths = runs.stage_paths(tid, "draft")
+    draft_paths.response_path.write_text(GUIDE_FIXTURE + "\n", encoding="utf-8")
+    runs.approve_stage(tid, "draft", overwrite=True)
+    runs.validate_run(tid, "draft")
+
+    with pytest.raises(ConfigError, match="stale"):
+        runs.write_repair_prompt(tid)
+    with pytest.raises(ConfigError, match="stale"):
+        runs.write_module_repair_prompt(tid, "feedback-loops")
+
+
 def test_guide_v1_unparseable_draft_blocks_qa(tmp_path: Path) -> None:
     tid = "systems-thinking"
     runs = _create_guide_run(tmp_path, tid)

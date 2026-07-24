@@ -4,7 +4,7 @@
 
 **Goal:** Add a first-class guide-v1 model stage `factcheck` between `qa` and `repair` that produces a Markdown findings report consumed by repair, while stripping deep factual work from model QA and leaving legacy markdown runs unchanged.
 
-**Architecture:** Keep the existing stage lifecycle (prompt → response → explicit approve). Rebase the derived config chain on `GUIDE_V1_REQUIRED_STAGES` so `SUPPORTED_STAGES` / `PRESET_STAGES` / `STAGE_ORDER` pick up `factcheck` automatically. Drive guide-v1 `next_action` through `qa → factcheck → repair` with a grandfathering rule (skip factcheck when repair is already approved). Surface guide-aware progress via public `RunStore.required_stages(topic_id)`.
+**Architecture:** Keep the existing stage lifecycle (prompt → response → explicit approve). Rebase the derived config chain on `GUIDE_V1_REQUIRED_STAGES` so `SUPPORTED_STAGES` / `PRESET_STAGES` / `STAGE_ORDER` pick up `factcheck` automatically. Drive guide-v1 `next_action` through `qa → factcheck → repair` with a grandfathering rule (skip factcheck when repair is already approved *and still current*; a stale grandfathered repair has to earn a factcheck before it can be rebuilt). Surface guide-aware progress via public `RunStore.required_stages(topic_id)`.
 
 **Tech Stack:** Python 3.11+ stdlib package (`education_pipeline/`), pytest, React/TypeScript cockpit (`web/`), Vite/vitest. No new runtime dependencies.
 

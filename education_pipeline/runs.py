@@ -804,11 +804,16 @@ class RunStore:
             if (
                 stage_name == "factcheck"
                 and by_stage["repair"].approved
+                and not by_stage["repair"].stale
                 and not by_stage["factcheck"].approved
             ):
                 # Grandfather pre-feature runs that already approved repair
                 # before the factcheck stage existed: never demand a factcheck
-                # for a run whose repair is already done.
+                # for a run whose repair is already done *and still current*.
+                # Once that repair goes stale it has to be rebuilt, and
+                # write_repair_prompt requires an approved factcheck -- so stop
+                # skipping the stage rather than advertise a rebuild the run
+                # cannot perform.
                 continue
             if status.approved and status.stale:
                 return self._stale_stage_rebuild_action(topic_id, stage_name)
@@ -1078,6 +1083,7 @@ class RunStore:
             "prompt_file": paths.prompt_path,
             "approved_file": paths.approved_path,
         }
+        file_hashes: dict[str, str] | None = None
         if self._is_guide_v1(paths.topic_id) and paths.stage in {
             "qa",
             "factcheck",
@@ -1095,11 +1101,15 @@ class RunStore:
                 # would make the stale check false-positive forever.
                 if factcheck_approved.is_file():
                     files["source_factcheck_file"] = factcheck_approved
+            file_hashes = self._prompt_bound_source_hashes(
+                paths.topic_id, paths.stage, files
+            )
         self._append_event(
             paths.topic_id,
             stage=paths.stage,
             action="response_approved",
             files=files,
+            file_hashes=file_hashes,
             extra={"repair_module": scope} if scope is not None else None,
         )
         return paths.approved_path
@@ -2955,6 +2965,7 @@ class RunStore:
         approved_outline = self.read_approved(safe_id, "outline")
         approved_draft = self.read_approved(safe_id, "draft")
         approved_qa = self.read_approved(safe_id, "qa")
+        self._require_current_upstream(safe_id, "factcheck", "qa")
         profile = self._load_attached_profile(safe_id)
         state = self.report_state(safe_id, "draft")
         if state != "current":
@@ -3014,6 +3025,8 @@ class RunStore:
         profile = self._load_attached_profile(safe_id)
         if self._is_guide_v1(safe_id):
             approved_factcheck = self.read_approved(safe_id, "factcheck")
+            self._require_current_upstream(safe_id, "repair", "qa")
+            self._require_current_upstream(safe_id, "repair", "factcheck")
             state = self.report_state(safe_id, "draft")
             if state != "current":
                 if state == "missing":
@@ -3100,6 +3113,8 @@ class RunStore:
         approved_draft = self.read_approved(safe_id, "draft")
         approved_qa = self.read_approved(safe_id, "qa")
         approved_factcheck = self.read_approved(safe_id, "factcheck")
+        self._require_current_upstream(safe_id, "repair", "qa")
+        self._require_current_upstream(safe_id, "repair", "factcheck")
         profile = self._load_attached_profile(safe_id)
         state = self.report_state(safe_id, "draft")
         if state != "current":
@@ -3771,6 +3786,47 @@ class RunStore:
                 return True
         return False
 
+    def _prompt_bound_source_hashes(
+        self, topic_id: str, stage: str, files: dict[str, Path]
+    ) -> dict[str, str]:
+        """Upstream hashes as recorded on the stage's latest written prompt.
+
+        An approval must key its response to the upstream bytes the *prompt*
+        embedded, not to whatever happens to be on disk when the response is
+        approved: an upstream stage reapproved in between never reached the
+        model, so the response has to read as stale. Only ``source_*`` labels
+        the prompt event actually recorded are returned -- anything else falls
+        back to hashing the current file, which keeps pre-feature and
+        grandfathered runs behaving exactly as before.
+        """
+
+        event = self._latest_stage_event(topic_id, stage, "prompt_written")
+        if event is None:
+            return {}
+        bound: dict[str, str] = {}
+        for label in files:
+            if not label.startswith("source_"):
+                continue
+            recorded = event.get(f"{label}_sha256")
+            if isinstance(recorded, str):
+                bound[label] = recorded
+        return bound
+
+    def _require_current_upstream(self, topic_id: str, stage: str, upstream: str) -> None:
+        """Refuse to compile ``stage`` while an approved upstream stage is stale.
+
+        ``_next_action_*`` already routes callers around this, but the prompt
+        writers are public: a direct caller must not be able to splice a fresh
+        draft together with superseded upstream findings and then approve the
+        result as if the stage sequence had been followed.
+        """
+
+        if self._stage_upstream_stale(topic_id, upstream):
+            raise ConfigError(
+                f"the approved {upstream} for {topic_id!r} is stale; rebuild the "
+                f"{upstream} prompt and reapprove it before {stage}"
+            )
+
     def _append_event(
         self,
         topic_id: str,
@@ -3778,6 +3834,7 @@ class RunStore:
         stage: str,
         action: str,
         files: dict[str, Path],
+        file_hashes: dict[str, str] | None = None,
         extra: dict[str, object] | None = None,
     ) -> None:
         """Append one structured stage event to the manifest.
@@ -3792,7 +3849,12 @@ class RunStore:
         safe_id = _artifact_id(topic_id, "topic id")
         with self._manifest_write_lock(safe_id):
             self._append_event_locked(
-                safe_id, stage=stage, action=action, files=files, extra=extra
+                safe_id,
+                stage=stage,
+                action=action,
+                files=files,
+                file_hashes=file_hashes,
+                extra=extra,
             )
 
     def _append_event_locked(
@@ -3802,6 +3864,7 @@ class RunStore:
         stage: str,
         action: str,
         files: dict[str, Path],
+        file_hashes: dict[str, str] | None = None,
         extra: dict[str, object] | None = None,
     ) -> None:
         """Unlocked read-modify-write of one structured stage event.
@@ -3817,7 +3880,13 @@ class RunStore:
         event: dict[str, str] = {"stage": stage, "action": action}
         for label, path in files.items():
             event[label] = _relative_to(path, run)
-            if path.is_file():
+            # An explicit hash pins the bytes this event is *about* (see
+            # _prompt_bound_source_hashes); without one, hash the file as it
+            # stands now.
+            bound = (file_hashes or {}).get(label)
+            if bound is not None:
+                event[f"{label}_sha256"] = bound
+            elif path.is_file():
                 event[f"{label}_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
         if extra:
             event.update(extra)
