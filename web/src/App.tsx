@@ -1,5 +1,6 @@
 import { Link, NavLink, Route, Routes } from "react-router-dom";
 import BuildFreshnessBanner from "./components/BuildFreshnessBanner";
+import GlobalJobActivity from "./components/GlobalJobActivity";
 import NewRunPage from "./pages/NewRunPage";
 import RunBoardPage from "./pages/RunBoardPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -30,6 +31,7 @@ export default function App() {
           </NavLink>
           <NavLink to="/settings">Settings</NavLink>
         </nav>
+        <GlobalJobActivity />
         <p className="rail-footer">
           <strong>Stored on this device</strong>
           Courses, profiles, and runs live in your local workspace.

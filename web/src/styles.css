@@ -238,6 +238,58 @@ code, pre, .technical {
   background: var(--ep-color-rail-accent);
 }
 
+/* Workspace-wide job awareness in the rail + terminal-state toasts. */
+.rail-jobs {
+  margin-top: var(--ep-space-4);
+  padding: var(--ep-space-2) var(--ep-space-3);
+  border: 1px solid var(--ep-color-rail-border);
+  border-radius: var(--ep-radius-control);
+  background: var(--ep-color-rail-active);
+  color: var(--ep-color-rail-muted);
+  font-size: 0.8125rem;
+}
+.rail-jobs strong {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--ep-color-rail-text);
+  font-size: 0.875rem;
+}
+.rail-jobs strong::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  background: var(--ep-color-rail-accent);
+  animation: ep-running-pulse 1.4s ease-in-out infinite;
+}
+.rail-jobs ul { margin: var(--ep-space-1) 0 0; padding: 0; list-style: none; }
+.rail-jobs a { color: var(--ep-color-rail-accent); font-family: var(--ep-font-technical); }
+
+.toast-region {
+  position: fixed;
+  right: var(--ep-space-4);
+  bottom: var(--ep-space-4);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ep-space-2);
+  max-width: 24rem;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ep-space-2);
+  padding: var(--ep-space-3) var(--ep-space-4);
+  border-radius: var(--ep-radius-control);
+  background: var(--ep-color-surface);
+  box-shadow: 0 6px 24px color-mix(in srgb, var(--ep-color-text) 22%, transparent);
+}
+.toast p { margin: 0; }
+.toast button { flex: none; padding: 0 0.4rem; line-height: 1.4; }
+.toast-success { border-left: 3px solid var(--ep-color-success); }
+.toast-error { border-left: 3px solid var(--ep-color-danger); }
+
 .rail-footer {
   margin-top: auto;
   padding-top: var(--ep-space-4);
