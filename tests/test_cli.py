@@ -640,7 +640,7 @@ def test_advance_repair_module_writes_scoped_prompt(
 ) -> None:
     ws = tmp_path / "ws"
     runs = test_runs._create_guide_run(ws)
-    test_runs._drive_guide_through_qa(runs, "systems-thinking")
+    test_runs._drive_guide_through_factcheck(runs, "systems-thinking")
     capsys.readouterr()
 
     exit_code = _run(ws, "advance", "systems-thinking", "--repair-module", "loop-basics")
@@ -659,7 +659,7 @@ def test_advance_repair_module_unknown_module_is_usage_error(
 ) -> None:
     ws = tmp_path / "ws"
     runs = test_runs._create_guide_run(ws)
-    test_runs._drive_guide_through_qa(runs, "systems-thinking")
+    test_runs._drive_guide_through_factcheck(runs, "systems-thinking")
     capsys.readouterr()
 
     assert _run(ws, "advance", "systems-thinking", "--repair-module", "nope") == 2

@@ -198,6 +198,24 @@ def _drive_guide_outline_to_approved(runs: RunStore, topic_id: str) -> None:
 GUIDE_FIXTURE = Path("tests/fixtures/guides/feedback-loops.guide.json").read_text(
     encoding="utf-8"
 )
+
+FACTCHECK_FIXTURE = """# Fact-Check Report: Systems Thinking
+
+## Verdict
+pass — no material factual errors.
+
+## Claim Inventory
+1. "Feedback loops couple stocks and flows" — module feedback-loops, type: definition
+
+## Findings
+(none)
+
+## Unsupported Or Uncertain Claims
+(none)
+
+## Repair Instructions
+(none)
+"""
 PERSONALIZED_GUIDE_FIXTURE = Path(
     "tests/fixtures/guides/feedback-loops.personalized.guide.json"
 ).read_text(encoding="utf-8")
@@ -278,6 +296,9 @@ def _drive_profiled_guide_to_finalize_ready(
     qa = runs.write_qa_prompt(topic_id)
     qa.response_path.write_text("# QA findings\n\nNo major issues.\n", encoding="utf-8")
     runs.approve_stage(topic_id, "qa")
+    fc = runs.write_factcheck_prompt(topic_id)
+    fc.response_path.write_text(FACTCHECK_FIXTURE, encoding="utf-8")
+    runs.approve_stage(topic_id, "factcheck")
     repair = runs.write_repair_prompt(topic_id)
     repair.response_path.write_text(body, encoding="utf-8")
     runs.approve_stage(topic_id, "repair")
@@ -351,6 +372,15 @@ def _drive_guide_through_qa(
     runs.approve_stage(topic_id, "qa")
 
 
+def _drive_guide_through_factcheck(
+    runs: RunStore, topic_id: str, *, draft_body: str | None = None
+) -> None:
+    _drive_guide_through_qa(runs, topic_id, draft_body=draft_body)
+    fc = runs.write_factcheck_prompt(topic_id)
+    fc.response_path.write_text(FACTCHECK_FIXTURE, encoding="utf-8")
+    runs.approve_stage(topic_id, "factcheck")
+
+
 def _drive_guide_to_finalize_ready(
     runs: RunStore,
     topic_id: str,
@@ -358,7 +388,7 @@ def _drive_guide_to_finalize_ready(
     draft_body: str | None = None,
     repair_body: str | None = None,
 ) -> None:
-    _drive_guide_through_qa(runs, topic_id, draft_body=draft_body)
+    _drive_guide_through_factcheck(runs, topic_id, draft_body=draft_body)
     repair = runs.write_repair_prompt(topic_id)
     body = repair_body if repair_body is not None else (
         draft_body if draft_body is not None else GUIDE_FIXTURE
@@ -690,7 +720,7 @@ def _revised_module_json(module_index: int = 0, **changes) -> str:
 
 def test_write_module_repair_prompt_scopes_and_records_the_module(tmp_path: Path) -> None:
     runs = _create_guide_run(tmp_path)
-    _drive_guide_through_qa(runs, "systems-thinking")
+    _drive_guide_through_factcheck(runs, "systems-thinking")
 
     prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
 
@@ -708,7 +738,7 @@ def test_write_module_repair_prompt_scopes_and_records_the_module(tmp_path: Path
 
 def test_write_module_repair_prompt_rejects_unknown_module(tmp_path: Path) -> None:
     runs = _create_guide_run(tmp_path)
-    _drive_guide_through_qa(runs, "systems-thinking")
+    _drive_guide_through_factcheck(runs, "systems-thinking")
 
     with pytest.raises(ConfigError, match="no-such-module"):
         runs.write_module_repair_prompt("systems-thinking", "no-such-module")
@@ -725,7 +755,7 @@ def test_write_module_repair_prompt_requires_approved_qa(tmp_path: Path) -> None
 
 def test_scoped_repair_approval_splices_and_preserves_other_modules(tmp_path: Path) -> None:
     runs = _create_guide_run(tmp_path)
-    _drive_guide_through_qa(runs, "systems-thinking")
+    _drive_guide_through_factcheck(runs, "systems-thinking")
     prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
     prompt.response_path.write_text(
         _revised_module_json(0, title="Loop Basics, Regenerated"), encoding="utf-8"
@@ -756,7 +786,7 @@ def test_scoped_repair_approval_splices_and_preserves_other_modules(tmp_path: Pa
 
 def test_scoped_repair_approval_refuses_splice_violations(tmp_path: Path) -> None:
     runs = _create_guide_run(tmp_path)
-    _drive_guide_through_qa(runs, "systems-thinking")
+    _drive_guide_through_factcheck(runs, "systems-thinking")
     prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
     prompt.response_path.write_text(
         _revised_module_json(0, id="loop-basics-renamed"), encoding="utf-8"
@@ -769,7 +799,7 @@ def test_scoped_repair_approval_refuses_splice_violations(tmp_path: Path) -> Non
 
 def test_scoped_repair_approval_refuses_a_drifted_draft(tmp_path: Path) -> None:
     runs = _create_guide_run(tmp_path)
-    _drive_guide_through_qa(runs, "systems-thinking")
+    _drive_guide_through_factcheck(runs, "systems-thinking")
     prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
     prompt.response_path.write_text(_revised_module_json(0), encoding="utf-8")
 
@@ -785,7 +815,7 @@ def test_scoped_repair_approval_refuses_a_drifted_draft(tmp_path: Path) -> None:
 
 def test_whole_guide_repair_approval_is_unchanged_after_a_scoped_retry(tmp_path: Path) -> None:
     runs = _create_guide_run(tmp_path)
-    _drive_guide_through_qa(runs, "systems-thinking")
+    _drive_guide_through_factcheck(runs, "systems-thinking")
     # A scoped prompt is written first, then replaced by a whole-guide prompt.
     runs.write_module_repair_prompt("systems-thinking", "loop-basics")
     prompt = runs.write_repair_prompt("systems-thinking", overwrite=True)
@@ -2670,6 +2700,13 @@ def test_guide_v1_full_walk_via_advance(tmp_path: Path) -> None:
     runs.stage_paths(tid, "qa").response_path.write_text("# QA\n", encoding="utf-8")
     runs.approve_stage(tid, "qa")
 
+    assert snapshot() == ("factcheck", "write_prompt")
+    assert runs.advance(tid).performed == "write_prompt"
+    runs.stage_paths(tid, "factcheck").response_path.write_text(
+        FACTCHECK_FIXTURE, encoding="utf-8"
+    )
+    runs.approve_stage(tid, "factcheck")
+
     assert snapshot() == ("repair", "write_prompt")
     assert runs.advance(tid).performed == "write_prompt"
     runs.stage_paths(tid, "repair").response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
@@ -2745,7 +2782,7 @@ def test_guide_v1_qa_prompt_gate_and_content(tmp_path: Path) -> None:
 def test_guide_v1_repair_prompt_content_and_event_extras(tmp_path: Path) -> None:
     tid = "systems-thinking"
     runs = _create_guide_run(tmp_path, tid)
-    _drive_guide_through_qa(runs, tid)
+    _drive_guide_through_factcheck(runs, tid)
 
     result = runs.write_repair_prompt(tid)
     text = result.prompt_path.read_text(encoding="utf-8")
@@ -2760,8 +2797,138 @@ def test_guide_v1_repair_prompt_content_and_event_extras(tmp_path: Path) -> None
     )
     assert "source_draft_file_sha256" in event
     assert "source_qa_file_sha256" in event
+    assert "source_factcheck_file_sha256" in event
     assert "draft_report_file_sha256" in event
     assert "contract_file_sha256" in event
+
+
+def test_required_stages_depends_on_content_contract(tmp_path: Path) -> None:
+    from education_pipeline.config import GUIDE_V1_REQUIRED_STAGES, REQUIRED_STAGES
+
+    guide = _create_guide_run(tmp_path)
+    assert guide.required_stages("systems-thinking") == GUIDE_V1_REQUIRED_STAGES
+
+    legacy = _create_legacy_run(tmp_path, "legacy-topic")
+    assert legacy.required_stages("legacy-topic") == REQUIRED_STAGES
+
+
+def test_write_factcheck_prompt_embeds_upstream_and_hashes(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_qa(runs, tid)
+    result = runs.write_factcheck_prompt(tid)
+    text = result.prompt_path.read_text(encoding="utf-8")
+    assert "Fact-Check" in text
+    assert "BEGIN UNTRUSTED DATA" in text
+    event = next(
+        e
+        for e in reversed(runs.read_manifest(tid)["events"])
+        if e["action"] == "prompt_written" and e["stage"] == "factcheck"
+    )
+    assert "source_draft_file_sha256" in event
+    assert "source_qa_file_sha256" in event
+
+
+def test_write_factcheck_prompt_requires_approved_qa(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_draft_approved(runs, tid)
+    runs.validate_run(tid, "draft")
+    with pytest.raises(ConfigError, match="qa"):
+        runs.write_factcheck_prompt(tid)
+
+
+def test_write_factcheck_refuses_legacy_runs(tmp_path: Path) -> None:
+    runs = _create_legacy_run(tmp_path)
+    with pytest.raises(ConfigError, match="interactive-guide|guide"):
+        runs.write_factcheck_prompt("systems-thinking")
+
+
+def test_guide_v1_next_action_inserts_factcheck_between_qa_and_repair(
+    tmp_path: Path,
+) -> None:
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_qa(runs, tid)
+    na = runs.run_status(tid).next_action
+    assert na.stage == "factcheck"
+    assert na.action == "write_prompt"
+
+
+def test_guide_v1_repair_requires_factcheck_and_embeds_it(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_qa(runs, tid)
+    with pytest.raises(ConfigError, match="factcheck"):
+        runs.write_repair_prompt(tid)
+
+
+def test_repair_prompt_event_binds_factcheck(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_factcheck(runs, tid)
+    result = runs.write_repair_prompt(tid)
+    assert "Approved Fact-Check Findings" in result.prompt_path.read_text(encoding="utf-8")
+    event = next(
+        e
+        for e in reversed(runs.read_manifest(tid)["events"])
+        if e["action"] == "prompt_written" and e["stage"] == "repair"
+    )
+    assert "source_factcheck_file_sha256" in event
+
+
+def test_factcheck_stale_when_qa_reapproved(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_factcheck(runs, tid)
+    qa_paths = runs.stage_paths(tid, "qa")
+    qa_paths.response_path.write_text("# QA findings\n\nChanged.\n", encoding="utf-8")
+    runs.approve_stage(tid, "qa", overwrite=True)
+    assert runs.stage_status(tid, "factcheck").stale is True
+
+
+def test_repair_stale_when_factcheck_reapproved(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_factcheck(runs, tid)
+    repair = runs.write_repair_prompt(tid)
+    repair.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    runs.approve_stage(tid, "repair")
+    fc = runs.stage_paths(tid, "factcheck")
+    fc.response_path.write_text(FACTCHECK_FIXTURE + "\n# touch\n", encoding="utf-8")
+    runs.approve_stage(tid, "factcheck", overwrite=True)
+    assert runs.stage_status(tid, "repair").stale is True
+
+
+def test_grandfather_skips_factcheck_when_repair_already_approved(
+    tmp_path: Path,
+) -> None:
+    """Simulate a pre-feature run: QA + repair approved, no factcheck artifacts."""
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_through_qa(runs, tid)
+    # Plant an approved repair with no factcheck artifacts, using only
+    # low-level files -- the pre-feature shape that grandfathering must accept.
+    repair_paths = runs.stage_paths(tid, "repair")
+    repair_paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    repair_paths.prompt_path.write_text("# planted repair prompt\n", encoding="utf-8")
+    repair_paths.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    repair_paths.approved_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    runs._append_event(
+        tid,
+        stage="repair",
+        action="response_approved",
+        files={
+            "prompt_file": repair_paths.prompt_path,
+            "approved_file": repair_paths.approved_path,
+            "source_draft_file": runs.stage_paths(tid, "draft").approved_path,
+            "source_qa_file": runs.stage_paths(tid, "qa").approved_path,
+        },
+    )
+    assert not runs.stage_paths(tid, "factcheck").approved_path.exists()
+    na = runs.run_status(tid).next_action
+    assert not (na.stage == "factcheck")
+    assert na.action in {"validate", "finalize", "resolve_findings", "done"}
 
 
 def test_guide_v1_unparseable_draft_blocks_qa(tmp_path: Path) -> None:
@@ -3070,7 +3237,7 @@ def test_final_validation_report_includes_computed_static_checks(tmp_path: Path)
     """A healthy run's final report has no runtime.* findings; the context was computed."""
     tid = "systems-thinking"
     store = _create_guide_run(tmp_path, tid)
-    _drive_guide_through_qa(store, tid)
+    _drive_guide_through_factcheck(store, tid)
     repair = store.write_repair_prompt(tid)
     repair.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
     store.approve_stage(tid, "repair")
@@ -3101,7 +3268,7 @@ def test_final_validation_size_limit_applies_before_parsing(tmp_path: Path) -> N
     """An oversized-but-parseable final source keeps the size-limit blocker and a current report."""
     tid = "systems-thinking"
     store = _create_guide_run(tmp_path, tid)
-    _drive_guide_through_qa(store, tid)
+    _drive_guide_through_factcheck(store, tid)
     oversized = GUIDE_FIXTURE + " " * 2_000_001
     repair = store.write_repair_prompt(tid)
     repair.response_path.write_text(oversized, encoding="utf-8")
@@ -3123,7 +3290,7 @@ def test_report_state_is_current_for_crlf_final_source(tmp_path: Path) -> None:
     """
     tid = "systems-thinking"
     store = _create_guide_run(tmp_path, tid)
-    _drive_guide_through_qa(store, tid)
+    _drive_guide_through_factcheck(store, tid)
     oversized_crlf = (GUIDE_FIXTURE + " " * 2_000_001).replace("\n", "\r\n")
     repair = store.write_repair_prompt(tid)
     repair.response_path.write_bytes(oversized_crlf.encode("utf-8"))
@@ -3785,6 +3952,9 @@ def test_draft_and_final_validation_write_canonical_trace_without_draft_regressi
     qa = runs.write_qa_prompt(tid)
     qa.response_path.write_text("# QA\n", encoding="utf-8")
     runs.approve_stage(tid, "qa")
+    fc = runs.write_factcheck_prompt(tid)
+    fc.response_path.write_text(FACTCHECK_FIXTURE, encoding="utf-8")
+    runs.approve_stage(tid, "factcheck")
     repair = runs.write_repair_prompt(tid)
     final_source = json.loads(PERSONALIZED_GUIDE_FIXTURE)
     final_source["course"]["description"] += " Final candidate."

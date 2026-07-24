@@ -1027,7 +1027,7 @@ def compile_guide_v1_repair_prompt(
     *,
     draft_guide_json: str,
     qa_findings_markdown: str,
-    factcheck_findings_markdown: str = "",
+    factcheck_findings_markdown: str,
     draft_findings_json: str,
     guide_contract: bytes,
     profile: LearnerProfile | None = None,
@@ -1045,14 +1045,14 @@ def compile_guide_v1_repair_prompt(
     approved QA findings, fact-check findings, deterministic findings, and
     draft are delimited as untrusted data, same as the QA prompt.
 
-    ``factcheck_findings_markdown`` carries a temporary ``""`` default while
-    the ``runs.py`` call site is bridged across tasks; when empty the
-    ``## Approved Fact-Check Findings`` section is omitted. Task 3 makes it
-    required.
+    ``factcheck_findings_markdown`` is required: guide-v1 repair always runs
+    after an approved fact-check stage, so the ``## Approved Fact-Check
+    Findings`` section is always present.
     """
 
     _required_block(draft_guide_json, "draft guide JSON")
     _required_block(qa_findings_markdown, "QA findings")
+    _required_block(factcheck_findings_markdown, "factcheck findings")
     _required_block(draft_findings_json, "draft findings")
     contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
     personalization_lines = _private_personalization_lines(
@@ -1075,18 +1075,16 @@ def compile_guide_v1_repair_prompt(
             _untrusted_block("approved model-QA findings", qa_findings_markdown),
         ),
     ]
-    if factcheck_findings_markdown:
-        _required_block(factcheck_findings_markdown, "factcheck findings")
-        sections.append(
-            (
-                "## Approved Fact-Check Findings",
-                "The required factual fixes. Resolve every blocker and major finding.",
-                "factcheck findings",
-                _untrusted_block(
-                    "approved fact-check findings", factcheck_findings_markdown
-                ),
-            )
+    sections.append(
+        (
+            "## Approved Fact-Check Findings",
+            "The required factual fixes. Resolve every blocker and major finding.",
+            "factcheck findings",
+            _untrusted_block(
+                "approved fact-check findings", factcheck_findings_markdown
+            ),
         )
+    )
     sections.extend(
         [
             (
@@ -1190,7 +1188,7 @@ def compile_guide_v1_module_repair_prompt(
     module_id: str,
     draft_guide_json: str,
     qa_findings_markdown: str,
-    factcheck_findings_markdown: str = "",
+    factcheck_findings_markdown: str,
     draft_findings_json: str,
     guide_contract: bytes,
     profile: LearnerProfile | None = None,
@@ -1208,10 +1206,9 @@ def compile_guide_v1_module_repair_prompt(
     The fact-check report is embedded in full (v1 does not filter fact-check
     findings by module — it avoids inventing a second splitter contract; the
     model is told to apply only the findings that fall inside this module).
-    ``factcheck_findings_markdown`` carries a temporary ``""`` default while the
-    ``runs.py`` call site is bridged across tasks; when empty the
-    ``## Approved Fact-Check Findings`` section is omitted. Task 3 makes it
-    required.
+    ``factcheck_findings_markdown`` is required: module-scoped repair always
+    runs after an approved fact-check stage, so the ``## Approved Fact-Check
+    Findings`` section is always present.
     """
 
     from education_pipeline.guides.canonical import guide_to_dict
@@ -1219,6 +1216,7 @@ def compile_guide_v1_module_repair_prompt(
 
     _required_block(draft_guide_json, "draft guide JSON")
     _required_block(qa_findings_markdown, "QA findings")
+    _required_block(factcheck_findings_markdown, "factcheck findings")
     _required_block(draft_findings_json, "draft findings")
     contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
 
@@ -1304,20 +1302,17 @@ def compile_guide_v1_module_repair_prompt(
     )
     # v1 embeds the fact-check report in full rather than filtering it by module
     # (see docstring); the model applies only the in-module factual fixes.
-    factcheck_sections: tuple[tuple[str, str, str, str], ...] = ()
-    if factcheck_findings_markdown:
-        _required_block(factcheck_findings_markdown, "factcheck findings")
-        factcheck_sections = (
-            (
-                "## Approved Fact-Check Findings",
-                "The full fact-check report. Apply the factual fixes that fall inside this module "
-                "and treat the rest as context. Resolve every in-scope blocker and major finding.",
-                "factcheck findings",
-                _untrusted_block(
-                    "approved fact-check findings", factcheck_findings_markdown
-                ),
+    factcheck_sections: tuple[tuple[str, str, str, str], ...] = (
+        (
+            "## Approved Fact-Check Findings",
+            "The full fact-check report. Apply the factual fixes that fall inside this module "
+            "and treat the rest as context. Resolve every in-scope blocker and major finding.",
+            "factcheck findings",
+            _untrusted_block(
+                "approved fact-check findings", factcheck_findings_markdown
             ),
-        )
+        ),
+    )
     return _compile_stage_prompt(
         stage="repair",
         pre_topic_lines=_blueprint_contract_lines(blueprint, "repair_lines"),

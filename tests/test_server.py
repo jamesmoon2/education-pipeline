@@ -1139,7 +1139,7 @@ def _drive_guide_through_qa_http(context, topic_id="scoped-topic"):
     TopicStore(context.root).save_topic_toml(topic_id, topic_toml)
     runs = context.runs
     runs.create_run(topic_id)
-    test_runs._drive_guide_through_qa(runs, topic_id)
+    test_runs._drive_guide_through_factcheck(runs, topic_id)
     return runs
 
 

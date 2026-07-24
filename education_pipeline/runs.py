@@ -13,6 +13,7 @@ import threading
 import tomllib
 
 from education_pipeline.config import (
+    GUIDE_V1_REQUIRED_STAGES,
     OPTIONAL_STAGES,
     REQUIRED_STAGES,
     SUPPORTED_STAGES,
@@ -81,6 +82,7 @@ from education_pipeline.prompts import (
     SpecPromptInput,
     compile_draft_prompt,
     compile_guide_v1_draft_prompt,
+    compile_guide_v1_factcheck_prompt,
     compile_guide_v1_module_repair_prompt,
     compile_guide_v1_outline_prompt,
     compile_guide_v1_qa_prompt,
@@ -600,13 +602,28 @@ class RunStore:
         ]
         return tuple(sorted(ids))
 
+    def required_stages(self, topic_id: str) -> tuple[str, ...]:
+        """Required model stages for progress/next-action of this run.
+
+        Interactive-guide (guide-v1) runs require the adversarial ``factcheck``
+        stage between ``qa`` and ``repair``; legacy Markdown runs never do.
+        """
+
+        if self.content_contract(topic_id).kind == "interactive_guide":
+            return GUIDE_V1_REQUIRED_STAGES
+        return REQUIRED_STAGES
+
     def stage_status(self, topic_id: str, stage: str) -> StageStatus:
         """Report the persisted progress for one stage of a run."""
 
         paths = self.stage_paths(topic_id, stage)
         approved = paths.approved_path.exists()
         stale = False
-        if approved and self._is_guide_v1(paths.topic_id) and paths.stage in {"qa", "repair"}:
+        if approved and self._is_guide_v1(paths.topic_id) and paths.stage in {
+            "qa",
+            "factcheck",
+            "repair",
+        }:
             stale = self._stage_upstream_stale(paths.topic_id, paths.stage)
         elif paths.stage == "audit":
             stale = (
@@ -681,6 +698,7 @@ class RunStore:
             "outline": self.write_outline_prompt,
             "draft": self.write_draft_prompt,
             "qa": self.write_qa_prompt,
+            "factcheck": self.write_factcheck_prompt,
             "repair": self.write_repair_prompt,
         }
         try:
@@ -781,8 +799,17 @@ class RunStore:
                 ),
             )
 
-        for stage_name in ("qa", "repair"):
+        for stage_name in ("qa", "factcheck", "repair"):
             status = by_stage[stage_name]
+            if (
+                stage_name == "factcheck"
+                and by_stage["repair"].approved
+                and not by_stage["factcheck"].approved
+            ):
+                # Grandfather pre-feature runs that already approved repair
+                # before the factcheck stage existed: never demand a factcheck
+                # for a run whose repair is already done.
+                continue
             if status.approved and status.stale:
                 return self._stale_stage_rebuild_action(topic_id, stage_name)
             pending = self._pending_stage_action(topic_id, status)
@@ -896,7 +923,7 @@ class RunStore:
         if prompt_event is not None and draft_sha is not None:
             recorded_draft = prompt_event.get("source_draft_file_sha256")
             needs_prompt = recorded_draft != draft_sha
-            if stage == "repair" and not needs_prompt:
+            if stage in {"factcheck", "repair"} and not needs_prompt:
                 qa_path = self.stage_paths(topic_id, "qa").approved_path
                 qa_sha = (
                     hashlib.sha256(qa_path.read_bytes()).hexdigest()
@@ -905,6 +932,15 @@ class RunStore:
                 )
                 recorded_qa = prompt_event.get("source_qa_file_sha256")
                 needs_prompt = recorded_qa != qa_sha
+            if stage == "repair" and not needs_prompt:
+                fc_path = self.stage_paths(topic_id, "factcheck").approved_path
+                fc_sha = (
+                    hashlib.sha256(fc_path.read_bytes()).hexdigest()
+                    if fc_path.is_file()
+                    else None
+                )
+                recorded_fc = prompt_event.get("source_factcheck_file_sha256")
+                needs_prompt = recorded_fc != fc_sha
 
         if needs_prompt:
             return NextAction(
@@ -1042,10 +1078,23 @@ class RunStore:
             "prompt_file": paths.prompt_path,
             "approved_file": paths.approved_path,
         }
-        if self._is_guide_v1(paths.topic_id) and paths.stage in {"qa", "repair"}:
+        if self._is_guide_v1(paths.topic_id) and paths.stage in {
+            "qa",
+            "factcheck",
+            "repair",
+        }:
             files["source_draft_file"] = self.stage_paths(paths.topic_id, "draft").approved_path
-            if paths.stage == "repair":
+            if paths.stage in {"factcheck", "repair"}:
                 files["source_qa_file"] = self.stage_paths(paths.topic_id, "qa").approved_path
+            if paths.stage == "repair":
+                factcheck_approved = self.stage_paths(
+                    paths.topic_id, "factcheck"
+                ).approved_path
+                # Only bind the fact-check source when it exists: grandfathered
+                # pre-feature repairs have none, and recording an absent source
+                # would make the stale check false-positive forever.
+                if factcheck_approved.is_file():
+                    files["source_factcheck_file"] = factcheck_approved
         self._append_event(
             paths.topic_id,
             stage=paths.stage,
@@ -2880,6 +2929,71 @@ class RunStore:
         )
         return self._write_prompt(artifact, overwrite=overwrite)
 
+    def write_factcheck_prompt(
+        self,
+        topic_id: str,
+        *,
+        overwrite: bool = False,
+    ) -> PromptFile:
+        """Compile and write the guide-v1 factcheck prompt.
+
+        The adversarial fact-check stage runs between QA and repair for
+        interactive-guide runs only. It requires the spec, outline, draft, and
+        QA stages to have been approved, plus a current draft validation report
+        and a parseable approved draft (same gates as ``write_qa_prompt``). The
+        stage never rewrites the draft; it produces a fixed-section report.
+        """
+
+        safe_id = _artifact_id(topic_id, "topic id")
+        if not self._is_guide_v1(safe_id):
+            raise ConfigError(
+                f"the factcheck stage applies only to interactive-guide runs; "
+                f"{safe_id!r} is a legacy Markdown run"
+            )
+        topic = TopicStore(self.root).load_topic(safe_id)
+        approved_spec = self.read_approved(safe_id, "spec")
+        approved_outline = self.read_approved(safe_id, "outline")
+        approved_draft = self.read_approved(safe_id, "draft")
+        approved_qa = self.read_approved(safe_id, "qa")
+        profile = self._load_attached_profile(safe_id)
+        state = self.report_state(safe_id, "draft")
+        if state != "current":
+            if state == "missing":
+                raise ConfigError(
+                    f"draft validation is required before factcheck for {safe_id!r}; "
+                    "run draft validation first"
+                )
+            raise ConfigError(
+                f"draft validation is stale for {safe_id!r}; "
+                "the draft changed and must be revalidated before factcheck"
+            )
+        parsed = parse_guide(approved_draft)
+        if not parsed.ok:
+            raise ConfigError(
+                f"approved draft for {safe_id!r} is too malformed for factcheck; "
+                "correct and reapprove the draft response"
+            )
+        draft_guide_json = canonical_guide_bytes(normalize_guide(parsed)).decode("utf-8")
+        draft_findings_json = self.draft_report_path(safe_id).read_text(encoding="utf-8")
+        artifact = compile_guide_v1_factcheck_prompt(
+            topic,
+            approved_spec=approved_spec,
+            approved_outline=approved_outline,
+            draft_guide_json=draft_guide_json,
+            qa_findings_markdown=approved_qa,
+            draft_findings_json=draft_findings_json,
+            profile=profile,
+            blueprint=self.run_blueprint(safe_id),
+        )
+        extra_files = {
+            "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
+            "source_qa_file": self.stage_paths(safe_id, "qa").approved_path,
+            "draft_report_file": self.draft_report_path(safe_id),
+        }
+        return self._write_prompt(
+            artifact, overwrite=overwrite, extra_event_files=extra_files
+        )
+
     def write_repair_prompt(
         self,
         topic_id: str,
@@ -2899,6 +3013,7 @@ class RunStore:
         approved_qa = self.read_approved(safe_id, "qa")
         profile = self._load_attached_profile(safe_id)
         if self._is_guide_v1(safe_id):
+            approved_factcheck = self.read_approved(safe_id, "factcheck")
             state = self.report_state(safe_id, "draft")
             if state != "current":
                 if state == "missing":
@@ -2927,6 +3042,7 @@ class RunStore:
                 topic,
                 draft_guide_json=draft_guide_json,
                 qa_findings_markdown=approved_qa,
+                factcheck_findings_markdown=approved_factcheck,
                 draft_findings_json=draft_findings_json,
                 guide_contract=contract_path.read_bytes(),
                 profile=profile,
@@ -2935,6 +3051,7 @@ class RunStore:
             extra_files = {
                 "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
                 "source_qa_file": self.stage_paths(safe_id, "qa").approved_path,
+                "source_factcheck_file": self.stage_paths(safe_id, "factcheck").approved_path,
                 "draft_report_file": self.draft_report_path(safe_id),
                 "contract_file": contract_path,
             }
@@ -2971,14 +3088,18 @@ class RunStore:
                 f"module-scoped repair applies only to interactive-guide runs; "
                 f"{safe_id!r} is a legacy Markdown run"
             )
-        if not self.stage_paths(safe_id, "qa").approved_path.is_file():
+        if not (
+            self.stage_paths(safe_id, "qa").approved_path.is_file()
+            and self.stage_paths(safe_id, "factcheck").approved_path.is_file()
+        ):
             raise ConfigError(
                 f"module-scoped repair for {safe_id!r} is available only when repair "
-                "is the run's active stage; approve the qa stage first"
+                "is the run's active stage; approve the qa and factcheck stages first"
             )
         topic = TopicStore(self.root).load_topic(safe_id)
         approved_draft = self.read_approved(safe_id, "draft")
         approved_qa = self.read_approved(safe_id, "qa")
+        approved_factcheck = self.read_approved(safe_id, "factcheck")
         profile = self._load_attached_profile(safe_id)
         state = self.report_state(safe_id, "draft")
         if state != "current":
@@ -3009,6 +3130,7 @@ class RunStore:
             module_id=module_id,
             draft_guide_json=draft_guide_json,
             qa_findings_markdown=approved_qa,
+            factcheck_findings_markdown=approved_factcheck,
             draft_findings_json=draft_findings_json,
             guide_contract=contract_path.read_bytes(),
             profile=profile,
@@ -3017,6 +3139,7 @@ class RunStore:
         extra_files = {
             "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
             "source_qa_file": self.stage_paths(safe_id, "qa").approved_path,
+            "source_factcheck_file": self.stage_paths(safe_id, "factcheck").approved_path,
             "draft_report_file": self.draft_report_path(safe_id),
             "contract_file": contract_path,
         }
@@ -3604,7 +3727,15 @@ class RunStore:
         return None
 
     def _stage_upstream_stale(self, topic_id: str, stage: str) -> bool:
-        """True when an approved guide-v1 qa/repair stage's recorded upstream hashes drifted."""
+        """True when an approved guide-v1 qa/factcheck/repair stage's recorded
+        upstream hashes drifted.
+
+        The chain deepens downstream: qa depends on the draft; factcheck on the
+        draft and approved qa; repair on the draft, approved qa, and approved
+        factcheck. A recorded hash that is absent (a pre-feature or
+        grandfathered event) is treated as "no dependency to check", never as
+        stale.
+        """
 
         event = self._latest_stage_event(topic_id, stage, "response_approved")
         if event is None:
@@ -3619,7 +3750,7 @@ class RunStore:
         if recorded_draft != hashlib.sha256(draft_path.read_bytes()).hexdigest():
             return True
 
-        if stage == "repair":
+        if stage in {"factcheck", "repair"}:
             recorded_qa = event.get("source_qa_file_sha256")
             if recorded_qa is None:
                 return False
@@ -3627,6 +3758,16 @@ class RunStore:
             if not qa_path.is_file():
                 return True
             if recorded_qa != hashlib.sha256(qa_path.read_bytes()).hexdigest():
+                return True
+
+        if stage == "repair":
+            recorded_fc = event.get("source_factcheck_file_sha256")
+            if recorded_fc is None:
+                return False
+            fc_path = self.stage_paths(topic_id, "factcheck").approved_path
+            if not fc_path.is_file():
+                return True
+            if recorded_fc != hashlib.sha256(fc_path.read_bytes()).hexdigest():
                 return True
         return False
 
