@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from education_pipeline import ui as ui_module
 from education_pipeline.registry import load_registry, record_workspace
 from education_pipeline.ui import UiDeps, run_ui
 
@@ -172,3 +173,86 @@ def test_ui_is_idempotent_for_a_live_daemon(tmp_path: Path) -> None:
     # ensure_daemon owns reuse-vs-start; ui just calls it each time.
     assert calls["ensure"] == [(ws.resolve(), True)] * 2
     assert len(calls["opened"]) == 2
+
+
+def test_stale_build_warns_but_launches(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    deps, calls = make_deps(
+        tmp_path,
+        build_report=lambda dist: {"status": "stale", "build_id": "1000"},
+    )
+    assert run_ui(str(tmp_path / "ws"), deps=deps) == 0
+    err = capsys.readouterr().err
+    assert "warning [cockpit_build_stale]" in err
+    assert "npm run build" in err
+    assert "--rebuild" in err
+    assert calls["opened"]  # launch was not blocked
+
+
+def test_fresh_build_prints_no_warning(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    deps, calls = make_deps(tmp_path)
+    assert run_ui(str(tmp_path / "ws"), deps=deps) == 0
+    assert "cockpit_build_stale" not in capsys.readouterr().err
+
+
+def test_rebuild_runs_npm_then_launches(tmp_path):
+    web_dir = tmp_path / "web"
+    (web_dir / "dist").mkdir(parents=True)
+    (web_dir / "dist" / "index.html").write_text("built", encoding="utf-8")
+    built = []
+    reported = []
+    deps, calls = make_deps(
+        tmp_path,
+        repo_web_dir=lambda: web_dir,
+        npm_build=lambda d: built.append(d) or 0,
+        web_dist=lambda: tmp_path / "packaged-webdist",
+        build_report=lambda dist: reported.append(dist) or {"status": "ok"},
+    )
+    assert run_ui(str(tmp_path / "ws"), rebuild=True, deps=deps) == 0
+    assert built == [web_dir]
+    assert reported == [web_dir / "dist"]
+    assert calls["opened"]
+
+
+def test_rebuild_outside_checkout_errors(tmp_path, capsys):
+    deps, calls = make_deps(tmp_path, repo_web_dir=lambda: None)
+    assert run_ui(str(tmp_path / "ws"), rebuild=True, deps=deps) == 1
+    assert "cockpit_rebuild_unavailable" in capsys.readouterr().err
+    assert not calls["ensure"]  # no daemon was started
+
+
+def test_rebuild_without_npm_errors(tmp_path, capsys):
+    deps, calls = make_deps(
+        tmp_path,
+        repo_web_dir=lambda: tmp_path / "web",
+        npm_build=lambda d: None,
+    )
+    assert run_ui(str(tmp_path / "ws"), rebuild=True, deps=deps) == 1
+    assert "npm_missing" in capsys.readouterr().err
+
+
+def test_rebuild_failure_stops_launch(tmp_path, capsys):
+    deps, calls = make_deps(
+        tmp_path,
+        repo_web_dir=lambda: tmp_path / "web",
+        npm_build=lambda d: 2,
+    )
+    assert run_ui(str(tmp_path / "ws"), rebuild=True, deps=deps) == 1
+    assert "cockpit_build_failed" in capsys.readouterr().err
+    assert not calls["ensure"]
+
+
+def test_default_npm_build_returns_none_when_npm_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(ui_module.shutil, "which", lambda name: None)
+    assert ui_module._default_npm_build(tmp_path) is None
+
+
+def test_default_npm_build_returns_nonzero_on_spawn_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(ui_module.shutil, "which", lambda name: "/usr/bin/npm")
+
+    def _raise(*args, **kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(ui_module.subprocess, "call", _raise)
+    code = ui_module._default_npm_build(tmp_path)
+    assert isinstance(code, int)
+    assert code != 0

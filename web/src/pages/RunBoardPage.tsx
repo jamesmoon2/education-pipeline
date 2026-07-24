@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { ApiRequestError, getJobs, getPersonalization, getRunStatus, postAdvance } from "../api/client";
-import type { Job, RunStatus, StageProvenance } from "../api/types";
+import type { Job, RunStatus } from "../api/types";
 import AuditControls from "../components/AuditControls";
 import CanonicalGuidePreview, {
   type CanonicalGuidePreviewHandle,
@@ -10,31 +10,12 @@ import ErrorNotice from "../components/ErrorNotice";
 import InfoTip from "../components/InfoTip";
 import JobsPanel, { ACTIVE_JOB_STATUSES } from "../components/JobsPanel";
 import PersonalizationPanel from "../components/PersonalizationPanel";
+import PipelineStepper from "../components/PipelineStepper";
 import PrimaryAction from "../components/PrimaryAction";
 import RunPlanPanel from "../components/RunPlanPanel";
 import ValidationFindingsPanel from "../components/ValidationFindingsPanel";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
-import { stageStateLabel } from "../lib/labels";
-
-// The latest provenance entry per stage — a stage can be re-run, so multiple
-// entries may share a stage name; the most recently recorded one wins.
-function latestProvenanceByStage(entries: StageProvenance[]): Map<string, StageProvenance> {
-  const latest = new Map<string, StageProvenance>();
-  for (const entry of entries) {
-    const existing = latest.get(entry.stage);
-    if (!existing || entry.recorded_at > existing.recorded_at) {
-      latest.set(entry.stage, entry);
-    }
-  }
-  return latest;
-}
-
-function formatProvenance(entry: StageProvenance): string {
-  const model = entry.model ? ` / ${entry.model}` : "";
-  const effort = entry.effort ? ` / ${entry.effort}` : "";
-  return `ran on ${entry.provider}${model}${effort} (${entry.source})`;
-}
 
 // Blocking-or-error findings by stage, combined across the draft and final
 // validation reports, so a stage badges up if either phase flagged it.
@@ -182,9 +163,14 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
   // a queued/running job must be visible at the TOP of the board — in the
   // action area and on its stage row — not only after scrolling to Jobs.
   const fetchJobs = useCallback(() => getJobs(topicId), [topicId]);
-  const { data: jobsData } = usePolling(fetchJobs, 2_000);
-  const activeJob: Job | null =
-    jobsData?.jobs.find((job) => ACTIVE_JOB_STATUSES.has(job.status)) ?? null;
+  const { data: jobsData, error: jobsError } = usePolling(fetchJobs, 2_000);
+  // While the jobs poll is failing, usePolling keeps its last payload; a job
+  // that terminated during the outage would stay presented as "Running…" in
+  // the action area and on its stepper node. Treat the snapshot as unusable
+  // until a poll succeeds again (error clears on the next good tick).
+  const activeJob: Job | null = jobsError
+    ? null
+    : (jobsData?.jobs.find((job) => ACTIVE_JOB_STATUSES.has(job.status)) ?? null);
   const [contentGeneration, setContentGeneration] = useState(0);
   const refresh = useCallback(() => {
     refreshStatus();
@@ -222,7 +208,6 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
     return <p className="error" role="alert">Run response does not match this topic.</p>;
   }
 
-  const provenanceByStage = latestProvenanceByStage(status.stage_provenance);
   const findingsByStage = combinedFindingsByStage(status);
 
   return (
@@ -238,53 +223,11 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
         <strong>Next:</strong> {status.next_action.detail}
       </p>
       <PrimaryAction status={status} activeJob={activeJob} onChanged={refresh} />
-      <table>
-        <thead>
-          <tr>
-            <th>Stage</th>
-            <th>State</th>
-            <th>Findings</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {status.stages.map((s) => {
-            const provenance = provenanceByStage.get(s.stage);
-            const findingsCount = findingsByStage[s.stage] ?? 0;
-            const stageJob = activeJob?.stage === s.stage ? activeJob : null;
-            return (
-              <tr key={s.stage}>
-                <td>{s.stage}</td>
-                <td>
-                  {stageJob ? (
-                    <span className="state state-running">
-                      {stageJob.status === "queued"
-                        ? `Queued with ${stageJob.provider}`
-                        : `Running with ${stageJob.provider}…`}
-                    </span>
-                  ) : (
-                    <span className={`state state-${s.state}`}>{stageStateLabel(s.state)}</span>
-                  )}
-                  {provenance && <p className="stage-provenance">{formatProvenance(provenance)}</p>}
-                </td>
-                <td>
-                  {findingsCount > 0 && (
-                    <span
-                      className="findings-badge"
-                      aria-label={`${findingsCount} ${findingsCount === 1 ? "finding" : "findings"}`}
-                    >
-                      {findingsCount}
-                    </span>
-                  )}
-                </td>
-                <td>
-                  <Link to={`/topics/${status.topic_id}/stages/${s.stage}`}>view</Link>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <PipelineStepper
+        status={status}
+        activeJob={activeJob}
+        findingsByStage={findingsByStage}
+      />
       <p>
         Finalized: {status.finalized ? "yes" : "no"}{" "}
         <InfoTip

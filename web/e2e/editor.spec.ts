@@ -69,10 +69,10 @@ test("edit → save → re-approve → finalize entirely in the browser", async 
   page.on("dialog", (dialog) => dialog.accept());
   await importTopicAndRunAllStages(page, "w", "Editable Topic");
 
-  // open the repair stage viewer and edit its response
+  // open the repair stage viewer (stepper node link) and edit its response
   await page
-    .getByRole("row", { name: /repair/ })
-    .getByRole("link", { name: "view" })
+    .getByRole("listitem", { name: "repair stage" })
+    .getByRole("link", { name: "repair" })
     .click();
   await page.getByRole("tab", { name: /^response/ }).click();
   await page.getByRole("button", { name: "Edit" }).click();
@@ -119,8 +119,8 @@ test("a concurrent external edit is detected and rejected, never overwritten", a
 
   // open the editor with the loaded content/hash
   await page
-    .getByRole("row", { name: /spec/ })
-    .getByRole("link", { name: "view" })
+    .getByRole("listitem", { name: "spec stage" })
+    .getByRole("link", { name: "spec" })
     .click();
   await page.getByRole("tab", { name: /^response/ }).click();
   await page.getByRole("button", { name: "Edit" }).click();

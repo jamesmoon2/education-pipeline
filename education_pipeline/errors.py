@@ -136,6 +136,23 @@ ERROR_CATALOG: dict[str, ErrorCode] = dict(
             "The request Host header is not allowed.",
             "Access the cockpit via 127.0.0.1 or localhost only.",
         ),
+        _entry(
+            "cockpit_rebuild_unavailable",
+            "--rebuild needs a source checkout containing web/src.",
+            "Packaged installs already bundle the cockpit; run "
+            "`education-pipeline ui` without --rebuild.",
+        ),
+        _entry(
+            "npm_missing",
+            "npm was not found on PATH.",
+            "Install Node.js (which provides npm), or build manually with "
+            "`cd web && npm run build`.",
+        ),
+        _entry(
+            "cockpit_build_failed",
+            "The cockpit build (npm run build) failed.",
+            "Fix the reported build errors in web/, then rerun.",
+        ),
     ]
 )
 

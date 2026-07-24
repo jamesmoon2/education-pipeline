@@ -152,11 +152,70 @@ describe("StageViewerPage", () => {
       content_type: "text/markdown",
     });
     renderAt("/topics/t/stages/draft");
-    expect(await screen.findByText("# the prompt")).toBeInTheDocument();
+    // Markdown renders as prose by default; the Raw toggle restores the bytes.
+    expect(await screen.findByRole("heading", { name: "the prompt" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Raw" }));
+    expect(screen.getByText("# the prompt")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: /^response/ }));
-    expect(screen.getByText("# the response")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "the response" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: /^approved/ }));
     expect(screen.getByText("(no approved yet)")).toBeInTheDocument();
+  });
+
+  it("switches to the requested tab on in-page navigation to the same stage", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "qa",
+      prompt: "# the prompt",
+      response: "# the response",
+      approved: null,
+      response_sha256: "sha-1",
+      content_type: "text/markdown",
+    });
+    // A job toast's "ready to review" link navigates to the stage the user
+    // may already be viewing: only the ?tab= query changes, so the route
+    // key stays the same and the viewer must react to the query itself.
+    render(
+      <MemoryRouter initialEntries={["/topics/t/stages/qa"]}>
+        <Link to="/topics/t/stages/qa?tab=response">ready to review</Link>
+        <Routes>
+          <Route path="/topics/:topicId/stages/:stage" element={<StageViewerPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole("heading", { name: "the prompt" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("link", { name: "ready to review" }));
+    expect(await screen.findByRole("heading", { name: "the response" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /^response/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("opens the paste form on in-page navigation with ?paste=1", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "audit",
+      prompt: "# audit prompt",
+      response: '{"findings": []}',
+      approved: null,
+      response_sha256: "sha-1",
+      content_type: "application/json",
+    });
+    // AuditControls links to the audit stage with ?tab=response&paste=1;
+    // when that stage page is already open only the query changes.
+    render(
+      <MemoryRouter initialEntries={["/topics/t/stages/audit"]}>
+        <Link to="/topics/t/stages/audit?tab=response&paste=1">Paste audit response…</Link>
+        <Routes>
+          <Route path="/topics/:topicId/stages/:stage" element={<StageViewerPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await screen.findByRole("tab", { name: /^response/ });
+    expect(screen.queryByLabelText("Response for audit")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("link", { name: "Paste audit response…" }));
+    expect(await screen.findByLabelText("Response for audit")).toBeInTheDocument();
   });
 
   it("explains the prompt/response/approved workflow with an InfoTip", async () => {

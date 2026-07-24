@@ -348,6 +348,28 @@ def test_profile_store_alias_paths_share_lock_and_allow_one_stale_writer(
     }
 
 
+def test_profile_lock_identity_does_not_depend_on_path_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows resolve() can change spelling when a parent starts existing."""
+
+    target = tmp_path / "new-workspace" / "profiles" / "p1.toml"
+    monkeypatch.setattr(
+        Path,
+        "resolve",
+        lambda self, strict=False: (_ for _ in ()).throw(
+            AssertionError("lock identity must not consult Path.resolve")
+        ),
+    )
+
+    first = _profile_lock(target)
+    target.parent.mkdir(parents=True)
+    target.write_text("profile", encoding="utf-8")
+    second = _profile_lock(target)
+
+    assert first is second
+
+
 def test_profile_store_rejects_id_mismatch(tmp_path: Path) -> None:
     store = ProfileStore(tmp_path)
 

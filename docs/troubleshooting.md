@@ -31,13 +31,24 @@ enforces that).
 | `invalid_guide_json` | The guide text is not valid JSON. | Fix the JSON syntax and try again. |
 | `unauthorized` | The request token is missing or invalid. | Reload the cockpit page to refresh the session token. |
 | `bad_host` | The request Host header is not allowed. | Access the cockpit via 127.0.0.1 or localhost only. |
+| `cockpit_rebuild_unavailable` | --rebuild needs a source checkout containing web/src. | Packaged installs already bundle the cockpit; run `education-pipeline ui` without --rebuild. |
+| `npm_missing` | npm was not found on PATH. | Install Node.js (which provides npm), or build manually with `cd web && npm run build`. |
+| `cockpit_build_failed` | The cockpit build (npm run build) failed. | Fix the reported build errors in web/, then rerun. |
 
 ## Common first-run problems
 
+**I pulled changes but the cockpit looks the same.** The daemon serves
+the built bundle in `web/dist`, and `git pull` only updates source.
+`education-pipeline ui` prints a `cockpit_build_stale` warning and the
+cockpit shows a banner when this happens. Rebuild with
+`(cd web && npm run build)` (or `education-pipeline ui --rebuild`) and
+hard-reload the browser. Restarting the daemon alone never fixes this.
+
 **`education-pipeline ui` says the cockpit assets are missing
 (`web_assets_missing`).** Packaged release wheels bundle the built cockpit;
-a source checkout does not. In a checkout, build once with `npm run build`
-in `web/`. The CLI works either way — only the browser cockpit needs the
+a source checkout does not. In a checkout, build with `npm run build`
+in `web/` — and rebuild after any `git pull` that touches `web/`, or
+launch with `education-pipeline ui --rebuild`. The CLI works either way — only the browser cockpit needs the
 built assets.
 
 **The cockpit page loads but every request fails (`unauthorized`).** The

@@ -25,6 +25,13 @@ python3 -m pip install -e ".[dev]"
 (cd web && npm ci && npm run build)   # only needed for the cockpit
 ```
 
+> **Keeping a source checkout current:** `git pull` updates the cockpit's
+> *source*, not the built bundle the daemon serves. After any pull that
+> touches `web/`, rebuild with `(cd web && npm run build)` — or launch
+> with `education-pipeline ui --rebuild`. If you skip this, `ui` warns
+> and the cockpit shows a banner. Release wheels bundle a prebuilt
+> cockpit and never need this.
+
 Installation is verified in CI on Linux, macOS, and Windows.
 
 ## 2. Launch

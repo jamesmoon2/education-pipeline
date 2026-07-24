@@ -1289,9 +1289,10 @@ def _patch_run_ui(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     seen: dict = {}
 
-    def fake_run_ui(workspace, *, no_browser=False, deps=None):
+    def fake_run_ui(workspace, *, no_browser=False, rebuild=False, deps=None):
         seen["workspace"] = workspace
         seen["no_browser"] = no_browser
+        seen["rebuild"] = rebuild
         return 0
 
     monkeypatch.setattr(ui_module, "run_ui", fake_run_ui)
@@ -1303,7 +1304,19 @@ def test_ui_subcommand_passes_flags(
 ) -> None:
     seen = _patch_run_ui(monkeypatch)
     assert main(["ui", "--workspace", str(tmp_path), "--no-browser"]) == 0
-    assert seen == {"workspace": str(tmp_path), "no_browser": True}
+    assert seen == {
+        "workspace": str(tmp_path),
+        "no_browser": True,
+        "rebuild": False,
+    }
+
+
+def test_ui_subcommand_passes_rebuild_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _patch_run_ui(monkeypatch)
+    assert main(["ui", "--workspace", str(tmp_path), "--rebuild"]) == 0
+    assert seen["rebuild"] is True
 
 
 def test_ui_subcommand_defaults_to_registry_resolution(

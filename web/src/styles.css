@@ -238,6 +238,58 @@ code, pre, .technical {
   background: var(--ep-color-rail-accent);
 }
 
+/* Workspace-wide job awareness in the rail + terminal-state toasts. */
+.rail-jobs {
+  margin-top: var(--ep-space-4);
+  padding: var(--ep-space-2) var(--ep-space-3);
+  border: 1px solid var(--ep-color-rail-border);
+  border-radius: var(--ep-radius-control);
+  background: var(--ep-color-rail-active);
+  color: var(--ep-color-rail-muted);
+  font-size: 0.8125rem;
+}
+.rail-jobs strong {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--ep-color-rail-text);
+  font-size: 0.875rem;
+}
+.rail-jobs strong::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  background: var(--ep-color-rail-accent);
+  animation: ep-running-pulse 1.4s ease-in-out infinite;
+}
+.rail-jobs ul { margin: var(--ep-space-1) 0 0; padding: 0; list-style: none; }
+.rail-jobs a { color: var(--ep-color-rail-accent); font-family: var(--ep-font-technical); }
+
+.toast-region {
+  position: fixed;
+  right: var(--ep-space-4);
+  bottom: var(--ep-space-4);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ep-space-2);
+  max-width: 24rem;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ep-space-2);
+  padding: var(--ep-space-3) var(--ep-space-4);
+  border-radius: var(--ep-radius-control);
+  background: var(--ep-color-surface);
+  box-shadow: 0 6px 24px color-mix(in srgb, var(--ep-color-text) 22%, transparent);
+}
+.toast p { margin: 0; }
+.toast button { flex: none; padding: 0 0.4rem; line-height: 1.4; }
+.toast-success { border-left: 3px solid var(--ep-color-success); }
+.toast-error { border-left: 3px solid var(--ep-color-danger); }
+
 .rail-footer {
   margin-top: auto;
   padding-top: var(--ep-space-4);
@@ -519,6 +571,139 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   font-weight: 650;
 }
 
+/* ------------------------------------------------------ pipeline stepper
+ * The run board's at-a-glance pipeline (replaces the stage table): one node
+ * per model stage joined by a connector line. State is carried by the
+ * plain-language .state word and its shape marker, never color alone. */
+.pipeline-stepper {
+  display: flex;
+  margin: var(--ep-space-4) 0 var(--ep-space-6);
+  padding: var(--ep-space-4) var(--ep-space-3);
+  border: 1px solid var(--ep-color-border);
+  border-radius: var(--ep-radius-surface);
+  background: var(--ep-color-surface);
+  list-style: none;
+  overflow-x: auto;
+}
+.stepper-step {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 8.5rem;
+  padding: 1.5rem var(--ep-space-3) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ep-space-1);
+}
+/* Connector segments: into the marker from the left, out toward the next
+ * step on the right. */
+.stepper-step::before,
+.stepper-step::after {
+  content: "";
+  position: absolute;
+  top: 0.45rem;
+  height: 2px;
+  background: var(--ep-color-border);
+}
+.stepper-step::before { left: 0; width: var(--ep-space-3); }
+.stepper-step:first-child::before { content: none; }
+.stepper-step::after { left: calc(var(--ep-space-3) + 16px); right: 0; }
+.stepper-step:last-child::after { content: none; }
+.stepper-marker {
+  position: absolute;
+  top: 0;
+  left: var(--ep-space-3);
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--ep-color-border-strong);
+  border-radius: 50%;
+  background: var(--ep-color-surface);
+}
+.stepper-approved .stepper-marker {
+  border-color: var(--ep-color-success);
+  background: var(--ep-color-success);
+}
+.stepper-prompt_written .stepper-marker { border-color: var(--ep-color-accent); }
+.stepper-response_ingested .stepper-marker,
+.stepper-stale .stepper-marker {
+  border-color: var(--ep-color-warning);
+  background: var(--ep-color-warning-soft);
+}
+.stepper-running .stepper-marker {
+  border-color: var(--ep-color-accent);
+  background: var(--ep-color-accent);
+  animation: ep-running-pulse 1.4s ease-in-out infinite;
+}
+.stepper-step[aria-current="step"] .stepper-marker {
+  box-shadow: 0 0 0 4px var(--ep-color-accent-soft);
+}
+.stepper-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--ep-space-2);
+}
+.stepper-stage { font-weight: 650; }
+.stepper-step[aria-current="step"] .stepper-stage { font-weight: 750; }
+.stepper-step .state { white-space: normal; }
+@media (max-width: 48rem) {
+  .pipeline-stepper { flex-direction: column; gap: var(--ep-space-3); }
+  .stepper-step { padding: 0 0 0 1.75rem; min-width: 0; }
+  .stepper-step::before, .stepper-step::after { content: none; }
+  .stepper-marker { left: 0; top: 0.2rem; }
+}
+
+/* ------------------------------------------------- stage content viewing
+ * Rendered review surfaces for stage artifacts: markdown as reading-face
+ * prose, JSON as a collapsible tree, with a Rendered/Raw mode toggle. */
+.content-mode { display: flex; gap: var(--ep-space-1); margin: var(--ep-space-2) 0; }
+.content-mode button[aria-pressed="true"] {
+  background: var(--ep-color-accent-soft);
+  border-color: var(--ep-color-accent);
+  color: var(--ep-color-accent);
+}
+.content-fallback-note { margin: var(--ep-space-2) 0; color: var(--ep-color-warning); }
+
+.markdown-view {
+  padding: var(--ep-space-4) var(--ep-space-6);
+  border: 1px solid var(--ep-color-border);
+  border-radius: var(--ep-radius-surface);
+  background: var(--ep-color-surface);
+  font-family: var(--ep-font-reading);
+  max-width: 46rem;
+}
+/* Artifact headings are offset in MarkdownView to start at h3 (the page
+ * title is an h2), so a source "# h1" arrives here as an h3. */
+.markdown-view h3 { font-size: 1.5rem; margin: var(--ep-space-4) 0 var(--ep-space-3); }
+.markdown-view h4 { font-size: 1.25rem; margin: var(--ep-space-4) 0 var(--ep-space-2); }
+.markdown-view h5 { font-size: 1.0625rem; margin: var(--ep-space-3) 0 var(--ep-space-2); }
+.markdown-view h6 { font-size: 1rem; margin: var(--ep-space-3) 0 var(--ep-space-1); }
+.markdown-view > :first-child { margin-top: 0; }
+.markdown-view blockquote {
+  margin: var(--ep-space-3) 0;
+  padding: 0 var(--ep-space-4);
+  border-left: 3px solid var(--ep-color-border-strong);
+  color: var(--ep-color-text-muted);
+}
+.markdown-view pre.content { max-width: none; }
+
+.json-tree {
+  padding: var(--ep-space-3) var(--ep-space-4);
+  border: 1px solid var(--ep-color-border);
+  border-radius: var(--ep-radius-surface);
+  background: var(--ep-color-surface);
+  font-family: var(--ep-font-technical);
+  font-size: 0.875rem;
+  overflow-x: auto;
+}
+.json-node > summary { cursor: pointer; }
+.json-node > summary:hover { background: var(--ep-color-surface-subtle); }
+.json-children { margin-left: var(--ep-space-4); padding-left: var(--ep-space-2); border-left: 1px solid var(--ep-color-border); }
+.json-key { color: var(--ep-color-accent); font-weight: 600; }
+.json-braces { color: var(--ep-color-text-muted); }
+.json-size { color: var(--ep-color-text-muted); font-size: 0.8125rem; }
+.json-string { color: var(--ep-color-success); }
+.json-number { color: var(--ep-color-warning); }
+.json-boolean, .json-null { color: var(--ep-color-danger); font-weight: 600; }
+
 /* ------------------------------------------------- feedback and evidence */
 .error { color: var(--ep-color-danger); }
 .success { color: var(--ep-color-success); }
@@ -539,6 +724,26 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
 .error-notice-details { font-size: 0.875rem; }
 .error-notice-details dt { color: var(--ep-color-text-muted); }
 .error-notice-details dd { margin: 0 0 var(--ep-space-2); }
+
+/* Source-checkout build-freshness banner */
+.build-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ep-space-4);
+  margin: 0 0 var(--ep-space-4);
+  padding: var(--ep-space-3) var(--ep-space-4);
+  border-left: 3px solid var(--ep-color-warning);
+  border-radius: var(--ep-radius-control);
+  background: var(--ep-color-warning-soft);
+  color: var(--ep-color-text);
+}
+.build-banner p { margin: 0; }
+.build-banner code {
+  font-family: var(--ep-font-technical);
+  font-weight: 600;
+}
+.build-banner button { flex: none; }
 
 .next-action {
   display: flex;

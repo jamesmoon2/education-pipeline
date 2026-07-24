@@ -354,7 +354,7 @@ describe("RunBoardPage", () => {
 
     expect(await screen.findByText(/Run the outline prompt/)).toBeInTheDocument();
     expect(screen.getByText("Complete")).toBeInTheDocument();
-    const stageLink = screen.getAllByRole("link", { name: "view" })[0];
+    const stageLink = screen.getByRole("link", { name: "spec" });
     expect(stageLink).toHaveAttribute("href", "/topics/t/stages/spec");
     expect(await screen.findByText("20260710T000000Z-abcd")).toBeInTheDocument();
     expect(screen.getByText("running")).toBeInTheDocument();
@@ -390,10 +390,45 @@ describe("RunBoardPage", () => {
       await screen.findByText(/outline stage is running with claude-code/),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run with provider" })).not.toBeInTheDocument();
-    // Stage table: the outline row reports the run, not "Ready to run".
-    const outlineRow = screen.getByRole("row", { name: /outline.*Running with claude-code/ });
-    expect(within(outlineRow).getByText(/Running with claude-code/)).toBeInTheDocument();
+    // Pipeline stepper: the outline step reports the run, not "Ready to run".
+    const outlineStep = screen.getByRole("listitem", { name: "outline stage" });
+    expect(within(outlineStep).getByText(/Running with claude-code/)).toBeInTheDocument();
     expect(screen.queryByText("Ready to run")).not.toBeInTheDocument();
+  });
+
+  it("stops presenting a running job as live when the jobs poll starts failing", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue(status);
+    vi.mocked(getJobs)
+      .mockResolvedValueOnce({
+        jobs: [
+          {
+            id: "20260710T000000Z-abcd",
+            topic_id: "t",
+            stage: "outline",
+            provider: "claude-code",
+            model: "sonnet",
+            effort: null,
+            status: "running",
+            created_at: "2026-07-10T00:00:00Z",
+            started_at: "2026-07-10T00:00:01Z",
+            ended_at: null,
+            exit_code: null,
+            error: null,
+          },
+        ],
+      })
+      .mockRejectedValue(new Error("daemon unreachable"));
+    renderAt("/topics/t");
+
+    expect(
+      await screen.findByText(/outline stage is running with claude-code/),
+    ).toBeInTheDocument();
+    // The failed poll must not leave the stale "running" snapshot on screen.
+    await waitFor(
+      () => expect(screen.queryByText(/is running with/)).not.toBeInTheDocument(),
+      { timeout: 4_000 },
+    );
+    expect(screen.getByRole("button", { name: "Run with provider" })).toBeInTheDocument();
   });
 
   it("keeps the action buttons when no job is active", async () => {
@@ -462,10 +497,10 @@ describe("RunBoardPage", () => {
     renderAt("/topics/t");
 
     // outline: 2 (draft) + 1 (final) summed; repair: 3 from the final report only.
-    const repairRow = await screen.findByRole("row", { name: /repair/ });
-    expect(within(repairRow).getByLabelText("3 findings")).toBeInTheDocument();
-    const outlineRow = screen.getByRole("row", { name: /outline/ });
-    expect(within(outlineRow).getByLabelText("3 findings")).toBeInTheDocument();
+    const repairStep = await screen.findByRole("listitem", { name: "repair stage" });
+    expect(within(repairStep).getByLabelText("3 findings")).toBeInTheDocument();
+    const outlineStep = screen.getByRole("listitem", { name: "outline stage" });
+    expect(within(outlineStep).getByLabelText("3 findings")).toBeInTheDocument();
   });
 
   it("ignores findings_by_stage from a phase whose report is not current", async () => {
@@ -492,8 +527,8 @@ describe("RunBoardPage", () => {
     vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
     renderAt("/topics/t");
 
-    const repairRow = await screen.findByRole("row", { name: /repair/ });
-    expect(within(repairRow).getByLabelText("1 finding")).toBeInTheDocument();
+    const repairStep = await screen.findByRole("listitem", { name: "repair stage" });
+    expect(within(repairStep).getByLabelText("1 finding")).toBeInTheDocument();
     expect(screen.queryByLabelText("5 findings")).not.toBeInTheDocument();
   });
 
@@ -533,10 +568,10 @@ describe("RunBoardPage", () => {
     vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
     renderAt("/topics/t");
 
-    const repairRow = await screen.findByRole("row", { name: /repair/ });
-    expect(within(repairRow).getByLabelText("1 finding")).toBeInTheDocument();
-    const outlineRow = screen.getByRole("row", { name: /outline/ });
-    expect(within(outlineRow).queryByLabelText(/finding/)).not.toBeInTheDocument();
+    const repairStep = await screen.findByRole("listitem", { name: "repair stage" });
+    expect(within(repairStep).getByLabelText("1 finding")).toBeInTheDocument();
+    const outlineStep = screen.getByRole("listitem", { name: "outline stage" });
+    expect(within(outlineStep).queryByLabelText(/finding/)).not.toBeInTheDocument();
   });
 
   it("does not announce the findings badge as a live region", async () => {

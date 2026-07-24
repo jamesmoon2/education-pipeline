@@ -72,12 +72,10 @@ function guideFixtures() {
 
 const { withPlaceholder: DRAFT_V1, repaired: DRAFT_V2 } = guideFixtures();
 
-// The stages table (the one with a "Findings" column) as opposed to the
-// validation-milestones table, which also has "draft"/"final" rows.
-function stagesTable(page: Page) {
-  return page
-    .locator("table")
-    .filter({ has: page.getByRole("columnheader", { name: "Findings" }) });
+// A stage's node in the run-board pipeline stepper (as opposed to the
+// validation-milestones table, which also has "draft"/"final" rows).
+function stageStep(page: Page, stage: string) {
+  return page.getByRole("listitem", { name: `${stage} stage` });
 }
 
 function draftPanel(page: Page) {
@@ -127,7 +125,7 @@ test("release gate: finding → repair → re-run → waive → export", async (
   // Run draft validation -> the draft stage badges up with both findings.
   await page.getByRole("button", { name: "Run draft validation" }).click();
 
-  const draftRow = stagesTable(page).locator("tr", { hasText: "draft" });
+  const draftRow = stageStep(page, "draft");
   // The badge is no longer a role="status" live region (that would
   // re-announce on every 5s poll) -- it carries its accessible name via
   // aria-label instead.
@@ -135,7 +133,7 @@ test("release gate: finding → repair → re-run → waive → export", async (
   await expect(draftRow.locator(".findings-badge")).toHaveAttribute("aria-label", "2 findings");
   // Badge is on the draft stage specifically, not any other stage.
   await expect(
-    stagesTable(page).locator("tr", { hasText: "outline" }).locator(".findings-badge"),
+    stageStep(page, "outline").locator(".findings-badge"),
   ).toHaveCount(0);
 
   // The blocker is listed in the draft findings panel and its source link
@@ -158,8 +156,15 @@ test("release gate: finding → repair → re-run → waive → export", async (
 
   // Repair the content in the editor: replace the draft response with the
   // placeholder-free guide, then re-approve.
-  await draftRow.getByRole("link", { name: "view" }).click();
+  await draftRow.getByRole("link", { name: "draft" }).click();
   await page.getByRole("tab", { name: /^response/ }).click();
+  // Accessibility gate over the JSON-tree stage view before editing.
+  await expect(page.locator(".json-tree")).toBeVisible();
+  const axeViewer = await new AxeBuilder({ page }).analyze();
+  const seriousViewer = axeViewer.violations.filter(
+    (v) => v.impact === "serious" || v.impact === "critical",
+  );
+  expect(seriousViewer, JSON.stringify(seriousViewer, null, 2)).toEqual([]);
   await page.getByRole("button", { name: "Edit" }).click();
   await page.getByLabel("Edit response for draft").fill(DRAFT_V2);
   await page.getByRole("button", { name: "Save" }).click();
@@ -169,7 +174,7 @@ test("release gate: finding → repair → re-run → waive → export", async (
   // Re-run validation from the panel: the placeholder blocker clears, and the
   // waivable heading finding remains (badge drops 2 -> 1).
   await draftPanel(page).getByRole("button", { name: "Re-run validation" }).click();
-  const draftRowAfter = stagesTable(page).locator("tr", { hasText: "draft" });
+  const draftRowAfter = stageStep(page, "draft");
   await expect(draftRowAfter.locator(".findings-badge")).toHaveText("1");
   await expect(draftPanel(page).getByText(/content\.placeholder/)).toHaveCount(0);
   await expect(draftPanel(page).getByText(/markdown\.invalid_heading_level/)).toBeVisible();
