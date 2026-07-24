@@ -14,7 +14,7 @@ Models author course *content* only — the guide shell, runtime behavior,
 design system, and validation rules live in this package's source.
 
 ```text
-create → spec → outline → draft → (draft validation) → qa → repair
+create → spec → outline → draft → (draft validation) → qa → factcheck → repair
        → (final validation) → finalize → export
 ```
 

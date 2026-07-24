@@ -70,7 +70,7 @@ In the cockpit, choose **New Course** (`/new`). The wizard walks through:
 
 ## 5. Run the stages
 
-A course moves through `spec → outline → draft → qa → repair`, and you
+A course moves through `spec → outline → draft → qa → factcheck → repair`, and you
 approve each stage before the next begins — the pipeline never
 auto-approves your course.
 
