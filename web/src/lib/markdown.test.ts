@@ -46,6 +46,25 @@ describe("parseMarkdown", () => {
     expect(parseMarkdown("---")).toEqual([{ kind: "hr" }]);
   });
 
+  it("folds indented continuation lines into the previous list item", () => {
+    const blocks = parseMarkdown(
+      "1. **First** (7 min) — starts here\n   and wraps onto this line.\n2. Second item",
+    );
+    expect(blocks).toEqual([
+      {
+        kind: "list",
+        ordered: true,
+        items: [
+          [
+            { kind: "strong", children: [{ kind: "text", text: "First" }] },
+            { kind: "text", text: " (7 min) — starts here and wraps onto this line." },
+          ],
+          [{ kind: "text", text: "Second item" }],
+        ],
+      },
+    ]);
+  });
+
   it("parses blockquotes recursively", () => {
     expect(parseMarkdown("> quoted line")).toEqual([
       {

@@ -141,14 +141,24 @@ export function parseMarkdown(text: string): MarkdownBlock[] {
     // HR is checked before lists so "---" never reads as a "-" bullet.
     const itemRe = UNORDERED_ITEM.test(line) ? UNORDERED_ITEM : ORDERED_ITEM.test(line) ? ORDERED_ITEM : null;
     if (itemRe) {
-      const items: InlineNode[][] = [];
+      const items: string[] = [];
       while (i < lines.length && !HR.test(lines[i])) {
         const item = lines[i].match(itemRe);
-        if (!item) break;
-        items.push(parseInline(item[1]));
+        if (item) {
+          items.push(item[1]);
+        } else if (/^\s+\S/.test(lines[i])) {
+          // Indented continuation of the previous item (hard-wrapped source).
+          items[items.length - 1] += ` ${lines[i].trim()}`;
+        } else {
+          break;
+        }
         i += 1;
       }
-      blocks.push({ kind: "list", ordered: itemRe === ORDERED_ITEM, items });
+      blocks.push({
+        kind: "list",
+        ordered: itemRe === ORDERED_ITEM,
+        items: items.map(parseInline),
+      });
       continue;
     }
     if (QUOTE.test(line)) {
