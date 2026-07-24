@@ -20,6 +20,9 @@
 - **Deterministic finalize/export gates unchanged.**
 - Stage id is exactly `factcheck` (UI label “Fact-check”).
 - Keep config derivation: `SUPPORTED_STAGES = GUIDE_V1_REQUIRED_STAGES + OPTIONAL_STAGES` (do not hand-write `STAGE_ORDER` / `PRESET_STAGES` literals).
+- **Preset back-compat:** `parse_model_catalog` backfills a missing `factcheck` preset row from that preset's `repair` row (factcheck only — every other stage stays strict per `test_preset_rejects_missing_stage`). Pre-feature user catalogs must keep loading unchanged.
+- **Green commits:** every Python task ends with the full suite (`python3 -m pytest --tb=line`), not a file-scoped run. Sole exception: Task 3 may leave `tests/test_example_project.py` red; Task 4 (example builder) runs immediately after and restores green.
+- **Pre-flight (before Task 1):** merge `origin/main` into this branch — PR #32 rewrote the run-board tests and e2e selectors this plan touches — then rebuild the cockpit bundle (`cd web && npm ci && npm run build`) so the daemon serves a fresh `web/dist` during e2e.
 
 ## File map
 
@@ -36,6 +39,8 @@
 | `tests/test_config.py` | Topology, derivation order, plan-TOML back-compat |
 | `tests/test_prompts.py` | Compiler contracts + intentional pin updates for qa/repair |
 | `tests/test_runs.py` | Engine behavior, drivers, full walk, grandfathering |
+| `tests/test_server.py` | `config_server` preset fixture + catalog payload stage-set assertion gain `factcheck` |
+| `tests/test_cli.py` | `--repair-module` advance tests drive through factcheck |
 | `tests/test_write_api.py` / daemon tests as needed | Completion totals if covered |
 | `web/src/**/*.test.tsx` | Stage-order fixtures that hardcode stage lists |
 
@@ -48,6 +53,7 @@
 - Modify: `education_pipeline/__init__.py`
 - Modify: `config/model-catalog.example.toml`
 - Test: `tests/test_config.py`
+- Modify: `tests/test_server.py` (`config_server` preset fixture + stage-set assertion)
 
 **Interfaces:**
 - Produces: `GUIDE_V1_REQUIRED_STAGES: tuple[str, ...]`
@@ -104,7 +110,21 @@ def test_model_plan_without_factcheck_table_still_loads_with_default() -> None:
     assert "factcheck" in plan.stages
     assert plan.stage("factcheck").recommendation == "strong_adversarial_check"
     assert plan.stage("factcheck").model is None
+
+
+def test_preset_missing_factcheck_backfills_from_repair() -> None:
+    """Pre-feature catalogs omit factcheck preset rows; parser copies the repair row."""
+    stages = _full_stage_map()
+    del stages["factcheck"]
+    stages["repair"] = {"model": "opus-4-8", "effort": "high"}
+    data = _catalog_data_with_preset({"id": "p", "stages": {"claude-code": stages}})
+    catalog = parse_model_catalog(data)
+    assert catalog.presets[0].stages["claude-code"]["factcheck"] == PresetStage(
+        model="opus-4-8", effort="high"
+    )
 ```
+
+(`_full_stage_map` at `tests/test_config.py:510` derives from `PRESET_STAGES`, so all other preset tests self-heal once the constant grows; `test_preset_rejects_missing_stage` deletes `audit` and must keep raising.)
 
 Also update the existing topology assertion that still says:
 
@@ -170,19 +190,37 @@ repair = { model = "opus-4-8", effort = "high" }
 
 Mirror for codex with that preset’s strong model (`sol` on max-quality). For cost-efficient, use the same mid-tier as repair (`sonnet-5` / `terra`), effort `medium`.
 
-- [ ] **Step 4: Run config tests**
+**Preset back-compat** in `parse_model_catalog` — the strict per-stage loop (`config.py:475`, raises `ConfigError` on any missing stage) would reject every pre-feature user catalog that defines presets. Special-case exactly `factcheck`: when its row is absent, copy the preset's `repair` row (guaranteed present in old catalogs by the same strict loop) instead of raising. All other stages stay strict.
+
+```python
+for stage_name in PRESET_STAGES:
+    raw_stage = raw_map.get(stage_name)
+    if raw_stage is None and stage_name == "factcheck":
+        # Pre-feature catalogs predate the factcheck stage; reuse the
+        # repair row, which the strict loop guarantees below.
+        raw_stage = raw_map.get("repair")
+    if raw_stage is None:
+        raise ConfigError(...)
+```
+
+(Order note: `repair` follows `factcheck` in `PRESET_STAGES`, so read the raw mapping — `raw_map.get("repair")` — not the parsed `stage_map`.)
+
+**Test fixtures with hand-written preset rows:** `tests/test_server.py` `config_server` (~line 148) hardcodes the stage rows — add `"factcheck": {"model": "strong-m"},` between `qa` and `repair`, and add `"factcheck"` to the expected set in `test_config_catalog_includes_presets` (line 2873). Without the fixture edit the backfill would still let it load, but the payload assertion must name the new stage explicitly.
+
+- [ ] **Step 4: Run config tests, then the full suite**
 
 ```bash
 python3 -m pytest tests/test_config.py -v
+python3 -m pytest --tb=line
 ```
 
-Expected: PASS (including example catalog load).
+Expected: PASS (including example catalog load). The full-suite run guards the topology ripple — `run_status` iterates `SUPPORTED_STAGES` (`runs.py:633`), so `factcheck` now appears in every run's stage list. If any other test hardcodes a stage list, fix it the same way (insert `factcheck` between `qa` and `repair`); do **not** change engine behavior in this task.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/config.py education_pipeline/__init__.py \
-  config/model-catalog.example.toml tests/test_config.py
+  config/model-catalog.example.toml tests/test_config.py tests/test_server.py
 git commit -m "feat(config): add guide-v1 factcheck to stage topology and presets"
 ```
 
@@ -253,6 +291,9 @@ def test_compile_guide_v1_qa_prompt_drops_deep_accuracy_for_factcheck() -> None:
 
 
 def test_legacy_qa_prompt_keeps_light_accuracy_note() -> None:
+    """Legacy pipelines have no factcheck stage: QA keeps a light accuracy
+    duty and the prompt must never mention factcheck (contradictory
+    instructions otherwise)."""
     artifact = compile_qa_prompt(
         Topic(id="systems-thinking", title="Systems Thinking"),
         approved_spec=APPROVED_SPEC,
@@ -260,6 +301,8 @@ def test_legacy_qa_prompt_keeps_light_accuracy_note() -> None:
         approved_draft="# Draft\n",
     )
     assert "obvious factual" in artifact.text.lower() or "unsupported claims" in artifact.text.lower()
+    assert "factcheck" not in artifact.text.lower()
+    assert "fact-check" not in artifact.text.lower()
 
 
 def test_compile_guide_v1_repair_prompt_embeds_factcheck_findings() -> None:
@@ -290,6 +333,8 @@ for stage, text in _compile_guide_v1_prompts().items():
     print(stage, _sha256_text(text))
 PY
 ```
+
+**Legacy pins change too:** `_LEGACY_PROMPT_TEXT_SHA256["qa"]` (`tests/test_prompts.py:119`, asserted in two places) must be recomputed — `compile_qa_prompt` shares `_QA_OUTPUT_AND_QUALITY_LINES`, so the `## Scope Checks` rename plus the legacy accuracy bullet change its text. Recompute it the same way (compile the legacy qa artifact with the pin test's own fixtures and `_sha256_text`), or read the new digest from the pin test's assertion diff. The other legacy pins (`spec`, `topic_spec`, `outline`, `draft`, `repair`) must **not** change.
 
 Paste only the new `qa` and `repair` digests into `_GUIDE_V1_NO_BLUEPRINT_PROMPT_TEXT_SHA256`. Add `factcheck` to `_compile_guide_v1_prompts` only if you also add a pin for it; optional for this milestone (spec does not require a factcheck pin). Prefer **not** pinning factcheck until its text stabilizes, but include it in a non-pin smoke test above.
 
@@ -325,16 +370,21 @@ _QA_OUTPUT_AND_QUALITY_LINES = (
     "- Do not rewrite the draft here; describe each fix precisely for the repair stage.",
     "- Separate blocking problems from minor polish.",
     "- Flag any contradiction between the specification and outline instead of guessing.",
-    "- Factual claim verification is handled by the factcheck stage; do not duplicate it.",
     "- Keep private learner details out of publishable report text unless explicitly allowed.",
 )
 
+_GUIDE_QA_FACTCHECK_NOTE_LINES = (
+    "- Factual claim verification is handled by the factcheck stage; do not duplicate it.",
+)
+
 _LEGACY_QA_ACCURACY_LINES = (
-    "- For pipelines without a factcheck stage, also flag obvious factual errors and unsupported claims.",
+    "- Flag obvious factual errors and unsupported claims.",
 )
 ```
 
-2. **`compile_qa_prompt` (legacy)** — append `_LEGACY_QA_ACCURACY_LINES` into the quality section (or pass `output_and_quality_lines=_QA_OUTPUT_AND_QUALITY_LINES + _LEGACY_QA_ACCURACY_LINES` if the compiler takes that as a whole block). Guide-v1 `compile_guide_v1_qa_prompt` uses the shared lines **without** the legacy bullet.
+The factcheck note is **guide-v1-only** — the shared tuple contains neither bullet, so the legacy prompt never references a stage its pipeline doesn't have.
+
+2. **`compile_qa_prompt` (legacy)** — pass `output_and_quality_lines=_QA_OUTPUT_AND_QUALITY_LINES + _LEGACY_QA_ACCURACY_LINES`. Guide-v1 `compile_guide_v1_qa_prompt` passes `_QA_OUTPUT_AND_QUALITY_LINES + _GUIDE_QA_FACTCHECK_NOTE_LINES`.
 
 3. **New `_FACTCHECK_HEADER_LINES` / `_FACTCHECK_OUTPUT_AND_QUALITY_LINES`** matching spec §4.1 (adversarial posture; six output sections; never invent sources; do not rewrite).
 
@@ -408,13 +458,16 @@ Update `_REPAIR_HEADER_LINES` / `_GUIDE_REPAIR_OUTPUT_AND_QUALITY_LINES` / modul
 
 Module-scoped: also filter factcheck finding items by module (reuse `_split_qa_finding_items` on the factcheck markdown if the report uses a `## Findings` section — same helper works on any report with that heading). If filtering is too invasive for v1, embed the full factcheck report as context and keep module filtering only for QA + deterministic findings (acceptable if documented in a code comment). **Prefer full embed for v1** to avoid inventing a second splitter contract.
 
-- [ ] **Step 4: Run prompt tests**
+- [ ] **Step 4: Run prompt tests, then the full suite**
 
 ```bash
 python3 -m pytest tests/test_prompts.py -v
+python3 -m pytest --tb=line
 ```
 
 Expected: PASS after pin updates and call-site signature fixes.
+
+**Two-task signature bridge:** `runs.py::write_repair_prompt` calls `compile_guide_v1_repair_prompt` today and is not touched until Task 3. To keep this commit green, declare `factcheck_findings_markdown: str = ""` (temporary default) in both repair compilers, and when empty: skip its `_required_block` check and omit the `## Approved Fact-Check Findings` section entirely. Task 3 removes the default and makes the block required in the same commit that updates the `runs.py` call sites.
 
 - [ ] **Step 5: Commit**
 
@@ -429,7 +482,9 @@ git commit -m "feat(prompts): add factcheck compiler; split accuracy out of QA"
 
 **Files:**
 - Modify: `education_pipeline/runs.py`
+- Modify: `education_pipeline/prompts.py` (drop the temporary `factcheck_findings_markdown = ""` default from Task 2; make the block required)
 - Test: `tests/test_runs.py`
+- Test: `tests/test_cli.py` (`--repair-module` advance tests drive through factcheck)
 
 **Interfaces:**
 - Produces: `RunStore.required_stages(topic_id: str) -> tuple[str, ...]`
@@ -752,24 +807,88 @@ python3 -m pytest tests/test_runs.py -k "factcheck or required_stages or grandfa
 
 Fix fallout in drivers (`_drive_guide_to_finalize_ready`, profiled finalize helper, any test that called `write_repair_prompt` right after QA).
 
-Then broader:
+Sweep every caller **in this task** (moved up from the example-builder task so fallout lands in the same commit that causes it):
 
 ```bash
-python3 -m pytest tests/test_runs.py -v --tb=line
+rg -n "write_repair_prompt|through_qa|GUIDE_V1_REQUIRED|\"qa\", \"repair\"" \
+  education_pipeline tests scripts web
 ```
 
-Expected: PASS.
+Known hits outside `tests/test_runs.py`:
+
+- `tests/test_cli.py:638` (`test_advance_repair_module_writes_scoped_prompt`) and `:657` (`test_advance_repair_module_unknown_module_is_usage_error`) call `test_runs._drive_guide_through_qa` then `advance --repair-module`; after this task next_action lands on factcheck there, so switch them to `test_runs._drive_guide_through_factcheck`.
+- `tests/test_write_api.py` and `tests/test_release_gate_acceptance.py` import the `test_runs` drivers and heal automatically once those drivers go through factcheck.
+- `scripts/build_example.py` is fixed in Task 4; `tests/test_example_project.py` is the **only** file allowed to stay red at the end of this task.
+
+Then the full suite:
+
+```bash
+python3 -m pytest --tb=line
+```
+
+Expected: PASS except `tests/test_example_project.py` (byte-pinned regeneration cannot reach repair until the example gains a factcheck fixture — Task 4 restores it).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add education_pipeline/runs.py tests/test_runs.py
+git add education_pipeline/runs.py education_pipeline/prompts.py \
+  tests/test_runs.py tests/test_cli.py tests/test_prompts.py
 git commit -m "feat(runs): guide-v1 factcheck stage with stale tracking and grandfathering"
 ```
 
 ---
 
-### Task 4: Daemon completion summary
+### Task 4: Example builder + committed example fixture
+
+Runs immediately after the engine change: `tests/test_example_project.py` regenerates the committed export by driving a real run through `build_example.build_export`, and Task 3 made that run require factcheck. This task restores a fully green suite in the very next commit.
+
+**Files:**
+- Modify: `scripts/build_example.py`
+- Add: factcheck response fixture under `examples/feedback-loops/responses/`
+- Check: `education_pipeline/guides/reports.py` `STAGES` set — **only** add `factcheck` if a test or validator requires stages from run status to be members; otherwise leave unchanged (factcheck does not project findings in v1)
+
+- [ ] **Step 1: Update `scripts/build_example.py`**
+
+If the example workspace is guide-v1, insert factcheck:
+
+```python
+stage_bodies = {
+    ...
+    "qa": (responses / "qa.md").read_text(...),
+    "factcheck": (responses / "factcheck.md").read_text(...),  # add fixture file if needed
+    "repair": ...
+}
+prompt_writers = {
+    ...
+    "qa": runs.write_qa_prompt,
+    "factcheck": runs.write_factcheck_prompt,
+    "repair": runs.write_repair_prompt,
+}
+for stage in ("spec", "outline", "draft", "qa", "factcheck", "repair"):
+    ...
+```
+
+If the example responses directory has no factcheck fixture, create a minimal `examples/.../factcheck.md` (or whatever path the script uses) with a pass report skeleton matching Appendix A of the spec.
+
+- [ ] **Step 2: Verify the pinned regeneration, then the full suite**
+
+```bash
+python3 -m pytest tests/test_example_project.py -v
+python3 -m pytest --tb=line
+```
+
+Expected: PASS. The export bytes must **not** change (factcheck findings are not projected into the export in v1), so the committed `examples/feedback-loops/export/` artifacts stay valid. If `test_committed_export_matches_a_regeneration` reports changed bytes, stop and investigate — do not regenerate the committed export to paper over it.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add scripts/build_example.py examples  # fixture added
+git commit -m "chore: include factcheck in example build sequence"
+```
+
+---
+
+### Task 5: Daemon completion summary
 
 **Files:**
 - Modify: `education_pipeline/daemon/read_api.py`
@@ -862,13 +981,16 @@ git commit -m "feat(daemon): guide-aware stage completion totals via required_st
 
 ---
 
-### Task 5: Cockpit help copy + hardcoded stage fixtures
+### Task 6: Cockpit help copy + hardcoded stage fixtures
 
 **Files:**
 - Modify: `web/src/lib/planHelp.ts`
-- Modify: `web/src/pages/SettingsPage.test.tsx` (and any other hardcoded stage lists that assert plan row order without `factcheck`)
-- Modify: `web/src/pages/RunBoardPage.test.tsx` / `RunPlanPanel.test.tsx` if they assert exact stage sequences from live plan API mocks
+- Modify: `web/src/pages/SettingsPage.test.tsx` (`STAGES` list at ~line 81) and `web/src/components/RunPlanPanel.test.tsx` (`STAGES` at ~line 40)
+- Modify: `web/src/pages/RunBoardPage.test.tsx` — **rewritten by PR #32**: `PLAN_STAGES` array (~line 61) and the full per-stage `RunStatus` fixtures (~line 92) both need a `factcheck` entry between `qa` and `repair`
+- Modify: `web/e2e/full-run.spec.ts` (guide-v1 test only), `web/e2e/blueprints.spec.ts`, `web/e2e/personalization.spec.ts`, `web/e2e/release-gates.spec.ts` — each drives a guide-v1 run qa → repair through the cockpit and must gain a factcheck paste/approve step (see Step 4)
 - Test: vitest for planHelp if present; otherwise SettingsPage tests that render stage rows
+
+**PR #32 non-impacts (do not touch):** `PipelineStepper.tsx` renders `status.stages.map(...)` and `StageViewerPage`/`StageContentView` take `content_type` from the daemon (`stage_paths` already types factcheck as markdown) — factcheck flows through all three with zero component changes. `web/e2e/editor.spec.ts` and full-run's first test use `--legacy-markdown` runs; leave their five-stage loops alone. `NewRunPage.tsx:442`'s hardcoded list is a cosmetic loading fallback — optional nit only.
 
 **Interfaces:**
 - Produces: `STAGE_HELP.factcheck` string; updated `STAGE_HELP.repair`
@@ -916,71 +1038,42 @@ cd web && npm run test -- --run src/pages/SettingsPage.test.tsx src/lib/planHelp
 
 Update other hardcoded stage arrays in tests to insert `"factcheck"` after `"qa"` wherever they mirror `STAGE_ORDER` / plan rows. **Do not** force factcheck into `NewRunPage` mocks that only list required legacy stages unless those mocks claim to be full plan order.
 
-- [ ] **Step 4: Re-run vitest**
+- [ ] **Step 4: Insert the factcheck step into the four guide-v1 e2e specs**
+
+Each spec advances a guide-v1 run and pastes/approves `qa` then `repair`. After Task 3, "Advance" following qa approval writes a **factcheck** prompt, so `Response for repair` never appears. Between the qa approval and the repair advance in each spec, insert:
+
+```ts
+await page.getByRole("button", { name: "Advance" }).click();
+await page.getByRole("button", { name: "Paste response…" }).click();
+await page
+  .getByLabel("Response for factcheck")
+  .fill("# Fact-Check Report\n\n## Verdict\npass — no material factual errors.\n\n## Findings\n(none)\n");
+await page.getByRole("button", { name: "Save response" }).click();
+await page.getByRole("button", { name: "Approve factcheck" }).click();
+```
+
+(Adapt to each spec's local helpers — `pasteAndApprove(page, "factcheck", ...)` where the spec uses that helper.) Affected: `full-run.spec.ts` **guide-v1 test only**, `blueprints.spec.ts`, `personalization.spec.ts`, `release-gates.spec.ts` (both of its qa approvals sit in the repair → re-run loop; trace the flow rather than pattern-matching). Do **not** touch the `--legacy-markdown` flows.
+
+- [ ] **Step 5: Re-run vitest and the affected e2e specs**
 
 ```bash
 cd web && npm run test -- --run
+npm run build   # daemon serves web/dist during e2e; stale bundles mask UI changes
+npx playwright test e2e/full-run.spec.ts e2e/blueprints.spec.ts \
+  e2e/personalization.spec.ts e2e/release-gates.spec.ts
 ```
 
 Expected: PASS (or only pre-existing failures unrelated to this work — fix any breakage you introduced).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add web/src/lib/planHelp.ts web/src/pages/SettingsPage.test.tsx \
-  web/src/pages/RunBoardPage.test.tsx web/src/components/RunPlanPanel.test.tsx
+  web/src/pages/RunBoardPage.test.tsx web/src/components/RunPlanPanel.test.tsx \
+  web/e2e/full-run.spec.ts web/e2e/blueprints.spec.ts \
+  web/e2e/personalization.spec.ts web/e2e/release-gates.spec.ts
 # only files you actually changed
-git commit -m "feat(web): factcheck stage help and plan fixture order"
-```
-
----
-
-### Task 6: Example builder + residual call sites
-
-**Files:**
-- Modify: `scripts/build_example.py`
-- Grep-driven fixes: any remaining `write_repair_prompt` callers that skip factcheck for guide-v1
-- Check: `education_pipeline/guides/reports.py` `STAGES` set — **only** add `factcheck` if a test or validator requires stages from run status to be members; otherwise leave unchanged (factcheck does not project findings in v1)
-
-- [ ] **Step 1: Grep for breakage**
-
-```bash
-rg -n "write_repair_prompt|through_qa|GUIDE_V1_REQUIRED|\"qa\", \"repair\"" \
-  education_pipeline tests scripts web
-```
-
-Fix every guide-v1 path that writes repair without factcheck.
-
-- [ ] **Step 2: Update `scripts/build_example.py`**
-
-If the example workspace is guide-v1, insert factcheck:
-
-```python
-stage_bodies = {
-    ...
-    "qa": (responses / "qa.md").read_text(...),
-    "factcheck": (responses / "factcheck.md").read_text(...),  # add fixture file if needed
-    "repair": ...
-}
-prompt_writers = {
-    ...
-    "qa": runs.write_qa_prompt,
-    "factcheck": runs.write_factcheck_prompt,
-    "repair": runs.write_repair_prompt,
-}
-for stage in ("spec", "outline", "draft", "qa", "factcheck", "repair"):
-    ...
-```
-
-If the example responses directory has no factcheck fixture, create a minimal `examples/.../factcheck.md` (or whatever path the script uses) with a pass report skeleton matching Appendix A of the spec.
-
-- [ ] **Step 3: Run focused script import / unit tests that cover example build** if any; otherwise skip runtime example build if it needs network/models.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add scripts/build_example.py examples  # if fixture added
-git commit -m "chore: include factcheck in example build sequence"
+git commit -m "feat(web): factcheck stage help, fixture order, and e2e flows"
 ```
 
 ---
@@ -1005,13 +1098,13 @@ cd web && npm run build && npm run test -- --run
 
 Expected: `tsc --noEmit` clean; vitest PASS.
 
-- [ ] **Step 3: Optional Playwright smoke** (only if a run-board e2e asserts stage order)
+- [ ] **Step 3: Full Playwright suite** (required since PR #32 — four guide-v1 specs now cross the factcheck stage)
 
 ```bash
-cd web && npx playwright test --grep factcheck || true
+cd web && npm run build && npm run e2e
 ```
 
-If no factcheck e2e exists, **do not** add a flaky browser test in this milestone unless Task 5 left an easy fixture-based assertion. Spec marks e2e as optional smoke.
+Expected: PASS, including the @axe-core accessibility checks against the stepper's factcheck step. Do **not** add new factcheck-specific browser tests in this milestone; Task 6's edits to the four existing specs are the full e2e scope.
 
 - [ ] **Step 4: Final commit only if fixes were needed**
 
@@ -1047,14 +1140,20 @@ git commit -m "docs: point factcheck design at implementation plan"
 | `compile_guide_v1_factcheck_prompt` Markdown contract | 2 |
 | QA strip deep accuracy; legacy light note | 2 |
 | Repair + module repair consume factcheck findings | 2 |
+| Preset catalogs missing factcheck still load (backfill from repair row) | 1 |
+| `tests/test_server.py` preset fixture + stage-set assertion | 1 |
+| Legacy QA pin recompute (`_LEGACY_PROMPT_TEXT_SHA256["qa"]`) | 2 |
+| Legacy QA prompt never mentions factcheck (guide-only note tuple) | 2 |
 | `RunStore.required_stages(topic_id)` | 3 |
 | `write_factcheck_prompt` + advance writer map | 3 |
 | `next_action` qa→factcheck→repair + grandfathering | 3 |
 | Manifest hashes + stale for factcheck and repair | 3 |
-| Daemon completion uses `required_stages` | 4 |
-| Cockpit `planHelp` copy | 5 |
-| Example builder sequence | 6 |
-| Full test gate | 7 |
+| CLI `--repair-module` drivers through factcheck | 3 |
+| Example builder sequence + committed example fixture | 4 |
+| Daemon completion uses `required_stages` | 5 |
+| Cockpit `planHelp` copy | 6 |
+| Guide-v1 e2e specs cross factcheck (PR #32 stepper flows) | 6 |
+| Full test gate incl. required Playwright run | 7 |
 | No tool-using / JSON claim UI / quality-report projection | Explicit non-goals — no task |
 | REASONING_STAGES unchanged | Task 1 assertion |
 
@@ -1065,6 +1164,14 @@ git commit -m "docs: point factcheck design at implementation plan"
 - **Grandfathering** implemented only in `next_action` (not by making `write_repair_prompt` optional factcheck) — new repairs always need factcheck; old approved repairs skip the stage.
 - **SHA256 pins** for `qa`/`repair` will change; `spec`/`outline`/`draft` must not.
 - **Module repair factcheck filtering:** v1 embeds full factcheck report (simpler, matches “prefer full embed”).
+
+## Review amendments (2026-07-22, post-verification against the codebase)
+
+1. **Preset back-compat.** The preset parser is strict (`config.py:475` raises on any missing stage), so pre-feature user catalogs with presets — and the `config_server` fixture in `tests/test_server.py` — would fail to load at Task 1. Added a factcheck-only backfill from the preset's `repair` row (all other stages stay strict), the matching test, and the `tests/test_server.py` fixture/assertion updates. This extends the spec's back-compat table (§ "Model plans missing `factcheck` row"), which covered plan TOMLs but not preset catalogs.
+2. **Legacy prompt pins.** `_LEGACY_PROMPT_TEXT_SHA256["qa"]` changes because `compile_qa_prompt` shares `_QA_OUTPUT_AND_QUALITY_LINES`; Task 2 now recomputes it explicitly. Added a two-task signature bridge (temporary `factcheck_findings_markdown = ""` default) so Task 2's commit stays green while `runs.py` still calls the old repair-compiler shape; Task 3 removes the default.
+3. **Green-commit sequencing.** Moved the fallout grep and the `tests/test_cli.py` `--repair-module` driver fixes into Task 3, and reordered the example-builder work to Task 4 (immediately after the engine change) since `tests/test_example_project.py` byte-pins a full regeneration. Every Python task now gates on the full pytest suite; the only sanctioned intermediate red is `test_example_project.py` between Tasks 3 and 4.
+4. **Legacy QA prompt coherence.** The "factual verification is handled by factcheck" quality-bar note moved to a guide-v1-only tuple; the legacy accuracy bullet no longer mentions factcheck, and the legacy test asserts the word never appears in legacy QA prompts.
+5. **PR #32 (pipeline stepper) fallout — 2026-07-24.** Four guide-v1 e2e specs (`full-run` guide test, `blueprints`, `personalization`, `release-gates`) drive qa → repair through the cockpit and break at Task 3; Task 6 now inserts a factcheck paste/approve step in each and Task 7's e2e run is required, not optional. `RunBoardPage.test.tsx` was rewritten (`PLAN_STAGES` + per-stage fixtures need factcheck rows). Confirmed non-impacts: `PipelineStepper`/`StageViewerPage`/`StageContentView` are data-driven and `stage_paths` already types factcheck as markdown. Added pre-flight: merge `origin/main` and rebuild `web/dist` before Task 1.
 
 ---
 
