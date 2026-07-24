@@ -146,6 +146,7 @@ def config_server(tmp_path, monkeypatch):
                             "outline": {"model": "strong-m"},
                             "draft": {"model": "strong-m"},
                             "qa": {"model": "m"},
+                            "factcheck": {"model": "strong-m"},
                             "repair": {"model": "strong-m"},
                             "audit": {"model": "strong-m"},
                         }
@@ -2906,7 +2907,16 @@ def test_config_catalog_includes_presets(config_server):
     preset = {p["id"]: p for p in payload["presets"]}["test-preset"]
     assert preset["label"] == "Test preset"
     stage_map = preset["stages"]["fake"]
-    assert set(stage_map) == {"profile", "spec", "outline", "draft", "qa", "repair", "audit"}
+    assert set(stage_map) == {
+        "profile",
+        "spec",
+        "outline",
+        "draft",
+        "qa",
+        "factcheck",
+        "repair",
+        "audit",
+    }
     assert stage_map["spec"] == {"model": "strong-m", "effort": "high"}
     assert stage_map["qa"] == {"model": "m", "effort": None}
 

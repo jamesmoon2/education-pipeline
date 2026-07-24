@@ -89,6 +89,7 @@ spec = { model = "fable-5", effort = "high" }
 outline = { model = "fable-5", effort = "high" }
 draft = { model = "opus-4-8", effort = "high" }
 qa = { model = "opus-4-8", effort = "medium" }
+factcheck = { model = "opus-4-8", effort = "high" }
 repair = { model = "opus-4-8", effort = "high" }
 audit = { model = "opus-4-8", effort = "high" }
 
@@ -98,6 +99,7 @@ spec = { model = "sol", effort = "high" }
 outline = { model = "sol", effort = "high" }
 draft = { model = "sol", effort = "high" }
 qa = { model = "sol", effort = "medium" }
+factcheck = { model = "sol", effort = "high" }
 repair = { model = "sol", effort = "high" }
 audit = { model = "sol", effort = "high" }
 
@@ -112,6 +114,7 @@ spec = { model = "fable-5", effort = "high" }
 outline = { model = "opus-4-8", effort = "high" }
 draft = { model = "opus-4-8", effort = "medium" }
 qa = { model = "haiku-4-5", effort = "medium" }
+factcheck = { model = "opus-4-8", effort = "medium" }
 repair = { model = "opus-4-8", effort = "medium" }
 audit = { model = "opus-4-8", effort = "medium" }
 
@@ -121,6 +124,7 @@ spec = { model = "sol", effort = "high" }
 outline = { model = "sol", effort = "high" }
 draft = { model = "sol", effort = "medium" }
 qa = { model = "luna", effort = "medium" }
+factcheck = { model = "sol", effort = "medium" }
 repair = { model = "sol", effort = "medium" }
 audit = { model = "sol", effort = "medium" }
 
@@ -135,6 +139,7 @@ spec = { model = "sonnet-5", effort = "medium" }
 outline = { model = "sonnet-5", effort = "medium" }
 draft = { model = "sonnet-5", effort = "medium" }
 qa = { model = "haiku-4-5", effort = "low" }
+factcheck = { model = "sonnet-5", effort = "medium" }
 repair = { model = "sonnet-5", effort = "medium" }
 audit = { model = "sonnet-5", effort = "medium" }
 
@@ -144,5 +149,6 @@ spec = { model = "terra", effort = "medium" }
 outline = { model = "terra", effort = "medium" }
 draft = { model = "terra", effort = "medium" }
 qa = { model = "luna", effort = "low" }
+factcheck = { model = "terra", effort = "medium" }
 repair = { model = "terra", effort = "medium" }
 audit = { model = "terra", effort = "medium" }

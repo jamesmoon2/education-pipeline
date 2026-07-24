@@ -11,6 +11,7 @@ from education_pipeline import (
     ConfigError,
     ContentContract,
     GUIDE_V1_CONTENT_TYPE,
+    GUIDE_V1_REQUIRED_STAGES,
     MARKDOWN_CONTENT_TYPE,
     NextAction,
     PromptFile,
@@ -1721,7 +1722,7 @@ def test_run_status_exposes_unrun_audit_without_changing_next_action(tmp_path: P
     status = RunStore(tmp_path).run_status("systems-thinking")
 
     assert tuple(s.stage for s in status.stages) == SUPPORTED_STAGES
-    assert tuple(s.stage for s in status.stages[:-1]) == REQUIRED_STAGES
+    assert tuple(s.stage for s in status.stages[:-1]) == GUIDE_V1_REQUIRED_STAGES
     assert tuple(s.stage for s in status.stages[-1:]) == OPTIONAL_STAGES
     audit = status.stages[-1]
     assert audit.state == "not_run"
