@@ -34,7 +34,7 @@ from education_pipeline.profiles import (
     render_profile_public_summary,
 )
 from education_pipeline.export import EXPORT_FORMATS
-from education_pipeline.runs import REQUIRED_STAGES, SUPPORTED_STAGES, RunStore
+from education_pipeline.runs import SUPPORTED_STAGES, RunStore
 from education_pipeline.workspace import ProfileRecord, ProfileStore, TopicStore
 
 
@@ -98,17 +98,18 @@ def _attached_profile_id(profiles: ProfileStore, topic_id: str) -> str | None:
 def _completion_summary(runs: RunStore, topic_id: str, run: dict | None) -> dict | None:
     if run is None:
         return None
+    required = set(runs.required_stages(topic_id))
     approved = sum(
         1
         for stage in run["stages"]
-        if stage["stage"] in REQUIRED_STAGES and stage["approved"]
+        if stage["stage"] in required and stage["approved"]
     )
     exported = any(
         runs.export_path(topic_id, format).is_file() for format in EXPORT_FORMATS
     )
     return {
         "stages_approved": approved,
-        "stages_total": len(REQUIRED_STAGES),
+        "stages_total": len(required),
         "exported": exported,
     }
 

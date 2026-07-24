@@ -4352,6 +4352,35 @@ def test_write_plan_overrides_empty_dict_writes_empty_overrides(tmp_path: Path) 
     assert runs.read_plan_overrides("systems-thinking") == {}
 
 
+def test_completion_summary_uses_run_required_stages(tmp_path: Path) -> None:
+    from education_pipeline.config import GUIDE_V1_REQUIRED_STAGES
+    from education_pipeline.daemon.read_api import _completion_summary
+
+    guide_runs = _create_guide_run(tmp_path / "guide", "systems-thinking")
+    # minimal fake run payload shape used by _completion_summary
+    status = guide_runs.run_status("systems-thinking")
+    run = {
+        "stages": [
+            {"stage": s.stage, "approved": s.approved}
+            for s in status.stages
+        ]
+    }
+    summary = _completion_summary(guide_runs, "systems-thinking", run)
+    assert summary["stages_total"] == len(GUIDE_V1_REQUIRED_STAGES)
+
+    legacy = _create_legacy_run(tmp_path / "legacy")
+    # ensure systems-thinking legacy exists
+    lstatus = legacy.run_status("systems-thinking")
+    lrun = {
+        "stages": [
+            {"stage": s.stage, "approved": s.approved}
+            for s in lstatus.stages
+        ]
+    }
+    lsummary = _completion_summary(legacy, "systems-thinking", lrun)
+    assert lsummary["stages_total"] == len(REQUIRED_STAGES)
+
+
 # ---------------------------------------------------------------------------
 # Archive flag (first-run milestone, spec §5.3)
 
