@@ -78,7 +78,18 @@ const presets: CatalogPreset[] = [
   },
 ];
 
-const STAGES = ["profile", "spec", "outline", "draft", "qa", "repair", "audit", "finalize", "export"];
+const STAGES = [
+  "profile",
+  "spec",
+  "outline",
+  "draft",
+  "qa",
+  "factcheck",
+  "repair",
+  "audit",
+  "finalize",
+  "export",
+];
 
 function makePlan(overrides: Partial<Record<string, unknown>> = {}): PlanPayload {
   return {
@@ -159,6 +170,7 @@ describe("SettingsPage", () => {
     expect(Object.keys(stages).sort()).toEqual([
       "audit",
       "draft",
+      "factcheck",
       "outline",
       "profile",
       "qa",

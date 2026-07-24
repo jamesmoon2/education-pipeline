@@ -58,7 +58,17 @@ const planCatalog = [
     models: [{ id: "sonnet", label: "Sonnet", description: "", quality: "strong", default_effort: null }],
   },
 ];
-const PLAN_STAGES = ["profile", "spec", "outline", "draft", "qa", "repair", "finalize", "export"];
+const PLAN_STAGES = [
+  "profile",
+  "spec",
+  "outline",
+  "draft",
+  "qa",
+  "factcheck",
+  "repair",
+  "finalize",
+  "export",
+];
 function makePlan() {
   return {
     provider: "claude-code",
@@ -90,6 +100,7 @@ const status: RunStatus = {
     { stage: "outline", state: "prompt_written", prompt_written: true, response_ingested: false, approved: false },
     { stage: "draft", state: "pending", prompt_written: false, response_ingested: false, approved: false },
     { stage: "qa", state: "pending", prompt_written: false, response_ingested: false, approved: false },
+    { stage: "factcheck", state: "pending", prompt_written: false, response_ingested: false, approved: false },
     { stage: "repair", state: "pending", prompt_written: false, response_ingested: false, approved: false },
   ],
   next_action: {

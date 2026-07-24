@@ -37,7 +37,17 @@ const catalog: CatalogProvider[] = [
   },
 ];
 
-const STAGES = ["profile", "spec", "outline", "draft", "qa", "repair", "finalize", "export"];
+const STAGES = [
+  "profile",
+  "spec",
+  "outline",
+  "draft",
+  "qa",
+  "factcheck",
+  "repair",
+  "finalize",
+  "export",
+];
 
 function makePlan(overrides: Partial<Record<string, unknown>> = {}): PlanPayload {
   return {
