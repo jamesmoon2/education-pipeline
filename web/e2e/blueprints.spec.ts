@@ -105,8 +105,10 @@ test("accepting the recommendation puts the blueprint contract in the spec promp
   await expect(page.getByText(/Blueprint:/)).toBeVisible();
   await expect(page.getByText("conceptual-foundations")).toBeVisible();
   await page.goto(`${baseURL}/topics/bp-accept/stages/spec`);
-  await expect(page.locator(".content")).toContainText("## Blueprint Contract");
-  await expect(page.locator(".content")).toContainText("Conceptual foundations");
+  // Raw mode shows the exact prompt bytes (rendered prose is the default).
+  await page.getByRole("button", { name: "Raw" }).click();
+  await expect(page.locator("pre.content")).toContainText("## Blueprint Contract");
+  await expect(page.locator("pre.content")).toContainText("Conceptual foundations");
 });
 
 test("overriding to a second blueprint produces a visibly different prompt", async ({
@@ -120,9 +122,10 @@ test("overriding to a second blueprint produces a visibly different prompt", asy
   await expect(page.getByText("exam-preparation")).toBeVisible();
   await expect(page.getByText(/\(user\)/)).toBeVisible();
   await page.goto(`${baseURL}/topics/bp-override/stages/spec`);
-  await expect(page.locator(".content")).toContainText("## Blueprint Contract");
-  await expect(page.locator(".content")).toContainText("Exam preparation");
-  await expect(page.locator(".content")).toContainText(
+  await page.getByRole("button", { name: "Raw" }).click();
+  await expect(page.locator("pre.content")).toContainText("## Blueprint Contract");
+  await expect(page.locator("pre.content")).toContainText("Exam preparation");
+  await expect(page.locator("pre.content")).toContainText(
     "Practice items must match the assessment format",
   );
 });

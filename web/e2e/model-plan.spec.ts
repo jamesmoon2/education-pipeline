@@ -219,7 +219,8 @@ test("mixed-provider run configured entirely in the cockpit", async ({ page }) =
 
   // Step 5: each completed stage shows the expected provenance line,
   // including "(override)" on draft and "manual" on qa.
-  const stageRow = (stage: string) => page.locator("tbody tr", { hasText: stage }).first();
+  const stageRow = (stage: string) =>
+    page.getByRole("listitem", { name: `${stage} stage` });
   await expect(stageRow("spec").locator(".stage-provenance")).toHaveText(
     "ran on claude-code (default)",
   );
