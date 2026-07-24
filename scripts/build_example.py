@@ -1,7 +1,7 @@
 """Rebuild the exported guide for the shipped synthetic example project.
 
-Drives a real guide-v1 run — spec → outline → draft → qa → repair →
-validate → finalize → export — in a throwaway workspace, using only the
+Drives a real guide-v1 run — spec → outline → draft → qa → factcheck →
+repair → validate → finalize → export — in a throwaway workspace, using only the
 committed sources under ``examples/feedback-loops/``, then copies the
 resulting ``guide.html`` and ``guide.report.json`` into the example's
 ``export/`` directory.
@@ -54,6 +54,7 @@ def build_export(example_dir: Path, workspace: Path) -> tuple[bytes, bytes]:
         "outline": (responses / "outline.md").read_text(encoding="utf-8"),
         "draft": (responses / "draft.guide.json").read_text(encoding="utf-8"),
         "qa": (responses / "qa.md").read_text(encoding="utf-8"),
+        "factcheck": (responses / "factcheck.md").read_text(encoding="utf-8"),
         "repair": (responses / "repair.guide.json").read_text(encoding="utf-8"),
     }
     prompt_writers = {
@@ -61,10 +62,11 @@ def build_export(example_dir: Path, workspace: Path) -> tuple[bytes, bytes]:
         "outline": runs.write_outline_prompt,
         "draft": runs.write_draft_prompt,
         "qa": runs.write_qa_prompt,
+        "factcheck": runs.write_factcheck_prompt,
         "repair": runs.write_repair_prompt,
     }
 
-    for stage in ("spec", "outline", "draft", "qa", "repair"):
+    for stage in ("spec", "outline", "draft", "qa", "factcheck", "repair"):
         result = prompt_writers[stage](TOPIC_ID)
         result.response_path.write_text(stage_bodies[stage], encoding="utf-8")
         runs.approve_stage(TOPIC_ID, stage)
