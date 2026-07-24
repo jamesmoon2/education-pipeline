@@ -152,9 +152,12 @@ describe("StageViewerPage", () => {
       content_type: "text/markdown",
     });
     renderAt("/topics/t/stages/draft");
-    expect(await screen.findByText("# the prompt")).toBeInTheDocument();
+    // Markdown renders as prose by default; the Raw toggle restores the bytes.
+    expect(await screen.findByRole("heading", { name: "the prompt" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Raw" }));
+    expect(screen.getByText("# the prompt")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: /^response/ }));
-    expect(screen.getByText("# the response")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "the response" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: /^approved/ }));
     expect(screen.getByText("(no approved yet)")).toBeInTheDocument();
   });

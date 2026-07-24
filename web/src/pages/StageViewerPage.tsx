@@ -14,6 +14,7 @@ import InfoTip from "../components/InfoTip";
 import ModuleRepairControl from "../components/ModuleRepairControl";
 import ResponseEditor from "../components/ResponseEditor";
 import ResponseForm from "../components/ResponseForm";
+import StageContentView from "../components/StageContentView";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 import ErrorNotice from "../components/ErrorNotice";
@@ -264,7 +265,12 @@ function StageViewerForRoute({
           <pre className="content">{data.response ?? "(no response yet)"}</pre>
         </div>
       ) : (
-        <pre className="content">{data[tab] ?? `(no ${tab} yet)`}</pre>
+        <StageContentView
+          key={tab}
+          label={tab}
+          text={data[tab]}
+          contentType={tab === "prompt" ? "text/markdown" : data.content_type}
+        />
       )}
       {diffOpen && draftApproved !== null && (
         <DiffView a={draftApproved} b={data.response ?? ""} />
