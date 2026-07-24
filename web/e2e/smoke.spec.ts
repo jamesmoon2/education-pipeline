@@ -57,6 +57,6 @@ test("read flow: topic list → run board → stage viewer", async ({ page }) =>
   await page.getByRole("link", { name: "t", exact: true }).click();
   // spec prompt written, no response → next action is save_response
   await expect(page.getByText(/Run the spec prompt/)).toBeVisible();
-  await page.getByRole("link", { name: "view" }).first().click();
+  await page.getByRole("listitem", { name: "spec stage" }).getByRole("link", { name: "spec" }).click();
   await expect(page.getByText("# spec prompt")).toBeVisible();
 });

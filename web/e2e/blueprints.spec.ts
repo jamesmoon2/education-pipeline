@@ -57,10 +57,8 @@ async function pasteAndApprove(page: Page, stage: string, response: string) {
   await page.getByRole("button", { name: `Approve ${stage}` }).click();
 }
 
-function stagesTable(page: Page) {
-  return page
-    .locator("table")
-    .filter({ has: page.getByRole("columnheader", { name: "Findings" }) });
+function stageStep(page: Page, stage: string) {
+  return page.getByRole("listitem", { name: `${stage} stage` });
 }
 
 test.beforeAll(async () => {
@@ -147,10 +145,7 @@ test("one weak module regenerates in place without touching its siblings", async
   await pasteAndApprove(page, "qa", "# QA\n\n## Findings\n1. minor - loop-basics: tighten the opener.");
 
   // Prepare a scoped repair for one module from the repair stage view.
-  await stagesTable(page)
-    .locator("tr", { hasText: "repair" })
-    .getByRole("link", { name: "view" })
-    .click();
+  await stageStep(page, "repair").getByRole("link", { name: "repair" }).click();
   await expect(
     page.getByRole("heading", { name: "Regenerate one module" }),
   ).toBeVisible();
