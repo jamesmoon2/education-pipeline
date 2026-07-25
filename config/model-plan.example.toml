@@ -25,6 +25,11 @@ recommendation = "fast_cheap_check"
 model = "haiku-4-5"
 effort = "medium"
 
+[stages.factcheck]
+recommendation = "strong_adversarial_check"
+model = "opus-4-8"
+effort = "medium"
+
 [stages.repair]
 recommendation = "strong_or_premium_repair"
 model = "opus-4-8"

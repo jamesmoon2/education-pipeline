@@ -11,8 +11,16 @@ import tomllib
 
 
 REQUIRED_STAGES = ("spec", "outline", "draft", "qa", "repair")
+GUIDE_V1_REQUIRED_STAGES = (
+    "spec",
+    "outline",
+    "draft",
+    "qa",
+    "factcheck",
+    "repair",
+)
 OPTIONAL_STAGES = ("audit",)
-SUPPORTED_STAGES = REQUIRED_STAGES + OPTIONAL_STAGES
+SUPPORTED_STAGES = GUIDE_V1_REQUIRED_STAGES + OPTIONAL_STAGES
 
 PRESET_STAGES = ("profile",) + SUPPORTED_STAGES
 _EFFORT_VALUES = frozenset({"low", "medium", "high"})
@@ -28,6 +36,7 @@ DEFAULT_STAGE_RECOMMENDATIONS = MappingProxyType(
         "outline": "premium_reasoning",
         "draft": "strong_longform_generation",
         "qa": "fast_cheap_check",
+        "factcheck": "strong_adversarial_check",
         "repair": "strong_or_premium_repair",
         "audit": "strong_personalization_audit",
         "finalize": "local_only",
@@ -474,6 +483,10 @@ def _parse_presets(
             stage_map: dict[str, PresetStage] = {}
             for stage_name in PRESET_STAGES:
                 raw_stage = raw_map.get(stage_name)
+                if raw_stage is None and stage_name == "factcheck":
+                    # Pre-feature catalogs predate the factcheck stage; reuse
+                    # the repair row, which the strict loop guarantees below.
+                    raw_stage = raw_map.get("repair")
                 if raw_stage is None:
                     raise ConfigError(
                         f"{context} is missing stage {stage_name!r} for provider {provider_id!r}"

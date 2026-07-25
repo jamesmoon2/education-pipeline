@@ -14,6 +14,7 @@ from education_pipeline import (
     parse_model_plan,
 )
 from education_pipeline.config import (
+    GUIDE_V1_REQUIRED_STAGES,
     OPTIONAL_STAGES,
     PRESET_STAGES,
     Preset,
@@ -31,9 +32,56 @@ from education_pipeline.config import (
 def test_audit_stage_topology_is_optional_model_powered_and_not_reasoning() -> None:
     assert REQUIRED_STAGES == ("spec", "outline", "draft", "qa", "repair")
     assert OPTIONAL_STAGES == ("audit",)
-    assert SUPPORTED_STAGES == REQUIRED_STAGES + OPTIONAL_STAGES
+    assert SUPPORTED_STAGES == GUIDE_V1_REQUIRED_STAGES + OPTIONAL_STAGES
     assert "audit" in STAGE_ORDER
     assert "audit" not in REASONING_STAGES
+
+
+def test_factcheck_stage_topology_derivation_and_order() -> None:
+    assert REQUIRED_STAGES == ("spec", "outline", "draft", "qa", "repair")
+    assert GUIDE_V1_REQUIRED_STAGES == (
+        "spec", "outline", "draft", "qa", "factcheck", "repair"
+    )
+    assert OPTIONAL_STAGES == ("audit",)
+    assert SUPPORTED_STAGES == GUIDE_V1_REQUIRED_STAGES + OPTIONAL_STAGES
+    assert PRESET_STAGES == ("profile",) + SUPPORTED_STAGES
+    assert STAGE_ORDER == ("profile",) + SUPPORTED_STAGES + ("finalize", "export")
+    # factcheck sits between qa and repair everywhere derived
+    for seq in (GUIDE_V1_REQUIRED_STAGES, SUPPORTED_STAGES, PRESET_STAGES, STAGE_ORDER):
+        assert seq.index("qa") < seq.index("factcheck") < seq.index("repair")
+    assert "factcheck" not in REQUIRED_STAGES
+    assert "factcheck" not in OPTIONAL_STAGES
+    assert "factcheck" not in REASONING_STAGES
+    assert DEFAULT_STAGE_RECOMMENDATIONS["factcheck"] == "strong_adversarial_check"
+    assert DEFAULT_STAGE_RECOMMENDATIONS["qa"] == "fast_cheap_check"
+
+
+def test_model_plan_without_factcheck_table_still_loads_with_default() -> None:
+    """Pre-feature plan TOMLs omit factcheck; loader fills from defaults."""
+    plan = parse_model_plan(
+        {
+            "provider": "manual",
+            "stages": {
+                "qa": {"model": "prompt-only"},
+                "repair": {"model": "prompt-only"},
+            },
+        }
+    )
+    assert "factcheck" in plan.stages
+    assert plan.stage("factcheck").recommendation == "strong_adversarial_check"
+    assert plan.stage("factcheck").model is None
+
+
+def test_preset_missing_factcheck_backfills_from_repair() -> None:
+    """Pre-feature catalogs omit factcheck preset rows; parser copies the repair row."""
+    stages = _full_stage_map()
+    del stages["factcheck"]
+    stages["repair"] = {"model": "opus-4-8", "effort": "high"}
+    data = _catalog_data_with_preset({"id": "p", "stages": {"claude-code": stages}})
+    catalog = parse_model_catalog(data)
+    assert catalog.presets[0].stages["claude-code"]["factcheck"] == PresetStage(
+        model="opus-4-8", effort="high"
+    )
 
 
 def test_model_plan_parses_and_overrides_audit_stage() -> None:

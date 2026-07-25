@@ -4,6 +4,7 @@ __version__ = "0.1.0"
 
 from education_pipeline.config import (
     DEFAULT_STAGE_RECOMMENDATIONS,
+    GUIDE_V1_REQUIRED_STAGES,
     OPTIONAL_STAGES,
     REQUIRED_STAGES,
     STAGE_ORDER,
@@ -76,6 +77,7 @@ __all__ = [
     "__version__",
     "EXPORT_FORMATS",
     "GUIDE_V1_CONTENT_TYPE",
+    "GUIDE_V1_REQUIRED_STAGES",
     "MANIFEST_SCHEMA_VERSION",
     "MARKDOWN_CONTENT_TYPE",
     "OPTIONAL_STAGES",

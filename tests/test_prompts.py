@@ -20,6 +20,7 @@ from education_pipeline import (
 from education_pipeline.guides.contract import build_guide_contract
 from education_pipeline.prompts import (
     compile_guide_v1_draft_prompt,
+    compile_guide_v1_factcheck_prompt,
     compile_guide_v1_outline_prompt,
     compile_guide_v1_qa_prompt,
     compile_guide_v1_repair_prompt,
@@ -64,6 +65,17 @@ revise
 
 ## Findings
 1. major - System boundaries module is missing.
+"""
+
+
+APPROVED_FACTCHECK = """\
+# Fact-Check Report: Systems Thinking
+
+## Verdict
+revise
+
+## Findings
+1. major - The claim that every feedback loop stabilizes a system is false.
 """
 
 
@@ -121,7 +133,7 @@ _LEGACY_PROMPT_TEXT_SHA256 = {
     "topic_spec": "0105ce68f4527875acf63d4b02bb179995081f0f91cbad827f88b4194bdc949e",
     "outline": "1877db820565cda9f692e78989451c28707d911e46883cc0b009598d5210cfe7",
     "draft": "64ee129a79b28e7806a283c3d8a2a29a5bdce2fc11eb2cb025ee2cab42f22f7c",
-    "qa": "a43cdf5ec7ed1c80935d8840e842446e8827bd8072610eb52832afe3f725dd58",
+    "qa": "be5b9b7a60f4ea43b2b0bf98b78376ef0657ef6aa4183be337993e2aad5e43d5",
     "repair": "c709a347abd1b1d8fe3868b1f8e5285a2b8547853fec7dc7c09a2c6cd14161b6",
 }
 
@@ -565,8 +577,8 @@ _GUIDE_V1_NO_BLUEPRINT_PROMPT_TEXT_SHA256 = {
     "spec": "8bda2c7da9c54a659d7ec6125dda3f04ee3783581c31a6e4ace97b2987cb8b92",
     "outline": "6c6a7b251879bc454eb34a2285a77a003cbc566122ace26d93463973da630b7b",
     "draft": "e8886ffad44f2b0a0728d839940011f5cd1db170430be1f70efc0192381f064c",
-    "qa": "99f98dd7a9bb931630c87e483834b2361c1cfaffa7183a9c320d17d86f62b857",
-    "repair": "da669344e07242f7950de75115bff9c6981832f54b56c01565d7a2e33171f76b",
+    "qa": "059c85debe9e83725a47ff4920e0827d17007c680bd68f1db8cae97ccac00762",
+    "repair": "d35d37cc0fdc6a22cb77ab536dc369231367611cc1e3ce59e694b5de6ec6974a",
 }
 
 
@@ -599,6 +611,7 @@ def _compile_guide_v1_prompts(blueprint=None) -> dict[str, str]:
             topic,
             draft_guide_json=GUIDE_DRAFT_JSON,
             qa_findings_markdown="# QA Report: Systems Thinking\n\n## Verdict\nrevise\n",
+            factcheck_findings_markdown="# Fact-Check Report: Systems Thinking\n\n## Verdict\nrevise\n",
             draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
             guide_contract=build_guide_contract(GUIDE_SPEC_CONTRACT, GUIDE_OUTLINE_CONTRACT),
             **kwargs,
@@ -735,6 +748,7 @@ def _compile_module_repair(module_id: str = "loop-basics", **kwargs):
         module_id=module_id,
         draft_guide_json=draft,
         qa_findings_markdown=_MODULE_REPAIR_QA,
+        factcheck_findings_markdown=APPROVED_FACTCHECK,
         draft_findings_json=_MODULE_REPAIR_DRAFT_FINDINGS,
         guide_contract=build_guide_contract(
             dict(
@@ -833,6 +847,7 @@ def _compile_personalized_1_1_prompts(tmp_path: Path, profile_toml: str) -> dict
             topic,
             draft_guide_json=GUIDE_DRAFT_JSON,
             qa_findings_markdown=APPROVED_QA,
+            factcheck_findings_markdown=APPROVED_FACTCHECK,
             draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
             guide_contract=contract,
             profile=profile,
@@ -1089,6 +1104,7 @@ def test_compile_guide_v1_repair_prompt_requires_complete_json_and_delimits_untr
         topic,
         draft_guide_json=GUIDE_DRAFT_JSON,
         qa_findings_markdown=APPROVED_QA,
+        factcheck_findings_markdown=APPROVED_FACTCHECK,
         draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
         guide_contract=guide_contract,
     )
@@ -1123,6 +1139,7 @@ def test_personalized_guide_repair_prompt_preserves_1_1_opaque_goal_annotations(
         Topic(id="systems-thinking", title="Systems Thinking"),
         draft_guide_json=GUIDE_DRAFT_JSON,
         qa_findings_markdown=APPROVED_QA,
+        factcheck_findings_markdown=APPROVED_FACTCHECK,
         draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
         guide_contract=contract,
         profile=profile,
@@ -1146,9 +1163,87 @@ def test_compile_guide_v1_repair_prompt_requires_draft_json() -> None:
             Topic(id="x", title="X"),
             draft_guide_json="   ",
             qa_findings_markdown=APPROVED_QA,
+            factcheck_findings_markdown=APPROVED_FACTCHECK,
             draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
             guide_contract=guide_contract,
         )
+
+
+def test_compile_guide_v1_factcheck_prompt_is_adversarial_markdown_report() -> None:
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    artifact = compile_guide_v1_factcheck_prompt(
+        topic,
+        approved_spec=APPROVED_SPEC,
+        approved_outline=APPROVED_OUTLINE,
+        draft_guide_json=GUIDE_DRAFT_JSON,
+        qa_findings_markdown=APPROVED_QA,
+        draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
+    )
+    assert artifact.stage == "factcheck"
+    assert artifact.text.startswith("# Fact-Check Stage Prompt\n")
+    assert "adversarial" in artifact.text.lower()
+    for heading in (
+        "## Claim Inventory",
+        "## Findings",
+        "## Unsupported Or Uncertain Claims",
+        "## Repair Instructions",
+        "## Approved Specification",
+        "## Draft Under Review",
+        "## Approved Model-QA Findings",
+        "## Deterministic Draft Findings",
+    ):
+        assert heading in artifact.text
+    assert "2. `## Verdict`" in artifact.text
+    assert GUIDE_DRAFT_JSON in artifact.text
+    assert APPROVED_QA in artifact.text
+    assert "BEGIN UNTRUSTED DATA" in artifact.text
+    assert "Never invent sources" in artifact.text or "never invent sources" in artifact.text.lower()
+
+
+def test_compile_guide_v1_qa_prompt_drops_deep_accuracy_for_factcheck() -> None:
+    artifact = compile_guide_v1_qa_prompt(
+        Topic(id="systems-thinking", title="Systems Thinking"),
+        approved_spec=APPROVED_SPEC,
+        approved_outline=APPROVED_OUTLINE,
+        draft_guide_json=GUIDE_DRAFT_JSON,
+        draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
+    )
+    assert "## Scope Checks" in artifact.text or "Scope Checks" in artifact.text
+    assert "Scope And Accuracy Checks" not in artifact.text
+    assert "factcheck" in artifact.text.lower()
+    # deep claim verification belongs to factcheck
+    assert "factual errors, and unsupported claims" not in artifact.text
+
+
+def test_legacy_qa_prompt_keeps_light_accuracy_note() -> None:
+    """Legacy pipelines have no factcheck stage: QA keeps a light accuracy
+    duty and the prompt must never mention factcheck (contradictory
+    instructions otherwise)."""
+    artifact = compile_qa_prompt(
+        Topic(id="systems-thinking", title="Systems Thinking"),
+        approved_spec=APPROVED_SPEC,
+        approved_outline=APPROVED_OUTLINE,
+        approved_draft="# Draft\n",
+    )
+    assert "obvious factual" in artifact.text.lower() or "unsupported claims" in artifact.text.lower()
+    assert "factcheck" not in artifact.text.lower()
+    assert "fact-check" not in artifact.text.lower()
+
+
+def test_compile_guide_v1_repair_prompt_embeds_factcheck_findings() -> None:
+    contract = build_guide_contract(GUIDE_SPEC_CONTRACT, GUIDE_OUTLINE_CONTRACT)
+    factcheck = "# Fact-Check Report\n\n## Findings\n1. **major** — bad claim\n"
+    artifact = compile_guide_v1_repair_prompt(
+        Topic(id="systems-thinking", title="Systems Thinking"),
+        draft_guide_json=GUIDE_DRAFT_JSON,
+        qa_findings_markdown=APPROVED_QA,
+        factcheck_findings_markdown=factcheck,
+        draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
+        guide_contract=contract,
+    )
+    assert "## Approved Fact-Check Findings" in artifact.text
+    assert factcheck in artifact.text
+    assert "fact-check" in artifact.text.lower() or "factcheck" in artifact.text.lower()
 
 
 def test_guide_v1_prompts_do_not_affect_legacy_prompt_hashes() -> None:

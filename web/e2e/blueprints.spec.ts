@@ -146,6 +146,11 @@ test("one weak module regenerates in place without touching its siblings", async
   await pasteAndApprove(page, "draft", DRAFT);
   await page.getByRole("button", { name: "Run draft validation" }).click();
   await pasteAndApprove(page, "qa", "# QA\n\n## Findings\n1. minor - loop-basics: tighten the opener.");
+  await pasteAndApprove(
+    page,
+    "factcheck",
+    "# Fact-Check Report\n\n## Verdict\npass — no material factual errors.\n\n## Findings\n(none)\n",
+  );
 
   // Prepare a scoped repair for one module from the repair stage view.
   await stageStep(page, "repair").getByRole("link", { name: "repair" }).click();

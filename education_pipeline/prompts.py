@@ -172,7 +172,7 @@ _QA_OUTPUT_AND_QUALITY_LINES = (
     "2. `## Verdict` - one of pass, revise, or fail, with a one-line justification.",
     "3. `## Outcome Coverage` - for each specification outcome, mark covered, partial, or missing, citing the module.",
     "4. `## Findings` - a numbered list. For each: severity (blocker, major, minor), location (module or section), what is wrong, and why it matters.",
-    "5. `## Scope And Accuracy Checks` - flag out-of-scope material, factual errors, and unsupported claims.",
+    "5. `## Scope Checks` - flag out-of-scope material relative to the approved specification and outline.",
     "6. `## Repair Instructions` - concrete fixes the repair stage can apply, ordered by severity.",
     "",
     "## Quality Bar",
@@ -183,6 +183,17 @@ _QA_OUTPUT_AND_QUALITY_LINES = (
     "- Separate blocking problems from minor polish.",
     "- Flag any contradiction between the specification and outline instead of guessing.",
     "- Keep private learner details out of publishable report text unless explicitly allowed.",
+)
+
+# The factcheck note is guide-v1-only: the shared tuple above carries neither
+# accuracy bullet, so the legacy prompt never references a stage its pipeline
+# does not have.
+_GUIDE_QA_FACTCHECK_NOTE_LINES = (
+    "- Factual claim verification is handled by the factcheck stage; do not duplicate it.",
+)
+
+_LEGACY_QA_ACCURACY_LINES = (
+    "- Flag obvious factual errors and unsupported claims.",
 )
 
 _REPAIR_HEADER_LINES = (
@@ -218,6 +229,62 @@ _REPAIR_OUTPUT_AND_QUALITY_LINES = (
     "- Keep worked examples fully worked and visual aids realized.",
     "- If a finding cannot be applied without violating a higher-priority requirement, note the conflict in `## Downstream Prompt Notes` instead of silently skipping it.",
     "- Keep private learner details out of publishable draft text unless explicitly allowed.",
+)
+
+# Guide-v1 repair applies two reports (model QA + adversarial fact-check), so it
+# uses its own header rather than the shared legacy `_REPAIR_HEADER_LINES`
+# (which must stay byte-identical for the legacy repair path).
+_GUIDE_REPAIR_HEADER_LINES = (
+    "# Repair Stage Prompt",
+    "",
+    "You are repairing a course draft for a local-first education pipeline.",
+    "Apply the approved QA and fact-check findings to the approved draft and return the corrected draft in full.",
+    "Change only what the findings require; preserve everything the reviews did not flag.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The approved QA and fact-check findings, which define the required fixes.",
+    "4. The approved draft, which is the base to revise.",
+    "5. Topic requirements.",
+    "6. Learner profile context.",
+)
+
+_FACTCHECK_HEADER_LINES = (
+    "# Fact-Check Stage Prompt",
+    "",
+    "You are an adversarial fact-checker for a local-first education pipeline.",
+    "You are not a co-author and not a pedagogical reviewer; your job is to verify the factual claims in the draft under review.",
+    "Assume the draft may contain confident errors, outdated statements, overgeneralizations, and unsupported quantitative claims.",
+    "Produce a findings report; do not rewrite the draft.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The approved specification and outline, which bound the claims the draft should make.",
+    "4. Topic requirements.",
+    "5. Learner profile context.",
+)
+
+_FACTCHECK_OUTPUT_AND_QUALITY_LINES = (
+    "## Output Format",
+    "Return markdown with exactly these sections:",
+    "1. `# Fact-Check Report: <title>`",
+    "2. `## Verdict` - one of pass, revise, or fail, with a one-line justification.",
+    "3. `## Claim Inventory` - a numbered list of the atomic claims extracted from the draft. For each: the claim (short quote or paraphrase), its location (module, section, or block id when available), and its claim type (definition, mechanism, historical, quantitative, causal, procedural, or other).",
+    "4. `## Findings` - a numbered list. For each: severity (blocker, major, minor), location, the referenced claim inventory number, what is wrong (false, unsupported, outdated, overstated, or internally inconsistent), why it matters for learners, and a concrete correction or hedge the repair stage can apply.",
+    "5. `## Unsupported Or Uncertain Claims` - claims that are not clearly false but lack adequate support in the guide for a learner audience, with severity guidance.",
+    "6. `## Repair Instructions` - concrete factual fixes the repair stage can apply, ordered by severity.",
+    "",
+    "## Quality Bar",
+    "- Take an adversarial posture: for non-common-knowledge claims, prefer flagging a doubtful claim over letting it pass silently.",
+    "- Enumerate the material claims; do not only sample a few paragraphs.",
+    "- Common knowledge and definitions that are true inside the course's own glossary may be marked supported without external citation theater.",
+    "- Never invent sources or DOIs; when a claim needs support that cannot be verified from general knowledge, mark it unsupported and instruct repair to hedge, qualify, or remove it rather than fabricate a bibliography.",
+    "- Mark uncertainty explicitly instead of guessing.",
+    "- Do not restate pedagogical QA findings such as missing outcomes or weak scenarios unless they encode a factual error.",
+    "- Do not rewrite the draft here; describe each fix precisely for the repair stage.",
+    "- Keep private learner details out of the report text.",
 )
 
 
@@ -323,7 +390,7 @@ def compile_qa_prompt(
                 approved_draft,
             ),
         ),
-        output_and_quality_lines=_QA_OUTPUT_AND_QUALITY_LINES,
+        output_and_quality_lines=_QA_OUTPUT_AND_QUALITY_LINES + _LEGACY_QA_ACCURACY_LINES,
         topic=topic,
         profile=profile,
     )
@@ -487,7 +554,10 @@ _GUIDE_REPAIR_OUTPUT_AND_QUALITY_LINES = (
     *_GUIDE_SCHEMA_REFERENCE_LINES,
     "",
     "## Quality Bar",
-    "- Resolve every blocking deterministic finding and every blocker or major model-QA finding.",
+    "- Resolve every blocking deterministic finding and every blocker or major finding from both the "
+    "model-QA and fact-check reports.",
+    "- On a factual conflict between the reports, prefer the fact-check report; on pedagogy or "
+    "coverage, prefer the QA report; do not invent a third answer.",
     "- Preserve stable IDs and valid unflagged structure; change only what the findings require.",
     "- Use only the registered root keys and the six registered block types; never invent new keys or "
     "block types.",
@@ -881,7 +951,72 @@ def compile_guide_v1_qa_prompt(
                 _untrusted_block("deterministic draft findings", draft_findings_json),
             ),
         ),
-        output_and_quality_lines=_QA_OUTPUT_AND_QUALITY_LINES,
+        output_and_quality_lines=_QA_OUTPUT_AND_QUALITY_LINES + _GUIDE_QA_FACTCHECK_NOTE_LINES,
+        topic=topic,
+        profile=profile,
+    )
+
+
+def compile_guide_v1_factcheck_prompt(
+    topic: Topic,
+    *,
+    approved_spec: str,
+    approved_outline: str,
+    draft_guide_json: str,
+    qa_findings_markdown: str,
+    draft_findings_json: str,
+    profile: LearnerProfile | None = None,
+    blueprint: Blueprint | None = None,
+) -> PromptArtifact:
+    """Compile the guide-v1 factcheck-stage prompt.
+
+    An adversarial fact-checker verifies the factual claims in the approved
+    draft. The draft, approved model-QA findings, and deterministic draft
+    findings are clearly delimited as untrusted data under review, not
+    instructions. Output is a fixed-section Markdown report; the stage never
+    rewrites the draft.
+    """
+
+    _required_block(draft_guide_json, "draft guide JSON")
+    _required_block(qa_findings_markdown, "QA findings")
+    _required_block(draft_findings_json, "draft findings")
+    return _compile_stage_prompt(
+        stage="factcheck",
+        pre_topic_lines=_blueprint_rubric_lines(blueprint),
+        header_lines=_FACTCHECK_HEADER_LINES,
+        sections=(
+            (
+                "## Approved Specification",
+                "The binding contract for scope and outcomes; claims should stay within it.",
+                "specification",
+                approved_spec,
+            ),
+            (
+                "## Approved Outline",
+                "The module map for locating claims.",
+                "outline",
+                approved_outline,
+            ),
+            (
+                "## Draft Under Review",
+                "The normalized draft guide JSON to fact-check.",
+                "draft",
+                _untrusted_block("draft guide JSON", draft_guide_json),
+            ),
+            (
+                "## Approved Model-QA Findings",
+                "Pedagogical context only; do not re-litigate pure pedagogy findings.",
+                "qa findings",
+                _untrusted_block("approved model-QA findings", qa_findings_markdown),
+            ),
+            (
+                "## Deterministic Draft Findings",
+                "Machine-generated validation findings. Do not waste effort restating pure structural issues.",
+                "draft findings",
+                _untrusted_block("deterministic draft findings", draft_findings_json),
+            ),
+        ),
+        output_and_quality_lines=_FACTCHECK_OUTPUT_AND_QUALITY_LINES,
         topic=topic,
         profile=profile,
     )
@@ -892,6 +1027,7 @@ def compile_guide_v1_repair_prompt(
     *,
     draft_guide_json: str,
     qa_findings_markdown: str,
+    factcheck_findings_markdown: str,
     draft_findings_json: str,
     guide_contract: bytes,
     profile: LearnerProfile | None = None,
@@ -901,16 +1037,22 @@ def compile_guide_v1_repair_prompt(
 
     Requires returning one complete guide JSON object (never a diff),
     resolving every blocking deterministic finding and every blocker/major
-    QA finding, while preserving stable IDs and valid unflagged structure.
-    ``guide_contract`` is the canonical payload bytes from
+    finding from both the model-QA and fact-check reports, while preserving
+    stable IDs and valid unflagged structure. ``guide_contract`` is the
+    canonical payload bytes from
     :func:`education_pipeline.guides.contract.build_guide_contract` and
     embeds the approved spec/outline constraints to prevent drift. The
-    approved QA findings, deterministic findings, and draft are delimited
-    as untrusted data, same as the QA prompt.
+    approved QA findings, fact-check findings, deterministic findings, and
+    draft are delimited as untrusted data, same as the QA prompt.
+
+    ``factcheck_findings_markdown`` is required: guide-v1 repair always runs
+    after an approved fact-check stage, so the ``## Approved Fact-Check
+    Findings`` section is always present.
     """
 
     _required_block(draft_guide_json, "draft guide JSON")
     _required_block(qa_findings_markdown, "QA findings")
+    _required_block(factcheck_findings_markdown, "factcheck findings")
     _required_block(draft_findings_json, "draft findings")
     contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
     personalization_lines = _private_personalization_lines(
@@ -919,23 +1061,32 @@ def compile_guide_v1_repair_prompt(
     personalization_suffix = (
         ("", *personalization_lines) if personalization_lines else ()
     )
-    return _compile_stage_prompt(
-        stage="repair",
-        pre_topic_lines=_blueprint_contract_lines(blueprint, "repair_lines"),
-        header_lines=_REPAIR_HEADER_LINES,
-        sections=(
-            (
-                "## Guide Contract",
-                "The following machine-readable contract was derived from the approved specification and outline. Its constraints are binding; the repaired guide must not drift outside them.",
-                "guide contract",
-                contract_text,
+    sections = [
+        (
+            "## Guide Contract",
+            "The following machine-readable contract was derived from the approved specification and outline. Its constraints are binding; the repaired guide must not drift outside them.",
+            "guide contract",
+            contract_text,
+        ),
+        (
+            "## Approved Model-QA Findings",
+            "The required fixes from model QA. Resolve every blocker and major finding.",
+            "qa findings",
+            _untrusted_block("approved model-QA findings", qa_findings_markdown),
+        ),
+    ]
+    sections.append(
+        (
+            "## Approved Fact-Check Findings",
+            "The required factual fixes. Resolve every blocker and major finding.",
+            "factcheck findings",
+            _untrusted_block(
+                "approved fact-check findings", factcheck_findings_markdown
             ),
-            (
-                "## Approved Model-QA Findings",
-                "The required fixes from model QA. Resolve every blocker and major finding.",
-                "qa findings",
-                _untrusted_block("approved model-QA findings", qa_findings_markdown),
-            ),
+        )
+    )
+    sections.extend(
+        [
             (
                 "## Deterministic Draft Findings",
                 "Machine-generated validation findings for the draft below. Resolve every blocking finding.",
@@ -948,7 +1099,13 @@ def compile_guide_v1_repair_prompt(
                 "draft",
                 _untrusted_block("draft guide JSON", draft_guide_json),
             ),
-        ),
+        ]
+    )
+    return _compile_stage_prompt(
+        stage="repair",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "repair_lines"),
+        header_lines=_GUIDE_REPAIR_HEADER_LINES,
+        sections=tuple(sections),
         output_and_quality_lines=(
             *_guide_json_output_lines(
                 _GUIDE_REPAIR_OUTPUT_AND_QUALITY_LINES, guide_schema_version
@@ -980,6 +1137,9 @@ _MODULE_REPAIR_QUALITY_LINES = (
     "## Quality Bar",
     "- Resolve every in-scope blocking deterministic finding and every in-scope blocker or major "
     "model-QA finding.",
+    "- Resolve every blocker or major fact-check finding that applies to this module.",
+    "- On a factual conflict between the reports, prefer the fact-check report; on pedagogy or "
+    "coverage, prefer the QA report; do not invent a third answer.",
     "- Do not fix out-of-scope findings; they are context so cross-references stay coherent.",
     "- Preserve stable IDs and valid unflagged structure inside the module; change only what the "
     "findings require.",
@@ -1028,6 +1188,7 @@ def compile_guide_v1_module_repair_prompt(
     module_id: str,
     draft_guide_json: str,
     qa_findings_markdown: str,
+    factcheck_findings_markdown: str,
     draft_findings_json: str,
     guide_contract: bytes,
     profile: LearnerProfile | None = None,
@@ -1041,6 +1202,13 @@ def compile_guide_v1_module_repair_prompt(
     unmatchable rest listed as out-of-scope context), the single module's JSON
     as the base to revise, and a compact summary of the rest of the course.
     Output contract: exactly one module object with the same ``id``.
+
+    The fact-check report is embedded in full (v1 does not filter fact-check
+    findings by module — it avoids inventing a second splitter contract; the
+    model is told to apply only the findings that fall inside this module).
+    ``factcheck_findings_markdown`` is required: module-scoped repair always
+    runs after an approved fact-check stage, so the ``## Approved Fact-Check
+    Findings`` section is always present.
     """
 
     from education_pipeline.guides.canonical import guide_to_dict
@@ -1048,6 +1216,7 @@ def compile_guide_v1_module_repair_prompt(
 
     _required_block(draft_guide_json, "draft guide JSON")
     _required_block(qa_findings_markdown, "QA findings")
+    _required_block(factcheck_findings_markdown, "factcheck findings")
     _required_block(draft_findings_json, "draft findings")
     contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
 
@@ -1131,6 +1300,19 @@ def compile_guide_v1_module_repair_prompt(
         *_guide_json_output_lines(_MODULE_REPAIR_QUALITY_LINES, guide_schema_version),
         *personalization_suffix,
     )
+    # v1 embeds the fact-check report in full rather than filtering it by module
+    # (see docstring); the model applies only the in-module factual fixes.
+    factcheck_sections: tuple[tuple[str, str, str, str], ...] = (
+        (
+            "## Approved Fact-Check Findings",
+            "The full fact-check report. Apply the factual fixes that fall inside this module "
+            "and treat the rest as context. Resolve every in-scope blocker and major finding.",
+            "factcheck findings",
+            _untrusted_block(
+                "approved fact-check findings", factcheck_findings_markdown
+            ),
+        ),
+    )
     return _compile_stage_prompt(
         stage="repair",
         pre_topic_lines=_blueprint_contract_lines(blueprint, "repair_lines"),
@@ -1164,6 +1346,7 @@ def compile_guide_v1_module_repair_prompt(
                     "\n".join(out_of_scope_items) if out_of_scope_items else "(none)",
                 ),
             ),
+            *factcheck_sections,
             (
                 "## Deterministic Draft Findings (This Module)",
                 "Machine-generated validation findings located inside this module. Resolve every "

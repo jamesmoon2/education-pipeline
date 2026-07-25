@@ -182,6 +182,11 @@ test("release gate: finding → repair → re-run → waive → export", async (
   // Continue the pipeline. Repair-stage content is the repaired guide, so the
   // final-phase report carries the same waivable heading blocker.
   await pasteAndApprove(page, "qa", "# QA\n\nNo blocking issues.");
+  await pasteAndApprove(
+    page,
+    "factcheck",
+    "# Fact-Check Report\n\n## Verdict\npass — no material factual errors.\n\n## Findings\n(none)\n",
+  );
   await pasteAndApprove(page, "repair", DRAFT_V2);
   await page.getByRole("button", { name: "Run final validation" }).click();
 
@@ -242,6 +247,11 @@ test("release gate: a waiver can be removed from the cockpit", async ({ page }) 
     draftPanel(page).getByText(/markdown\.invalid_heading_level/),
   ).toBeVisible();
   await pasteAndApprove(page, "qa", "# QA\n\nNo blocking issues.");
+  await pasteAndApprove(
+    page,
+    "factcheck",
+    "# Fact-Check Report\n\n## Verdict\npass — no material factual errors.\n\n## Findings\n(none)\n",
+  );
   await pasteAndApprove(page, "repair", DRAFT_V2);
   await page.getByRole("button", { name: "Run final validation" }).click();
 

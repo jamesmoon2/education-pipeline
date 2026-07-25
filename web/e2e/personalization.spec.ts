@@ -279,6 +279,11 @@ test("personalization milestone: private profile through safe audited export", a
   await page.getByRole("button", { name: "Run draft validation", exact: true }).click();
 
   await pasteAndApprove(page, "qa", "# QA\n\nNo blocking issues.");
+  await pasteAndApprove(
+    page,
+    "factcheck",
+    "# Fact-Check Report\n\n## Verdict\npass — no material factual errors.\n\n## Findings\n(none)\n",
+  );
   await pasteAndApprove(page, "repair", LEAKED_GUIDE);
   await page.getByRole("button", { name: "Run final validation", exact: true }).click();
 
