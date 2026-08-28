@@ -30,6 +30,8 @@ import {
   postAdvance,
   recommendBlueprints,
 } from "../api/client";
+import { NEW_RUN_DRAFT_KEY, loadNewRunDraft, saveNewRunDraft } from "../lib/newRunDraft";
+import type { NewRunDraft } from "../lib/newRunDraft";
 
 const blueprintsPayload = {
   blueprints: [
@@ -105,6 +107,7 @@ function renderWizard() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionStorage.clear();
   vi.mocked(getConfigPlan).mockResolvedValue(makePlan());
   vi.mocked(recommendBlueprints).mockResolvedValue(blueprintsPayload);
 });
@@ -399,5 +402,133 @@ describe("NewRunPage wizard structure", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Create course" }));
 
     expect(postAdvance).toHaveBeenCalledWith("b3", undefined);
+  });
+});
+
+function makeDraft(overrides: Partial<NewRunDraft> = {}): NewRunDraft {
+  return {
+    step: "topic",
+    profileId: "",
+    mode: "describe",
+    id: "resumed-topic",
+    title: "Resumed Topic",
+    brief: "",
+    audience: "",
+    goals: "",
+    toml: "",
+    selectedBlueprint: "",
+    timeBudget: "",
+    createdId: null,
+    attached: false,
+    ...overrides,
+  };
+}
+
+describe("NewRunPage draft persistence", () => {
+  it("stores nothing while the wizard is pristine", async () => {
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderWizard();
+    await screen.findByRole("heading", { name: "Learner" });
+    expect(sessionStorage.getItem(NEW_RUN_DRAFT_KEY)).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("mirrors typed wizard input into sessionStorage", async () => {
+    await renderAtTopicStep();
+    await userEvent.type(screen.getByLabelText("Topic id"), "draft-1");
+    await userEvent.type(screen.getByLabelText("Title"), "Draft One");
+    await userEvent.type(screen.getByLabelText("Brief"), "Half-finished brief");
+
+    expect(loadNewRunDraft()).toEqual(
+      makeDraft({ id: "draft-1", title: "Draft One", brief: "Half-finished brief" }),
+    );
+  });
+
+  it("restores a stored draft on mount and shows the restored note", async () => {
+    saveNewRunDraft(makeDraft({ brief: "Keep this brief", timeBudget: "45" }));
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderWizard();
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Restored your in-progress course draft.",
+    );
+    expect(screen.getByRole("heading", { name: "Topic and brief" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Topic id")).toHaveValue("resumed-topic");
+    expect(screen.getByLabelText("Title")).toHaveValue("Resumed Topic");
+    expect(screen.getByLabelText("Brief")).toHaveValue("Keep this brief");
+    expect(screen.getByLabelText("Time budget (minutes, optional)")).toHaveValue(45);
+  });
+
+  it("re-fetches blueprints for a draft restored at the blueprint step, keeping the override", async () => {
+    saveNewRunDraft(
+      makeDraft({ step: "blueprint", id: "b9", title: "B9", selectedBlueprint: "exam-preparation" }),
+    );
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderWizard();
+
+    expect(await screen.findByText("Choose a blueprint")).toBeInTheDocument();
+    expect(recommendBlueprints).toHaveBeenCalledWith({ id: "b9", title: "B9" });
+    expect(
+      await screen.findByRole("radio", { name: /Exam preparation/ }),
+    ).toBeChecked();
+  });
+
+  it("falls back to no selection when the restored-step blueprint re-fetch fails", async () => {
+    saveNewRunDraft(
+      makeDraft({ step: "blueprint", id: "b9", title: "B9", selectedBlueprint: "exam-preparation" }),
+    );
+    vi.mocked(recommendBlueprints).mockRejectedValue(new Error("registry down"));
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderWizard();
+
+    expect(await screen.findByText("Choose a blueprint")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/unavailable/i);
+  });
+
+  it("Start over clears the stored draft and resets the wizard", async () => {
+    saveNewRunDraft(makeDraft({ id: "throwaway", title: "Throwaway" }));
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderWizard();
+
+    await screen.findByRole("status");
+    await userEvent.click(screen.getByRole("button", { name: "Start over" }));
+
+    expect(sessionStorage.getItem(NEW_RUN_DRAFT_KEY)).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Learner" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByLabelText("Topic id")).toHaveValue("");
+    expect(screen.getByLabelText("Title")).toHaveValue("");
+  });
+
+  it("Dismiss hides the note but keeps the draft and the restored input", async () => {
+    saveNewRunDraft(makeDraft());
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderWizard();
+
+    await screen.findByRole("status");
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByLabelText("Topic id")).toHaveValue("resumed-topic");
+    expect(loadNewRunDraft()).toEqual(makeDraft());
+  });
+
+  it("clears the draft after a successful create", async () => {
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    vi.mocked(createTopic).mockResolvedValue({ id: "done", title: "Done" });
+    vi.mocked(postAdvance).mockResolvedValue({ performed: "write_prompt", status: makeRunStatus("done") });
+    vi.mocked(getRunStatus).mockResolvedValue(makeRunStatus("done"));
+
+    renderWizard();
+    await screen.findByRole("heading", { name: "Learner" });
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await fillTopicStep("done", "Done");
+    await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(sessionStorage.getItem(NEW_RUN_DRAFT_KEY)).not.toBeNull();
+    await userEvent.click(await screen.findByRole("button", { name: "Create course" }));
+
+    expect(await screen.findByText("RUN BOARD DESTINATION")).toBeInTheDocument();
+    expect(sessionStorage.getItem(NEW_RUN_DRAFT_KEY)).toBeNull();
   });
 });
