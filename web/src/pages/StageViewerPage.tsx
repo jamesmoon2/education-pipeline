@@ -9,6 +9,7 @@ import {
   getStageContent,
   postApprove,
 } from "../api/client";
+import CopyPromptButton from "../components/CopyPromptButton";
 import DiffView from "../components/DiffView";
 import InfoTip from "../components/InfoTip";
 import ModuleRepairControl from "../components/ModuleRepairControl";
@@ -97,6 +98,7 @@ function StageViewerForRoute({
 
   const finalized = run ? run.finalized : true; // hide Edit until status loads
   const isAudit = data.stage === "audit";
+  const prompt = data.prompt;
   const canEdit = data.response !== null && (!finalized || isAudit);
   const needsApproval =
     data.response !== null &&
@@ -160,6 +162,9 @@ function StageViewerForRoute({
         )}
       </div>
       <div className="stage-actions" role="toolbar" aria-label="Stage actions">
+        {prompt !== null && (
+          <CopyPromptButton getText={() => Promise.resolve(prompt)} />
+        )}
         {tab === "response" && canEdit && !editing && (
           <button onClick={() => setEditing(true)}>Edit</button>
         )}

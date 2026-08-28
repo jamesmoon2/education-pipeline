@@ -16,6 +16,7 @@ vi.mock("../api/client", async () => {
     postResponse: vi.fn(),
     postExport: vi.fn(),
     enqueueJob: vi.fn(),
+    getStageContent: vi.fn(),
     downloadFinal: vi.fn(),
     downloadExport: vi.fn(),
   };
@@ -24,17 +25,32 @@ vi.mock("../api/client", async () => {
 import {
   ApiRequestError,
   enqueueJob,
+  getStageContent,
   postAdvance,
   postApprove,
   postFinalize,
   postValidate,
   postResponse,
 } from "../api/client";
+import type { StageContent } from "../api/types";
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  delete (navigator as { clipboard?: unknown }).clipboard;
 });
+
+function makeStageContent(prompt: string | null): StageContent {
+  return {
+    topic_id: "t",
+    stage: "draft",
+    prompt,
+    response: null,
+    approved: null,
+    response_sha256: null,
+    content_type: "text/markdown",
+  };
+}
 
 function makeStatus(action: NextAction["action"], stage: string | null): RunStatus {
   return {
@@ -86,6 +102,43 @@ describe("PrimaryAction", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save response" }));
     expect(postResponse).toHaveBeenCalledWith("t", "draft", "draft body");
     expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("save_response groups the manual loop and copies the stage prompt", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    vi.mocked(getStageContent).mockResolvedValue(
+      makeStageContent("# raw prompt bytes\n"),
+    );
+    renderAction(makeStatus("save_response", "draft"));
+
+    const loop = screen.getByRole("list", { name: "Manual copy/paste loop" });
+    expect(loop).toContainElement(
+      screen.getByRole("button", { name: "Copy prompt" }),
+    );
+    expect(loop).toContainElement(
+      screen.getByRole("button", { name: "Paste response…" }),
+    );
+    expect(loop).not.toContainElement(
+      screen.getByRole("button", { name: "Run with provider" }),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
+    expect(getStageContent).toHaveBeenCalledWith("t", "draft");
+    expect(writeText).toHaveBeenCalledWith("# raw prompt bytes\n");
+    expect(await screen.findByRole("status")).toHaveTextContent("Copied ✓");
+  });
+
+  it("copy prompt fails visibly when no prompt is on disk", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    vi.mocked(getStageContent).mockResolvedValue(makeStageContent(null));
+    renderAction(makeStatus("save_response", "draft"));
+    await userEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Copy failed — select the prompt text and copy it manually.",
+    );
+    expect(writeText).not.toHaveBeenCalled();
   });
 
   it("approve renders Approve {stage} with a review link", async () => {

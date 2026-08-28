@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   enqueueJob,
+  getStageContent,
   postAdvance,
   postApprove,
   postFinalize,
@@ -9,6 +10,7 @@ import {
 } from "../api/client";
 import type { Job, RunStatus } from "../api/types";
 import { useAction } from "../hooks/useAction";
+import CopyPromptButton from "./CopyPromptButton";
 import ExportControls from "./ExportControls";
 import ResponseForm from "./ResponseForm";
 
@@ -67,9 +69,30 @@ export default function PrimaryAction({
           >
             Run with provider
           </button>{" "}
-          <button disabled={busy} onClick={() => setPasteOpen((open) => !open)}>
-            Paste response…
-          </button>
+          <ol className="manual-loop" aria-label="Manual copy/paste loop">
+            <li>
+              <CopyPromptButton
+                getText={async () => {
+                  const content = await getStageContent(topicId, stage);
+                  if (content.prompt === null) {
+                    throw new Error(`No prompt on disk for ${stage} yet.`);
+                  }
+                  return content.prompt;
+                }}
+              />
+            </li>
+            <li className="manual-loop-hint">
+              run it in the model you already use
+            </li>
+            <li>
+              <button
+                disabled={busy}
+                onClick={() => setPasteOpen((open) => !open)}
+              >
+                Paste response…
+              </button>
+            </li>
+          </ol>
           {pasteOpen && (
             <ResponseForm
               topicId={topicId}
