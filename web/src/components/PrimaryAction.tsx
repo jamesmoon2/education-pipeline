@@ -30,6 +30,9 @@ export default function PrimaryAction({
   const [pasteOpen, setPasteOpen] = useState(false);
   const { topic_id: topicId, next_action: next } = status;
   const stage = next.stage;
+  // stages[].approved flags an approved copy on disk, so an approve action
+  // for such a stage is a re-approval that overwrites the prior copy.
+  const reapproving = status.stages.some((s) => s.stage === stage && s.approved);
 
   if (activeJob) {
     const verb = activeJob.status === "queued" ? "queued" : "running";
@@ -116,9 +119,12 @@ export default function PrimaryAction({
               })
             }
           >
-            Approve {stage}
+            {reapproving ? `Approve changes to ${stage}` : `Approve ${stage}`}
           </button>{" "}
-          <Link to={`/topics/${topicId}/stages/${stage}`}>review first</Link>
+          {/* Land review on the pending content, not the default prompt tab. */}
+          <Link to={`/topics/${topicId}/stages/${stage}?tab=response`}>
+            review first
+          </Link>
         </>
       )}
       {next.action === "validate" && stage && (

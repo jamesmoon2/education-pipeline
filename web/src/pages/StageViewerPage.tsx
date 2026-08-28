@@ -77,6 +77,10 @@ function StageViewerForRoute({
   const [compare, setCompare] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [draftApproved, setDraftApproved] = useState<string | null>(null);
+  // An explicit hide of the "what changed" delta is sticky for this visit to
+  // the stage (the route key remounts per stage): polling replaces `data`
+  // every 5s and must neither reopen nor close the section.
+  const [deltaHidden, setDeltaHidden] = useState(false);
   const approve = useAction(refresh);
   const rerun = useAction(refresh);
 
@@ -103,6 +107,14 @@ function StageViewerForRoute({
   const needsApproval =
     data.response !== null &&
     (data.approved === null || data.approved !== data.response);
+  // Pending re-approval: an approved copy exists and the response drifted
+  // from it (edit or provider rerun). Show the delta the approval decides on.
+  const approvalDelta =
+    data.response !== null &&
+    data.approved !== null &&
+    data.response !== data.approved
+      ? { a: data.approved, b: data.response }
+      : null;
   const showEditor = editing && canEdit && tab === "response";
 
   const toggleDiff = async () => {
@@ -158,6 +170,11 @@ function StageViewerForRoute({
         {data.stage === "repair" && (
           <button onClick={() => void toggleDiff()}>
             {diffOpen ? "Hide diff" : "Diff against draft"}
+          </button>
+        )}
+        {approvalDelta && (
+          <button onClick={() => setDeltaHidden((hidden) => !hidden)}>
+            {deltaHidden ? "What changed since last approval" : "Hide what changed"}
           </button>
         )}
       </div>
@@ -265,6 +282,15 @@ function StageViewerForRoute({
         >
           {approve.feedback}
         </p>
+      )}
+      {approvalDelta && !deltaHidden && (
+        <section
+          className="approval-delta"
+          aria-label="What changed since last approval"
+        >
+          <h3>What changed since last approval</h3>
+          <DiffView a={approvalDelta.a} b={approvalDelta.b} />
+        </section>
       )}
       {showEditor ? (
         <ResponseEditor

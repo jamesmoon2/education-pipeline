@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   Link,
@@ -538,6 +538,163 @@ describe("StageViewerPage", () => {
     expect(
       await screen.findByRole("button", { name: "Approve draft" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows what changed since the last approval by default on a pending re-approval", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "draft",
+      prompt: "# prompt",
+      response: "same line\nnew line",
+      approved: "same line\nold line",
+      response_sha256: "sha-2",
+      content_type: "text/markdown",
+    });
+    renderAt("/topics/t/stages/draft");
+
+    const region = await screen.findByRole("region", {
+      name: "What changed since last approval",
+    });
+    expect(
+      within(region).getByRole("heading", { name: "What changed since last approval" }),
+    ).toBeInTheDocument();
+    expect(within(region).getByText("old line").closest(".diff-line")).toHaveClass(
+      "diff-removed",
+    );
+    expect(within(region).getByText("new line").closest(".diff-line")).toHaveClass(
+      "diff-added",
+    );
+
+    // The approve toolbar stays above the delta, and the hide toggle sits in
+    // the view-toggles row alongside the compare toggle.
+    const toolbar = screen.getByRole("toolbar", { name: "Stage actions" });
+    expect(toolbar).toContainElement(
+      screen.getByRole("button", { name: "Approve draft" }),
+    );
+    expect(
+      toolbar.compareDocumentPosition(region) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const hide = screen.getByRole("button", { name: "Hide what changed" });
+    expect(hide.closest(".view-toggles")).not.toBeNull();
+  });
+
+  it("offers no what-changed section or toggle on a first approval", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "draft",
+      prompt: "# prompt",
+      response: "response body",
+      approved: null,
+      response_sha256: "sha-1",
+      content_type: "text/markdown",
+    });
+    renderAt("/topics/t/stages/draft");
+    expect(
+      await screen.findByRole("button", { name: "Approve draft" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "What changed since last approval" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /what changed/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps an explicitly hidden what-changed section hidden across poll refreshes", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(getStageContent).mockResolvedValue({
+        topic_id: "t",
+        stage: "draft",
+        prompt: "# prompt",
+        response: "same line\nnew line",
+        approved: "same line\nold line",
+        response_sha256: "sha-2",
+        content_type: "text/markdown",
+      });
+      renderAt("/topics/t/stages/draft");
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(
+        screen.getByRole("region", { name: "What changed since last approval" }),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Hide what changed" }));
+      expect(
+        screen.queryByRole("region", { name: "What changed since last approval" }),
+      ).not.toBeInTheDocument();
+
+      // A polling refresh replaces `data` but must not reopen the section.
+      const fetches = vi.mocked(getStageContent).mock.calls.length;
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(vi.mocked(getStageContent).mock.calls.length).toBeGreaterThan(fetches);
+      expect(
+        screen.queryByRole("region", { name: "What changed since last approval" }),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "What changed since last approval" }),
+      );
+      expect(
+        screen.getByRole("region", { name: "What changed since last approval" }),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the repair draft diff independent of the what-changed section", async () => {
+    vi.mocked(getStageContent).mockImplementation(async (_topic, stage) => {
+      if (stage === "draft") {
+        return {
+          topic_id: "t",
+          stage: "draft",
+          prompt: null,
+          response: "shared line\ndraft line",
+          approved: "shared line\ndraft line",
+          response_sha256: "sha-d",
+          content_type: "text/markdown",
+        };
+      }
+      return {
+        topic_id: "t",
+        stage: "repair",
+        prompt: null,
+        response: "shared line\nrepair new line",
+        approved: "shared line\nrepair old line",
+        response_sha256: "sha-r",
+        content_type: "text/markdown",
+      };
+    });
+    renderAt("/topics/t/stages/repair");
+
+    const region = await screen.findByRole("region", {
+      name: "What changed since last approval",
+    });
+    expect(
+      within(region).getByText("repair old line").closest(".diff-line"),
+    ).toHaveClass("diff-removed");
+
+    await userEvent.click(screen.getByRole("button", { name: "Diff against draft" }));
+    // The draft diff renders outside the what-changed region.
+    expect(await screen.findByText("draft line")).toBeInTheDocument();
+    expect(within(region).queryByText("draft line")).not.toBeInTheDocument();
+
+    // Hiding the what-changed delta leaves the draft diff open.
+    await userEvent.click(screen.getByRole("button", { name: "Hide what changed" }));
+    expect(
+      screen.queryByRole("region", { name: "What changed since last approval" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("draft line")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hide diff" })).toBeInTheDocument();
   });
 
   it("compare toggle lays prompt and response side by side", async () => {

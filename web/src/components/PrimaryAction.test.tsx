@@ -52,7 +52,11 @@ function makeStageContent(prompt: string | null): StageContent {
   };
 }
 
-function makeStatus(action: NextAction["action"], stage: string | null): RunStatus {
+function makeStatus(
+  action: NextAction["action"],
+  stage: string | null,
+  stages: RunStatus["stages"] = [],
+): RunStatus {
   return {
     topic_id: "t",
     finalized: action === "done",
@@ -62,7 +66,7 @@ function makeStatus(action: NextAction["action"], stage: string | null): RunStat
       draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
       final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
     },
-    stages: [],
+    stages,
     next_action: { topic_id: "t", stage, action, detail: `detail for ${action}` },
   };
 }
@@ -141,15 +145,53 @@ describe("PrimaryAction", () => {
     expect(writeText).not.toHaveBeenCalled();
   });
 
-  it("approve renders Approve {stage} with a review link", async () => {
+  it("approve renders Approve {stage} with a review link to the pending response", async () => {
     vi.mocked(postApprove).mockResolvedValue({} as never);
     renderAction(makeStatus("approve", "qa"));
     expect(screen.getByRole("link", { name: "review first" })).toHaveAttribute(
       "href",
-      "/topics/t/stages/qa",
+      "/topics/t/stages/qa?tab=response",
     );
     await userEvent.click(screen.getByRole("button", { name: "Approve qa" }));
     expect(postApprove).toHaveBeenCalledWith("t", "qa");
+  });
+
+  it("labels a re-approval when the stage already has an approved copy", async () => {
+    vi.mocked(postApprove).mockResolvedValue({} as never);
+    renderAction(
+      makeStatus("approve", "qa", [
+        {
+          stage: "qa",
+          state: "stale",
+          prompt_written: true,
+          response_ingested: true,
+          approved: true,
+        },
+      ]),
+    );
+    const button = screen.getByRole("button", { name: "Approve changes to qa" });
+    // e2e and screen-reader affordances rely on names starting with "Approve".
+    expect(button).toHaveAccessibleName(/^Approve/);
+    await userEvent.click(button);
+    expect(postApprove).toHaveBeenCalledWith("t", "qa");
+  });
+
+  it("keeps the plain approve label when no approved copy exists for the stage", () => {
+    renderAction(
+      makeStatus("approve", "qa", [
+        {
+          stage: "qa",
+          state: "response_ingested",
+          prompt_written: true,
+          response_ingested: true,
+          approved: false,
+        },
+      ]),
+    );
+    expect(screen.getByRole("button", { name: "Approve qa" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Approve changes to qa" }),
+    ).not.toBeInTheDocument();
   });
 
   it("retries approve with overwrite after a confirmed 409", async () => {
