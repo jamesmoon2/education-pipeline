@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.0" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-g8aO0jiwJl6gNe3EJ3rIpsomad2nyXsL+124/0cOo2E='; script-src 'sha256-GJAtTjhYsBi1qM0sQimfxgWKP5pY3Iy0iynTaW+JC2c='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
+<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.0" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-g8aO0jiwJl6gNe3EJ3rIpsomad2nyXsL+124/0cOo2E='; script-src 'sha256-zD48OlOeFxKpFn5PtBrPtG++AMQyoZN4H9AHL+kUjJI='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
  * Derives from the product token system in docs/design-system.md (§4.2):
  * the guide surface reads with Literata on a white surface, interface
  * chrome uses the Plex Sans stack, and status is never color alone.
@@ -208,6 +208,11 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
     // earlier version's progress to offer. Anything non-finite is dropped
     // rather than carried forward.
     if (Number.isFinite(raw.updatedAt)) out.updatedAt = raw.updatedAt;
+    // Optional, and only ever recorded as true: the learner has answered the
+    // carry-over offer for this export (resumed or started fresh), so it must
+    // not be raised again. Absent means "not asked yet", which is what every
+    // older stored state correctly means.
+    if (raw.migrationDecided === true) out.migrationDecided = true;
     return out;
   }
 
@@ -320,6 +325,11 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       data = next || emptyState();
       return save();
     }
+    // The learner has answered the carry-over offer for this export.
+    function markMigrationDecided() {
+      data.migrationDecided = true;
+      return save();
+    }
     function setTheme(theme) {
       data.theme = theme;
       save();
@@ -342,7 +352,12 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       save();
     }
     function resetProgress() {
-      data = { completedSections: [], interactions: {}, lastSection: null, theme: data.theme };
+      // Theme is a display preference and the carry-over decision is an
+      // answer the learner already gave; neither is progress, so a reset
+      // keeps both rather than resurrecting a banner they dismissed.
+      const next = { completedSections: [], interactions: {}, lastSection: null, theme: data.theme };
+      if (data.migrationDecided === true) next.migrationDecided = true;
+      data = next;
       save();
     }
     return {
@@ -350,6 +365,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       get,
       save,
       adopt,
+      markMigrationDecided,
       setTheme,
       markSectionComplete,
       setLastSection,
@@ -973,8 +989,13 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
     // way to rebuild submitted answers, revealed steps and saved notes: each
     // block enhancer reads stored state once, at boot, and re-running them
     // over the live DOM would bind every listener a second time.
-    function adopt(state) {
+    //
+    // `options.decided` records, in the same write, that the carry-over offer
+    // has been answered -- so the boot after the reload cannot raise it again
+    // even if the adopted progress filtered down to nothing.
+    function adopt(state, options) {
       const filtered = filterToDocument(state);
+      if (options && options.decided) filtered.migrationDecided = true;
       if (State.adopt(filtered)) {
         window.location.reload();
         return true;
@@ -1171,6 +1192,10 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       }, null);
     }
 
+    function hasProgress(state) {
+      return state.completedSections.length > 0 || Object.keys(state.interactions).length > 0;
+    }
+
     function describe(state) {
       const sections = state.completedSections.length;
       const answers = Object.keys(state.interactions).length;
@@ -1180,22 +1205,36 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       );
     }
 
+    // The offer stands until the learner answers it. Booting this export
+    // records a last section and a theme, so "has this export been used yet"
+    // cannot be read from the mere existence of a stored record -- it is read
+    // from real progress (a completed section or a saved interaction) plus an
+    // explicit decision flag. A learner who opens the replacement file, does
+    // nothing, and closes it still gets the offer next time.
+    function shouldOffer(current) {
+      return !current.migrationDecided && !hasProgress(current);
+    }
+
     function offer(courseId, hash, schemaVersion) {
       try {
         const banner = qs('[data-role="progress-migration"]');
-        if (!banner) return false;
+        if (!banner || !shouldOffer(State.get())) return false;
         const winner = newest(candidates(courseId, hash, schemaVersion));
+        // Only worth raising if something in it survives the filter: a banner
+        // announcing nothing to carry over is noise, not an offer.
         if (!winner) return false;
+        const preview = Restore.filterToDocument(winner.state);
+        if (!hasProgress(preview)) return false;
 
         const detail = qs('[data-role="progress-migration-detail"]', banner);
-        if (detail) detail.textContent = describe(Restore.filterToDocument(winner.state));
+        if (detail) detail.textContent = describe(preview);
         const resume = qs('[data-role="resume-progress"]', banner);
         const dismiss = qs('[data-role="dismiss-progress"]', banner);
         if (resume) {
           resume.addEventListener("click", () => {
             banner.hidden = true;
             try {
-              Restore.adopt(winner.state);
+              Restore.adopt(winner.state, { decided: true });
             } catch (_error) {
               /* the guide keeps working with the progress it already had */
             }
@@ -1204,9 +1243,13 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
         if (dismiss) {
           dismiss.addEventListener("click", () => {
             banner.hidden = true;
-            // Persist this export's own (empty) record so the same offer
-            // does not come back the next time this file is opened.
-            State.save();
+            // Records the decision alongside this export's own (empty)
+            // record, so the offer does not come back on the next load.
+            // Where storage refuses the write the flag cannot persist, but
+            // neither can any candidate be found there (the same storage is
+            // unreadable), so nothing loops: the banner is simply gone for
+            // this viewing.
+            State.markMigrationDecided();
           });
         }
         banner.hidden = false;
@@ -1294,10 +1337,9 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       Nav.boot();
       installPreviewEvidenceBridge(guide);
       Progress.update();
-      // Only when this exact export has nothing stored yet: booting itself
-      // records a last section, so the offer is made against the state read
-      // before any of that happened.
-      if (!loaded) Migration.offer(guide.course.id, hash, guide.schema_version);
+      // Stands on every load until the learner answers it or genuinely starts
+      // this export; Migration.offer decides from the stored record itself.
+      Migration.offer(guide.course.id, hash, guide.schema_version);
     } catch (error) {
       shell.hidden = true;
       status.hidden = false;

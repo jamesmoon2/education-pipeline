@@ -97,6 +97,18 @@ const DECOY_STATE = {
   updatedAt: 1_900_000_000_000,
 };
 
+// Valid, but every id in it was cut from the course: nothing survives the
+// filter, so there is nothing to offer.
+const GHOST_ONLY_STATE = {
+  completedSections: ["section-that-was-cut"],
+  interactions: {
+    "block-that-was-cut": { type: "reflection", completed: true, text: "gone", skipped: false },
+  },
+  lastSection: "section-that-was-cut",
+  theme: "system",
+  updatedAt: 1_700_000_003_000,
+};
+
 async function seed(page: import("@playwright/test").Page, entries: Record<string, unknown>) {
   await page.addInitScript((seeded) => {
     try {
@@ -180,6 +192,38 @@ test.describe("progress carried over from a previous export", () => {
     expect(typeof adopted.updatedAt).toBe("number");
     const previous = await page.evaluate((key) => window.localStorage.getItem(key), OLD_KEY);
     expect(JSON.parse(previous || "null")).toEqual(NEWEST_STATE);
+    expect(adopted.migrationDecided).toBe(true);
+
+    // Answered, so it never returns -- not even though the seeded previous
+    // record is still there on the next load.
+    await page.reload({ waitUntil: "load" });
+    await expect(page.locator(banner)).toBeHidden();
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "2 of 4 sections complete",
+    );
+  });
+
+  test("the offer stands across reloads until the learner answers it", async ({ page }) => {
+    // Opening the guide records a last section and a theme under this
+    // export's own key. That must not count as "already decided": a learner
+    // who opens the replacement file and closes it still gets the offer.
+    await seed(page, { [OLD_KEY]: NEWEST_STATE });
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+    await expect(page.locator(banner)).toBeVisible();
+
+    await page.reload({ waitUntil: "load" });
+    await expect(page.locator(banner)).toBeVisible();
+    await page.reload({ waitUntil: "load" });
+    await expect(page.locator(banner)).toContainText(
+      "You have progress from a previous version of this course.",
+    );
+
+    // A record exists under the current key by now; it simply carries no
+    // progress and no decision.
+    const records = await currentRecords(page, [OLD_KEY]);
+    const current = Object.values(records)[0] as Record<string, unknown>;
+    expect(current.completedSections).toEqual([]);
+    expect(current.migrationDecided).toBeUndefined();
   });
 
   test("start fresh dismisses the offer and it stays dismissed on reload", async ({ page }) => {
@@ -194,12 +238,42 @@ test.describe("progress carried over from a previous export", () => {
       "0 of 4 sections complete",
     );
 
+    const records = await currentRecords(page, [OLD_KEY]);
+    expect((Object.values(records)[0] as Record<string, unknown>).migrationDecided).toBe(true);
+
     await page.reload({ waitUntil: "load" });
     await expect(page.locator("[data-guide-status]")).toBeHidden();
     await expect(page.locator(banner)).toBeHidden();
     await expect(page.locator('[data-role="progress-summary"]')).toContainText(
       "0 of 4 sections complete",
     );
+  });
+
+  test("real progress on this export retires the offer without an answer", async ({ page }) => {
+    await seed(page, { [OLD_KEY]: NEWEST_STATE });
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+    await expect(page.locator(banner)).toBeVisible();
+
+    // The learner ignored the banner and just started working: they have
+    // moved on, so the offer stops asking.
+    await page.locator("section.is-current").locator('[data-role="mark-complete"]').click();
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "1 of 4 sections complete",
+    );
+
+    await page.reload({ waitUntil: "load" });
+    await expect(page.locator(banner)).toBeHidden();
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "1 of 4 sections complete",
+    );
+  });
+
+  test("a previous record whose ids were all cut is not offered", async ({ page }) => {
+    await seed(page, { [OLD_KEY]: GHOST_ONLY_STATE });
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+
+    await expect(page.getByRole("heading", { name: "Thinking in Feedback Loops" })).toBeVisible();
+    await expect(page.locator(banner)).toBeHidden();
   });
 
   test("no previous record means no offer at all", async ({ page }) => {

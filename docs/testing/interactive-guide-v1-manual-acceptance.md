@@ -32,6 +32,10 @@ as an HTTP-served document and as a local `file://` export, unless a row says ot
       keyboard.
 - [ ] Previous/next section controls, the mark-complete control, the theme select, and
       the reset-progress control are all reachable and operable by keyboard.
+- [ ] The download-progress and restore-progress controls, and both buttons of the
+      carry-over offer banner ("Resume that progress" / "Start fresh"), are reachable
+      and operable by keyboard; the restore control opens the file picker from the
+      keyboard and the hidden file input is never itself a tab stop.
 - [ ] Visible focus indicator is present on every interactive element.
 
 ## 2. Screen reader smoke test

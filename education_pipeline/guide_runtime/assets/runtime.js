@@ -227,7 +227,12 @@
       save();
     }
     function resetProgress() {
-      data = { completedSections: [], interactions: {}, lastSection: null, theme: data.theme };
+      // Theme is a display preference and the carry-over decision is an
+      // answer the learner already gave; neither is progress, so a reset
+      // keeps both rather than resurrecting a banner they dismissed.
+      const next = { completedSections: [], interactions: {}, lastSection: null, theme: data.theme };
+      if (data.migrationDecided === true) next.migrationDecided = true;
+      data = next;
       save();
     }
     return {
@@ -859,8 +864,13 @@
     // way to rebuild submitted answers, revealed steps and saved notes: each
     // block enhancer reads stored state once, at boot, and re-running them
     // over the live DOM would bind every listener a second time.
-    function adopt(state) {
+    //
+    // `options.decided` records, in the same write, that the carry-over offer
+    // has been answered -- so the boot after the reload cannot raise it again
+    // even if the adopted progress filtered down to nothing.
+    function adopt(state, options) {
       const filtered = filterToDocument(state);
+      if (options && options.decided) filtered.migrationDecided = true;
       if (State.adopt(filtered)) {
         window.location.reload();
         return true;
@@ -1057,6 +1067,10 @@
       }, null);
     }
 
+    function hasProgress(state) {
+      return state.completedSections.length > 0 || Object.keys(state.interactions).length > 0;
+    }
+
     function describe(state) {
       const sections = state.completedSections.length;
       const answers = Object.keys(state.interactions).length;
@@ -1066,22 +1080,36 @@
       );
     }
 
+    // The offer stands until the learner answers it. Booting this export
+    // records a last section and a theme, so "has this export been used yet"
+    // cannot be read from the mere existence of a stored record -- it is read
+    // from real progress (a completed section or a saved interaction) plus an
+    // explicit decision flag. A learner who opens the replacement file, does
+    // nothing, and closes it still gets the offer next time.
+    function shouldOffer(current) {
+      return !current.migrationDecided && !hasProgress(current);
+    }
+
     function offer(courseId, hash, schemaVersion) {
       try {
         const banner = qs('[data-role="progress-migration"]');
-        if (!banner) return false;
+        if (!banner || !shouldOffer(State.get())) return false;
         const winner = newest(candidates(courseId, hash, schemaVersion));
+        // Only worth raising if something in it survives the filter: a banner
+        // announcing nothing to carry over is noise, not an offer.
         if (!winner) return false;
+        const preview = Restore.filterToDocument(winner.state);
+        if (!hasProgress(preview)) return false;
 
         const detail = qs('[data-role="progress-migration-detail"]', banner);
-        if (detail) detail.textContent = describe(Restore.filterToDocument(winner.state));
+        if (detail) detail.textContent = describe(preview);
         const resume = qs('[data-role="resume-progress"]', banner);
         const dismiss = qs('[data-role="dismiss-progress"]', banner);
         if (resume) {
           resume.addEventListener("click", () => {
             banner.hidden = true;
             try {
-              Restore.adopt(winner.state);
+              Restore.adopt(winner.state, { decided: true });
             } catch (_error) {
               /* the guide keeps working with the progress it already had */
             }
@@ -1090,9 +1118,13 @@
         if (dismiss) {
           dismiss.addEventListener("click", () => {
             banner.hidden = true;
-            // Persist this export's own (empty) record so the same offer
-            // does not come back the next time this file is opened.
-            State.save();
+            // Records the decision alongside this export's own (empty)
+            // record, so the offer does not come back on the next load.
+            // Where storage refuses the write the flag cannot persist, but
+            // neither can any candidate be found there (the same storage is
+            // unreadable), so nothing loops: the banner is simply gone for
+            // this viewing.
+            State.markMigrationDecided();
           });
         }
         banner.hidden = false;
@@ -1180,10 +1212,9 @@
       Nav.boot();
       installPreviewEvidenceBridge(guide);
       Progress.update();
-      // Only when this exact export has nothing stored yet: booting itself
-      // records a last section, so the offer is made against the state read
-      // before any of that happened.
-      if (!loaded) Migration.offer(guide.course.id, hash, guide.schema_version);
+      // Stands on every load until the learner answers it or genuinely starts
+      // this export; Migration.offer decides from the stored record itself.
+      Migration.offer(guide.course.id, hash, guide.schema_version);
     } catch (error) {
       shell.hidden = true;
       status.hidden = false;

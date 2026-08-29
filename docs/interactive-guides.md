@@ -149,6 +149,12 @@ still contains — and "Start fresh" keeps the empty record. Nothing is adopted
 without that choice, and the older key is never deleted, so an older exported
 file that is still in use keeps working.
 
+The offer is durable: it is raised on every load until the learner answers it
+(either button records the decision) or genuinely starts this export (a
+completed section or a saved interaction under its own key), so closing the
+file without deciding does not strand the earlier progress. It is not raised
+when nothing in the earlier record still fits the current course.
+
 ### Taking progress with you
 
 The course controls also carry **Download progress** and **Restore
