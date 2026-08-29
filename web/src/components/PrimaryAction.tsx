@@ -10,10 +10,43 @@ import {
 } from "../api/client";
 import type { Job, RunStatus } from "../api/types";
 import { useAction } from "../hooks/useAction";
+import { useNow } from "../hooks/useNow";
 import { continueFailed, continueFeedback, continueRun } from "../lib/continueRun";
+import { formatDurationMs, jobElapsedMs } from "../lib/time";
 import CopyPromptButton from "./CopyPromptButton";
 import ExportControls from "./ExportControls";
+import JobLogView from "./JobLogView";
 import ResponseForm from "./ResponseForm";
+
+/** The active-job block for a queued/running provider job. Split out so
+ *  `useNow`'s tick is scoped to exactly this block's lifetime -- it mounts
+ *  only from the `if (activeJob)` branch below and unmounts (taking its
+ *  interval with it) the moment the job leaves the board's status poll. */
+function ActiveJobStatus({ job }: { job: Job }) {
+  const now = useNow();
+  const queued = job.status === "queued";
+  const elapsedMs = jobElapsedMs(job, now);
+  const elapsedLabel =
+    elapsedMs === null
+      ? null
+      : `${queued ? "Queued" : "Running"} for ${formatDurationMs(elapsedMs)}`;
+
+  return (
+    <div className="primary-action">
+      <p className="active-job-status" role="status">
+        <span className="state state-running">{queued ? "Queued" : "Running"}</span>
+        <span>
+          The {job.stage} stage is {queued ? "queued" : "running"} with {job.provider}
+          {job.model ? ` / ${job.model}` : ""}. The board updates automatically; the
+          full log is in Jobs below.
+        </span>
+        {elapsedLabel && <span className="active-job-elapsed">{elapsedLabel}</span>}
+      </p>
+      {/* A queued job has no process running yet, so there is no log to tail. */}
+      {job.status === "running" && <JobLogView jobId={job.id} active tail={3} />}
+    </div>
+  );
+}
 
 export default function PrimaryAction({
   status,
@@ -37,21 +70,7 @@ export default function PrimaryAction({
   const approveLabel = reapproving ? `Approve changes to ${stage}` : `Approve ${stage}`;
 
   if (activeJob) {
-    const verb = activeJob.status === "queued" ? "queued" : "running";
-    return (
-      <div className="primary-action">
-        <p className="active-job-status" role="status">
-          <span className="state state-running">
-            {activeJob.status === "queued" ? "Queued" : "Running"}
-          </span>
-          <span>
-            The {activeJob.stage} stage is {verb} with {activeJob.provider}
-            {activeJob.model ? ` / ${activeJob.model}` : ""}. The board updates
-            automatically; the live log is in Jobs below.
-          </span>
-        </p>
-      </div>
-    );
+    return <ActiveJobStatus job={activeJob} />;
   }
 
   return (

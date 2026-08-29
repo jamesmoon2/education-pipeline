@@ -35,3 +35,43 @@ describe("JobLogView", () => {
     expect(vi.mocked(getJobLog)).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("JobLogView tail", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders only the last N non-empty lines", async () => {
+    vi.mocked(getJobLog).mockResolvedValue({
+      data: "line one\nline two\n\nline three\nline four",
+      offset: 40,
+    });
+    render(<JobLogView jobId="j3" active={true} tail={3} />);
+    const pre = await screen.findByText(/line four/);
+    expect(pre).toHaveTextContent("line two line three line four");
+    expect(pre).not.toHaveTextContent("line one");
+  });
+
+  it("renders the full log when tail is unset", async () => {
+    vi.mocked(getJobLog).mockResolvedValue({
+      data: "line one\nline two\nline three\nline four",
+      offset: 40,
+    });
+    render(<JobLogView jobId="j4" active={true} />);
+    const pre = await screen.findByText(/line four/);
+    expect(pre).toHaveTextContent("line one line two line three line four");
+  });
+
+  it("keeps polling on the same 1s loop with a tail set", async () => {
+    vi.mocked(getJobLog)
+      .mockResolvedValueOnce({ data: "first\n", offset: 6 })
+      .mockResolvedValueOnce({ data: "second\n", offset: 13 })
+      .mockResolvedValue({ data: "", offset: 13 });
+    render(<JobLogView jobId="j5" active={true} tail={2} />);
+    expect(await screen.findByText(/first/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/second/, undefined, { timeout: 3000 }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(getJobLog).mock.calls[1]).toEqual(["j5", 6]);
+  });
+});

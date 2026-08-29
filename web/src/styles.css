@@ -265,6 +265,34 @@ code, pre, .technical {
 }
 .rail-jobs ul { margin: var(--ep-space-1) 0 0; padding: 0; list-style: none; }
 .rail-jobs a { color: var(--ep-color-rail-accent); font-family: var(--ep-font-technical); }
+.rail-jobs li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ep-space-2);
+}
+.rail-jobs-elapsed {
+  flex: none;
+  color: var(--ep-color-rail-muted);
+  font-family: var(--ep-font-technical);
+  font-size: 0.75rem;
+}
+
+/* Derived from the topics poll (next_action === "approve"), so unlike the
+   toast above it cannot go stale once a stage is approved -- it just drops
+   off the next successful poll. */
+.rail-ready {
+  margin-top: var(--ep-space-3);
+  padding: var(--ep-space-2) var(--ep-space-3);
+  border: 1px solid var(--ep-color-rail-border);
+  border-radius: var(--ep-radius-control);
+  background: var(--ep-color-rail-active);
+  color: var(--ep-color-rail-muted);
+  font-size: 0.8125rem;
+}
+.rail-ready strong { display: block; color: var(--ep-color-rail-text); font-size: 0.875rem; }
+.rail-ready ul { margin: var(--ep-space-1) 0 0; padding: 0; list-style: none; }
+.rail-ready a { color: var(--ep-color-rail-accent); font-family: var(--ep-font-technical); }
 
 .toast-region {
   position: fixed;
@@ -768,6 +796,12 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   border-radius: 0 var(--ep-radius-control) var(--ep-radius-control) 0;
   background: var(--ep-color-accent-soft);
 }
+.active-job-elapsed {
+  margin-left: auto;
+  color: var(--ep-color-text-muted);
+  font-family: var(--ep-font-technical);
+  font-size: 0.8125rem;
+}
 .blocked-reason { color: var(--ep-color-warning); font-weight: 600; }
 
 .action-feedback { padding: 0.65rem 0.8rem; border-left: 3px solid currentColor; }
@@ -879,6 +913,7 @@ pre.content, pre.log {
   white-space: pre-wrap;
 }
 pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.875rem; }
+pre.log-tail { max-height: none; font-size: 0.8125rem; color: var(--ep-color-text-muted); }
 
 .editor-panes { display: flex; gap: var(--ep-space-4); align-items: flex-start; }
 .editor-panes label { flex: 1; min-width: 0; }

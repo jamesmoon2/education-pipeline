@@ -1,9 +1,34 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { getJobs } from "../api/client";
-import type { Job } from "../api/types";
+import { getJobs, getTopics } from "../api/client";
+import type { Job, TopicSummary } from "../api/types";
+import { useNow } from "../hooks/useNow";
 import { usePolling } from "../hooks/usePolling";
+import { formatDurationMs, jobElapsedMs } from "../lib/time";
 import { ACTIVE_JOB_STATUSES } from "./JobsPanel";
+
+interface ReadyTopic {
+  topic: TopicSummary;
+  stage: string;
+}
+
+/** Every job in `jobs` is already known active, so ticking it is
+ *  unconditional here -- the row only exists while its job is active, and
+ *  disappears (taking `useNow`'s interval with it) the moment it isn't. */
+function ActiveJobRow({ job }: { job: Job }) {
+  const now = useNow();
+  const elapsedMs = jobElapsedMs(job, now);
+  return (
+    <li>
+      <Link to={`/topics/${job.topic_id}`}>
+        {job.stage} · {job.topic_id}
+      </Link>
+      {elapsedMs !== null && (
+        <span className="rail-jobs-elapsed">{formatDurationMs(elapsedMs)}</span>
+      )}
+    </li>
+  );
+}
 
 interface JobToast {
   key: number;
@@ -21,11 +46,14 @@ interface JobToast {
 export default function GlobalJobActivity({
   intervalMs = 5_000,
   successToastMs = 8_000,
+  topicsIntervalMs = 10_000,
 }: {
   intervalMs?: number;
   successToastMs?: number;
+  topicsIntervalMs?: number;
 }) {
   const { data, error } = usePolling(getJobs, intervalMs);
+  const { data: topicsData, error: topicsError } = usePolling(getTopics, topicsIntervalMs);
   const [toasts, setToasts] = useState<JobToast[]>([]);
   const seenStatus = useRef<Map<string, Job["status"]>>(new Map());
   const nextKey = useRef(0);
@@ -74,6 +102,24 @@ export default function GlobalJobActivity({
     ? []
     : (data?.jobs.filter((job) => ACTIVE_JOB_STATUSES.has(job.status)) ?? []);
 
+  // Same rule as the jobs poll above: while this poll is failing,
+  // usePolling keeps its last successful topics payload, and presenting
+  // that as live could still list a topic as "ready to review" after a
+  // reviewer approved it during the outage (or hide one newly ready).
+  // Suppress the section until a fresh poll succeeds.
+  const readyToReview: ReadyTopic[] = topicsError
+    ? []
+    : (topicsData?.topics
+        .filter((topic): topic is TopicSummary & { run: NonNullable<TopicSummary["run"]> } =>
+          !topic.archived && topic.run?.next_action.action === "approve",
+        )
+        .flatMap((topic) => {
+          const stage = topic.run.next_action.stage;
+          return stage ? [{ topic, stage }] : [];
+        }) ?? []);
+  const readyShown = readyToReview.slice(0, 5);
+  const readyOverflow = readyToReview.length - readyShown.length;
+
   return (
     <>
       {active.length > 0 && (
@@ -83,12 +129,27 @@ export default function GlobalJobActivity({
           </strong>
           <ul>
             {active.map((job) => (
-              <li key={job.id}>
-                <Link to={`/topics/${job.topic_id}`}>
-                  {job.stage} · {job.topic_id}
+              <ActiveJobRow key={job.id} job={job} />
+            ))}
+          </ul>
+        </nav>
+      )}
+      {readyToReview.length > 0 && (
+        <nav className="rail-ready" aria-label="Ready to review">
+          <strong>Ready to review</strong>
+          <ul>
+            {readyShown.map(({ topic, stage }) => (
+              <li key={topic.id}>
+                <Link to={`/topics/${topic.id}/stages/${stage}?tab=response`}>
+                  {topic.title ?? topic.id}
                 </Link>
               </li>
             ))}
+            {readyOverflow > 0 && (
+              <li>
+                <Link to="/">+{readyOverflow} more</Link>
+              </li>
+            )}
           </ul>
         </nav>
       )}

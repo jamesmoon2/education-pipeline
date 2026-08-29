@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,8 @@ vi.mock("../api/client", async () => {
     getConfigPlan: vi.fn(),
     downloadFinal: vi.fn(),
     downloadExport: vi.fn(),
+    // Read by JobLogView's tail, mounted for a running activeJob.
+    getJobLog: vi.fn(),
   };
 });
 
@@ -29,6 +31,7 @@ import {
   ApiRequestError,
   enqueueJob,
   getConfigPlan,
+  getJobLog,
   getRunStatus,
   getStageContent,
   postAdvance,
@@ -37,7 +40,7 @@ import {
   postValidate,
   postResponse,
 } from "../api/client";
-import type { PlanPayload, StageContent } from "../api/types";
+import type { Job, PlanPayload, StageContent } from "../api/types";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -80,13 +83,31 @@ function makePlan(provider: string): PlanPayload {
   return { provider, plan_sha256: "sha-plan", stages: [] };
 }
 
-function renderAction(status: RunStatus, onChanged = vi.fn()) {
+function renderAction(status: RunStatus, onChanged = vi.fn(), activeJob: Job | null = null) {
   render(
     <MemoryRouter>
-      <PrimaryAction status={status} onChanged={onChanged} />
+      <PrimaryAction status={status} activeJob={activeJob} onChanged={onChanged} />
     </MemoryRouter>,
   );
   return onChanged;
+}
+
+function makeJob(status: Job["status"], overrides: Partial<Job> = {}): Job {
+  return {
+    id: "j1",
+    topic_id: "t",
+    stage: "draft",
+    provider: "claude-code",
+    model: "sonnet",
+    effort: null,
+    status,
+    created_at: "2026-07-10T00:00:00.000Z",
+    started_at: "2026-07-10T00:01:00.000Z",
+    ended_at: null,
+    exit_code: null,
+    error: null,
+    ...overrides,
+  };
 }
 
 describe("PrimaryAction", () => {
@@ -370,5 +391,52 @@ describe("PrimaryAction", () => {
     expect(
       await screen.findByText(/job j1 is running for topic 't'/),
     ).toBeInTheDocument();
+  });
+});
+
+describe("PrimaryAction active job", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-10T00:05:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("shows a ticking elapsed readout and a log tail for a running job", async () => {
+    vi.mocked(getJobLog).mockResolvedValue({
+      data: "line one\nline two\nline three\nline four",
+      offset: 40,
+    });
+    renderAction(
+      makeStatus("save_response", "draft"),
+      vi.fn(),
+      makeJob("running", { started_at: "2026-07-10T00:01:00.000Z" }),
+    );
+
+    expect(
+      screen.getByText(/draft stage is running with claude-code \/ sonnet/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Running for 4m 00s")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(screen.getByText("Running for 5m 00s")).toBeInTheDocument();
+
+    // Only the tail (last 3 non-empty lines) is shown, not the full log.
+    expect(await screen.findByText(/line four/)).toBeInTheDocument();
+    expect(screen.queryByText(/line one\b/)).not.toBeInTheDocument();
+  });
+
+  it("shows a Queued elapsed readout without a log tail (no process running yet)", () => {
+    renderAction(
+      makeStatus("save_response", "draft"),
+      vi.fn(),
+      makeJob("queued", { started_at: null, created_at: "2026-07-10T00:04:18.000Z" }),
+    );
+    expect(screen.getByText("Queued for 42s")).toBeInTheDocument();
+    expect(getJobLog).not.toHaveBeenCalled();
   });
 });

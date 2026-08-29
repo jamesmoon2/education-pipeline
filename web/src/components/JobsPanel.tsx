@@ -1,13 +1,34 @@
 import { Fragment, useCallback, useState } from "react";
 import { cancelJob, getJobs } from "../api/client";
+import type { Job } from "../api/types";
 import { useAction } from "../hooks/useAction";
+import { useNow } from "../hooks/useNow";
 import { usePolling } from "../hooks/usePolling";
+import { formatDurationMs, jobElapsedMs } from "../lib/time";
 import JobLogView from "./JobLogView";
 import ErrorNotice from "./ErrorNotice";
 import InfoTip from "./InfoTip";
 
 export const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
+
+/** Elapsed-time cell for a job row. A terminal job's span never changes, so
+ *  it's a plain snapshot; an active job's is split into its own component
+ *  so `useNow`'s tick applies only to rows that are actually still moving,
+ *  not to every row in the table. */
+function JobTiming({ job }: { job: Job }) {
+  if (!ACTIVE_STATUSES.has(job.status)) {
+    const ms = jobElapsedMs(job, Date.now());
+    return <>{ms === null ? "—" : formatDurationMs(ms)}</>;
+  }
+  return <TickingJobTiming job={job} />;
+}
+
+function TickingJobTiming({ job }: { job: Job }) {
+  const now = useNow();
+  const ms = jobElapsedMs(job, now);
+  return <>{ms === null ? "—" : formatDurationMs(ms)}</>;
+}
 
 export default function JobsPanel({ topicId }: { topicId: string }) {
   const fetchJobs = useCallback(() => getJobs(topicId), [topicId]);
@@ -39,6 +60,7 @@ export default function JobsPanel({ topicId }: { topicId: string }) {
               <th>Provider</th>
               <th>Model / effort</th>
               <th>Status</th>
+              <th>Time</th>
               <th></th>
             </tr>
           </thead>
@@ -53,6 +75,9 @@ export default function JobsPanel({ topicId }: { topicId: string }) {
                   <td>
                     {job.status}
                     {job.error ? <span className="error"> — {job.error}</span> : null}
+                  </td>
+                  <td>
+                    <JobTiming job={job} />
                   </td>
                   <td>
                     <button
@@ -76,7 +101,7 @@ export default function JobsPanel({ topicId }: { topicId: string }) {
                 </tr>
                 {openJobId === job.id ? (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={7}>
                       <JobLogView jobId={job.id} active={ACTIVE_STATUSES.has(job.status)} />
                     </td>
                   </tr>

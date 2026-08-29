@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Job } from "../api/types";
 import JobsPanel from "./JobsPanel";
 
@@ -20,7 +20,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-function makeJob(id: string, status: Job["status"]): Job {
+function makeJob(id: string, status: Job["status"], overrides: Partial<Job> = {}): Job {
   return {
     id,
     topic_id: "t",
@@ -34,7 +34,12 @@ function makeJob(id: string, status: Job["status"]): Job {
     ended_at: null,
     exit_code: null,
     error: null,
+    ...overrides,
   };
+}
+
+function jobRow(id: string) {
+  return screen.getByText(id).closest("tr") as HTMLTableRowElement;
 }
 
 describe("JobsPanel help", () => {
@@ -59,5 +64,80 @@ describe("JobsPanel cancel", () => {
     render(<JobsPanel topicId="t" />);
     expect(await screen.findByText("j2")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "cancel" })).not.toBeInTheDocument();
+  });
+});
+
+describe("JobsPanel timing column", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-10T00:05:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("labels the column in plain language", async () => {
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [makeJob("j1", "running")] });
+    render(<JobsPanel topicId="t" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("columnheader", { name: "Time" })).toBeInTheDocument();
+  });
+
+  it("shows a final duration for a terminal job", async () => {
+    vi.mocked(getJobs).mockResolvedValue({
+      jobs: [
+        makeJob("j3", "succeeded", {
+          created_at: "2026-07-10T00:00:00Z",
+          started_at: "2026-07-10T00:01:00Z",
+          ended_at: "2026-07-10T00:03:30Z",
+        }),
+      ],
+    });
+    render(<JobsPanel topicId="t" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(within(jobRow("j3")).getByText("2m 30s")).toBeInTheDocument();
+  });
+
+  it("shows a dash when a terminal job is missing the stamps it needs", async () => {
+    vi.mocked(getJobs).mockResolvedValue({
+      jobs: [makeJob("j4", "failed", { started_at: "2026-07-10T00:01:00Z", ended_at: null })],
+    });
+    render(<JobsPanel topicId="t" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(within(jobRow("j4")).getByText("—")).toBeInTheDocument();
+  });
+
+  it("ticks a running job's elapsed time live", async () => {
+    vi.mocked(getJobs).mockResolvedValue({
+      jobs: [makeJob("j5", "running", { started_at: "2026-07-10T00:01:00Z" })],
+    });
+    render(<JobsPanel topicId="t" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(within(jobRow("j5")).getByText("4m 00s")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(within(jobRow("j5")).getByText("5m 00s")).toBeInTheDocument();
+  });
+
+  it("ticks a queued job's elapsed time from created_at", async () => {
+    vi.mocked(getJobs).mockResolvedValue({
+      jobs: [makeJob("j6", "queued", { created_at: "2026-07-10T00:04:42Z", started_at: null })],
+    });
+    render(<JobsPanel topicId="t" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(within(jobRow("j6")).getByText("18s")).toBeInTheDocument();
   });
 });
