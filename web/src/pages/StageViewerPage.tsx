@@ -109,10 +109,14 @@ function StageViewerForRoute({
     (data.approved === null || data.approved !== data.response);
   // Pending re-approval: an approved copy exists and the response drifted
   // from it (edit or provider rerun). Show the delta the approval decides on.
+  // Not for module-scoped repairs: there the response is one module while
+  // approval splices it into the whole guide, so the strings differ by
+  // construction and a raw delta would show the guide replaced by a module.
   const approvalDelta =
     data.response !== null &&
     data.approved !== null &&
-    data.response !== data.approved
+    data.response !== data.approved &&
+    !data.repair_scope?.module_id
       ? { a: data.approved, b: data.response }
       : null;
   const showEditor = editing && canEdit && tab === "response";

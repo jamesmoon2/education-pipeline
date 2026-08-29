@@ -600,6 +600,29 @@ describe("StageViewerPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("offers no what-changed section for a module-scoped repair", async () => {
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "repair",
+      prompt: "# prompt",
+      response: '{"module": "loop-basics"}',
+      approved: '{"whole": "guide with loop-basics spliced in"}',
+      response_sha256: "sha-3",
+      content_type: "application/json",
+      repair_scope: { module_id: "loop-basics" },
+    });
+    renderAt("/topics/t/stages/repair");
+    expect(
+      await screen.findByRole("button", { name: "Approve repair" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "What changed since last approval" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /what changed/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("keeps an explicitly hidden what-changed section hidden across poll refreshes", async () => {
     vi.useFakeTimers();
     try {
