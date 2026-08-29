@@ -3895,10 +3895,48 @@ class RunStore:
         _write_manifest(run / "manifest.json", manifest)
 
 
-def _guide_source_sha(text: str) -> str:
-    """Hash the guide source the same way ``validate_guide`` records ``guide_sha256``."""
+#: Bound for the guide-source digest memo. The live working set is a couple of
+#: sources per open run (draft and final), so a few hundred entries covers a
+#: whole workspace's poll traffic; each entry is two short hex strings.
+_GUIDE_SOURCE_SHA_MEMO_LIMIT = 256
+_GUIDE_SOURCE_SHA_MEMO: dict[str, str] = {}
+_GUIDE_SOURCE_SHA_MEMO_LOCK = threading.Lock()
 
-    return validation_guide_sha256(text)
+
+def _guide_source_sha(text: str) -> str:
+    """Hash the guide source the same way ``validate_guide`` records ``guide_sha256``.
+
+    Memoized on the exact input bytes. ``report_state`` answers "is this
+    report still current?" on every cockpit poll -- once per phase, per
+    course, per tick -- and each answer costs a codepoint sanitize, a full
+    parse + normalize, and a canonical re-encode of the entire guide, for
+    content that has almost never changed since the previous tick.
+
+    The key is the SHA-256 of the raw input, which makes this a pure-function
+    cache rather than run state: equal bytes have equal digests by
+    construction, so an edited guide simply misses (no invalidation window,
+    no path or topic to go stale) and no content can leak between workspaces
+    (identical bytes must hash identically anyway). It is module level
+    because ``RunStore`` is constructed freely -- fresh per CLI command, per
+    test -- so an instance-scoped memo would rarely be the one that is asked
+    twice.
+
+    Bounded by clear-on-full rather than an LRU: overflow costs one
+    recomputation per live source and never a wrong answer, which does not
+    justify carrying eviction bookkeeping on this path.
+    """
+
+    key = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    with _GUIDE_SOURCE_SHA_MEMO_LOCK:
+        memoized = _GUIDE_SOURCE_SHA_MEMO.get(key)
+    if memoized is not None:
+        return memoized
+    digest = validation_guide_sha256(text)
+    with _GUIDE_SOURCE_SHA_MEMO_LOCK:
+        if len(_GUIDE_SOURCE_SHA_MEMO) >= _GUIDE_SOURCE_SHA_MEMO_LIMIT:
+            _GUIDE_SOURCE_SHA_MEMO.clear()
+        _GUIDE_SOURCE_SHA_MEMO[key] = digest
+    return digest
 
 
 def _stub_text(paths: StagePaths) -> str:

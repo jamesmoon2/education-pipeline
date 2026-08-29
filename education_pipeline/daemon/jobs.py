@@ -178,6 +178,13 @@ class JobStore:
         return Job.from_dict(_read_job_record(self._job_json(topic_id, job_id)))
 
     def all_jobs(self) -> list[Job]:
+        """Every job record in the workspace.
+
+        The genuinely workspace-wide listing (``list()`` with no topic, and
+        ``Worker.reconcile``). Topic- and id-scoped callers must not pay for
+        it: see :meth:`list` and :meth:`find`.
+        """
+
         jobs: list[Job] = []
         if not self.runs_dir.exists():
             return jobs
@@ -188,12 +195,59 @@ class JobStore:
                     jobs.append(Job.from_dict(_read_job_record(record)))
         return jobs
 
+    def _topic_jobs(self, topic_id: str) -> list[Job]:
+        """Records under one topic's ``jobs`` directory, unordered."""
+
+        if not _is_path_segment(topic_id):
+            return []
+        jobs_dir = self.runs_dir / topic_id / "jobs"
+        if not jobs_dir.is_dir():
+            return []
+        jobs: list[Job] = []
+        for job_dir in jobs_dir.iterdir():
+            record = job_dir / "job.json"
+            if not record.is_file():
+                continue
+            job = Job.from_dict(_read_job_record(record))
+            # ``save`` always writes a record under its own topic, so this
+            # only ever drops a hand-edited record whose stored topic_id
+            # disagrees with its directory -- which the old filter over
+            # ``all_jobs()`` dropped too. Keeps the postcondition every
+            # caller relies on: everything listed belongs to ``topic_id``.
+            if job.topic_id == topic_id:
+                jobs.append(job)
+        return jobs
+
     def list(self, topic_id: str | None = None) -> list[Job]:
-        jobs = [j for j in self.all_jobs() if topic_id is None or j.topic_id == topic_id]
+        """Jobs newest-first, for one topic or (``topic_id=None``) all of them.
+
+        The per-topic case reads only ``runs/<topic_id>/jobs`` instead of
+        parsing every record in the workspace: ``active_for`` and
+        ``any_active_for`` are built on it, and those sit on the enqueue path
+        under ``Worker``'s lock.
+        """
+
+        jobs = self.all_jobs() if topic_id is None else self._topic_jobs(topic_id)
         return sorted(jobs, key=lambda j: j.id, reverse=True)
 
     def find(self, job_id: str) -> Job | None:
-        for job in self.all_jobs():
+        """The job with this id, read by its deterministic path.
+
+        ``save`` writes every record to ``runs/<topic_id>/jobs/<job_id>/
+        job.json``, so the only unknown is which topic owns the id: probe that
+        exact path under each topic rather than parsing (and then linearly
+        scanning) every record in the workspace. This is on the daemon's 1s
+        log poll and the CLI's 0.25s job poll, and ``Worker.cancel``/
+        ``Worker._loop`` call it per job.
+        """
+
+        if not _is_path_segment(job_id):
+            return None
+        for jobs_dir in self.runs_dir.glob("*/jobs"):
+            record = jobs_dir / job_id / "job.json"
+            if not record.is_file():
+                continue
+            job = Job.from_dict(_read_job_record(record))
             if job.id == job_id:
                 return job
         return None

@@ -174,7 +174,13 @@ def serve(
         server = build_server(context)
         lifecycle.write_discovery(root, pid=os.getpid(), port=server.server_port, token=token,
                                   version=__version__)
-        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        # serve_forever checks the shutdown flag once per poll interval, so
+        # that interval is the floor on how long the shutdown() below blocks.
+        # The stdlib default is 0.5s; 0.1s bounds a daemon stop at ~100ms for
+        # the cost of a handful of extra idle select() wakeups per second.
+        server_thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
+        )
         server_thread.start()
         if ready is not None:
             ready.set()
