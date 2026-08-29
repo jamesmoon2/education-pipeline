@@ -87,6 +87,12 @@ function renderBlock(block: MarkdownBlock, index: number): ReactNode {
 }
 
 /** Markdown rendered as React elements — model output never becomes HTML. */
-export default function MarkdownView({ markdown }: { markdown: string }) {
+function MarkdownView({ markdown }: { markdown: string }) {
   return <div className="markdown-view">{parseMarkdown(markdown).map(renderBlock)}</div>;
 }
+
+// Re-parsing and re-rendering a whole artifact is the most expensive thing a
+// stage page does, and its only prop is the artifact text — so a parent
+// re-render (a poll tick, a sibling's state) must not reach it unless that
+// text actually changed.
+export default memo(MarkdownView);

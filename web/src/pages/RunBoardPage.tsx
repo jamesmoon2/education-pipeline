@@ -13,7 +13,7 @@ import PersonalizationPanel from "../components/PersonalizationPanel";
 import PipelineStepper from "../components/PipelineStepper";
 import PrimaryAction from "../components/PrimaryAction";
 import RunPlanPanel from "../components/RunPlanPanel";
-import ValidationFindingsPanel from "../components/ValidationFindingsPanel";
+import ValidationFindingsPanel, { NO_FINDINGS } from "../components/ValidationFindingsPanel";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 
@@ -146,7 +146,7 @@ function InteractiveGuidePanels({
             state={status.validations[phase].state}
             effectiveBlocking={status.validations[phase].effective_blocking}
             supplementalFindings={
-              phase === "final" ? currentPersonalization?.audit.findings : []
+              phase === "final" ? currentPersonalization?.audit.findings : NO_FINDINGS
             }
             onChanged={refreshWorkspace}
           />

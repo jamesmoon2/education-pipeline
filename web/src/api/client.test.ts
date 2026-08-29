@@ -744,6 +744,36 @@ describe("profile endpoints", () => {
     expect(body).toContain('"maxI64":9223372036854775807');
   });
 
+  it("recovers exact metadata numeric text where the reviver gets no source context", async () => {
+    // Older engines call the reviver with no third argument, so the exact text
+    // has to come from a scan of the body instead. Digits inside strings
+    // ("sha-1" below) must not shift that scan out of alignment.
+    const realParse = JSON.parse;
+    vi.spyOn(JSON, "parse").mockImplementation((text, reviver) =>
+      realParse(text, reviver ? (key, value) => reviver(key, value) : undefined),
+    );
+    const rawDetail = JSON.stringify({
+      id: "learner-a",
+      parsed: structuredProfile,
+      sensitivity: {},
+      content_sha256: "sha-1",
+      warnings: [],
+      attached_topic_count: 0,
+    }).replace('"year":2026', '"year":-2.50e+3');
+    vi.stubGlobal("fetch", mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/profiles/learner-a": { status: 200, body: {}, rawBody: rawDetail },
+    }));
+
+    const loaded = await getProfile("learner-a");
+
+    expect(loaded.parsed.metadata.cohort).toEqual({
+      year: expect.objectContaining({ kind: "float", text: "-2.50e+3" }),
+    });
+    expect(loaded.parsed.schema_version).toBe(1);
+    expect(loaded.attached_topic_count).toBe(0);
+  });
+
   it("preserves legal metadata objects whose keys resemble the internal number wrapper", async () => {
     const collision = { rawJsonNumber: true, source: "user-authored", nested: { value: 3 } };
     const rawDetail = JSON.stringify({

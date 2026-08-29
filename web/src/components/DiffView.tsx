@@ -1,7 +1,7 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { diffLines } from "../lib/diff";
 
-export default function DiffView({ a, b }: { a: string; b: string }) {
+function DiffView({ a, b }: { a: string; b: string }) {
   // Deps are primitive strings, so fresh-but-equal payloads from polling
   // reuse the computed diff instead of re-running the quadratic LCS.
   const rows = useMemo(() => diffLines(a, b), [a, b]);
@@ -18,3 +18,8 @@ export default function DiffView({ a, b }: { a: string; b: string }) {
     </div>
   );
 }
+
+// Both props are the raw stage strings, so a parent re-render that changed
+// nothing (a poll tick landing an equal payload) stops here rather than
+// walking every diff row again.
+export default memo(DiffView);

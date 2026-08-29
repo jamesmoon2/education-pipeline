@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 
 function summarize(value: unknown): string {
   if (Array.isArray(value)) {
@@ -61,10 +61,15 @@ function Node({
  * A collapsible tree over already-parsed JSON. Nesting collapses below two
  * levels via native <details>, so large guide documents open scannable.
  */
-export default function JsonTreeView({ value }: { value: unknown }) {
+function JsonTreeView({ value }: { value: unknown }) {
   return (
     <div className="json-tree">
       <Node name={null} value={value} depth={0} />
     </div>
   );
 }
+
+// Walking a guide document builds thousands of nodes. `value` is handed over
+// by StageContentView's parse memo, so it only changes when the stage text
+// does — every other parent re-render can stop here.
+export default memo(JsonTreeView);

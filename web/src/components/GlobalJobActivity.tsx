@@ -79,6 +79,17 @@ export default function GlobalJobActivity({
         finished.push({ key: nextKey.current++, job });
       }
     }
+    // Bound the map to the jobs the daemon still reports: an id that is gone
+    // can never complete a transition, and the rail runs on every page for as
+    // long as the tab is open. Pruned strictly after the scan above, so a job
+    // whose terminal status arrives in the last payload carrying it still
+    // toasts — and a job that leaves while active is simply forgotten.
+    if (seenStatus.current.size > data.jobs.length) {
+      const present = new Set(data.jobs.map((job) => job.id));
+      for (const id of seenStatus.current.keys()) {
+        if (!present.has(id)) seenStatus.current.delete(id);
+      }
+    }
     if (finished.length === 0) return;
     setToasts((current) => [...current, ...finished]);
     for (const toast of finished) {

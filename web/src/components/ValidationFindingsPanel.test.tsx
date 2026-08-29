@@ -1,8 +1,9 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunStatus, ValidationReport } from "../api/types";
-import ValidationFindingsPanel from "./ValidationFindingsPanel";
+import ValidationFindingsPanel, { NO_FINDINGS } from "./ValidationFindingsPanel";
 
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client");
@@ -406,6 +407,55 @@ describe("ValidationFindingsPanel", () => {
     renderPanel("current", { supplementalFindings: [report.findings[0]] });
     expect(await screen.findAllByText("Unsafe content.")).toHaveLength(1);
   });
+
+  it.each([
+    ["omitted", undefined],
+    ["the shared empty constant", NO_FINDINGS],
+  ])(
+    "keeps the merged-findings memo across parent re-renders with aggregate findings %s",
+    async (_label, supplementalFindings) => {
+      // The memo's only observable work is walking the report's findings, so
+      // count that: a caller handing over a fresh [] per render (or an
+      // unstable default) recomputes the merge on every parent render.
+      let merges = 0;
+      const countingFindings = [...report.findings];
+      const iterate = Array.prototype[Symbol.iterator];
+      Object.defineProperty(countingFindings, Symbol.iterator, {
+        value: function (this: unknown[]) {
+          merges += 1;
+          return iterate.call(this);
+        },
+      });
+      vi.mocked(getValidation).mockResolvedValue({
+        state: "current",
+        report: { ...report, findings: countingFindings },
+      });
+
+      function Harness() {
+        const [bumps, setBumps] = useState(0);
+        return (
+          <>
+            <button onClick={() => setBumps(bumps + 1)}>bump {bumps}</button>
+            <ValidationFindingsPanel
+              topicId="feedback loops"
+              phase="draft"
+              state="current"
+              supplementalFindings={supplementalFindings}
+              onChanged={() => {}}
+            />
+          </>
+        );
+      }
+
+      render(<Harness />);
+      await screen.findByText("Unsafe content.");
+      const mergesAfterLoad = merges;
+      expect(mergesAfterLoad).toBeGreaterThan(0);
+
+      await userEvent.click(screen.getByRole("button", { name: /bump/ }));
+      expect(merges).toBe(mergesAfterLoad);
+    },
+  );
 
   it("falls back to the repair stage for a pre-v2 finding with no stage on a final-phase report", async () => {
     const { stage: _stage, ...findingWithoutStage } = report.findings[0];

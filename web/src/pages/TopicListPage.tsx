@@ -115,7 +115,13 @@ export default function TopicListPage() {
       ).sort(),
     [topics],
   );
-  const rows = filterAndSortTopics(topics, { query, status, learner, showArchived, sort });
+  // Filtering and sorting the whole library on every render is wasted work:
+  // most re-renders here come from a poll tick or an unrelated control, not
+  // from one of these inputs.
+  const rows = useMemo(
+    () => filterAndSortTopics(topics, { query, status, learner, showArchived, sort }),
+    [topics, query, status, learner, showArchived, sort],
+  );
 
   if (error) return <ErrorNotice prefix="Failed to load topics" error={error} onRetry={refresh} />;
   if (!data) return <p>Loading…</p>;

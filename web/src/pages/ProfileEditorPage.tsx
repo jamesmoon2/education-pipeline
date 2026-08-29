@@ -52,6 +52,12 @@ export default function ProfileEditorPage() {
   const invalidMetadata = useMemo(() => hasInvalidMetadataNumber(profile.metadata), [profile.metadata]);
   const draftKey = profileId ?? "__new_profile__";
   const purgeRetainedDraft = () => declinedNavigationDrafts.delete(draftKey);
+  // The navigation guard below only reads the draft at the moment a navigation
+  // is declined, so it reads it from here. Depending on `profile` directly
+  // would tear down and re-register its global listeners -- a capture-phase
+  // document click handler among them -- on every keystroke.
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
 
   const load = async () => {
     const retainedDraft = declinedNavigationDrafts.get(draftKey);
@@ -105,7 +111,7 @@ export default function ProfileEditorPage() {
     const protectHistory = () => {
       if (!window.confirm("Discard unsaved profile changes?")) {
         if (controlsBrowserHistory) {
-          declinedNavigationDrafts.set(draftKey, profile);
+          declinedNavigationDrafts.set(draftKey, profileRef.current);
           window.history.pushState(expectedHistoryState, "", expectedPath);
           window.setTimeout(() => window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state })), 0);
         } else {
@@ -123,7 +129,7 @@ export default function ProfileEditorPage() {
       document.removeEventListener("click", protectLinks, true);
       window.removeEventListener("popstate", protectHistory);
     };
-  }, [dirty, draftKey, profile, profileId]);
+  }, [dirty, draftKey, profileId]);
 
   useEffect(() => {
     if (feedback?.type === "error" || feedback?.type === "conflict") feedbackRef.current?.focus();
