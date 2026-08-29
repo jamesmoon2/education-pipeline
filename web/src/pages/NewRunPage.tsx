@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   attachProfile,
@@ -78,6 +78,15 @@ export default function NewRunPage() {
   );
   const [timeBudget, setTimeBudget] = useState(initialDraft?.timeBudget ?? "");
 
+  // A draft restored at or past the blueprint step re-fetches blueprints on
+  // mount (effect below). Until that settles the restored selection cannot be
+  // told apart from a user override, so course creation waits on this flag.
+  const [restoringBlueprints, setRestoringBlueprints] = useState(
+    () =>
+      initialDraft !== null &&
+      STEP_ORDER.indexOf(initialDraft.step) >= STEP_ORDER.indexOf("blueprint"),
+  );
+
   const [plan, setPlan] = useState<PlanPayload | null>(null);
   const [planError, setPlanError] = useState<unknown>(null);
 
@@ -147,12 +156,19 @@ export default function NewRunPage() {
       ? selectedBlueprint
       : undefined;
 
+  // Request generation for blueprint fetches: only the request that is still
+  // the newest may apply its results, so a stale response (from before Start
+  // over or a re-entered blueprint step) cannot clobber newer state.
+  const blueprintsGeneration = useRef(0);
+
   const loadBlueprints = async (preferredSelection?: string) => {
+    const generation = ++blueprintsGeneration.current;
     setBlueprintsError(null);
     try {
       const payload = await recommendBlueprints(
         mode === "describe" ? describeFields() : { toml },
       );
+      if (generation !== blueprintsGeneration.current) return;
       setBlueprints(payload);
       setSelectedBlueprint(
         preferredSelection &&
@@ -164,6 +180,7 @@ export default function NewRunPage() {
               "",
       );
     } catch (err) {
+      if (generation !== blueprintsGeneration.current) return;
       // Selection is an enhancement: with the registry unavailable the
       // wizard still proceeds and the daemon records its own recommendation.
       setBlueprints(null);
@@ -184,11 +201,18 @@ export default function NewRunPage() {
   useEffect(() => {
     if (!initialDraft) return;
     if (STEP_ORDER.indexOf(initialDraft.step) < STEP_ORDER.indexOf("blueprint")) return;
-    void loadBlueprints(initialDraft.selectedBlueprint || undefined);
+    // loadBlueprints never rejects, so finally is simply "settled either way".
+    void loadBlueprints(initialDraft.selectedBlueprint || undefined).finally(() => {
+      setRestoringBlueprints(false);
+    });
   }, []);
 
   const startOver = () => {
     clearNewRunDraft();
+    // Invalidate any in-flight blueprint fetch so a late response cannot
+    // repopulate the freshly reset wizard.
+    blueprintsGeneration.current++;
+    setRestoringBlueprints(false);
     setRestoredNoteVisible(false);
     setStep("learner");
     setProfileId("");
@@ -282,7 +306,9 @@ export default function NewRunPage() {
       {restoredNoteVisible && (
         <p className="next-action" role="status">
           <span>Restored your in-progress course draft.</span>
-          <button onClick={startOver}>Start over</button>
+          <button onClick={startOver} disabled={creating}>
+            Start over
+          </button>
           <button onClick={() => setRestoredNoteVisible(false)}>Dismiss</button>
         </p>
       )}
@@ -537,9 +563,15 @@ export default function NewRunPage() {
             <button onClick={goBack} disabled={creating}>
               Back
             </button>{" "}
-            <button onClick={() => void createCourse()} disabled={creating}>
+            <button
+              onClick={() => void createCourse()}
+              disabled={creating || restoringBlueprints}
+            >
               Create course
             </button>
+            {restoringBlueprints && (
+              <span className="field-help"> Restoring blueprint choices…</span>
+            )}
           </p>
         </section>
       )}

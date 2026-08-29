@@ -1,8 +1,8 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import type { PlanPayload, RunStatus } from "../api/types";
+import type { BlueprintsPayload, PlanPayload, RunStatus } from "../api/types";
 import NewRunPage from "./NewRunPage";
 
 vi.mock("../api/client", async () => {
@@ -512,6 +512,111 @@ describe("NewRunPage draft persistence", () => {
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByLabelText("Topic id")).toHaveValue("resumed-topic");
     expect(loadNewRunDraft()).toEqual(makeDraft());
+  });
+
+  it("ignores a stale restored-draft blueprint fetch resolving after Start over", async () => {
+    saveNewRunDraft(
+      makeDraft({ step: "blueprint", id: "b9", title: "B9", selectedBlueprint: "exam-preparation" }),
+    );
+    let resolveBlueprints!: (payload: BlueprintsPayload) => void;
+    vi.mocked(recommendBlueprints).mockImplementation(
+      () =>
+        new Promise<BlueprintsPayload>((resolve) => {
+          resolveBlueprints = resolve;
+        }),
+    );
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderWizard();
+
+    expect(await screen.findByText("Choose a blueprint")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Start over" }));
+    expect(sessionStorage.getItem(NEW_RUN_DRAFT_KEY)).toBeNull();
+
+    // The pre-reset fetch settles late; its results were computed from the
+    // discarded draft and must not repopulate the reset wizard (which would
+    // also re-save a draft via the persistence mirror).
+    await act(async () => {
+      resolveBlueprints(blueprintsPayload);
+    });
+
+    expect(screen.getByRole("heading", { name: "Learner" })).toBeInTheDocument();
+    expect(sessionStorage.getItem(NEW_RUN_DRAFT_KEY)).toBeNull();
+  });
+
+  it("disables Create course until a restored-at-confirm blueprint re-fetch resolves", async () => {
+    saveNewRunDraft(
+      makeDraft({ step: "confirm", id: "rc", title: "RC", selectedBlueprint: "exam-preparation" }),
+    );
+    let resolveBlueprints!: (payload: BlueprintsPayload) => void;
+    vi.mocked(recommendBlueprints).mockImplementation(
+      () =>
+        new Promise<BlueprintsPayload>((resolve) => {
+          resolveBlueprints = resolve;
+        }),
+    );
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderWizard();
+
+    expect(await screen.findByText("Confirm")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create course" })).toBeDisabled();
+    expect(screen.getByText("Restoring blueprint choices…")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveBlueprints(blueprintsPayload);
+    });
+
+    expect(screen.getByRole("button", { name: "Create course" })).toBeEnabled();
+    expect(screen.queryByText("Restoring blueprint choices…")).toBeNull();
+  });
+
+  it("re-enables Create course when the restored-at-confirm blueprint re-fetch fails", async () => {
+    saveNewRunDraft(
+      makeDraft({ step: "confirm", id: "rc", title: "RC", selectedBlueprint: "exam-preparation" }),
+    );
+    let rejectBlueprints!: (err: unknown) => void;
+    vi.mocked(recommendBlueprints).mockImplementation(
+      () =>
+        new Promise<BlueprintsPayload>((_resolve, reject) => {
+          rejectBlueprints = reject;
+        }),
+    );
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderWizard();
+
+    expect(await screen.findByText("Confirm")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create course" })).toBeDisabled();
+
+    await act(async () => {
+      rejectBlueprints(new Error("registry down"));
+    });
+
+    expect(screen.getByRole("button", { name: "Create course" })).toBeEnabled();
+  });
+
+  it("disables Start over while course creation is in flight", async () => {
+    saveNewRunDraft(makeDraft({ step: "confirm", id: "c1", title: "C1" }));
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    vi.mocked(createTopic).mockResolvedValue({ id: "c1", title: "C1" });
+    let resolveAdvance!: (value: Awaited<ReturnType<typeof postAdvance>>) => void;
+    vi.mocked(postAdvance).mockImplementation(
+      () =>
+        new Promise<Awaited<ReturnType<typeof postAdvance>>>((resolve) => {
+          resolveAdvance = resolve;
+        }),
+    );
+    renderWizard();
+
+    expect(await screen.findByText("Confirm")).toBeInTheDocument();
+    const createButton = screen.getByRole("button", { name: "Create course" });
+    await waitFor(() => expect(createButton).toBeEnabled());
+    await userEvent.click(createButton);
+
+    expect(screen.getByRole("button", { name: "Start over" })).toBeDisabled();
+
+    await act(async () => {
+      resolveAdvance({ performed: "write_prompt", status: makeRunStatus("c1") });
+    });
+    expect(await screen.findByText("RUN BOARD DESTINATION")).toBeInTheDocument();
   });
 
   it("clears the draft after a successful create", async () => {
