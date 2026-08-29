@@ -1,6 +1,6 @@
 import {
   enqueueJob,
-  getConfigPlan,
+  getRunPlan,
   getRunStatus,
   postAdvance,
   postValidate,
@@ -60,7 +60,10 @@ export interface ContinueApi {
   postValidate: (topicId: string, phase: "draft" | "final") => Promise<unknown>;
   /** The queued job payload is not used; the board's job poll picks it up. */
   enqueueJob: (topicId: string) => Promise<unknown>;
-  getConfigPlan: () => Promise<PlanPayload>;
+  /** This run's effective plan (GET /v1/runs/{id}/plan) — the workspace plan
+   *  with this run's stage overrides already applied. The workspace-wide
+   *  plan (GET /v1/config/plan) is the wrong source: it misses overrides. */
+  getRunPlan: (topicId: string) => Promise<PlanPayload>;
 }
 
 // Wrapped rather than passed by reference so each call resolves through the
@@ -70,7 +73,7 @@ const PRODUCTION_API: ContinueApi = {
   postAdvance: (topicId) => postAdvance(topicId),
   postValidate: (topicId, phase) => postValidate(topicId, phase),
   enqueueJob: (topicId) => enqueueJob(topicId),
-  getConfigPlan: () => getConfigPlan(),
+  getRunPlan: (topicId) => getRunPlan(topicId),
 };
 
 /** Carries the plain-language name of the step that threw, so the caller can
@@ -137,12 +140,22 @@ export async function continueRun(
           if (stage === null) return stopAt({ kind: "unfinished" });
           let plan: PlanPayload;
           try {
-            plan = await api.getConfigPlan();
+            plan = await api.getRunPlan(topicId);
           } catch {
             // A plan we cannot read is not a failed approval: the prompt is
             // on disk either way, so hand the stage back to the user.
             return stopAt({ kind: "plan_unreadable", stage });
           }
+          // INVARIANT: this must resolve the provider exactly as the enqueue
+          // endpoint does, or the chain starts a job the daemon runs with a
+          // different provider than reported — or refuses to start one it
+          // would have run. DaemonContext.enqueue_stage (daemon/server.py)
+          // applies this run's overrides to the workspace plan and then takes
+          // `stage_plan.provider or plan.provider`; GET /v1/runs/{id}/plan
+          // serializes that same overridden plan, so the rule here is the
+          // matching row's provider, falling back to the plan default. A row
+          // with no provider of its own is NOT manual — the run-plan panel
+          // shows null as "manual", but that is a display fallback only.
           const provider =
             plan.stages.find((entry) => entry.stage === stage)?.provider ?? plan.provider;
           if (provider === MANUAL_PROVIDER) return stopAt({ kind: "manual", stage });

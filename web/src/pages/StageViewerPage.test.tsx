@@ -26,7 +26,7 @@ vi.mock("../api/client", async () => {
     // Read by the "Approve & continue" chain (lib/continueRun.ts).
     postValidate: vi.fn(),
     enqueueJob: vi.fn(),
-    getConfigPlan: vi.fn(),
+    getRunPlan: vi.fn(),
   };
 });
 
@@ -35,8 +35,8 @@ import {
   approveAudit,
   enqueueAuditJob,
   enqueueJob,
-  getConfigPlan,
   getRepairModules,
+  getRunPlan,
   getRunStatus,
   getStageContent,
   postAdvance,
@@ -297,7 +297,7 @@ describe("StageViewerPage", () => {
       next = { action: "save_response", stage: "qa" };
       return {} as never;
     });
-    vi.mocked(getConfigPlan).mockResolvedValue({
+    vi.mocked(getRunPlan).mockResolvedValue({
       provider: "claude-code",
       plan_sha256: "sha-plan",
       stages: [],

@@ -26,10 +26,25 @@ function makeAdvance(status: RunStatus): AdvanceResult {
   return { performed: "write_prompt", status };
 }
 
-function makePlanStage(stage: string, provider: string | null): PlanStage {
-  return { stage, provider, model: null, effort: null, recommendation: "", warning: null };
+function makePlanStage(
+  stage: string,
+  provider: string | null,
+  source: PlanStage["source"] = "default",
+): PlanStage {
+  return {
+    stage,
+    provider,
+    model: null,
+    effort: null,
+    recommendation: "",
+    warning: null,
+    source,
+  };
 }
 
+/** A GET /v1/runs/{id}/plan payload: `provider` is the workspace plan's
+ *  default and each stage row is already resolved with this run's overrides
+ *  applied (read_api.run_plan_payload). */
 function makePlan(provider: string, stages: PlanStage[] = []): PlanPayload {
   return { provider, plan_sha256: "sha-plan", stages };
 }
@@ -50,7 +65,7 @@ function makeApi(overrides: Partial<ContinueApi> = {}): MockedApi {
     postAdvance: vi.fn(unstubbed("postAdvance")),
     postValidate: vi.fn(unstubbed("postValidate")),
     enqueueJob: vi.fn(unstubbed("enqueueJob")),
-    getConfigPlan: vi.fn(unstubbed("getConfigPlan")),
+    getRunPlan: vi.fn(unstubbed("getRunPlan")),
     ...overrides,
   } as MockedApi;
 }
@@ -91,7 +106,7 @@ describe("continueRun stopping actions", () => {
     // The chain only ever calls these four; finalize/export have no adapter.
     expect(Object.keys(done).sort()).toEqual([
       "enqueueJob",
-      "getConfigPlan",
+      "getRunPlan",
       "getRunStatus",
       "postAdvance",
       "postValidate",
@@ -160,7 +175,7 @@ describe("continueRun mechanical steps", () => {
       postAdvance: vi
         .fn()
         .mockResolvedValue(makeAdvance(makeStatus("save_response", "qa"))),
-      getConfigPlan: vi.fn().mockResolvedValue(makePlan("claude-code")),
+      getRunPlan: vi.fn().mockResolvedValue(makePlan("claude-code")),
       enqueueJob: vi.fn().mockResolvedValue({}),
     });
     const result = await continueRun("t", api);
@@ -200,20 +215,77 @@ describe("continueRun mechanical steps", () => {
 });
 
 describe("continueRun provider decision", () => {
+  it("reads this run's plan, not the workspace-wide one", async () => {
+    const api = makeApi({
+      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
+      getRunPlan: vi.fn().mockResolvedValue(makePlan("codex")),
+      enqueueJob: vi.fn().mockResolvedValue({}),
+    });
+    await continueRun("t", api);
+    expect(api.getRunPlan).toHaveBeenCalledWith("t");
+  });
+
   it("starts the stage with the plan's default provider", async () => {
     const api = makeApi({
       getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getConfigPlan: vi.fn().mockResolvedValue(makePlan("codex")),
+      getRunPlan: vi.fn().mockResolvedValue(makePlan("codex")),
       enqueueJob: vi.fn().mockResolvedValue({}),
     });
     const result = await continueRun("t", api);
     expect(result.stop).toEqual({ kind: "started", stage: "draft", provider: "codex" });
   });
 
+  it("starts the stage when this run overrides a manual workspace plan", async () => {
+    // The run-plan payload arrives with the override already applied, so the
+    // manual workspace default must not veto an automatic per-run stage.
+    const api = makeApi({
+      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
+      getRunPlan: vi
+        .fn()
+        .mockResolvedValue(makePlan("manual", [makePlanStage("draft", "codex", "override")])),
+      enqueueJob: vi.fn().mockResolvedValue({}),
+    });
+    const result = await continueRun("t", api);
+    expect(api.enqueueJob).toHaveBeenCalledWith("t");
+    expect(result.steps).toEqual([{ kind: "enqueue", stage: "draft", provider: "codex" }]);
+    expect(result.stop).toEqual({ kind: "started", stage: "draft", provider: "codex" });
+  });
+
+  it("stops for the manual loop when this run overrides an automatic workspace plan", async () => {
+    const api = makeApi({
+      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
+      getRunPlan: vi
+        .fn()
+        .mockResolvedValue(
+          makePlan("claude-code", [makePlanStage("draft", "manual", "override")]),
+        ),
+    });
+    const result = await continueRun("t", api);
+    expect(result.stop).toEqual({ kind: "manual", stage: "draft" });
+    expect(api.enqueueJob).not.toHaveBeenCalled();
+  });
+
+  it("names the provider from this run's row, not another run's", async () => {
+    const api = makeApi({
+      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "qa")),
+      getRunPlan: vi.fn().mockResolvedValue(
+        makePlan("manual", [
+          makePlanStage("draft", "codex", "override"),
+          makePlanStage("qa", "claude-code", "override"),
+        ]),
+      ),
+      enqueueJob: vi.fn().mockResolvedValue({}),
+    });
+    const result = await continueRun("t", api);
+    expect(continueFeedback("draft", result)).toBe(
+      "Approved draft — started qa with claude-code.",
+    );
+  });
+
   it("prefers the stage's own provider over the plan default", async () => {
     const api = makeApi({
       getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getConfigPlan: vi.fn().mockResolvedValue(
+      getRunPlan: vi.fn().mockResolvedValue(
         makePlan("codex", [
           makePlanStage("qa", "claude-code"),
           makePlanStage("draft", "claude-code"),
@@ -229,22 +301,38 @@ describe("continueRun provider decision", () => {
     });
   });
 
-  it("falls back to the plan default when the stage has no provider of its own", async () => {
+  it("reads a null stage provider as the plan default, the way enqueue does", async () => {
+    // enqueue_stage resolves `stage_plan.provider or plan.provider`, so a row
+    // without a provider of its own is NOT manual — the run-plan panel's
+    // display fallback (null shown as "manual") must not leak in here.
     const api = makeApi({
       getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getConfigPlan: vi
+      getRunPlan: vi
         .fn()
         .mockResolvedValue(makePlan("codex", [makePlanStage("draft", null)])),
       enqueueJob: vi.fn().mockResolvedValue({}),
     });
     const result = await continueRun("t", api);
+    expect(api.enqueueJob).toHaveBeenCalledWith("t");
     expect(result.stop).toEqual({ kind: "started", stage: "draft", provider: "codex" });
+  });
+
+  it("stops for the manual loop when a null stage row falls back to a manual plan", async () => {
+    const api = makeApi({
+      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
+      getRunPlan: vi
+        .fn()
+        .mockResolvedValue(makePlan("manual", [makePlanStage("draft", null)])),
+    });
+    const result = await continueRun("t", api);
+    expect(result.stop).toEqual({ kind: "manual", stage: "draft" });
+    expect(api.enqueueJob).not.toHaveBeenCalled();
   });
 
   it("stops for the manual loop when the plan default is manual", async () => {
     const api = makeApi({
       getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getConfigPlan: vi.fn().mockResolvedValue(makePlan("manual")),
+      getRunPlan: vi.fn().mockResolvedValue(makePlan("manual")),
     });
     const result = await continueRun("t", api);
     expect(result.stop).toEqual({ kind: "manual", stage: "draft" });
@@ -254,7 +342,7 @@ describe("continueRun provider decision", () => {
   it("stops for the manual loop when only this stage is manual", async () => {
     const api = makeApi({
       getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getConfigPlan: vi
+      getRunPlan: vi
         .fn()
         .mockResolvedValue(makePlan("claude-code", [makePlanStage("draft", "manual")])),
     });
@@ -266,7 +354,7 @@ describe("continueRun provider decision", () => {
   it("stops gracefully when the plan cannot be read", async () => {
     const api = makeApi({
       getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getConfigPlan: vi.fn().mockRejectedValue(new Error("plan unreadable")),
+      getRunPlan: vi.fn().mockRejectedValue(new Error("plan unreadable")),
     });
     const result = await continueRun("t", api);
     expect(result.stop).toEqual({ kind: "plan_unreadable", stage: "draft" });
@@ -278,7 +366,7 @@ describe("continueRun provider decision", () => {
       getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", null)),
     });
     expect((await continueRun("t", api)).stop).toEqual({ kind: "unfinished" });
-    expect(api.getConfigPlan).not.toHaveBeenCalled();
+    expect(api.getRunPlan).not.toHaveBeenCalled();
   });
 });
 
@@ -329,7 +417,7 @@ describe("continueRun failures", () => {
   it("reports a failed job start and records no enqueue step", async () => {
     const api = makeApi({
       getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "qa")),
-      getConfigPlan: vi.fn().mockResolvedValue(makePlan("claude-code")),
+      getRunPlan: vi.fn().mockResolvedValue(makePlan("claude-code")),
       enqueueJob: vi.fn().mockRejectedValue(new Error("provider unavailable")),
     });
     const result = await continueRun("t", api);
