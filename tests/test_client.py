@@ -42,7 +42,7 @@ def test_ensure_daemon_captures_startup_stderr_to_a_log(tmp_path):
     # timeout error must point at it.
     assert lifecycle.claim_discovery(tmp_path) is True
     with pytest.raises(DaemonError) as excinfo:
-        ensure_daemon(tmp_path, autostart=True, timeout=3)
+        ensure_daemon(tmp_path, autostart=True, timeout=1.5)
     log_path = lifecycle.discovery_dir(tmp_path) / "daemon.log"
     assert str(log_path) in str(excinfo.value)
     assert "a daemon already owns this workspace" in log_path.read_text(
