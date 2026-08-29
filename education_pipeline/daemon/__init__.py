@@ -5,11 +5,11 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
-import tempfile
 import threading
 from pathlib import Path
 
 from education_pipeline import __version__
+from education_pipeline.atomic_io import atomic_write_text
 from education_pipeline.config import (
     ConfigError,
     ModelCatalog,
@@ -66,17 +66,7 @@ class WorkspaceConfigSource:
         return hashlib.sha256(self.plan_path().read_bytes()).hexdigest()
 
     def write_plan(self, toml_text: str) -> None:
-        target = self.root / "config" / "model-plan.toml"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".tmp-", suffix=".toml")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(toml_text)
-            os.replace(tmp, target)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+        atomic_write_text(self.root / "config" / "model-plan.toml", toml_text)
 
 
 class StaticConfigSource:

@@ -14,7 +14,6 @@ import secrets
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -22,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from education_pipeline.atomic_io import atomic_write_text
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
 from education_pipeline.providers import get_runner
 from education_pipeline.runs import RunStore, StaleContentError
@@ -152,27 +152,10 @@ class JobStore:
         return job
 
     def save(self, job: Job) -> None:
-        target = self._job_json(job.topic_id, job.id)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".tmp-", suffix=".json")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(job.to_dict(), handle, indent=2)
-            # Windows sharing semantics: replacing job.json while an API
-            # reader holds it open fails with PermissionError. Readers are
-            # transient, so retry briefly instead of crashing the worker.
-            for attempt in range(10):
-                try:
-                    os.replace(tmp, target)
-                    break
-                except PermissionError:
-                    if attempt == 9:
-                        raise
-                    time.sleep(0.05)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+        atomic_write_text(
+            self._job_json(job.topic_id, job.id),
+            json.dumps(job.to_dict(), indent=2),
+        )
 
     def load(self, topic_id: str, job_id: str) -> Job:
         return Job.from_dict(_read_job_record(self._job_json(topic_id, job_id)))

@@ -4680,3 +4680,85 @@ class TestLastActivity:
 
     def test_last_activity_none_without_run_dir(self, tmp_path: Path) -> None:
         assert RunStore(tmp_path).last_activity_at("missing") is None
+
+
+def test_last_activity_at_reports_the_newest_regular_file(tmp_path: Path) -> None:
+    # One stat() per entry decides both "is it a regular file?" and "how old
+    # is it?"; directories must never win the mtime race even when they are
+    # the newest thing under the run.
+    import os
+    from datetime import datetime, timezone
+
+    runs = _create_legacy_run(tmp_path)
+    run_dir = runs.run_dir("systems-thinking")
+    nested = run_dir / "nested"
+    nested.mkdir(parents=True, exist_ok=True)
+    older = run_dir / "older.txt"
+    newer = nested / "newer.txt"
+    older.write_text("a", encoding="utf-8")
+    newer.write_text("b", encoding="utf-8")
+    for path in run_dir.rglob("*"):
+        os.utime(path, (1_000_000, 1_000_000))
+    os.utime(older, (1_700_000_000, 1_700_000_000))
+    os.utime(newer, (1_700_000_500, 1_700_000_500))
+    os.utime(nested, (1_900_000_000, 1_900_000_000))
+
+    assert runs.last_activity_at("systems-thinking") == datetime.fromtimestamp(
+        1_700_000_500, timezone.utc
+    ).isoformat()
+
+
+def test_last_activity_at_skips_entries_that_cannot_be_stat_ed(tmp_path: Path) -> None:
+    import os
+    from datetime import datetime, timezone
+
+    from conftest import symlink_or_skip
+
+    runs = _create_legacy_run(tmp_path)
+    run_dir = runs.run_dir("systems-thinking")
+    for path in run_dir.rglob("*"):
+        if path.is_file():
+            os.utime(path, (1_700_000_000, 1_700_000_000))
+    symlink_or_skip(run_dir / "dangling", run_dir / "missing-target")
+
+    assert runs.last_activity_at("systems-thinking") == datetime.fromtimestamp(
+        1_700_000_000, timezone.utc
+    ).isoformat()
+
+
+def test_last_activity_at_is_none_without_a_run(tmp_path: Path) -> None:
+    assert RunStore(tmp_path).last_activity_at("systems-thinking") is None
+
+
+def test_report_state_is_stale_for_an_unreadable_report_file(tmp_path: Path) -> None:
+    # report_state parses the report and digests the same bytes. Both come
+    # from one read, so a corrupt file must still be reported stale rather
+    # than raising -- for invalid JSON and for invalid UTF-8 alike.
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_draft_approved(runs, tid)
+    runs.validate_run(tid, "draft")
+    assert runs.report_state(tid, "draft") == "current"
+
+    report_path = runs.draft_report_path(tid)
+    report_path.write_bytes(b"{ not json")
+    assert runs.report_state(tid, "draft") == "stale"
+
+    report_path.write_bytes(b"\xff\xfe not utf-8")
+    assert runs.report_state(tid, "draft") == "stale"
+
+
+def test_export_state_is_stale_for_an_unreadable_export_report(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_finalize_ready(runs, tid)
+    runs.finalize_run(tid)
+    runs.export_run(tid, format="html")
+    assert runs.export_state(tid) == "current"
+
+    sidecar_path = runs.export_report_path(tid)
+    sidecar_path.write_bytes(b"{ not json")
+    assert runs.export_state(tid) == "stale"
+
+    sidecar_path.write_bytes(b"\xff\xfe not utf-8")
+    assert runs.export_state(tid) == "stale"

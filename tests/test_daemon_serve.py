@@ -464,3 +464,39 @@ def test_worker_restamps_plan_source_when_overrides_edited_while_queued(tmp_path
     finally:
         _post(port, token, "/v1/shutdown")
         thread.join(timeout=10)
+
+
+def test_workspace_config_source_write_plan_retries_replace_on_permission_error(
+    tmp_path, monkeypatch
+):
+    # Windows sharing semantics: os.replace onto model-plan.toml while a
+    # reader holds it open fails with PermissionError. The plan writer shares
+    # the package-wide atomic writer, so it polls through it instead of
+    # dropping the edit.
+    from education_pipeline import atomic_io
+    from education_pipeline.config import emit_model_plan_toml, parse_model_plan
+
+    source = WorkspaceConfigSource(tmp_path)
+    catalog, _ = source.load()
+    toml_text = emit_model_plan_toml(
+        parse_model_plan({"provider": "manual", "stages": {}}, catalog=catalog)
+    )
+
+    real_replace = os.replace
+    calls = {"count": 0}
+
+    def flaky_replace(src, dst):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise PermissionError("sharing violation")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(atomic_io.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(os, "replace", flaky_replace)
+
+    source.write_plan(toml_text)
+
+    assert calls["count"] == 2
+    written_path = tmp_path / "config" / "model-plan.toml"
+    assert written_path.read_text(encoding="utf-8") == toml_text
+    assert [p.name for p in written_path.parent.iterdir()] == ["model-plan.toml"]

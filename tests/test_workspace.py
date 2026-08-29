@@ -675,3 +675,71 @@ class TestFixWorkspace:
         remaining = fix_workspace(target)
         assert [f.code for f in remaining] == ["path_is_file"]
         assert target.is_file()
+
+
+def test_profile_write_retries_replace_on_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows sharing semantics: os.replace onto a profile a concurrent reader
+    # holds open fails with PermissionError. The profile writer shares the
+    # package-wide atomic writer, so it polls through it rather than failing
+    # the create outright.
+    import os
+
+    from education_pipeline import atomic_io
+
+    store = ProfileStore(tmp_path)
+    real_replace = os.replace
+    calls = {"count": 0}
+
+    def flaky_replace(source, target):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise PermissionError("sharing violation")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(atomic_io.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(os, "replace", flaky_replace)
+
+    record = store.create_profile("visual-profile", _profile_mapping(PROFILE_TOML))
+
+    assert calls["count"] == 2
+    assert store.profile_path("visual-profile").read_bytes() == record.canonical_bytes
+    assert not tuple(store.profiles_dir.glob(".*.tmp"))
+
+
+def test_run_and_workspace_stores_share_one_artifact_id_message(tmp_path: Path) -> None:
+    # One validator behind both entry paths: the same invalid id must not
+    # produce two different errors depending on which store rejected it.
+    from education_pipeline import RunStore
+
+    invalid_topic_id = f"../{PLANTED_SECRET}"
+    runs = RunStore(tmp_path)
+    profiles = ProfileStore(tmp_path)
+
+    with pytest.raises(ConfigError) as run_error:
+        runs.create_run(invalid_topic_id)
+    with pytest.raises(ConfigError) as workspace_error:
+        profiles.attach_profile_to_topic("visual-profile", invalid_topic_id)
+
+    assert str(run_error.value) == str(workspace_error.value)
+    assert str(run_error.value) == (
+        "topic id must match '^[A-Za-z0-9][A-Za-z0-9._-]*$'"
+    )
+    # Naming the pattern is the actionable half; the rejected id itself is
+    # never reflected back into the message.
+    assert PLANTED_SECRET not in str(run_error.value)
+    assert PLANTED_SECRET not in str(workspace_error.value)
+
+
+def test_artifact_id_accepts_and_rejects_the_documented_shape() -> None:
+    from education_pipeline.workspace import artifact_id, is_artifact_id
+
+    for valid in ("a", "0", "systems-thinking", "Guide.v1_2-final"):
+        assert is_artifact_id(valid)
+        assert artifact_id(valid, "topic id") == valid
+
+    for invalid in ("", "../escape", ".hidden", "-leading", "with space", "a/b", 7, None):
+        assert not is_artifact_id(invalid)
+        with pytest.raises(ConfigError, match="topic id must match"):
+            artifact_id(invalid, "topic id")  # type: ignore[arg-type]
