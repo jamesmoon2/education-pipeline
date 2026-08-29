@@ -30,6 +30,27 @@ def test_canonical_fixture_passes_every_static_check(guide):
     assert result.document is not None and "data-guide-shell" in result.document
 
 
+def test_progress_portability_controls_keep_the_document_checks_green(guide):
+    """The download/restore controls add a button pair and a file input to the
+    course controls, and the carry-over banner adds two more buttons: every one
+    of them has to stay named, and the banner must not introduce a heading that
+    breaks the document's h1 -> h2 -> h3 order."""
+    result = compute_static_checks(guide)
+
+    assert result.document is not None
+    for role in (
+        "download-progress",
+        "restore-progress",
+        "progress-file-input",
+        "resume-progress",
+        "dismiss-progress",
+    ):
+        assert f'data-role="{role}"' in result.document
+    assert 'aria-label="Progress file to restore"' in result.document
+    assert result.context.controls_have_labels is True
+    assert result.context.heading_order_valid is True
+
+
 def test_static_checks_are_deterministic(guide):
     assert compute_static_checks(guide).document == compute_static_checks(guide).document
 

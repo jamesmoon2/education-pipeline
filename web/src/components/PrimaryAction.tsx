@@ -10,9 +10,51 @@ import {
 } from "../api/client";
 import type { Job, RunStatus } from "../api/types";
 import { useAction } from "../hooks/useAction";
+import { useNow } from "../hooks/useNow";
+import { continueFailed, continueFeedback, continueRun } from "../lib/continueRun";
+import { formatDurationMs, jobElapsedMs } from "../lib/time";
 import CopyPromptButton from "./CopyPromptButton";
 import ExportControls from "./ExportControls";
+import JobLogView from "./JobLogView";
 import ResponseForm from "./ResponseForm";
+
+/** The active-job block for a queued/running provider job. Split out so
+ *  `useNow`'s tick is scoped to exactly this block's lifetime -- it mounts
+ *  only from the `if (activeJob)` branch below and unmounts (taking its
+ *  interval with it) the moment the job leaves the board's status poll. */
+function ActiveJobStatus({ job }: { job: Job }) {
+  const now = useNow();
+  const queued = job.status === "queued";
+  const elapsedMs = jobElapsedMs(job, now);
+  const elapsedLabel =
+    elapsedMs === null
+      ? null
+      : `${queued ? "Queued" : "Running"} for ${formatDurationMs(elapsedMs)}`;
+
+  return (
+    <div className="primary-action">
+      <div className="active-job-status">
+        {/* The live region announces the job's state once when it changes;
+            the ticking elapsed readout below is a sibling, not a child, so
+            a screen reader is never re-prompted to re-announce this whole
+            block every second for the life of a run. */}
+        <p role="status">
+          <span className="state state-running">{queued ? "Queued" : "Running"}</span>
+          <span>
+            The {job.stage} stage is {queued ? "queued" : "running"} with {job.provider}
+            {job.model ? ` / ${job.model}` : ""}. The board updates automatically; the
+            full log is in Jobs below.
+          </span>
+        </p>
+        {/* Not aria-hidden: still reachable/readable on demand, just outside
+            the live region above. */}
+        {elapsedLabel && <span className="active-job-elapsed">{elapsedLabel}</span>}
+      </div>
+      {/* A queued job has no process running yet, so there is no log to tail. */}
+      {job.status === "running" && <JobLogView jobId={job.id} active tail={3} />}
+    </div>
+  );
+}
 
 export default function PrimaryAction({
   status,
@@ -33,23 +75,10 @@ export default function PrimaryAction({
   // stages[].approved flags an approved copy on disk, so an approve action
   // for such a stage is a re-approval that overwrites the prior copy.
   const reapproving = status.stages.some((s) => s.stage === stage && s.approved);
+  const approveLabel = reapproving ? `Approve changes to ${stage}` : `Approve ${stage}`;
 
   if (activeJob) {
-    const verb = activeJob.status === "queued" ? "queued" : "running";
-    return (
-      <div className="primary-action">
-        <p className="active-job-status" role="status">
-          <span className="state state-running">
-            {activeJob.status === "queued" ? "Queued" : "Running"}
-          </span>
-          <span>
-            The {activeJob.stage} stage is {verb} with {activeJob.provider}
-            {activeJob.model ? ` / ${activeJob.model}` : ""}. The board updates
-            automatically; the live log is in Jobs below.
-          </span>
-        </p>
-      </div>
-    );
+    return <ActiveJobStatus job={activeJob} />;
   }
 
   return (
@@ -110,6 +139,30 @@ export default function PrimaryAction({
       )}
       {next.action === "approve" && stage && (
         <>
+          {/* Approval is the judgment; the chain runs the mechanical
+              follow-ups only after it succeeds — including after an
+              overwrite retry, which repeats the approval first. */}
+          <button
+            disabled={busy}
+            onClick={() =>
+              run(
+                async () => {
+                  await postApprove(topicId, stage);
+                  return continueRun(topicId);
+                },
+                {
+                  retryWithOverwrite: async () => {
+                    await postApprove(topicId, stage, true);
+                    return continueRun(topicId);
+                  },
+                  successMessage: (result) => continueFeedback(stage, result),
+                  errorTone: continueFailed,
+                },
+              )
+            }
+          >
+            {approveLabel} &amp; continue
+          </button>{" "}
           <button
             disabled={busy}
             onClick={() =>
@@ -119,7 +172,7 @@ export default function PrimaryAction({
               })
             }
           >
-            {reapproving ? `Approve changes to ${stage}` : `Approve ${stage}`}
+            {approveLabel} only
           </button>{" "}
           {/* Land review on the pending content, not the default prompt tab. */}
           <Link to={`/topics/${topicId}/stages/${stage}?tab=response`}>

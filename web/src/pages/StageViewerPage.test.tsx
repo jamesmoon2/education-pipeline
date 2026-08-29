@@ -23,6 +23,10 @@ vi.mock("../api/client", async () => {
     postResponse: vi.fn(),
     putResponse: vi.fn(),
     postPreview: vi.fn(),
+    // Read by the "Approve & continue" chain (lib/continueRun.ts).
+    postValidate: vi.fn(),
+    enqueueJob: vi.fn(),
+    getRunPlan: vi.fn(),
   };
 });
 
@@ -30,13 +34,17 @@ import {
   ApiRequestError,
   approveAudit,
   enqueueAuditJob,
+  enqueueJob,
   getRepairModules,
+  getRunPlan,
   getRunStatus,
   getStageContent,
+  postAdvance,
   postApprove,
   postResponse,
   putResponse,
 } from "../api/client";
+import type { NextAction, RunStatus } from "../api/types";
 
 function renderAt(path: string) {
   return render(
@@ -48,8 +56,11 @@ function renderAt(path: string) {
   );
 }
 
-function mockRun(finalized = false) {
-  vi.mocked(getRunStatus).mockResolvedValue({
+function makeRunStatus(
+  next: Pick<NextAction, "action" | "stage">,
+  finalized = false,
+): RunStatus {
+  return {
     topic_id: "t",
     finalized,
     content_contract: { kind: "legacy_markdown" },
@@ -59,8 +70,15 @@ function mockRun(finalized = false) {
       final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
     },
     stages: [],
-    next_action: { topic_id: "t", stage: null, action: "done", detail: "" },
-  });
+    next_action: { topic_id: "t", detail: "", ...next },
+  };
+}
+
+function mockRun(finalized = false, next: Pick<NextAction, "action" | "stage"> = {
+  action: "done",
+  stage: null,
+}) {
+  vi.mocked(getRunStatus).mockResolvedValue(makeRunStatus(next, finalized));
 }
 
 beforeEach(() => {
@@ -268,6 +286,109 @@ describe("StageViewerPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Approve draft" }));
     expect(postApprove).toHaveBeenCalledWith("t", "draft");
     expect(screen.queryByRole("button", { name: "Paste response…" })).not.toBeInTheDocument();
+  });
+
+  it("offers Approve & continue for the approval the run is waiting on", async () => {
+    // The daemon reports the next action after the approval lands, so the
+    // chain sees the run move on exactly as it would against the daemon.
+    let next: Pick<NextAction, "action" | "stage"> = { action: "approve", stage: "draft" };
+    vi.mocked(getRunStatus).mockImplementation(async () => makeRunStatus(next));
+    vi.mocked(postApprove).mockImplementation(async () => {
+      next = { action: "save_response", stage: "qa" };
+      return {} as never;
+    });
+    vi.mocked(getRunPlan).mockResolvedValue({
+      provider: "claude-code",
+      plan_sha256: "sha-plan",
+      stages: [],
+    });
+    vi.mocked(enqueueJob).mockResolvedValue({} as never);
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "draft",
+      prompt: "# prompt",
+      response: "response body",
+      approved: null,
+      response_sha256: "sha-1",
+      content_type: "text/markdown",
+    });
+    renderAt("/topics/t/stages/draft");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve & continue" }));
+    expect(postApprove).toHaveBeenCalledWith("t", "draft");
+    expect(enqueueJob).toHaveBeenCalledWith("t");
+    const feedback = await screen.findByRole("status");
+    expect(feedback).toHaveTextContent("Approved draft — started qa with claude-code.");
+    expect(feedback).toHaveClass("success");
+  });
+
+  it("announces a failed follow-up as an alert while reporting the approval", async () => {
+    let next: Pick<NextAction, "action" | "stage"> = { action: "approve", stage: "draft" };
+    vi.mocked(getRunStatus).mockImplementation(async () => makeRunStatus(next));
+    vi.mocked(postApprove).mockImplementation(async () => {
+      next = { action: "write_prompt", stage: "qa" };
+      return {} as never;
+    });
+    vi.mocked(postAdvance).mockRejectedValue(
+      new ApiRequestError(409, "job_active", "job j1 is running for topic 't'"),
+    );
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "draft",
+      prompt: "# prompt",
+      response: "response body",
+      approved: null,
+      response_sha256: "sha-1",
+      content_type: "text/markdown",
+    });
+    renderAt("/topics/t/stages/draft");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve & continue" }));
+    const feedback = await screen.findByRole("alert");
+    expect(feedback).toHaveTextContent(
+      "Approved draft, but writing the qa prompt failed: job j1 is running for topic 't'",
+    );
+    expect(feedback).toHaveClass("error");
+  });
+
+  it("offers only the plain approve button when the run's next action is elsewhere", async () => {
+    // Re-approving an earlier stage: the run is waiting on repair, so there
+    // is no next step for this stage's approval to continue into.
+    mockRun(false, { action: "approve", stage: "repair" });
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "draft",
+      prompt: "# prompt",
+      response: "edited body",
+      approved: "previously approved body",
+      response_sha256: "sha-1",
+      content_type: "text/markdown",
+    });
+    renderAt("/topics/t/stages/draft");
+
+    expect(await screen.findByRole("button", { name: "Approve draft" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Approve & continue" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("never chains an audit approval", async () => {
+    mockRun(false, { action: "approve", stage: "audit" });
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "audit",
+      prompt: "audit prompt",
+      response: '{"findings":[]}',
+      approved: null,
+      response_sha256: "sha-audit",
+      content_type: "application/json",
+    });
+    renderAt("/topics/t/stages/audit?tab=response");
+
+    expect(await screen.findByRole("button", { name: "Approve audit" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Approve & continue" }),
+    ).not.toBeInTheDocument();
   });
 
   it("offers neither action once approved", async () => {

@@ -77,6 +77,17 @@ export function filterAndSortTopics(
   return sorted;
 }
 
+// Where the "Next action" cell takes you. An approval is the one action that
+// needs the pending response in front of the reviewer; every other action —
+// and a topic with no run yet — starts from the board's action area.
+function nextActionHref(topic: TopicSummary): string {
+  const next = topic.run?.next_action;
+  if (next?.action === "approve" && next.stage) {
+    return `/topics/${topic.id}/stages/${next.stage}?tab=response`;
+  }
+  return `/topics/${topic.id}`;
+}
+
 function formatActivity(stamp: string | null): string {
   if (!stamp) return "—";
   const parsed = new Date(stamp);
@@ -271,7 +282,11 @@ export default function TopicListPage() {
                     )}
                   </td>
                   <td>{t.error ? <span className="error">{t.error}</span> : (t.title ?? "—")}</td>
-                  <td>{t.run ? nextActionLabel(t.run.next_action.action) : "No run yet"}</td>
+                  <td>
+                    <Link to={nextActionHref(t)}>
+                      {t.run ? nextActionLabel(t.run.next_action.action) : "No run yet"}
+                    </Link>
+                  </td>
                   <td>{formatActivity(t.last_activity)}</td>
                   <td>
                     {t.completion

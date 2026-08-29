@@ -59,7 +59,7 @@ async function importTopicAndRunAllStages(page, topicId: string, title: string) 
     await page.getByRole("button", { name: "Paste response…" }).click();
     await page.getByLabel(`Response for ${stage}`).fill(`${stage} response body`);
     await page.getByRole("button", { name: "Save response" }).click();
-    await page.getByRole("button", { name: `Approve ${stage}` }).click();
+    await page.getByRole("button", { name: `Approve ${stage} only`, exact: true }).click();
   }
 }
 

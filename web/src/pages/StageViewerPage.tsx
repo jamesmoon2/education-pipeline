@@ -18,6 +18,7 @@ import ResponseForm from "../components/ResponseForm";
 import StageContentView from "../components/StageContentView";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
+import { continueFailed, continueFeedback, continueRun } from "../lib/continueRun";
 import ErrorNotice from "../components/ErrorNotice";
 
 const TABS = ["prompt", "response", "approved"] as const;
@@ -120,6 +121,14 @@ function StageViewerForRoute({
       ? { a: data.approved, b: data.response }
       : null;
   const showEditor = editing && canEdit && tab === "response";
+  // Chaining is only safe on the approval the run is actually waiting for:
+  // re-approving an earlier stage leaves the run's own next action untouched,
+  // so there is nothing to continue into. Audit approval goes through
+  // approveAudit and sits outside the stage pipeline — never chain it.
+  const chainable =
+    !isAudit &&
+    run?.next_action.action === "approve" &&
+    run.next_action.stage === data.stage;
 
   const toggleDiff = async () => {
     const next = !diffOpen;
@@ -214,6 +223,29 @@ function StageViewerForRoute({
             }
           >
             Approve {data.stage}
+          </button>
+        )}
+        {needsApproval && chainable && (
+          <button
+            disabled={approve.busy}
+            onClick={() =>
+              approve.run(
+                async () => {
+                  await postApprove(topicId, data.stage);
+                  return continueRun(topicId);
+                },
+                {
+                  retryWithOverwrite: async () => {
+                    await postApprove(topicId, data.stage, true);
+                    return continueRun(topicId);
+                  },
+                  successMessage: (result) => continueFeedback(data.stage, result),
+                  errorTone: continueFailed,
+                },
+              )
+            }
+          >
+            Approve &amp; continue
           </button>
         )}
         {data.response !== null && (!finalized || isAudit) && (

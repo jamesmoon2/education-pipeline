@@ -109,6 +109,35 @@ describe("TopicListPage", () => {
     expect(screen.getByText("Write the next prompt")).toBeInTheDocument();
   });
 
+  it("links a pending approval straight to the response awaiting review", async () => {
+    vi.mocked(getTopics).mockResolvedValue({
+      topics: [makeTopic("systems-thinking", { run: makeRun("systems-thinking", "approve") })],
+    });
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderPage();
+    expect(
+      await screen.findByRole("link", { name: "Review and approve" }),
+    ).toHaveAttribute("href", "/topics/systems-thinking/stages/spec?tab=response");
+  });
+
+  it("links every other next action to the run board", async () => {
+    vi.mocked(getTopics).mockResolvedValue({
+      topics: [
+        makeTopic("alpha", { run: makeRun("alpha", "write_prompt") }),
+        makeTopic("delta", { run: null, last_activity: null, completion: null }),
+      ],
+    });
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderPage();
+    expect(
+      await screen.findByRole("link", { name: "Write the next prompt" }),
+    ).toHaveAttribute("href", "/topics/alpha");
+    expect(screen.getByRole("link", { name: "No run yet" })).toHaveAttribute(
+      "href",
+      "/topics/delta",
+    );
+  });
+
   it("explains the row actions with an InfoTip in the Actions header", async () => {
     vi.mocked(getTopics).mockResolvedValue({ topics: [summary] });
     vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });

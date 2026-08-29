@@ -33,10 +33,15 @@
   // ---------------------------------------------------------------------
 
   const STORAGE_NS = "education-pipeline";
+  const PROGRESS_FILE_FORMAT = "education-pipeline.guide-progress";
+  const PROGRESS_FILE_VERSION = 1;
+
+  function schemaMajor(schemaVersion) {
+    return String(schemaVersion).split(".")[0];
+  }
 
   function storageKey(courseId, hash, schemaVersion) {
-    const major = String(schemaVersion).split(".")[0];
-    return `${STORAGE_NS}:guide:${courseId}:${hash}:v${major}`;
+    return `${STORAGE_NS}:guide:${courseId}:${hash}:v${schemaMajor(schemaVersion)}`;
   }
 
   function emptyState() {
@@ -73,6 +78,16 @@
     }
     if (typeof raw.lastSection === "string") out.lastSection = raw.lastSection;
     if (raw.theme === "light" || raw.theme === "dark" || raw.theme === "system") out.theme = raw.theme;
+    // Optional: exports before this field existed stored no timestamp, and a
+    // state without one stays valid -- it only sorts last when choosing which
+    // earlier version's progress to offer. Anything non-finite is dropped
+    // rather than carried forward.
+    if (Number.isFinite(raw.updatedAt)) out.updatedAt = raw.updatedAt;
+    // Optional, and only ever recorded as true: the learner has answered the
+    // carry-over offer for this export (resumed or started fresh), so it must
+    // not be raised again. Absent means "not asked yet", which is what every
+    // older stored state correctly means.
+    if (raw.migrationDecided === true) out.migrationDecided = true;
     return out;
   }
 
@@ -136,7 +151,24 @@
       }
     }
 
-    return { read, write };
+    // Every key currently in storage, for callers that must look beyond their
+    // own. Reading the index is silent about availability: whoever needed the
+    // notice has already tried a real read or write.
+    function keys() {
+      if (!probe()) return [];
+      try {
+        const out = [];
+        for (let i = 0; i < window.localStorage.length; i++) {
+          const key = window.localStorage.key(i);
+          if (typeof key === "string") out.push(key);
+        }
+        return out;
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    return { read, write, keys };
   })();
 
   // ---------------------------------------------------------------------
@@ -151,11 +183,27 @@
       key = storageKeyValue;
       data = loaded || emptyState();
     }
+    // Stamped on every write so a later export can tell which of this
+    // course's stored records is the most recent one to offer.
     function save() {
-      if (key) Persistence.write(key, data);
+      if (!key) return false;
+      data.updatedAt = Date.now();
+      return Persistence.write(key, data);
     }
     function get() {
       return data;
+    }
+    // Replace the whole record (migration or a restored progress file).
+    // Returns whether it reached storage, which decides whether the caller
+    // can safely reload to rebuild the interactive blocks.
+    function adopt(next) {
+      data = next || emptyState();
+      return save();
+    }
+    // The learner has answered the carry-over offer for this export.
+    function markMigrationDecided() {
+      data.migrationDecided = true;
+      return save();
     }
     function setTheme(theme) {
       data.theme = theme;
@@ -179,12 +227,20 @@
       save();
     }
     function resetProgress() {
-      data = { completedSections: [], interactions: {}, lastSection: null, theme: data.theme };
+      // Theme is a display preference and the carry-over decision is an
+      // answer the learner already gave; neither is progress, so a reset
+      // keeps both rather than resurrecting a banner they dismissed.
+      const next = { completedSections: [], interactions: {}, lastSection: null, theme: data.theme };
+      if (data.migrationDecided === true) next.migrationDecided = true;
+      data = next;
       save();
     }
     return {
       init,
       get,
+      save,
+      adopt,
+      markMigrationDecided,
       setTheme,
       markSectionComplete,
       setLastSection,
@@ -413,7 +469,12 @@
       if (restored && indexOf(restored) > -1) startId = restored;
       show(startId);
     }
-    return { boot, toggleDrawer, revealEvidenceTarget };
+    // Shows a section by id when it exists, without moving focus: used after
+    // a record is adopted in place, to land on the section it left off at.
+    function showSection(id) {
+      return Boolean(id) && show(id, { focus: false });
+    }
+    return { boot, toggleDrawer, revealEvidenceTarget, showSection };
   })();
 
   // ---------------------------------------------------------------------
@@ -513,6 +574,22 @@
       if (retryBtn) retryBtn.hidden = !retryAllowed;
     }
 
+    // The pristine, unanswered view. Retry uses it, and so does hydrate --
+    // which is why hydrate can run a second time without layering a new
+    // answer on top of the one already shown.
+    function clear() {
+      inputs.forEach((i) => {
+        i.checked = false;
+        i.disabled = false;
+      });
+      items.forEach((li) => (li.dataset.state = ""));
+      article.classList.remove("is-submitted");
+      resultEl.textContent = "";
+      submitBtn.hidden = false;
+      if (retryBtn) retryBtn.hidden = true;
+      updateSubmitEnabled();
+    }
+
     inputs.forEach((i) => i.addEventListener("change", updateSubmitEnabled));
     submitBtn.addEventListener("click", () => {
       const selected = selectedIds();
@@ -528,31 +605,23 @@
       });
       Progress.update();
     });
-    if (retryBtn) {
-      retryBtn.addEventListener("click", () => {
-        inputs.forEach((i) => {
-          i.checked = false;
-          i.disabled = false;
-        });
-        items.forEach((li) => (li.dataset.state = ""));
-        article.classList.remove("is-submitted");
-        resultEl.textContent = "";
-        submitBtn.hidden = false;
-        retryBtn.hidden = true;
-        updateSubmitEnabled();
-      });
-    }
+    if (retryBtn) retryBtn.addEventListener("click", clear);
 
-    const entry = State.interaction(id);
-    if (entry && entry.completed) {
-      (entry.selectedIds || []).forEach((cid) => {
-        const input = inputs.find((i) => i.dataset.choiceId === cid);
-        if (input) input.checked = true;
-      });
-      applySubmittedView(entry.selectedIds || []);
-      lock();
+    function hydrate() {
+      clear();
+      const entry = State.interaction(id);
+      if (entry && entry.completed) {
+        (entry.selectedIds || []).forEach((cid) => {
+          const input = inputs.find((i) => i.dataset.choiceId === cid);
+          if (input) input.checked = true;
+        });
+        applySubmittedView(entry.selectedIds || []);
+        lock();
+      }
+      updateSubmitEnabled();
     }
-    updateSubmitEnabled();
+    hydrate();
+    return hydrate;
   }
 
   // ---------------------------------------------------------------------
@@ -608,11 +677,19 @@
       });
     }
 
-    const entry = State.interaction(id);
-    if (entry && Number.isFinite(entry.revealedCount)) {
-      revealed = Math.min(entry.revealedCount, steps.length);
+    // Rereads the record into the block's own counter, so a record adopted
+    // after boot continues from its step rather than from the stale one.
+    function hydrate() {
+      const entry = State.interaction(id);
+      revealed =
+        entry && Number.isFinite(entry.revealedCount)
+          ? Math.min(entry.revealedCount, steps.length)
+          : 0;
+      if (live) live.textContent = "";
+      apply();
     }
-    apply();
+    hydrate();
+    return hydrate;
   }
 
   // ---------------------------------------------------------------------
@@ -654,6 +731,19 @@
       if (retryBtn) retryBtn.hidden = false;
     }
 
+    function clear() {
+      inputs.forEach((i) => {
+        i.checked = false;
+        i.disabled = false;
+      });
+      items.forEach((li) => (li.dataset.state = ""));
+      article.classList.remove("is-submitted");
+      resultEl.textContent = "";
+      submitBtn.hidden = false;
+      if (retryBtn) retryBtn.hidden = true;
+      updateSubmitEnabled();
+    }
+
     inputs.forEach((i) => i.addEventListener("change", updateSubmitEnabled));
     submitBtn.addEventListener("click", () => {
       const choiceId = selectedId();
@@ -663,29 +753,21 @@
       State.setInteraction(id, { type: "scenario", completed: true, selectedId: choiceId });
       Progress.update();
     });
-    if (retryBtn) {
-      retryBtn.addEventListener("click", () => {
-        inputs.forEach((i) => {
-          i.checked = false;
-          i.disabled = false;
-        });
-        items.forEach((li) => (li.dataset.state = ""));
-        article.classList.remove("is-submitted");
-        resultEl.textContent = "";
-        submitBtn.hidden = false;
-        retryBtn.hidden = true;
-        updateSubmitEnabled();
-      });
-    }
+    if (retryBtn) retryBtn.addEventListener("click", clear);
 
-    const entry = State.interaction(id);
-    if (entry && entry.completed && entry.selectedId) {
-      const input = inputs.find((i) => i.dataset.choiceId === entry.selectedId);
-      if (input) input.checked = true;
-      applySubmittedView(entry.selectedId);
-      lock();
+    function hydrate() {
+      clear();
+      const entry = State.interaction(id);
+      if (entry && entry.completed && entry.selectedId) {
+        const input = inputs.find((i) => i.dataset.choiceId === entry.selectedId);
+        if (input) input.checked = true;
+        applySubmittedView(entry.selectedId);
+        lock();
+      }
+      updateSubmitEnabled();
     }
-    updateSubmitEnabled();
+    hydrate();
+    return hydrate;
   }
 
   // ---------------------------------------------------------------------
@@ -741,15 +823,21 @@
       });
     }
 
-    const entry = State.interaction(id);
-    if (entry) {
-      textarea.value = entry.text || "";
-      if (resetBtn) resetBtn.hidden = !entry.text;
+    function hydrate() {
+      // Drop any pending debounced save first: it would otherwise write the
+      // note that was on screen before the record was replaced.
+      if (debounceHandle) window.clearTimeout(debounceHandle);
+      const entry = State.interaction(id);
+      textarea.value = entry && typeof entry.text === "string" ? entry.text : "";
+      if (resetBtn) resetBtn.hidden = textarea.value.trim().length === 0;
       if (status) {
-        if (entry.skipped) status.textContent = "Skipped.";
-        else if (entry.text) status.textContent = "Saved locally.";
+        if (entry && entry.skipped) status.textContent = "Skipped.";
+        else if (textarea.value.trim()) status.textContent = "Saved locally.";
+        else status.textContent = "";
       }
     }
+    hydrate();
+    return hydrate;
   }
 
   // ---------------------------------------------------------------------
@@ -763,21 +851,427 @@
     reflection: enhanceReflection,
   };
 
+  const INTERACTION_TYPES = Object.keys(ENHANCERS);
+
+  // The kind of interaction a block is *now*, read from the document rather
+  // than from anything a stored record claims about it.
+  function interactionTypeOf(article) {
+    return INTERACTION_TYPES.find((type) => article.classList.contains(type)) || null;
+  }
+
+  // Each enhancer hands back a function that re-applies the current record to
+  // its own DOM. Collected here so a record adopted after boot can be shown
+  // without re-running the enhancers (which would bind every listener twice).
+  const HYDRATORS = [];
+
   function enhanceBlocks() {
+    HYDRATORS.length = 0;
     qsa('[data-interactive="true"]').forEach((article) => {
-      const type = Object.keys(ENHANCERS).find((t) => article.classList.contains(t));
+      const type = interactionTypeOf(article);
       const fn = type && ENHANCERS[type];
       if (!fn) return;
       try {
-        fn(article);
+        const hydrate = fn(article);
+        if (typeof hydrate === "function") HYDRATORS.push(hydrate);
       } catch (error) {
         reportBlockError(article, error);
       }
     });
   }
 
+  function rehydrateBlocks() {
+    HYDRATORS.forEach((hydrate) => {
+      try {
+        hydrate();
+      } catch (_error) {
+        /* one block failing to refresh must not stop the others */
+      }
+    });
+  }
+
   // ---------------------------------------------------------------------
-  // Course controls: theme, progress reset, nav drawer
+  // Adopting progress recorded elsewhere (an earlier export, or a file)
+  // ---------------------------------------------------------------------
+
+  const Restore = (() => {
+    // A surviving block id is not enough. A revised export can reuse an id
+    // for a different kind of block, or rewrite away the very choice the
+    // learner picked; either way the enhancer would restore an answer it can
+    // no longer show -- a knowledge check locked as submitted with nothing
+    // selected, which is permanent where retry is off. So every entry is
+    // checked against the block as it exists now and dropped whole when it no
+    // longer lines up: losing one answer beats displaying a false one.
+    function usableInteraction(id, entry) {
+      const el = document.getElementById(id);
+      if (!el || el.dataset.interactive !== "true") return null;
+      const type = interactionTypeOf(el);
+      if (type !== entry.type) return null;
+      if (type === "knowledge_check") {
+        const choiceIds = new Set(
+          qsa('[data-role="kc-choice"]', el).map((input) => input.dataset.choiceId)
+        );
+        if (entry.completed && entry.selectedIds.length === 0) return null;
+        if (!entry.selectedIds.every((choiceId) => choiceIds.has(choiceId))) return null;
+        return entry;
+      }
+      if (type === "scenario") {
+        if (entry.selectedId === null) return entry.completed ? null : entry;
+        const choiceIds = new Set(
+          qsa('[data-role="sc-choice"]', el).map((input) => input.dataset.choiceId)
+        );
+        return choiceIds.has(entry.selectedId) ? entry : null;
+      }
+      if (type === "worked_reveal") {
+        // Nothing here references an id -- only a count, which means something
+        // solely against the current step list. Clamp it and recompute
+        // completion instead of trusting a flag from a different step count.
+        const total = qsa('[data-role="reveal-step"]', el).length;
+        const revealedCount = Math.min(entry.revealedCount, total);
+        return { type, completed: total > 0 && revealedCount >= total, revealedCount };
+      }
+      // Reflection: the note is the learner's own prose, so it always
+      // survives; completion follows from the note rather than a stale flag.
+      return {
+        type,
+        completed: entry.skipped || entry.text.trim().length > 0,
+        text: entry.text,
+        skipped: entry.skipped,
+      };
+    }
+
+    // Progress that came from another export can name sections and blocks
+    // this document no longer has, so it is always narrowed to what this
+    // exact guide contains before anything is stored.
+    function filterToDocument(state) {
+      const sectionIds = new Set(qsa('main section[data-role="guide-section"]').map((el) => el.id));
+      const out = emptyState();
+      out.theme = state.theme;
+      out.completedSections = state.completedSections.filter((id) => sectionIds.has(id));
+      Object.keys(state.interactions).forEach((id) => {
+        const entry = usableInteraction(id, state.interactions[id]);
+        if (entry) out.interactions[id] = entry;
+      });
+      if (state.lastSection && sectionIds.has(state.lastSection)) out.lastSection = state.lastSection;
+      return out;
+    }
+
+    function refreshTheme(theme) {
+      applyTheme(theme);
+      const select = qs('[data-role="theme-select"]');
+      if (select) select.value = theme || "system";
+    }
+
+    // Reloading is how reset-progress refreshes, and it is the only honest
+    // way to rebuild submitted answers, revealed steps and saved notes: each
+    // block enhancer reads stored state once, at boot, and re-running them
+    // over the live DOM would bind every listener a second time.
+    //
+    // `options.decided` records, in the same write, that the carry-over offer
+    // has been answered -- so the boot after the reload cannot raise it again
+    // even if the adopted progress filtered down to nothing.
+    function adopt(state, options) {
+      const filtered = filterToDocument(state);
+      if (options && options.decided) filtered.migrationDecided = true;
+      if (State.adopt(filtered)) {
+        window.location.reload();
+        return true;
+      }
+      // Storage refused the write, so a reload would throw the adopted
+      // progress away. Rebuild the page from the record in memory instead:
+      // every block re-applies it through the hydrator it registered at boot,
+      // so restored answers, revealed steps and notes are actually on screen
+      // and each block's own counters match what is stored.
+      refreshTheme(filtered.theme);
+      rehydrateBlocks();
+      Nav.showSection(filtered.lastSection);
+      Progress.update();
+      return false;
+    }
+
+    return { adopt, filterToDocument };
+  })();
+
+  // ---------------------------------------------------------------------
+  // Progress files: download the current record, restore a saved one
+  // ---------------------------------------------------------------------
+
+  const ProgressFile = (() => {
+    let courseId = null;
+    let schemaVersion = null;
+
+    function setStatus(message, isError) {
+      try {
+        const el = qs('[data-role="progress-file-status"]');
+        if (!el) return;
+        el.textContent = message;
+        if (isError) el.dataset.state = "error";
+        else delete el.dataset.state;
+      } catch (_error) {
+        /* the status line must never be the thing that breaks */
+      }
+    }
+
+    function download() {
+      try {
+        const payload = {
+          format: PROGRESS_FILE_FORMAT,
+          version: PROGRESS_FILE_VERSION,
+          course_id: courseId,
+          schema_version: schemaVersion,
+          saved_at: new Date().toISOString(),
+          // The in-memory record, so the download still works in browsers
+          // that refuse local storage for this file.
+          state: State.get(),
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2) + "\n"], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${courseId}-progress.json`;
+        // Appended only for the duration of the click: some browsers ignore
+        // a download from an anchor that was never in the document. No paint
+        // happens inside one task, so nothing flashes on screen.
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        // Revoking in the same task can cancel the download the click just
+        // started, so let this one finish first.
+        window.setTimeout(() => {
+          try {
+            URL.revokeObjectURL(url);
+          } catch (_error) {
+            /* already released */
+          }
+        }, 0);
+        setStatus("Progress file downloaded.");
+      } catch (_error) {
+        setStatus("This browser would not save a progress file here.", true);
+      }
+    }
+
+    // Reads one chosen file. Every rejection path ends in a visible message
+    // and leaves the stored progress exactly as it was.
+    function applyText(text) {
+      let payload = null;
+      try {
+        payload = JSON.parse(text);
+      } catch (_error) {
+        payload = null;
+      }
+      if (!isPlainObject(payload) || payload.format !== PROGRESS_FILE_FORMAT) {
+        setStatus(
+          "That is not an Education Pipeline progress file, so nothing was changed.",
+          true
+        );
+        return false;
+      }
+      // A later format version may hold progress in a shape this runtime
+      // would read as "empty" -- applying it would quietly wipe real
+      // progress -- so an unknown version is refused rather than degraded.
+      if (payload.version !== PROGRESS_FILE_VERSION) {
+        const named = Number.isInteger(payload.version)
+          ? `format version ${payload.version}`
+          : "an unknown format version";
+        setStatus(
+          `That progress file uses ${named}, which this guide cannot read, ` +
+            "so nothing was changed.",
+          true
+        );
+        return false;
+      }
+      const state = validateState(payload.state);
+      if (!state) {
+        setStatus("That progress file holds no readable progress, so nothing was changed.", true);
+        return false;
+      }
+      const fileCourse = typeof payload.course_id === "string" ? payload.course_id : "";
+      if (fileCourse !== courseId) {
+        const named = fileCourse ? `"${fileCourse}"` : "another course";
+        if (
+          !window.confirm(
+            `That progress file was saved from ${named}, not this course. Apply it here anyway?`
+          )
+        ) {
+          setStatus("Restore cancelled. Your progress is unchanged.");
+          return false;
+        }
+      }
+      setStatus("Progress restored from the file you chose.");
+      Restore.adopt(state);
+      return true;
+    }
+
+    function readChosenFile(input) {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      try {
+        const reader = new FileReader();
+        reader.onerror = () => {
+          input.value = "";
+          setStatus("That file could not be read.", true);
+        };
+        reader.onload = () => {
+          applyText(typeof reader.result === "string" ? reader.result : "");
+          // Clear the picker so choosing the same file again still fires.
+          input.value = "";
+        };
+        reader.readAsText(file);
+      } catch (_error) {
+        input.value = "";
+        setStatus("That file could not be read.", true);
+      }
+    }
+
+    function init(course, schema) {
+      courseId = course;
+      schemaVersion = schema;
+      const downloadBtn = qs('[data-role="download-progress"]');
+      const restoreBtn = qs('[data-role="restore-progress"]');
+      const input = qs('[data-role="progress-file-input"]');
+      if (downloadBtn) downloadBtn.addEventListener("click", download);
+      if (restoreBtn && input) {
+        restoreBtn.addEventListener("click", () => {
+          try {
+            input.value = "";
+            input.click();
+          } catch (_error) {
+            setStatus("This browser would not open a file picker here.", true);
+          }
+        });
+      }
+      if (input) input.addEventListener("change", () => readChosenFile(input));
+    }
+
+    return { init };
+  })();
+
+  // ---------------------------------------------------------------------
+  // Progress carried over from a previous export of the same course
+  // ---------------------------------------------------------------------
+
+  const Migration = (() => {
+    // Re-exporting after any content change gives the guide a new content
+    // hash, so the learner's progress stays behind under the previous key.
+    // This offers it -- never imposes it -- and never removes the old key:
+    // the older exported file may still be in use somewhere.
+    function candidates(courseId, hash, schemaVersion) {
+      const prefix = `${STORAGE_NS}:guide:${courseId}:`;
+      const suffix = `:v${schemaMajor(schemaVersion)}`;
+      const currentKey = storageKey(courseId, hash, schemaVersion);
+      const found = [];
+      Persistence.keys().forEach((key) => {
+        if (key === currentKey || !key.startsWith(prefix) || !key.endsWith(suffix)) return;
+        const otherHash = key.slice(prefix.length, key.length - suffix.length);
+        // Exactly one segment between course id and schema: anything else is
+        // some other product's key that happens to share the prefix.
+        if (!otherHash || otherHash.indexOf(":") !== -1) return;
+        const state = Persistence.read(key);
+        if (state) found.push(state);
+      });
+      return found;
+    }
+
+    function newest(list) {
+      return list.reduce((winner, entry) => {
+        if (!winner) return entry;
+        const at = Number.isFinite(entry.state.updatedAt) ? entry.state.updatedAt : 0;
+        const winnerAt = Number.isFinite(winner.state.updatedAt) ? winner.state.updatedAt : 0;
+        if (at !== winnerAt) return at > winnerAt ? entry : winner;
+        // Same timestamp (or neither has one): prefer the fuller offer.
+        return entry.transferable.completedSections.length >
+          winner.transferable.completedSections.length
+          ? entry
+          : winner;
+      }, null);
+    }
+
+    // Recency alone is the wrong test: merely opening an older export
+    // re-stamps its record with a fresh timestamp and no progress, so the
+    // emptiest record would win and the offer would be abandoned while a
+    // record with real progress sat right next to it. Rank only the records
+    // that still have something to give this version of the course.
+    function transferable(states) {
+      const out = [];
+      states.forEach((state) => {
+        const filtered = Restore.filterToDocument(state);
+        if (hasProgress(filtered)) out.push({ state, transferable: filtered });
+      });
+      return out;
+    }
+
+    function hasProgress(state) {
+      return state.completedSections.length > 0 || Object.keys(state.interactions).length > 0;
+    }
+
+    function describe(state) {
+      const sections = state.completedSections.length;
+      const answers = Object.keys(state.interactions).length;
+      return (
+        `It records ${sections} completed section${sections === 1 ? "" : "s"} and ` +
+        `${answers} saved interaction${answers === 1 ? "" : "s"} that still fit this version.`
+      );
+    }
+
+    // The offer stands until the learner answers it. Booting this export
+    // records a last section and a theme, so "has this export been used yet"
+    // cannot be read from the mere existence of a stored record -- it is read
+    // from real progress (a completed section or a saved interaction) plus an
+    // explicit decision flag. A learner who opens the replacement file, does
+    // nothing, and closes it still gets the offer next time.
+    function shouldOffer(current) {
+      return !current.migrationDecided && !hasProgress(current);
+    }
+
+    function offer(courseId, hash, schemaVersion) {
+      try {
+        const banner = qs('[data-role="progress-migration"]');
+        if (!banner || !shouldOffer(State.get())) return false;
+        // Only records with something left to carry over are candidates at
+        // all, so a banner announcing nothing can never be raised.
+        const winner = newest(transferable(candidates(courseId, hash, schemaVersion)));
+        if (!winner) return false;
+
+        const detail = qs('[data-role="progress-migration-detail"]', banner);
+        if (detail) detail.textContent = describe(winner.transferable);
+        const resume = qs('[data-role="resume-progress"]', banner);
+        const dismiss = qs('[data-role="dismiss-progress"]', banner);
+        if (resume) {
+          resume.addEventListener("click", () => {
+            banner.hidden = true;
+            try {
+              Restore.adopt(winner.state, { decided: true });
+            } catch (_error) {
+              /* the guide keeps working with the progress it already had */
+            }
+          });
+        }
+        if (dismiss) {
+          dismiss.addEventListener("click", () => {
+            banner.hidden = true;
+            // Records the decision alongside this export's own (empty)
+            // record, so the offer does not come back on the next load.
+            // Where storage refuses the write the flag cannot persist, but
+            // neither can any candidate be found there (the same storage is
+            // unreadable), so nothing loops: the banner is simply gone for
+            // this viewing.
+            State.markMigrationDecided();
+          });
+        }
+        banner.hidden = false;
+        return true;
+      } catch (_error) {
+        // A guide that cannot offer earlier progress is still a whole guide.
+        return false;
+      }
+    }
+
+    return { offer };
+  })();
+
+  // ---------------------------------------------------------------------
+  // Course controls: theme, progress reset, progress files, nav drawer
   // ---------------------------------------------------------------------
 
   function applyTheme(pref) {
@@ -786,7 +1280,7 @@
     else delete root.dataset.theme;
   }
 
-  function enhanceCourseControls() {
+  function enhanceCourseControls(guide) {
     const select = qs('[data-role="theme-select"]');
     if (select) {
       select.value = State.get().theme || "system";
@@ -810,6 +1304,7 @@
         window.location.reload();
       });
     }
+    ProgressFile.init(guide.course.id, guide.schema_version);
     const navToggle = qs('[data-role="nav-toggle"]');
     if (navToggle) navToggle.addEventListener("click", () => Nav.toggleDrawer());
   }
@@ -844,11 +1339,14 @@
       State.init(key, loaded || undefined);
 
       document.documentElement.classList.add("js-enhanced");
-      enhanceCourseControls();
+      enhanceCourseControls(guide);
       enhanceBlocks();
       Nav.boot();
       installPreviewEvidenceBridge(guide);
       Progress.update();
+      // Stands on every load until the learner answers it or genuinely starts
+      // this export; Migration.offer decides from the stored record itself.
+      Migration.offer(guide.course.id, hash, guide.schema_version);
     } catch (error) {
       shell.hidden = true;
       status.hidden = false;

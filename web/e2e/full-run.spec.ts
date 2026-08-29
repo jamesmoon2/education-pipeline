@@ -56,7 +56,7 @@ test("full write flow: import → advance/paste/approve ×5 → finalize → exp
     await page.getByRole("button", { name: "Paste response…" }).click();
     await page.getByLabel(`Response for ${stage}`).fill(`${stage} response body`);
     await page.getByRole("button", { name: "Save response" }).click();
-    await page.getByRole("button", { name: `Approve ${stage}` }).click();
+    await page.getByRole("button", { name: `Approve ${stage} only`, exact: true }).click();
   }
 
   await page.getByRole("button", { name: "Finalize", exact: true }).click();
@@ -100,26 +100,26 @@ test("guide-v1 fixture reaches validation, finalize, export, and mixed-workspace
     await page.getByRole("button", { name: "Paste response…" }).click();
     await page.getByLabel(`Response for ${stage}`).fill(response);
     await page.getByRole("button", { name: "Save response" }).click();
-    await page.getByRole("button", { name: `Approve ${stage}` }).click();
+    await page.getByRole("button", { name: `Approve ${stage} only`, exact: true }).click();
   }
   await page.getByRole("button", { name: "Run draft validation" }).click();
   await page.getByRole("button", { name: "Advance" }).click();
   await page.getByRole("button", { name: "Paste response…" }).click();
   await page.getByLabel("Response for qa").fill("# QA\n\nNo blocking issues.");
   await page.getByRole("button", { name: "Save response" }).click();
-  await page.getByRole("button", { name: "Approve qa" }).click();
+  await page.getByRole("button", { name: "Approve qa only", exact: true }).click();
   await page.getByRole("button", { name: "Advance" }).click();
   await page.getByRole("button", { name: "Paste response…" }).click();
   await page
     .getByLabel("Response for factcheck")
     .fill("# Fact-Check Report\n\n## Verdict\npass — no material factual errors.\n\n## Findings\n(none)\n");
   await page.getByRole("button", { name: "Save response" }).click();
-  await page.getByRole("button", { name: "Approve factcheck" }).click();
+  await page.getByRole("button", { name: "Approve factcheck only", exact: true }).click();
   await page.getByRole("button", { name: "Advance" }).click();
   await page.getByRole("button", { name: "Paste response…" }).click();
   await page.getByLabel("Response for repair").fill(fixture);
   await page.getByRole("button", { name: "Save response" }).click();
-  await page.getByRole("button", { name: "Approve repair" }).click();
+  await page.getByRole("button", { name: "Approve repair only", exact: true }).click();
   await page.getByRole("button", { name: "Run final validation" }).click();
   await page.getByRole("button", { name: "Finalize", exact: true }).click();
   await page.getByRole("button", { name: "Export", exact: true }).click();

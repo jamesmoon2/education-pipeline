@@ -205,17 +205,19 @@ test("mixed-provider run configured entirely in the cockpit", async ({ page }) =
       await page.getByRole("button", { name: "Advance" }).click();
     }
     await page.getByRole("button", { name: "Run with provider" }).click();
-    await expect(page.getByRole("button", { name: `Approve ${stage}` })).toBeVisible({
+    await expect(
+      page.getByRole("button", { name: `Approve ${stage} only`, exact: true }),
+    ).toBeVisible({
       timeout: 20_000,
     });
-    await page.getByRole("button", { name: `Approve ${stage}` }).click();
+    await page.getByRole("button", { name: `Approve ${stage} only`, exact: true }).click();
   }
 
   await page.getByRole("button", { name: "Advance" }).click();
   await page.getByRole("button", { name: "Paste response…" }).click();
   await page.getByLabel("Response for qa").fill("qa response body");
   await page.getByRole("button", { name: "Save response" }).click();
-  await page.getByRole("button", { name: "Approve qa" }).click();
+  await page.getByRole("button", { name: "Approve qa only", exact: true }).click();
 
   // Step 5: each completed stage shows the expected provenance line,
   // including "(override)" on draft and "manual" on qa.

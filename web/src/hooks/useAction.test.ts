@@ -43,6 +43,58 @@ describe("useAction", () => {
     expect(result.current.feedback).toBe("Approved.");
   });
 
+  it("builds the message from the value the action resolved with", async () => {
+    const { result } = renderHook(() => useAction());
+    await act(() =>
+      result.current.run(() => Promise.resolve({ started: "qa" }), {
+        successMessage: (value) => `Started ${value.started}.`,
+      }),
+    );
+    expect(result.current.feedback).toBe("Started qa.");
+    expect(result.current.isError).toBe(false);
+  });
+
+  it("builds the message from the overwrite retry's value", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { result } = renderHook(() => useAction());
+    await act(() =>
+      result.current.run(
+        () => Promise.reject(new ApiRequestError(409, "already_exists", "already approved")),
+        {
+          retryWithOverwrite: () => Promise.resolve({ started: "qa" }),
+          successMessage: (value) => `Started ${value.started}.`,
+        },
+      ),
+    );
+    expect(result.current.feedback).toBe("Started qa.");
+  });
+
+  it("shows the error tone for a resolved-but-partial outcome, and still reports success", async () => {
+    const onSuccess = vi.fn();
+    const { result } = renderHook(() => useAction(onSuccess));
+    await act(() =>
+      result.current.run(() => Promise.resolve({ failed: true }), {
+        successMessage: () => "Approved draft, but starting qa failed: offline",
+        errorTone: (value) => value.failed,
+      }),
+    );
+    expect(result.current.isError).toBe(true);
+    expect(result.current.feedback).toBe("Approved draft, but starting qa failed: offline");
+    // The approval itself landed, so the caller still refreshes.
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the success tone when the outcome is complete", async () => {
+    const { result } = renderHook(() => useAction());
+    await act(() =>
+      result.current.run(() => Promise.resolve({ failed: false }), {
+        successMessage: () => "Approved draft — started qa with codex.",
+        errorTone: (value) => value.failed,
+      }),
+    );
+    expect(result.current.isError).toBe(false);
+  });
+
   it("does not retry when the confirm is declined", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
     const retry = vi.fn();

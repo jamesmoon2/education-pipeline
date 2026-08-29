@@ -150,7 +150,7 @@ async function pasteAndApprove(page: Page, stage: string, response: string) {
   await page.getByRole("button", { name: "Paste response…", exact: true }).click();
   await page.getByLabel(`Response for ${stage}`, { exact: true }).fill(response);
   await page.getByRole("button", { name: "Save response", exact: true }).click();
-  await page.getByRole("button", { name: `Approve ${stage}`, exact: true }).click();
+  await page.getByRole("button", { name: `Approve ${stage} only`, exact: true }).click();
 }
 
 async function importTopic(page: Page, id: string, title: string) {
@@ -273,7 +273,7 @@ test("personalization milestone: private profile through safe audited export", a
   await page.getByRole("button", { name: "Paste response…", exact: true }).click();
   await page.getByLabel("Response for spec", { exact: true }).fill(SPEC);
   await page.getByRole("button", { name: "Save response", exact: true }).click();
-  await page.getByRole("button", { name: "Approve spec", exact: true }).click();
+  await page.getByRole("button", { name: "Approve spec only", exact: true }).click();
   await pasteAndApprove(page, "outline", OUTLINE);
   await pasteAndApprove(page, "draft", SAFE_GUIDE);
   await page.getByRole("button", { name: "Run draft validation", exact: true }).click();

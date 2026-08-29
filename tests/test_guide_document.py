@@ -111,9 +111,54 @@ def test_interactive_scaffolding_present_for_each_block_type() -> None:
     assert 'data-role="mark-complete"' in document and 'data-role="section-status"' in document
     assert 'data-role="theme-select"' in document and 'data-role="reset-progress"' in document
     assert 'data-role="storage-notice"' in document and 'data-role="nav-announcement"' in document
+    # Progress portability controls sit with the other course controls.
+    assert 'data-role="download-progress"' in document and 'data-role="restore-progress"' in document
+    assert 'data-role="progress-file-input"' in document and 'data-role="progress-file-status"' in document
+    # Carry-over offer for progress stored by a previous export.
+    assert 'data-role="progress-migration"' in document and 'data-role="progress-migration-detail"' in document
+    assert 'data-role="resume-progress"' in document and 'data-role="dismiss-progress"' in document
     for block_type in ("knowledge_check", "worked_reveal", "scenario", "reflection"):
         assert f'class="block {block_type}" id=' in document
     assert len(re.findall(r'class="block \w+" id="[a-z0-9-]+" data-interactive="true"', document)) == 5
+
+
+def test_progress_migration_banner_is_present_and_hidden_until_the_runtime_offers_it() -> None:
+    """The banner ships in every document but must never show itself: the
+    runtime reveals it only when it actually found a previous export's
+    progress, so a no-JS reader is never told about an offer it cannot make."""
+    document = assemble_guide_document(guide())
+
+    banner = re.search(
+        r'<div class="progress-migration".*?</div></div>', document, re.DOTALL
+    ).group(0)
+    assert 'data-role="progress-migration"' in banner
+    assert 'role="status"' in banner and 'aria-live="polite"' in banner
+    assert 'aria-live="polite" hidden>' in banner
+    assert "You have progress from a previous version of this course." in banner
+    assert '<span data-role="progress-migration-detail"></span>' in banner
+    assert '<button type="button" data-role="resume-progress">Resume that progress</button>' in banner
+    assert '<button type="button" data-role="dismiss-progress">Start fresh</button>' in banner
+    # It is part of the shell, so it can never precede the loading status.
+    assert document.index("data-guide-shell hidden") < document.index(
+        '<div class="progress-migration"'
+    )
+
+
+def test_progress_file_controls_are_named_and_the_picker_is_hidden() -> None:
+    document = assemble_guide_document(guide())
+
+    controls = re.search(
+        r'<div class="course-controls".*?</div>', document, re.DOTALL
+    ).group(0)
+    assert '<button type="button" data-role="download-progress">Download progress</button>' in controls
+    assert '<button type="button" data-role="restore-progress">Restore progress…</button>' in controls
+    # The picker itself is opened by the button, so it stays out of the tab
+    # order and the accessibility tree -- but it is still named for anything
+    # that surfaces it anyway.
+    picker = re.search(r'<input class="progress-file-input"[^>]*>', controls).group(0)
+    assert 'type="file"' in picker and 'accept="application/json"' in picker
+    assert 'aria-label="Progress file to restore"' in picker and picker.endswith("hidden>")
+    assert 'data-role="progress-file-status"' in controls and 'role="status"' in controls
 
 
 def test_print_visible_content_survives_progressive_disclosure_markup() -> None:
