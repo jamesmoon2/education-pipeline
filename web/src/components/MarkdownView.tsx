@@ -1,4 +1,4 @@
-import { createElement, Fragment, type ReactNode } from "react";
+import { createElement, Fragment, memo, type ReactNode } from "react";
 import {
   parseMarkdown,
   type InlineNode,

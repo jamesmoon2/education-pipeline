@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 import math
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any
 import tomllib
 
 from education_pipeline.config import ConfigError
+from education_pipeline.text_scalars import has_surrogates
 
 
 PROFILE_SCHEMA_VERSION = 1
@@ -507,6 +509,6 @@ def _validate_metadata_value(value: Any, path: str) -> Any:
 
 
 def _validate_unicode_scalar(value: str, path: str) -> str:
-    if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+    if has_surrogates(value):
         raise ConfigError(f"learner profile field '{path}' must contain Unicode scalar values")
     return value

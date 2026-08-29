@@ -684,3 +684,57 @@ def test_example_plan_has_no_weak_stage_warnings() -> None:
             provider=stage.provider or plan.provider,
         )
         assert weak_stage_warning(catalog, effective) is None, stage_name
+
+
+# ---------------------------------------------------------------------------
+# ``Mapping`` is both an annotation and an ``isinstance`` target here, so the
+# import source must not change which catalogs parse.
+
+
+def test_parse_model_catalog_accepts_every_registered_mapping_type() -> None:
+    from collections import ChainMap, OrderedDict, UserDict
+    from types import MappingProxyType
+
+    provider = {
+        "id": "claude-code",
+        "models": [{"id": "model-a", "label": "Model A"}],
+    }
+    source = {"providers": [provider]}
+    variants = [
+        source,
+        MappingProxyType(source),
+        OrderedDict(source),
+        ChainMap(source),
+        UserDict(source),
+    ]
+
+    parsed = [parse_model_catalog(variant) for variant in variants]
+
+    assert all(set(item.providers) == {"claude-code"} for item in parsed)
+
+
+def test_parse_model_catalog_accepts_mapping_typed_provider_entries() -> None:
+    from types import MappingProxyType
+
+    catalog = parse_model_catalog(
+        {
+            "providers": [
+                MappingProxyType(
+                    {
+                        "id": "claude-code",
+                        "models": [MappingProxyType({"id": "model-a", "label": "A"})],
+                    }
+                )
+            ]
+        }
+    )
+
+    assert set(catalog.providers["claude-code"].models) == {"model-a"}
+
+
+@pytest.mark.parametrize("value", [None, "id = 1", 7, ["providers"]])
+def test_parse_model_catalog_rejects_provider_entries_that_are_not_tables(
+    value: object,
+) -> None:
+    with pytest.raises(ConfigError, match="must be a table"):
+        parse_model_catalog({"providers": [value]})

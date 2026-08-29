@@ -771,3 +771,61 @@ def test_privacy_operations_reject_lone_surrogates_before_fingerprinting(
         operation(profile)  # type: ignore[operator]
 
     assert not isinstance(exc_info.value.__cause__, UnicodeEncodeError)
+
+
+# ---------------------------------------------------------------------------
+# ``Mapping`` is used both as an annotation and as an ``isinstance`` target.
+# Importing it from ``collections.abc`` rather than ``typing`` must keep both
+# roles working: every registered mapping type is accepted, non-mappings are
+# refused with the same ConfigError.
+
+
+def test_parse_learner_profile_accepts_every_registered_mapping_type() -> None:
+    from collections import ChainMap, OrderedDict, UserDict
+    from types import MappingProxyType
+
+    source = {"id": "mapping-kinds", "target_learner": "cohort"}
+    variants = [
+        source,
+        MappingProxyType(source),
+        OrderedDict(source),
+        ChainMap(source),
+        UserDict(source),
+    ]
+
+    parsed = [parse_learner_profile(variant) for variant in variants]
+
+    assert all(item == parsed[0] for item in parsed)
+
+
+@pytest.mark.parametrize("value", [None, [], "id = 1", 7, ("id", "x")])
+def test_parse_learner_profile_rejects_non_mappings(value: object) -> None:
+    with pytest.raises(ConfigError, match="table"):
+        parse_learner_profile(value)  # type: ignore[arg-type]
+
+
+def test_profile_metadata_accepts_a_custom_mapping_subclass() -> None:
+    from collections.abc import Mapping as AbcMapping
+
+    class LazyTable(AbcMapping):
+        def __init__(self, data: dict) -> None:
+            self._data = data
+
+        def __getitem__(self, key):
+            return self._data[key]
+
+        def __iter__(self):
+            return iter(self._data)
+
+        def __len__(self) -> int:
+            return len(self._data)
+
+    profile = parse_learner_profile(
+        {
+            "id": "custom-mapping",
+            "target_learner": "cohort",
+            "metadata": LazyTable({"cohort": LazyTable({"nested": "value"})}),
+        }
+    )
+
+    assert profile.metadata["cohort"]["nested"] == "value"

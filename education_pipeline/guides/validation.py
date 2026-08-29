@@ -9,6 +9,11 @@ import re
 from typing import Iterable
 
 from education_pipeline.privacy import normalize_private_value, private_value_fingerprint
+from education_pipeline.text_scalars import (
+    SURROGATE_REPLACEMENT,
+    has_surrogates,
+    replace_surrogates,
+)
 
 from .canonical import guide_sha256
 from .model import Callout, Guide, KnowledgeCheck, RichText, Scenario, WorkedReveal

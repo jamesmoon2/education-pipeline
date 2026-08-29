@@ -6,6 +6,7 @@ profile store, editor surfaces, and guide privacy validation.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from enum import StrEnum
 import hashlib
@@ -13,11 +14,12 @@ import json
 import math
 import re
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping
+from typing import Any
 import unicodedata
 
 from education_pipeline.config import ConfigError
 from education_pipeline.profiles import LearnerProfile, parse_learner_profile
+from education_pipeline.text_scalars import has_surrogates
 
 
 class SensitivityTier(StrEnum):
@@ -317,5 +319,5 @@ def _toml_string(value: str, path: str) -> str:
 
 
 def _require_unicode_scalar(value: str, context: str) -> None:
-    if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+    if has_surrogates(value):
         raise ConfigError(f"{context} must contain Unicode scalar values")

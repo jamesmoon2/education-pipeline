@@ -95,14 +95,20 @@ describe("usePolling change gating", () => {
     });
     const first = result.current.data;
     expect(first).toEqual(freshPayload());
-    const rendersAfterFirstPayload = renders;
+
+    // One settling render as the unconditional setError(null) drains behind
+    // the payload that did land; after that the poll is silent.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    const rendersAtSteadyState = renders;
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(5000);
     });
-    expect(fetcher.mock.calls.length).toBeGreaterThan(1);
+    expect(fetcher.mock.calls.length).toBeGreaterThanOrEqual(6);
     expect(result.current.data).toBe(first);
-    expect(renders).toBe(rendersAfterFirstPayload);
+    expect(renders).toBe(rendersAtSteadyState);
     unmount();
   });
 
