@@ -90,7 +90,7 @@ async function pasteAndApprove(page: Page, stage: string, response: string) {
   await page.getByRole("button", { name: "Paste response…" }).click();
   await page.getByLabel(`Response for ${stage}`).fill(response);
   await page.getByRole("button", { name: "Save response" }).click();
-  await page.getByRole("button", { name: `Approve ${stage}` }).click();
+  await page.getByRole("button", { name: `Approve ${stage} only`, exact: true }).click();
 }
 
 test.beforeAll(async () => {

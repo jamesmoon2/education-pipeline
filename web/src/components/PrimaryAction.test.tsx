@@ -192,9 +192,9 @@ describe("PrimaryAction", () => {
     expect(postApprove).toHaveBeenCalledWith("t", "draft");
     expect(postAdvance).toHaveBeenCalledWith("t");
     expect(enqueueJob).toHaveBeenCalledWith("t");
-    expect(
-      await screen.findByText("Approved draft — started qa with claude-code."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Approved draft — started qa with claude-code.")).toHaveClass(
+      "success",
+    );
     expect(onChanged).toHaveBeenCalled();
   });
 
@@ -235,11 +235,27 @@ describe("PrimaryAction", () => {
     renderAction(makeStatus("approve", "draft"));
 
     await userEvent.click(screen.getByRole("button", { name: "Approve draft & continue" }));
+    // The approval landed, but a failed follow-up must not read as a plain
+    // success: the line carries the error tone.
     expect(
       await screen.findByText(
         "Approved draft, but writing the qa prompt failed: job j1 is running for topic 't'",
       ),
-    ).toBeInTheDocument();
+    ).toHaveClass("error");
+  });
+
+  it("keeps the success tone for a stage left to the manual loop", async () => {
+    vi.mocked(postApprove).mockResolvedValue({} as never);
+    vi.mocked(getRunStatus).mockResolvedValue(makeStatus("save_response", "qa"));
+    vi.mocked(getConfigPlan).mockRejectedValue(new Error("plan unreadable"));
+    renderAction(makeStatus("approve", "draft"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Approve draft & continue" }));
+    expect(
+      await screen.findByText(
+        "Approved draft — the qa prompt is ready, but the model plan could not be read, so start the stage yourself.",
+      ),
+    ).toHaveClass("success");
   });
 
   it("labels a re-approval when the stage already has an approved copy", async () => {

@@ -129,6 +129,7 @@ export default function PrimaryAction({
                     return continueRun(topicId);
                   },
                   successMessage: (result) => continueFeedback(stage, result),
+                  errorTone: continueFailed,
                 },
               )
             }

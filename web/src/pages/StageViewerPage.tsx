@@ -18,7 +18,7 @@ import ResponseForm from "../components/ResponseForm";
 import StageContentView from "../components/StageContentView";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
-import { continueFeedback, continueRun } from "../lib/continueRun";
+import { continueFailed, continueFeedback, continueRun } from "../lib/continueRun";
 import ErrorNotice from "../components/ErrorNotice";
 
 const TABS = ["prompt", "response", "approved"] as const;
@@ -240,6 +240,7 @@ function StageViewerForRoute({
                     return continueRun(topicId);
                   },
                   successMessage: (result) => continueFeedback(data.stage, result),
+                  errorTone: continueFailed,
                 },
               )
             }

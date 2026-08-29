@@ -39,6 +39,7 @@ import {
   getRepairModules,
   getRunStatus,
   getStageContent,
+  postAdvance,
   postApprove,
   postResponse,
   putResponse,
@@ -316,9 +317,38 @@ describe("StageViewerPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Approve & continue" }));
     expect(postApprove).toHaveBeenCalledWith("t", "draft");
     expect(enqueueJob).toHaveBeenCalledWith("t");
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      "Approved draft — started qa with claude-code.",
+    const feedback = await screen.findByRole("status");
+    expect(feedback).toHaveTextContent("Approved draft — started qa with claude-code.");
+    expect(feedback).toHaveClass("success");
+  });
+
+  it("announces a failed follow-up as an alert while reporting the approval", async () => {
+    let next: Pick<NextAction, "action" | "stage"> = { action: "approve", stage: "draft" };
+    vi.mocked(getRunStatus).mockImplementation(async () => makeRunStatus(next));
+    vi.mocked(postApprove).mockImplementation(async () => {
+      next = { action: "write_prompt", stage: "qa" };
+      return {} as never;
+    });
+    vi.mocked(postAdvance).mockRejectedValue(
+      new ApiRequestError(409, "job_active", "job j1 is running for topic 't'"),
     );
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "draft",
+      prompt: "# prompt",
+      response: "response body",
+      approved: null,
+      response_sha256: "sha-1",
+      content_type: "text/markdown",
+    });
+    renderAt("/topics/t/stages/draft");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve & continue" }));
+    const feedback = await screen.findByRole("alert");
+    expect(feedback).toHaveTextContent(
+      "Approved draft, but writing the qa prompt failed: job j1 is running for topic 't'",
+    );
+    expect(feedback).toHaveClass("error");
   });
 
   it("offers only the plain approve button when the run's next action is elsewhere", async () => {
