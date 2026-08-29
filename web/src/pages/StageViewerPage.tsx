@@ -9,6 +9,7 @@ import {
   getStageContent,
   postApprove,
 } from "../api/client";
+import CopyPromptButton from "../components/CopyPromptButton";
 import DiffView from "../components/DiffView";
 import InfoTip from "../components/InfoTip";
 import ModuleRepairControl from "../components/ModuleRepairControl";
@@ -76,6 +77,10 @@ function StageViewerForRoute({
   const [compare, setCompare] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [draftApproved, setDraftApproved] = useState<string | null>(null);
+  // An explicit hide of the "what changed" delta is sticky for this visit to
+  // the stage (the route key remounts per stage): polling replaces `data`
+  // every 5s and must neither reopen nor close the section.
+  const [deltaHidden, setDeltaHidden] = useState(false);
   const approve = useAction(refresh);
   const rerun = useAction(refresh);
 
@@ -97,10 +102,23 @@ function StageViewerForRoute({
 
   const finalized = run ? run.finalized : true; // hide Edit until status loads
   const isAudit = data.stage === "audit";
+  const prompt = data.prompt;
   const canEdit = data.response !== null && (!finalized || isAudit);
   const needsApproval =
     data.response !== null &&
     (data.approved === null || data.approved !== data.response);
+  // Pending re-approval: an approved copy exists and the response drifted
+  // from it (edit or provider rerun). Show the delta the approval decides on.
+  // Not for module-scoped repairs: there the response is one module while
+  // approval splices it into the whole guide, so the strings differ by
+  // construction and a raw delta would show the guide replaced by a module.
+  const approvalDelta =
+    data.response !== null &&
+    data.approved !== null &&
+    data.response !== data.approved &&
+    !data.repair_scope?.module_id
+      ? { a: data.approved, b: data.response }
+      : null;
   const showEditor = editing && canEdit && tab === "response";
 
   const toggleDiff = async () => {
@@ -158,8 +176,16 @@ function StageViewerForRoute({
             {diffOpen ? "Hide diff" : "Diff against draft"}
           </button>
         )}
+        {approvalDelta && (
+          <button onClick={() => setDeltaHidden((hidden) => !hidden)}>
+            {deltaHidden ? "What changed since last approval" : "Hide what changed"}
+          </button>
+        )}
       </div>
       <div className="stage-actions" role="toolbar" aria-label="Stage actions">
+        {prompt !== null && (
+          <CopyPromptButton getText={() => Promise.resolve(prompt)} />
+        )}
         {tab === "response" && canEdit && !editing && (
           <button onClick={() => setEditing(true)}>Edit</button>
         )}
@@ -260,6 +286,15 @@ function StageViewerForRoute({
         >
           {approve.feedback}
         </p>
+      )}
+      {approvalDelta && !deltaHidden && (
+        <section
+          className="approval-delta"
+          aria-label="What changed since last approval"
+        >
+          <h3>What changed since last approval</h3>
+          <DiffView a={approvalDelta.a} b={approvalDelta.b} />
+        </section>
       )}
       {showEditor ? (
         <ResponseEditor

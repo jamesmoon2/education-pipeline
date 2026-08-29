@@ -1259,3 +1259,28 @@ pre.log { max-height: 20rem; overflow-y: auto; font-size: 0.875rem; }
 @supports (field-sizing: content) {
   .profile-field textarea { field-sizing: content; max-height: 24rem; }
 }
+
+/* Manual-loop copy affordance */
+.manual-loop {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ep-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  vertical-align: middle;
+}
+.manual-loop li { display: inline-flex; align-items: center; gap: var(--ep-space-2); }
+.manual-loop li + li::before { content: "→"; color: var(--ep-color-text-muted); }
+.manual-loop-hint { color: var(--ep-color-text-muted); font-size: 0.875rem; }
+.copy-prompt { display: inline-flex; align-items: center; gap: var(--ep-space-2); }
+.copy-prompt-feedback { font-size: 0.875rem; }
+
+/* --------------------------------- approval delta (appended; do not reorder) */
+/* "What changed since last approval" on a pending re-approval in the stage
+   viewer. Height-capped so the Approve toolbar and warnings above stay in
+   reach even for guide-sized diffs. */
+.approval-delta { margin: var(--ep-space-3) 0; }
+.approval-delta h3 { margin: 0 0 var(--ep-space-1); font-size: 1rem; }
+.approval-delta .diff { max-height: 24rem; overflow-y: auto; margin: 0; }
