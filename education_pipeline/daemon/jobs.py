@@ -26,14 +26,6 @@ from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
 from education_pipeline.providers import get_runner
 from education_pipeline.runs import RunStore, StaleContentError
 
-JOB_STATUSES = (
-    "queued",
-    "running",
-    "succeeded",
-    "failed",
-    "canceled",
-    "interrupted",
-)
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled", "interrupted"})
 
 

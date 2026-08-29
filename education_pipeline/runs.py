@@ -132,8 +132,6 @@ MANIFEST_SCHEMA_VERSION = 1
 RUN_SUBDIRS = ("inputs", "prompts", "responses", "approved", "reports", "final")
 
 _PROMPT_SUFFIX = ".prompt.md"
-_RESPONSE_SUFFIX = ".response.md"
-_STUB_SUFFIX = ".SAVE_RESPONSE_HERE.md"
 
 MARKDOWN_CONTENT_TYPE = "text/markdown"
 JSON_CONTENT_TYPE = "application/json"
@@ -1814,14 +1812,6 @@ class RunStore:
             return ValidationReport.from_dict(payload)
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
             raise ConfigError(f"invalid validation report: {path}") from exc
-
-    def _current_safe_audit_evidence(
-        self, topic_id: str
-    ) -> tuple[tuple[Finding, ...], str | None]:
-        safe_id = _artifact_id(topic_id, "topic id")
-        with self._manifest_write_lock(safe_id):
-            snapshot = self._public_audit_snapshot_locked(safe_id)
-        return snapshot.findings, snapshot.projection_sha256
 
     def _parse_safe_audit_projection(
         self, projection_bytes: bytes

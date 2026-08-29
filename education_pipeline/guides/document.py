@@ -135,7 +135,7 @@ def _all_ids(guide: Guide) -> frozenset[str]:
     return frozenset(ids)
 
 
-def _kc_block(b: object, ids: frozenset[str]) -> str:
+def _kc_block(b: object) -> str:
     input_type = "radio" if b.mode == "single" else "checkbox"
     name = f'kc-input-{html.escape(b.id, quote=True)}'
     choices = "".join(
@@ -184,7 +184,7 @@ def _wr_block(b: object, ids: frozenset[str]) -> str:
     )
 
 
-def _sc_block(b: object, ids: frozenset[str]) -> str:
+def _sc_block(b: object) -> str:
     name = f'sc-input-{html.escape(b.id, quote=True)}'
     choices = "".join(
         f'<li class="choice-item" id="{html.escape(c.id)}">'
@@ -212,7 +212,7 @@ def _sc_block(b: object, ids: frozenset[str]) -> str:
     )
 
 
-def _rf_block(b: object, ids: frozenset[str]) -> str:
+def _rf_block(b: object) -> str:
     label_id = f'{html.escape(b.id, quote=True)}-prompt'
     guidance = f'<p class="guidance">{html.escape(b.guidance)}</p>' if b.guidance else ""
     placeholder = f' placeholder="{html.escape(b.placeholder, quote=True)}"' if b.placeholder else ""
@@ -239,10 +239,10 @@ def _block(block: object, ids: frozenset[str]) -> str:
     elif b.type == "callout": body = (f"<h3>{html.escape(b.title or b.kind.title())}</h3>" + render_guide_markdown(b.markdown, ids))
     elif b.type == "knowledge_check":
         extra = f' data-mode="{html.escape(b.mode, quote=True)}" data-retry="{"true" if b.retry else "false"}"'
-        body = _kc_block(b, ids)
+        body = _kc_block(b)
     elif b.type == "worked_reveal": body = _wr_block(b, ids)
-    elif b.type == "scenario": body = _sc_block(b, ids)
-    elif b.type == "reflection": body = _rf_block(b, ids)
+    elif b.type == "scenario": body = _sc_block(b)
+    elif b.type == "reflection": body = _rf_block(b)
     else: raise GuideDocumentError(f"unsupported block type: {b.type!r}")
     interactive = f' data-interactive="true"' if b.type in _INTERACTIVE_TYPES else ""
     lead = f'<article class="block {html.escape(b.type)}" id="{html.escape(b.id)}"{interactive}{extra}>'

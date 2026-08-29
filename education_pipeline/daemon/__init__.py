@@ -91,15 +91,6 @@ class StaticConfigSource:
         self.held_text = toml_text
 
 
-def load_workspace_config(root: str | Path) -> tuple[ModelCatalog, ModelPlan]:
-    """Load the workspace model catalog + plan, falling back to packaged examples.
-
-    Thin compatibility wrapper around :class:`WorkspaceConfigSource`.
-    """
-
-    return WorkspaceConfigSource(root).load()
-
-
 def serve(
     root: str | Path,
     *,

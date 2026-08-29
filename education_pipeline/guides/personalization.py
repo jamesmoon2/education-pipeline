@@ -75,14 +75,6 @@ class PersonalizationGoalTrace:
     serving_outcome_ids: tuple[str, ...] = ()
     exclusions: tuple[GoalExclusion, ...] = ()
 
-    @property
-    def covered(self) -> bool:
-        """Whether service or a valid explicit exclusion accounts for the goal."""
-
-        return bool(
-            self.serving_module_ids or self.serving_outcome_ids or self.exclusions
-        )
-
 
 @dataclass(frozen=True)
 class AnnotationViolation:
@@ -383,12 +375,6 @@ def canonical_personalization_trace_bytes(trace: PersonalizationTrace) -> bytes:
         separators=(",", ": "),
     )
     return (text + "\n").encode("utf-8")
-
-
-def personalization_trace_sha256(trace: PersonalizationTrace) -> str:
-    """Hash private trace bytes; this value must remain local."""
-
-    return hashlib.sha256(canonical_personalization_trace_bytes(trace)).hexdigest()
 
 
 def safe_personalization_trace_projection(

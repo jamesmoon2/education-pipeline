@@ -348,12 +348,6 @@ export const recommendBlueprints = (
         time_budget_minutes?: number;
       },
 ) => apiPost<BlueprintsPayload>("/v1/blueprints/recommend", body);
-export const getBlueprints = (topicId?: string) =>
-  api<BlueprintsPayload>(
-    topicId
-      ? `/v1/blueprints?topic=${encodeURIComponent(topicId)}`
-      : "/v1/blueprints",
-  );
 export const getRepairModules = (topicId: string) =>
   api<RepairModulesPayload>(
     `/v1/runs/${encodeURIComponent(topicId)}/repair/modules`,
