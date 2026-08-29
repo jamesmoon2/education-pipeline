@@ -76,6 +76,26 @@ class Job:
         return cls(**fields)
 
 
+def _is_path_segment(name: str) -> bool:
+    """True when ``name`` is a single, non-traversing path component.
+
+    Topic and job ids reach the scoped lookups below straight off the HTTP
+    routes (``/v1/jobs/<id>``, ``/v1/jobs?topic=<id>``). Those lookups join an
+    id into a filesystem path, so the id must first be proven to name one
+    child directory and nothing else. Refusing anything else is behaviour
+    preserving: job records are only ever created through
+    ``DaemonContext.enqueue_stage``, which validates the topic against
+    ``RunStore``'s artifact-id pattern first, so no stored record can carry an
+    id that fails this check -- the old workspace-wide scan matched nothing
+    for such ids either.
+    """
+
+    if not name or name in (os.curdir, os.pardir):
+        return False
+    probe = Path(name)
+    return len(probe.parts) == 1 and not probe.is_absolute() and probe.name == name
+
+
 def _read_job_record(path: Path) -> dict:
     # Windows sharing semantics: reading job.json at the moment the worker
     # os.replace()s it fails with PermissionError. The replace is transient,

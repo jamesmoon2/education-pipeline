@@ -3179,6 +3179,85 @@ def test_current_v2_report_stays_current(tmp_path: Path) -> None:
     assert runs.report_state(tid, "final") == "current"
 
 
+# --- guide source digest: content-keyed memo on the cockpit poll path ---
+
+
+def test_report_state_follows_the_approved_guide_edited_in_process(tmp_path: Path) -> None:
+    """The digest memo is content-keyed, so it can never report stale content.
+
+    Polls report_state, mutates the approved guide *in the same process*
+    (exactly what a cached-by-path or cached-by-topic memo would miss), and
+    re-polls. Editing back must return "current" again -- a memo entry from
+    before the edit must neither shadow the new content nor poison the old.
+    """
+
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_finalize_ready(runs, tid)
+    approved = runs.stage_paths(tid, "repair").approved_path
+    original = approved.read_bytes()
+
+    assert runs.report_state(tid, "final") == "current"
+
+    edited = _edit_course_description(
+        original.decode("utf-8"), "Edited out from under the poll loop."
+    )
+    approved.write_bytes(edited.encode("utf-8"))
+    assert runs.report_state(tid, "final") == "stale"
+
+    approved.write_bytes(original)
+    assert runs.report_state(tid, "final") == "current"
+
+
+def test_guide_source_sha_memo_matches_the_unmemoized_derivation(tmp_path: Path) -> None:
+    """Cold and warm calls must both equal the raw validation derivation."""
+
+    from education_pipeline.guides.validation import validation_guide_sha256
+    from education_pipeline.runs import _guide_source_sha
+
+    sources = [
+        GUIDE_FIXTURE,
+        PERSONALIZED_GUIDE_FIXTURE,
+        GUIDE_FIXTURE.replace("Feedback", "Feedback\N{ZERO WIDTH SPACE}"),
+        "not a guide at all",
+        "",
+        json.dumps({"schema_version": 1}),
+    ]
+    for source in sources:
+        expected = validation_guide_sha256(source)
+        assert _guide_source_sha(source) == expected  # cold
+        assert _guide_source_sha(source) == expected  # warm (memo hit)
+    # Distinct sources must not collide onto one another's digests.
+    digests = {source: _guide_source_sha(source) for source in sources}
+    assert len(set(digests.values())) == len(set(sources))
+
+
+def test_guide_source_sha_memo_is_bounded(tmp_path: Path) -> None:
+    """Filling past the bound clears rather than growing without limit."""
+
+    from education_pipeline.guides.validation import validation_guide_sha256
+    from education_pipeline import runs as runs_module
+
+    limit = runs_module._GUIDE_SOURCE_SHA_MEMO_LIMIT
+    with runs_module._GUIDE_SOURCE_SHA_MEMO_LOCK:
+        runs_module._GUIDE_SOURCE_SHA_MEMO.clear()
+    try:
+        sources = [f'{{"schema_version": 1, "n": {n}}}' for n in range(limit * 2 + 3)]
+        for source in sources:
+            assert runs_module._guide_source_sha(source) == validation_guide_sha256(
+                source
+            )
+            assert len(runs_module._GUIDE_SOURCE_SHA_MEMO) <= limit
+        # Every source still hashes correctly after the memo has cycled.
+        for source in sources:
+            assert runs_module._guide_source_sha(source) == validation_guide_sha256(
+                source
+            )
+    finally:
+        with runs_module._GUIDE_SOURCE_SHA_MEMO_LOCK:
+            runs_module._GUIDE_SOURCE_SHA_MEMO.clear()
+
+
 def test_guide_v1_waivable_blocker_waiver_and_staleness(tmp_path: Path) -> None:
     tid = "systems-thinking"
     leak_json = _prompt_leak_guide_json()

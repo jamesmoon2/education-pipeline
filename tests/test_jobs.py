@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 import time
@@ -276,3 +277,193 @@ def test_any_active_for_ignores_terminal_jobs(tmp_path):
     job.status = "succeeded"
     store.save(job)
     assert store.any_active_for("t") is None
+
+
+# --- scoped lookups: id -> path is deterministic, so no workspace-wide scan ---
+
+
+def _seed_workspace(store, topics=("alpha", "beta", "gamma"), per_topic=4):
+    """Save ``per_topic`` jobs per topic with a mix of stages and statuses."""
+
+    stages = ("spec", "outline", "draft", "qa")
+    statuses = ("succeeded", "failed", "queued", "running")
+    saved = []
+    for topic_index, topic_id in enumerate(topics):
+        for index in range(per_topic):
+            job = store.create(
+                topic_id, stages[index % len(stages)], "fake", None, None
+            )
+            job.status = statuses[(topic_index + index) % len(statuses)]
+            store.save(job)
+            saved.append(job)
+    return saved
+
+
+def _scan_equivalents(store, topic_id=None):
+    """The all_jobs()-derived answer the scoped accessors must reproduce."""
+
+    jobs = [j for j in store.all_jobs() if topic_id is None or j.topic_id == topic_id]
+    return sorted(jobs, key=lambda j: j.id, reverse=True)
+
+
+def test_scoped_lookups_match_a_full_workspace_scan(tmp_path):
+    # find/list/active_for/any_active_for read job.json by its deterministic
+    # path instead of scanning the whole runs tree; the answers must stay
+    # byte-for-byte what the old all_jobs() scan produced.
+    store = JobStore(tmp_path)
+    saved = _seed_workspace(store)
+
+    for job in saved:
+        found = store.find(job.id)
+        assert found is not None
+        expected = next(j for j in store.all_jobs() if j.id == job.id)
+        assert found.to_dict() == expected.to_dict()
+
+    assert store.find("nope") is None
+
+    for topic_id in ("alpha", "beta", "gamma"):
+        listed = [j.to_dict() for j in store.list(topic_id)]
+        assert listed == [j.to_dict() for j in _scan_equivalents(store, topic_id)]
+        for stage in ("spec", "outline", "draft", "qa"):
+            active = store.active_for(topic_id, stage)
+            expected = next(
+                (
+                    j
+                    for j in _scan_equivalents(store, topic_id)
+                    if j.stage == stage and j.status not in TERMINAL_STATUSES
+                ),
+                None,
+            )
+            assert (active.to_dict() if active else None) == (
+                expected.to_dict() if expected else None
+            )
+        any_active = store.any_active_for(topic_id)
+        expected_any = next(
+            (
+                j
+                for j in _scan_equivalents(store, topic_id)
+                if j.status not in TERMINAL_STATUSES
+            ),
+            None,
+        )
+        assert (any_active.to_dict() if any_active else None) == (
+            expected_any.to_dict() if expected_any else None
+        )
+
+    # A topic with no jobs at all, and the workspace-wide listing, are unchanged.
+    assert store.list("unknown-topic") == []
+    assert store.any_active_for("unknown-topic") is None
+    assert [j.to_dict() for j in store.list()] == [
+        j.to_dict() for j in _scan_equivalents(store)
+    ]
+
+
+def test_scoped_lookups_read_only_the_records_they_need(tmp_path, monkeypatch):
+    # The point of the scoping: find() and list(topic) sit on the daemon's 1s
+    # log poll and the CLI's 0.25s job poll, under Worker.enqueue's lock.
+    # Neither may parse every job.json in the workspace.
+    from education_pipeline.daemon import jobs as jobs_module
+
+    store = JobStore(tmp_path)
+    saved = _seed_workspace(store, per_topic=5)
+    target = saved[7]
+
+    reads = []
+    real_read = jobs_module._read_job_record
+
+    def counting_read(path):
+        reads.append(path)
+        return real_read(path)
+
+    monkeypatch.setattr(jobs_module, "_read_job_record", counting_read)
+
+    reads.clear()
+    assert store.find(target.id).id == target.id
+    assert len(reads) == 1
+
+    reads.clear()
+    assert store.find("20260101T000000Z-dead") is None
+    assert reads == []
+
+    reads.clear()
+    listed = store.list(target.topic_id)
+    assert len(listed) == 5
+    assert len(reads) == 5
+    assert all(target.topic_id in path.parts for path in reads)
+
+    reads.clear()
+    store.active_for(target.topic_id, "draft")
+    assert all(target.topic_id in path.parts for path in reads)
+
+    # all_jobs() stays the genuinely workspace-wide listing.
+    reads.clear()
+    store.all_jobs()
+    assert len(reads) == 15
+
+
+def test_scoped_lookups_tolerate_missing_directories(tmp_path):
+    store = JobStore(tmp_path)
+    # No runs/ tree at all.
+    assert store.find("20260101T000000Z-aaaa") is None
+    assert store.list("t") == []
+    assert store.active_for("t", "draft") is None
+    assert store.any_active_for("t") is None
+
+    # runs/ exists, but the topic has no jobs/ directory.
+    (tmp_path / "runs" / "t").mkdir(parents=True)
+    assert store.find("20260101T000000Z-aaaa") is None
+    assert store.list("t") == []
+
+    # A job directory that exists but was never saved (create() mkdirs it
+    # before Worker.enqueue writes job.json) must stay invisible.
+    unsaved = store.create("t", "draft", "fake", None, None)
+    assert store.job_dir("t", unsaved.id).is_dir()
+    assert store.find(unsaved.id) is None
+    assert store.list("t") == []
+
+    # A stray file inside jobs/ is not a job directory.
+    (store.runs_dir / "t" / "jobs" / "README.txt").write_text("x", encoding="utf-8")
+    assert store.list("t") == []
+
+    saved = store.create("t", "draft", "fake", None, None)
+    store.save(saved)
+    assert store.find(saved.id).id == saved.id
+    assert [j.id for j in store.list("t")] == [saved.id]
+
+
+def test_scoped_find_skips_a_corrupt_record_in_another_topic(tmp_path):
+    # _read_job_record does not swallow malformed JSON: reading a corrupt
+    # record still raises. Scoping means an unrelated topic's corrupt record
+    # no longer breaks a lookup that never needed to read it.
+    store = JobStore(tmp_path)
+    good = store.create("alpha", "draft", "fake", None, None)
+    store.save(good)
+    bad = store.create("beta", "draft", "fake", None, None)
+    (store.job_dir("beta", bad.id) / "job.json").write_text("{ not json", encoding="utf-8")
+
+    assert store.find(good.id).id == good.id
+    assert [j.id for j in store.list("alpha")] == [good.id]
+
+    # The targeted record's own corruption still surfaces, unchanged.
+    with pytest.raises(json.JSONDecodeError):
+        store.find(bad.id)
+    with pytest.raises(json.JSONDecodeError):
+        store.list("beta")
+    with pytest.raises(json.JSONDecodeError):
+        store.all_jobs()
+
+
+def test_scoped_lookups_refuse_path_escaping_ids(tmp_path):
+    # find()/list() build paths from ids that arrive straight off the HTTP
+    # route (`/v1/jobs/<id>`, `/v1/jobs?topic=<id>`). A separator or ".."
+    # must never be joined into the runs tree.
+    store = JobStore(tmp_path)
+    job = store.create("alpha", "draft", "fake", None, None)
+    store.save(job)
+    (tmp_path / "runs" / "alpha" / "job.json").write_text("{}", encoding="utf-8")
+
+    for hostile in ("..", ".", "", "../..", "alpha/jobs", "/etc/passwd", "a/../b"):
+        assert store.find(hostile) is None
+        assert store.list(hostile) == []
+        assert store.active_for(hostile, "draft") is None
+        assert store.any_active_for(hostile) is None
