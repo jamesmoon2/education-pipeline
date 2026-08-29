@@ -292,9 +292,27 @@ def assemble_guide_document(guide: Guide, assets: RuntimeAssets | None = None, m
         f'<option value="light">Light</option><option value="dark">Dark</option></select>'
         f'</label>'
         f'<button type="button" data-role="reset-progress">Reset progress…</button>'
+        f'<button type="button" data-role="download-progress">Download progress</button>'
+        f'<button type="button" data-role="restore-progress">Restore progress…</button>'
+        f'<input class="progress-file-input" type="file" accept="application/json" '
+        f'data-role="progress-file-input" aria-label="Progress file to restore" hidden>'
         f'<p class="local-data-note">Your progress and reflection notes are stored only in this browser, '
-        f'for this exported file, and never leave your device.</p>'
+        f'for this exported file, and never leave your device. A downloaded progress file is yours to keep '
+        f'and stays on your device too.</p>'
+        f'<p class="progress-file-status" data-role="progress-file-status" role="status" aria-live="polite"></p>'
         f'<p class="storage-notice" data-role="storage-notice" role="status" aria-live="polite" hidden></p>'
+        f'</div>'
+    )
+    # Revealed by the runtime only when progress from a previous export of
+    # this same course is found; the learner chooses, nothing is imposed.
+    migration_banner = (
+        f'<div class="progress-migration" data-role="progress-migration" role="status" aria-live="polite" hidden>'
+        f'<p class="progress-migration-message">You have progress from a previous version of this course. '
+        f'<span data-role="progress-migration-detail"></span></p>'
+        f'<div class="progress-migration-controls">'
+        f'<button type="button" data-role="resume-progress">Resume that progress</button>'
+        f'<button type="button" data-role="dismiss-progress">Start fresh</button>'
+        f'</div>'
         f'</div>'
     )
     header = (
@@ -311,7 +329,7 @@ def assemble_guide_document(guide: Guide, assets: RuntimeAssets | None = None, m
         f'Sections</button>'
         f'<h2>Course navigation</h2><ol id="guide-nav-list">{nav}</ol></nav>'
     )
-    return f'''<!doctype html>\n<html lang="{html.escape(guide.course.language, quote=True)}" data-guide-schema="{guide.schema_version}" data-guide-runtime="{assets.version}" data-guide-mode="{mode}" data-guide-course="{html.escape(guide.course.id, quote=True)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{csp}"><meta name="generator" content="Education Pipeline"><title>{html.escape(guide.course.title)}</title><style>{assets.css}</style></head><body><a class="skip-link" href="#guide-main">Skip to course content</a><div class="live-region visually-hidden" data-role="nav-announcement" role="status" aria-live="polite"></div><div class="error-shell" data-guide-status role="alert">Loading course…</div><div data-guide-shell hidden>{header}{course_controls}<div class="layout">{nav_block}<main id="guide-main">{sections}</main></div><aside class="course-info"><h2>Learning outcomes</h2><ul>{''.join(f'<li id="{html.escape(x.id)}">{html.escape(x.text)}</li>' for x in guide.outcomes)}</ul><h2>Glossary</h2><dl>{glossary}</dl><h2>Sources</h2><ol>{sources}</ol></aside></div><script id="guide-data" type="application/json">{payload}</script><script>{assets.javascript}</script></body></html>\n'''
+    return f'''<!doctype html>\n<html lang="{html.escape(guide.course.language, quote=True)}" data-guide-schema="{guide.schema_version}" data-guide-runtime="{assets.version}" data-guide-mode="{mode}" data-guide-course="{html.escape(guide.course.id, quote=True)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="{csp}"><meta name="generator" content="Education Pipeline"><title>{html.escape(guide.course.title)}</title><style>{assets.css}</style></head><body><a class="skip-link" href="#guide-main">Skip to course content</a><div class="live-region visually-hidden" data-role="nav-announcement" role="status" aria-live="polite"></div><div class="error-shell" data-guide-status role="alert">Loading course…</div><div data-guide-shell hidden>{header}{migration_banner}{course_controls}<div class="layout">{nav_block}<main id="guide-main">{sections}</main></div><aside class="course-info"><h2>Learning outcomes</h2><ul>{''.join(f'<li id="{html.escape(x.id)}">{html.escape(x.text)}</li>' for x in guide.outcomes)}</ul><h2>Glossary</h2><dl>{glossary}</dl><h2>Sources</h2><ol>{sources}</ol></aside></div><script id="guide-data" type="application/json">{payload}</script><script>{assets.javascript}</script></body></html>\n'''
 
 
 __all__ = ["DocumentMode", "GuideDocumentError", "assemble_guide_document", "render_guide_markdown"]

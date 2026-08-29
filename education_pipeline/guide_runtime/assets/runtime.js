@@ -33,10 +33,15 @@
   // ---------------------------------------------------------------------
 
   const STORAGE_NS = "education-pipeline";
+  const PROGRESS_FILE_FORMAT = "education-pipeline.guide-progress";
+  const PROGRESS_FILE_VERSION = 1;
+
+  function schemaMajor(schemaVersion) {
+    return String(schemaVersion).split(".")[0];
+  }
 
   function storageKey(courseId, hash, schemaVersion) {
-    const major = String(schemaVersion).split(".")[0];
-    return `${STORAGE_NS}:guide:${courseId}:${hash}:v${major}`;
+    return `${STORAGE_NS}:guide:${courseId}:${hash}:v${schemaMajor(schemaVersion)}`;
   }
 
   function emptyState() {
@@ -73,6 +78,16 @@
     }
     if (typeof raw.lastSection === "string") out.lastSection = raw.lastSection;
     if (raw.theme === "light" || raw.theme === "dark" || raw.theme === "system") out.theme = raw.theme;
+    // Optional: exports before this field existed stored no timestamp, and a
+    // state without one stays valid -- it only sorts last when choosing which
+    // earlier version's progress to offer. Anything non-finite is dropped
+    // rather than carried forward.
+    if (Number.isFinite(raw.updatedAt)) out.updatedAt = raw.updatedAt;
+    // Optional, and only ever recorded as true: the learner has answered the
+    // carry-over offer for this export (resumed or started fresh), so it must
+    // not be raised again. Absent means "not asked yet", which is what every
+    // older stored state correctly means.
+    if (raw.migrationDecided === true) out.migrationDecided = true;
     return out;
   }
 
@@ -136,7 +151,24 @@
       }
     }
 
-    return { read, write };
+    // Every key currently in storage, for callers that must look beyond their
+    // own. Reading the index is silent about availability: whoever needed the
+    // notice has already tried a real read or write.
+    function keys() {
+      if (!probe()) return [];
+      try {
+        const out = [];
+        for (let i = 0; i < window.localStorage.length; i++) {
+          const key = window.localStorage.key(i);
+          if (typeof key === "string") out.push(key);
+        }
+        return out;
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    return { read, write, keys };
   })();
 
   // ---------------------------------------------------------------------
@@ -151,11 +183,27 @@
       key = storageKeyValue;
       data = loaded || emptyState();
     }
+    // Stamped on every write so a later export can tell which of this
+    // course's stored records is the most recent one to offer.
     function save() {
-      if (key) Persistence.write(key, data);
+      if (!key) return false;
+      data.updatedAt = Date.now();
+      return Persistence.write(key, data);
     }
     function get() {
       return data;
+    }
+    // Replace the whole record (migration or a restored progress file).
+    // Returns whether it reached storage, which decides whether the caller
+    // can safely reload to rebuild the interactive blocks.
+    function adopt(next) {
+      data = next || emptyState();
+      return save();
+    }
+    // The learner has answered the carry-over offer for this export.
+    function markMigrationDecided() {
+      data.migrationDecided = true;
+      return save();
     }
     function setTheme(theme) {
       data.theme = theme;
@@ -185,6 +233,9 @@
     return {
       init,
       get,
+      save,
+      adopt,
+      markMigrationDecided,
       setTheme,
       markSectionComplete,
       setLastSection,
@@ -777,7 +828,286 @@
   }
 
   // ---------------------------------------------------------------------
-  // Course controls: theme, progress reset, nav drawer
+  // Adopting progress recorded elsewhere (an earlier export, or a file)
+  // ---------------------------------------------------------------------
+
+  const Restore = (() => {
+    // Progress that came from another export can name sections and blocks
+    // this document no longer has. Adopting it unfiltered would count ids
+    // nothing here can display, so it is always narrowed to what this exact
+    // guide contains before anything is stored.
+    function filterToDocument(state) {
+      const sectionIds = new Set(qsa('main section[data-role="guide-section"]').map((el) => el.id));
+      const interactionIds = new Set(qsa('[data-interactive="true"]').map((el) => el.id));
+      const out = emptyState();
+      out.theme = state.theme;
+      out.completedSections = state.completedSections.filter((id) => sectionIds.has(id));
+      Object.keys(state.interactions).forEach((id) => {
+        if (interactionIds.has(id)) out.interactions[id] = state.interactions[id];
+      });
+      if (state.lastSection && sectionIds.has(state.lastSection)) out.lastSection = state.lastSection;
+      return out;
+    }
+
+    function refreshTheme(theme) {
+      applyTheme(theme);
+      const select = qs('[data-role="theme-select"]');
+      if (select) select.value = theme || "system";
+    }
+
+    // Reloading is how reset-progress refreshes, and it is the only honest
+    // way to rebuild submitted answers, revealed steps and saved notes: each
+    // block enhancer reads stored state once, at boot, and re-running them
+    // over the live DOM would bind every listener a second time.
+    function adopt(state) {
+      const filtered = filterToDocument(state);
+      if (State.adopt(filtered)) {
+        window.location.reload();
+        return true;
+      }
+      // Storage refused the write, so a reload would throw the adopted
+      // progress away. Keep it for this viewing and refresh what can be
+      // refreshed without re-enhancing the blocks.
+      refreshTheme(filtered.theme);
+      Progress.update();
+      return false;
+    }
+
+    return { adopt, filterToDocument };
+  })();
+
+  // ---------------------------------------------------------------------
+  // Progress files: download the current record, restore a saved one
+  // ---------------------------------------------------------------------
+
+  const ProgressFile = (() => {
+    let courseId = null;
+    let schemaVersion = null;
+
+    function setStatus(message, isError) {
+      try {
+        const el = qs('[data-role="progress-file-status"]');
+        if (!el) return;
+        el.textContent = message;
+        if (isError) el.dataset.state = "error";
+        else delete el.dataset.state;
+      } catch (_error) {
+        /* the status line must never be the thing that breaks */
+      }
+    }
+
+    function download() {
+      try {
+        const payload = {
+          format: PROGRESS_FILE_FORMAT,
+          version: PROGRESS_FILE_VERSION,
+          course_id: courseId,
+          schema_version: schemaVersion,
+          saved_at: new Date().toISOString(),
+          // The in-memory record, so the download still works in browsers
+          // that refuse local storage for this file.
+          state: State.get(),
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2) + "\n"], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${courseId}-progress.json`;
+        // Appended only for the duration of the click: some browsers ignore
+        // a download from an anchor that was never in the document. No paint
+        // happens inside one task, so nothing flashes on screen.
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        // Revoking in the same task can cancel the download the click just
+        // started, so let this one finish first.
+        window.setTimeout(() => {
+          try {
+            URL.revokeObjectURL(url);
+          } catch (_error) {
+            /* already released */
+          }
+        }, 0);
+        setStatus("Progress file downloaded.");
+      } catch (_error) {
+        setStatus("This browser would not save a progress file here.", true);
+      }
+    }
+
+    // Reads one chosen file. Every rejection path ends in a visible message
+    // and leaves the stored progress exactly as it was.
+    function applyText(text) {
+      let payload = null;
+      try {
+        payload = JSON.parse(text);
+      } catch (_error) {
+        payload = null;
+      }
+      if (!isPlainObject(payload) || payload.format !== PROGRESS_FILE_FORMAT) {
+        setStatus(
+          "That is not an Education Pipeline progress file, so nothing was changed.",
+          true
+        );
+        return false;
+      }
+      const state = validateState(payload.state);
+      if (!state) {
+        setStatus("That progress file holds no readable progress, so nothing was changed.", true);
+        return false;
+      }
+      const fileCourse = typeof payload.course_id === "string" ? payload.course_id : "";
+      if (fileCourse !== courseId) {
+        const named = fileCourse ? `"${fileCourse}"` : "another course";
+        if (
+          !window.confirm(
+            `That progress file was saved from ${named}, not this course. Apply it here anyway?`
+          )
+        ) {
+          setStatus("Restore cancelled. Your progress is unchanged.");
+          return false;
+        }
+      }
+      setStatus("Progress restored from the file you chose.");
+      Restore.adopt(state);
+      return true;
+    }
+
+    function readChosenFile(input) {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      try {
+        const reader = new FileReader();
+        reader.onerror = () => {
+          input.value = "";
+          setStatus("That file could not be read.", true);
+        };
+        reader.onload = () => {
+          applyText(typeof reader.result === "string" ? reader.result : "");
+          // Clear the picker so choosing the same file again still fires.
+          input.value = "";
+        };
+        reader.readAsText(file);
+      } catch (_error) {
+        input.value = "";
+        setStatus("That file could not be read.", true);
+      }
+    }
+
+    function init(course, schema) {
+      courseId = course;
+      schemaVersion = schema;
+      const downloadBtn = qs('[data-role="download-progress"]');
+      const restoreBtn = qs('[data-role="restore-progress"]');
+      const input = qs('[data-role="progress-file-input"]');
+      if (downloadBtn) downloadBtn.addEventListener("click", download);
+      if (restoreBtn && input) {
+        restoreBtn.addEventListener("click", () => {
+          try {
+            input.value = "";
+            input.click();
+          } catch (_error) {
+            setStatus("This browser would not open a file picker here.", true);
+          }
+        });
+      }
+      if (input) input.addEventListener("change", () => readChosenFile(input));
+    }
+
+    return { init };
+  })();
+
+  // ---------------------------------------------------------------------
+  // Progress carried over from a previous export of the same course
+  // ---------------------------------------------------------------------
+
+  const Migration = (() => {
+    // Re-exporting after any content change gives the guide a new content
+    // hash, so the learner's progress stays behind under the previous key.
+    // This offers it -- never imposes it -- and never removes the old key:
+    // the older exported file may still be in use somewhere.
+    function candidates(courseId, hash, schemaVersion) {
+      const prefix = `${STORAGE_NS}:guide:${courseId}:`;
+      const suffix = `:v${schemaMajor(schemaVersion)}`;
+      const currentKey = storageKey(courseId, hash, schemaVersion);
+      const found = [];
+      Persistence.keys().forEach((key) => {
+        if (key === currentKey || !key.startsWith(prefix) || !key.endsWith(suffix)) return;
+        const otherHash = key.slice(prefix.length, key.length - suffix.length);
+        // Exactly one segment between course id and schema: anything else is
+        // some other product's key that happens to share the prefix.
+        if (!otherHash || otherHash.indexOf(":") !== -1) return;
+        const state = Persistence.read(key);
+        if (state) found.push({ key, state });
+      });
+      return found;
+    }
+
+    function newest(list) {
+      return list.reduce((winner, entry) => {
+        if (!winner) return entry;
+        const at = Number.isFinite(entry.state.updatedAt) ? entry.state.updatedAt : 0;
+        const winnerAt = Number.isFinite(winner.state.updatedAt) ? winner.state.updatedAt : 0;
+        if (at !== winnerAt) return at > winnerAt ? entry : winner;
+        // Same timestamp (or neither has one): prefer the fuller record.
+        return entry.state.completedSections.length > winner.state.completedSections.length
+          ? entry
+          : winner;
+      }, null);
+    }
+
+    function describe(state) {
+      const sections = state.completedSections.length;
+      const answers = Object.keys(state.interactions).length;
+      return (
+        `It records ${sections} completed section${sections === 1 ? "" : "s"} and ` +
+        `${answers} saved interaction${answers === 1 ? "" : "s"} that still fit this version.`
+      );
+    }
+
+    function offer(courseId, hash, schemaVersion) {
+      try {
+        const banner = qs('[data-role="progress-migration"]');
+        if (!banner) return false;
+        const winner = newest(candidates(courseId, hash, schemaVersion));
+        if (!winner) return false;
+
+        const detail = qs('[data-role="progress-migration-detail"]', banner);
+        if (detail) detail.textContent = describe(Restore.filterToDocument(winner.state));
+        const resume = qs('[data-role="resume-progress"]', banner);
+        const dismiss = qs('[data-role="dismiss-progress"]', banner);
+        if (resume) {
+          resume.addEventListener("click", () => {
+            banner.hidden = true;
+            try {
+              Restore.adopt(winner.state);
+            } catch (_error) {
+              /* the guide keeps working with the progress it already had */
+            }
+          });
+        }
+        if (dismiss) {
+          dismiss.addEventListener("click", () => {
+            banner.hidden = true;
+            // Persist this export's own (empty) record so the same offer
+            // does not come back the next time this file is opened.
+            State.save();
+          });
+        }
+        banner.hidden = false;
+        return true;
+      } catch (_error) {
+        // A guide that cannot offer earlier progress is still a whole guide.
+        return false;
+      }
+    }
+
+    return { offer };
+  })();
+
+  // ---------------------------------------------------------------------
+  // Course controls: theme, progress reset, progress files, nav drawer
   // ---------------------------------------------------------------------
 
   function applyTheme(pref) {
@@ -786,7 +1116,7 @@
     else delete root.dataset.theme;
   }
 
-  function enhanceCourseControls() {
+  function enhanceCourseControls(guide) {
     const select = qs('[data-role="theme-select"]');
     if (select) {
       select.value = State.get().theme || "system";
@@ -810,6 +1140,7 @@
         window.location.reload();
       });
     }
+    ProgressFile.init(guide.course.id, guide.schema_version);
     const navToggle = qs('[data-role="nav-toggle"]');
     if (navToggle) navToggle.addEventListener("click", () => Nav.toggleDrawer());
   }
@@ -844,11 +1175,15 @@
       State.init(key, loaded || undefined);
 
       document.documentElement.classList.add("js-enhanced");
-      enhanceCourseControls();
+      enhanceCourseControls(guide);
       enhanceBlocks();
       Nav.boot();
       installPreviewEvidenceBridge(guide);
       Progress.update();
+      // Only when this exact export has nothing stored yet: booting itself
+      // records a last section, so the offer is made against the state read
+      // before any of that happened.
+      if (!loaded) Migration.offer(guide.course.id, hash, guide.schema_version);
     } catch (error) {
       shell.hidden = true;
       status.hidden = false;

@@ -10,6 +10,7 @@ import {
 } from "../api/client";
 import type { Job, RunStatus } from "../api/types";
 import { useAction } from "../hooks/useAction";
+import { continueFailed, continueFeedback, continueRun } from "../lib/continueRun";
 import CopyPromptButton from "./CopyPromptButton";
 import ExportControls from "./ExportControls";
 import ResponseForm from "./ResponseForm";
@@ -33,6 +34,7 @@ export default function PrimaryAction({
   // stages[].approved flags an approved copy on disk, so an approve action
   // for such a stage is a re-approval that overwrites the prior copy.
   const reapproving = status.stages.some((s) => s.stage === stage && s.approved);
+  const approveLabel = reapproving ? `Approve changes to ${stage}` : `Approve ${stage}`;
 
   if (activeJob) {
     const verb = activeJob.status === "queued" ? "queued" : "running";
@@ -110,6 +112,29 @@ export default function PrimaryAction({
       )}
       {next.action === "approve" && stage && (
         <>
+          {/* Approval is the judgment; the chain runs the mechanical
+              follow-ups only after it succeeds — including after an
+              overwrite retry, which repeats the approval first. */}
+          <button
+            disabled={busy}
+            onClick={() =>
+              run(
+                async () => {
+                  await postApprove(topicId, stage);
+                  return continueRun(topicId);
+                },
+                {
+                  retryWithOverwrite: async () => {
+                    await postApprove(topicId, stage, true);
+                    return continueRun(topicId);
+                  },
+                  successMessage: (result) => continueFeedback(stage, result),
+                },
+              )
+            }
+          >
+            {approveLabel} &amp; continue
+          </button>{" "}
           <button
             disabled={busy}
             onClick={() =>
@@ -119,7 +144,7 @@ export default function PrimaryAction({
               })
             }
           >
-            {reapproving ? `Approve changes to ${stage}` : `Approve ${stage}`}
+            {approveLabel} only
           </button>{" "}
           {/* Land review on the pending content, not the default prompt tab. */}
           <Link to={`/topics/${topicId}/stages/${stage}?tab=response`}>

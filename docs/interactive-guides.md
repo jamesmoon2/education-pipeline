@@ -136,9 +136,30 @@ no network requests. The canonical guide JSON can be exported alongside it.
 
 Learner progress (completed sections, interaction state, reflection notes,
 theme choice) is stored only in the reader's own browser `localStorage`, keyed
-by course ID, content hash, and schema version — so a revised export starts
-fresh rather than replaying stale progress. The built-in reset control clears
-progress for that guide after confirmation. Nothing is transmitted anywhere.
+by course ID, content hash, and schema version — so a revised export never
+replays stale progress on its own. The built-in reset control clears progress
+for that guide after confirmation. Nothing is transmitted anywhere.
+
+Because the key includes the content hash, a re-export starts with an empty
+record. When that happens, the runtime looks for progress stored by a previous
+export of the same course (same course ID and schema major version, different
+content hash) and **offers** it in a dismissible banner: "Resume that
+progress" adopts it — narrowed to the sections and interactions this version
+still contains — and "Start fresh" keeps the empty record. Nothing is adopted
+without that choice, and the older key is never deleted, so an older exported
+file that is still in use keeps working.
+
+### Taking progress with you
+
+The course controls also carry **Download progress** and **Restore
+progress…**. Downloading writes a small JSON file
+(`<course-id>-progress.json`) holding a `format` marker, the course ID, the
+schema version, a save timestamp, and the progress record itself; restoring
+reads one back, checks the marker, and applies it after filtering it to the
+current guide (a file from a different course asks for confirmation first).
+Both work offline and entirely on the reader's device — the download works
+even where the browser refuses `localStorage` for a `file:` URL, which is the
+supported way to move progress between machines, browsers, or exports.
 
 ### Privacy boundary
 

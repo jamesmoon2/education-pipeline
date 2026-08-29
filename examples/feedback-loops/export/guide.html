@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.0" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-/Yh21Ju/TeRen5/4Xbrh2pL0vxS6OKm1KRt7hraOaVE='; script-src 'sha256-QnGnIOs1e+DU8aOUSNb5442qTTVMoqX6IpKo8HodqyU='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
+<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.0" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-g8aO0jiwJl6gNe3EJ3rIpsomad2nyXsL+124/0cOo2E='; script-src 'sha256-GJAtTjhYsBi1qM0sQimfxgWKP5pY3Iy0iynTaW+JC2c='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
  * Derives from the product token system in docs/design-system.md (§4.2):
  * the guide surface reads with Literata on a white surface, interface
  * chrome uses the Plex Sans stack, and status is never color alone.
@@ -20,8 +20,18 @@ h1,h2,h3,h4{font-family:var(--ep-font-interface);letter-spacing:-.015em;line-hei
 .course-controls{display:flex;flex-wrap:wrap;align-items:center;gap:1rem;padding:.75rem max(1rem,calc((100% - 72rem)/2));background:var(--ep-color-surface-subtle);border-bottom:1px solid var(--ep-color-border);font-family:var(--ep-font-interface);font-size:.9rem}
 .course-controls select{font:inherit;margin-left:.4rem;padding:.25rem .4rem;border:1px solid var(--ep-color-border);border-radius:.375rem;background:var(--ep-color-surface);color:var(--ep-color-text)}
 .course-controls button{font:inherit}
+.course-controls [hidden]{display:none}
 .local-data-note{color:var(--ep-color-text-muted);margin:0;max-width:28rem}
 .storage-notice{color:var(--ep-color-danger);margin:0}
+.progress-file-status{color:var(--ep-color-text-muted);margin:0}
+.progress-file-status[data-state="error"]{color:var(--ep-color-danger)}
+/* Offered, never imposed: progress found under a previous export's key. */
+.progress-migration{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;padding:.75rem max(1rem,calc((100% - 72rem)/2));background:var(--ep-color-accent-soft);border-bottom:1px solid var(--ep-color-border);font-family:var(--ep-font-interface);font-size:.9rem}
+.progress-migration[hidden]{display:none}
+.progress-migration p{margin:0;max-width:44rem}
+.progress-migration-controls{display:flex;flex-wrap:wrap;gap:.6rem}
+.progress-migration button{font:inherit;font-weight:600;min-height:2.25rem;padding:.4rem .9rem;border:1px solid var(--ep-color-accent);border-radius:.375rem;background:var(--ep-color-accent);color:var(--ep-color-accent-contrast);cursor:pointer}
+.progress-migration button[data-role="dismiss-progress"]{background:transparent;color:var(--ep-color-accent)}
 .layout{display:grid;grid-template-columns:minmax(13rem,18rem) minmax(0,48rem);gap:2rem;max-width:72rem;margin:auto;padding:2rem 1rem}
 .guide-nav{position:sticky;top:1rem;align-self:start;font-family:var(--ep-font-interface);font-size:.95rem}
 .guide-nav ol{padding-left:1.2rem}
@@ -90,7 +100,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
   .guide-nav{position:static}
   .js-enhanced .guide-nav ol{display:none}
   .js-enhanced .guide-nav.is-open ol{display:block}
-  .course-controls{flex-direction:column;align-items:flex-start}
+  .course-controls,.progress-migration{flex-direction:column;align-items:flex-start}
 }
 
 @media(prefers-reduced-motion:reduce){
@@ -98,7 +108,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
 }
 
 @media print{
-  .guide-nav,.skip-link,.course-controls,.section-nav-controls,.section-complete-controls,
+  .guide-nav,.skip-link,.course-controls,.progress-migration,.section-nav-controls,.section-complete-controls,
   .kc-controls,.wr-controls,.sc-controls,.rf-controls,.reflection-input,.nav-toggle,
   .live-region,.progress-summary{display:none!important}
   .layout{display:block;max-width:none}
@@ -113,7 +123,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
   .js-enhanced .block.scenario .debrief{display:block!important}
   a[href^="http"]::after{content:" (" attr(href) ")"}
 }
-</style></head><body><a class="skip-link" href="#guide-main">Skip to course content</a><div class="live-region visually-hidden" data-role="nav-announcement" role="status" aria-live="polite"></div><div class="error-shell" data-guide-status role="alert">Loading course…</div><div data-guide-shell hidden><header class="course-header"><h1>Thinking in Feedback Loops</h1><p>A practical introduction through projects and gardens</p><p>Learn to recognize feedback, map its structure, and choose thoughtful interventions.</p><p>15 minutes · introductory</p><div class="progress-summary" data-role="progress-summary" role="status" aria-live="polite"></div></header><div class="course-controls" aria-label="Course controls"><h2 class="sr-only">Course controls</h2><label class="theme-control">Theme<select data-role="theme-select"><option value="system">Match system</option><option value="light">Light</option><option value="dark">Dark</option></select></label><button type="button" data-role="reset-progress">Reset progress…</button><p class="local-data-note">Your progress and reflection notes are stored only in this browser, for this exported file, and never leave your device.</p><p class="storage-notice" data-role="storage-notice" role="status" aria-live="polite" hidden></p></div><div class="layout"><nav class="guide-nav" aria-label="Course sections"><button type="button" class="nav-toggle" data-role="nav-toggle" aria-expanded="false" aria-controls="guide-nav-list">Sections</button><h2>Course navigation</h2><ol id="guide-nav-list"><li><a href="#feedback-foundations" data-role="nav-link" data-section-id="feedback-foundations">How loops behave — From events to loops</a></li><li><a href="#recognize-loop-types" data-role="nav-link" data-section-id="recognize-loop-types">How loops behave — Recognize loop behavior</a></li><li><a href="#delays-and-leverage" data-role="nav-link" data-section-id="delays-and-leverage">Intervene with the whole loop in view — Delays change what you see</a></li><li><a href="#garden-decision" data-role="nav-link" data-section-id="garden-decision">Intervene with the whole loop in view — Practice a gardening decision</a></li></ol></nav><main id="guide-main"><section id="feedback-foundations" data-role="guide-section" data-module-id="loop-basics" data-module-title="How loops behave" data-section-title="From events to loops"><p class="module-context">How loops behave</p><h2>From events to loops</h2><article class="block rich_text" id="loop-introduction"><p>A <strong>feedback loop</strong> exists when a change travels through a system and eventually influences its starting quantity. Reinforcing loops amplify direction; balancing loops resist a gap or move toward a goal.</p></article><article class="block callout" id="garden-connection"><h3>Connect it to gardening</h3><p>More leaf growth can capture more sunlight, enabling still more growth—a reinforcing loop. A thermostat-like watering controller instead compares soil moisture with a target and reduces the gap.</p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section><section id="recognize-loop-types" data-role="guide-section" data-module-id="loop-basics" data-module-title="How loops behave" data-section-title="Recognize loop behavior"><p class="module-context">How loops behave</p><h2>Recognize loop behavior</h2><article class="block knowledge_check" id="check-loop-type" data-interactive="true" data-mode="single" data-retry="true"><h3>A project team learns from each successful release, making later releases smoother and creating more opportunities to learn. What kind of loop dominates?</h3><div class="choice-group" role="group" aria-label="Answer choices"><ul class="choices"><li class="choice-item" id="release-reinforcing"><label class="choice-label-wrap"><input type="radio" name="kc-input-check-loop-type" value="release-reinforcing" data-choice-id="release-reinforcing" data-correct="true" data-role="kc-choice"><span class="choice-label">Reinforcing</span></label><span class="choice-feedback" data-role="answer-marker">Answer: correct</span></li><li class="choice-item" id="release-balancing"><label class="choice-label-wrap"><input type="radio" name="kc-input-check-loop-type" value="release-balancing" data-choice-id="release-balancing" data-correct="false" data-role="kc-choice"><span class="choice-label">Balancing</span></label><span class="choice-feedback" data-role="answer-marker">Answer: incorrect</span></li><li class="choice-item" id="release-unrelated"><label class="choice-label-wrap"><input type="radio" name="kc-input-check-loop-type" value="release-unrelated" data-choice-id="release-unrelated" data-correct="false" data-role="kc-choice"><span class="choice-label">No feedback loop</span></label><span class="choice-feedback" data-role="answer-marker">Answer: incorrect</span></li></ul></div><div class="kc-controls"><button type="button" class="kc-submit" data-role="kc-submit" disabled>Submit answer</button><button type="button" class="kc-retry" data-role="kc-retry" hidden>Try again</button></div><div class="live-region" data-role="kc-result" role="status" aria-live="polite"></div><p class="explanation" data-role="kc-explanation"><strong>Explanation:</strong> Success increases learning, which improves later success: the change amplifies itself.</p></article><article class="block worked_reveal" id="map-growth-loop" data-interactive="true"><h3>Map the reinforcing loop in a young garden&#x27;s plant growth.</h3><div class="wr-controls"><button type="button" class="wr-reveal" data-role="wr-reveal-next">Reveal first step</button><button type="button" class="wr-show-all" data-role="wr-show-all">Show all</button><button type="button" class="wr-reset" data-role="wr-reset" hidden>Reset steps</button></div><div class="live-region" data-role="wr-live" role="status" aria-live="polite"></div><ol class="reveal-steps" data-role="reveal-steps" data-total-steps="3"><li class="reveal-step" id="choose-biomass" data-role="reveal-step" data-step-index="1"><strong>Choose the quantity</strong><p>Start with <strong>plant biomass</strong>, something that can rise or fall over time.</p></li><li class="reveal-step" id="trace-leaf-area" data-role="reveal-step" data-step-index="2"><strong>Trace the first effect</strong><p>More biomass usually creates more leaf area, assuming the plant remains healthy.</p></li><li class="reveal-step" id="close-growth-loop" data-role="reveal-step" data-step-index="3"><strong>Close the loop</strong><p>More leaf area captures more sunlight, which supports growth and increases biomass again.</p></li></ol><p class="conclusion" data-role="wr-conclusion">The loop reinforces growth until water, nutrients, space, or another limiting factor becomes important.</p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section><section id="delays-and-leverage" data-role="guide-section" data-module-id="intervention-practice" data-module-title="Intervene with the whole loop in view" data-section-title="Delays change what you see"><p class="module-context">Intervene with the whole loop in view</p><h2>Delays change what you see</h2><article class="block rich_text" id="delay-explanation"><p>A <strong>delay</strong> separates an action from its visible result. Teams may add work when progress looks slow, just as gardeners may water again before moisture reaches deeper roots. Mapping the delay helps prevent overcorrection.</p></article><article class="block callout" id="delay-warning"><h3>Watch for overcorrection</h3><p>Before acting twice, ask whether the first action is still moving through the system.</p></article><article class="block knowledge_check" id="check-delay-response" data-interactive="true" data-mode="multiple" data-retry="true"><h3>Which actions help when a delayed balancing loop appears unresponsive?</h3><div class="choice-group" role="group" aria-label="Answer choices"><ul class="choices"><li class="choice-item" id="delay-map"><label class="choice-label-wrap"><input type="checkbox" name="kc-input-check-delay-response" value="delay-map" data-choice-id="delay-map" data-correct="true" data-role="kc-choice"><span class="choice-label">Map when the intervention should affect the measured quantity</span></label><span class="choice-feedback" data-role="answer-marker">Answer: correct</span></li><li class="choice-item" id="delay-observe"><label class="choice-label-wrap"><input type="checkbox" name="kc-input-check-delay-response" value="delay-observe" data-choice-id="delay-observe" data-correct="true" data-role="kc-choice"><span class="choice-label">Observe a leading indicator while waiting</span></label><span class="choice-feedback" data-role="answer-marker">Answer: correct</span></li><li class="choice-item" id="delay-double"><label class="choice-label-wrap"><input type="checkbox" name="kc-input-check-delay-response" value="delay-double" data-choice-id="delay-double" data-correct="false" data-role="kc-choice"><span class="choice-label">Immediately double the intervention</span></label><span class="choice-feedback" data-role="answer-marker">Answer: incorrect</span></li></ul></div><div class="kc-controls"><button type="button" class="kc-submit" data-role="kc-submit" disabled>Submit answer</button><button type="button" class="kc-retry" data-role="kc-retry" hidden>Try again</button></div><div class="live-region" data-role="kc-result" role="status" aria-live="polite"></div><p class="explanation" data-role="kc-explanation"><strong>Explanation:</strong> Mapping the delay and watching a leading indicator distinguish slow response from failed response; immediately doubling can produce oscillation or overshoot.</p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section><section id="garden-decision" data-role="guide-section" data-module-id="intervention-practice" data-module-title="Intervene with the whole loop in view" data-section-title="Practice a gardening decision"><p class="module-context">Intervene with the whole loop in view</p><h2>Practice a gardening decision</h2><article class="block scenario" id="pest-density-scenario" data-interactive="true"><h3>Pest damage rises as garden beds become denser. What should you inspect first before choosing an intervention?</h3><div class="choice-group" role="group" aria-label="Scenario choices"><ul class="scenario-choices"><li class="choice-item" id="pest-spray"><label class="choice-label-wrap"><input type="radio" name="sc-input-pest-density-scenario" value="pest-spray" data-choice-id="pest-spray" data-quality="weak" data-role="sc-choice"><span class="choice-label">Immediately increase pesticide use</span></label><span class="choice-feedback" data-role="sc-feedback">weak: This treats visible damage before checking how density, pest reproduction, and predator populations interact.</span></li><li class="choice-item" id="pest-map"><label class="choice-label-wrap"><input type="radio" name="sc-input-pest-density-scenario" value="pest-map" data-choice-id="pest-map" data-quality="best" data-role="sc-choice"><span class="choice-label">Map plant density, pest pressure, predator response, and their delays</span></label><span class="choice-feedback" data-role="sc-feedback">best: This exposes both reinforcing pest pressure and a potentially delayed balancing response from predators.</span></li><li class="choice-item" id="pest-ignore"><label class="choice-label-wrap"><input type="radio" name="sc-input-pest-density-scenario" value="pest-ignore" data-choice-id="pest-ignore" data-quality="harmful" data-role="sc-choice"><span class="choice-label">Wait indefinitely because nature always balances itself</span></label><span class="choice-feedback" data-role="sc-feedback">harmful: A balancing response may be too weak or delayed to prevent serious damage; observation needs a decision threshold.</span></li></ul></div><div class="sc-controls"><button type="button" class="sc-submit" data-role="sc-submit" disabled>Submit choice</button><button type="button" class="sc-retry" data-role="sc-retry" hidden>Try again</button></div><div class="live-region" data-role="sc-result" role="status" aria-live="polite"></div><p class="debrief" data-role="sc-debrief"><strong>Debrief:</strong> A thoughtful intervention begins by locating the important loops, their relative strength, and the delay before each response becomes visible.</p></article><article class="block reflection" id="project-reflection" data-interactive="true"><h3 id="project-reflection-prompt">Where might a delayed feedback loop be shaping a project you know?</h3><p class="guidance">Name the changing quantity, trace how it eventually affects itself, and identify one delay before proposing an intervention.</p><p class="local-data-note">Notes are stored only in this browser, for this file, and are never included in print or export.</p><textarea class="reflection-input" data-role="reflection-input" aria-labelledby="project-reflection-prompt" placeholder="Draft a private loop map in words…" rows="4"></textarea><div class="rf-controls"><button type="button" class="rf-skip" data-role="rf-skip">Skip this reflection</button><button type="button" class="rf-reset" data-role="rf-reset" hidden>Clear my note</button></div><p class="rf-status" data-role="rf-status" role="status" aria-live="polite"></p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section></main></div><aside class="course-info"><h2>Learning outcomes</h2><ul><li id="identify-loop">Identify reinforcing and balancing feedback in a familiar system.</li><li id="map-loop">Map a feedback loop by tracing a changing quantity back to itself.</li><li id="choose-intervention">Choose an intervention that accounts for feedback structure and delays.</li></ul><h2>Glossary</h2><dl><dt id="feedback-loop-term">Feedback loop</dt><dd><p>A chain of cause and effect that eventually influences its starting quantity.</p></dd><dt id="reinforcing-loop-term">Reinforcing loop</dt><dd><p>A loop that amplifies change in the same direction.</p></dd><dt id="balancing-loop-term">Balancing loop</dt><dd><p>A loop that counteracts a gap or moves a system toward a goal.</p></dd><dt id="delay-term">Delay</dt><dd><p>The elapsed time between a cause and an observable effect in a feedback structure.</p></dd></dl><h2>Sources</h2><ol><li id="meadows-2008"><strong>Thinking in Systems: A Primer</strong>: Donella H. Meadows (2008) — <p>General background on feedback structures, delays, and intervention in systems.</p> <a href="https://www.chelseagreen.com/product/thinking-in-systems/" rel="noopener noreferrer" aria-label="External link">Source</a></li></ol></aside></div><script id="guide-data" type="application/json">{"course":{"blueprint":"conceptual-foundations","description":"Learn to recognize feedback, map its structure, and choose thoughtful interventions.","difficulty":"introductory","estimated_minutes":15,"id":"feedback-loops","language":"en","learner_summary":"Designed for a project manager who values concrete gardening examples and scenario practice.","subtitle":"A practical introduction through projects and gardens","title":"Thinking in Feedback Loops"},"glossary":[{"definition":"A chain of cause and effect that eventually influences its starting quantity.","id":"feedback-loop-term","term":"Feedback loop"},{"definition":"A loop that amplifies change in the same direction.","id":"reinforcing-loop-term","term":"Reinforcing loop"},{"definition":"A loop that counteracts a gap or moves a system toward a goal.","id":"balancing-loop-term","term":"Balancing loop"},{"definition":"The elapsed time between a cause and an observable effect in a feedback structure.","id":"delay-term","term":"Delay"}],"modules":[{"estimated_minutes":7,"id":"loop-basics","outcome_ids":["identify-loop","map-loop"],"sections":[{"blocks":[{"id":"loop-introduction","markdown":"A **feedback loop** exists when a change travels through a system and eventually influences its starting quantity. Reinforcing loops amplify direction; balancing loops resist a gap or move toward a goal.","outcome_ids":["identify-loop"],"source_ids":["meadows-2008"],"type":"rich_text"},{"id":"garden-connection","kind":"connection","markdown":"More leaf growth can capture more sunlight, enabling still more growth—a reinforcing loop. A thermostat-like watering controller instead compares soil moisture with a target and reduces the gap.","outcome_ids":["identify-loop"],"source_ids":[],"title":"Connect it to gardening","type":"callout"}],"id":"feedback-foundations","title":"From events to loops"},{"blocks":[{"choices":[{"correct":true,"id":"release-reinforcing","label":"Reinforcing"},{"correct":false,"id":"release-balancing","label":"Balancing"},{"correct":false,"id":"release-unrelated","label":"No feedback loop"}],"explanation":"Success increases learning, which improves later success: the change amplifies itself.","id":"check-loop-type","mode":"single","outcome_ids":["identify-loop"],"prompt":"A project team learns from each successful release, making later releases smoother and creating more opportunities to learn. What kind of loop dominates?","retry":true,"source_ids":[],"type":"knowledge_check"},{"conclusion":"The loop reinforces growth until water, nutrients, space, or another limiting factor becomes important.","id":"map-growth-loop","outcome_ids":["map-loop"],"prompt":"Map the reinforcing loop in a young garden's plant growth.","source_ids":[],"steps":[{"id":"choose-biomass","markdown":"Start with **plant biomass**, something that can rise or fall over time.","title":"Choose the quantity"},{"id":"trace-leaf-area","markdown":"More biomass usually creates more leaf area, assuming the plant remains healthy.","title":"Trace the first effect"},{"id":"close-growth-loop","markdown":"More leaf area captures more sunlight, which supports growth and increases biomass again.","title":"Close the loop"}],"type":"worked_reveal"}],"id":"recognize-loop-types","title":"Recognize loop behavior"}],"summary":"Recognize the structures that amplify change or move a system toward a goal.","title":"How loops behave"},{"estimated_minutes":8,"id":"intervention-practice","outcome_ids":["map-loop","choose-intervention"],"sections":[{"blocks":[{"id":"delay-explanation","markdown":"A **delay** separates an action from its visible result. Teams may add work when progress looks slow, just as gardeners may water again before moisture reaches deeper roots. Mapping the delay helps prevent overcorrection.","outcome_ids":["map-loop","choose-intervention"],"source_ids":["meadows-2008"],"type":"rich_text"},{"id":"delay-warning","kind":"warning","markdown":"Before acting twice, ask whether the first action is still moving through the system.","outcome_ids":["choose-intervention"],"source_ids":[],"title":"Watch for overcorrection","type":"callout"},{"choices":[{"correct":true,"id":"delay-map","label":"Map when the intervention should affect the measured quantity"},{"correct":true,"id":"delay-observe","label":"Observe a leading indicator while waiting"},{"correct":false,"id":"delay-double","label":"Immediately double the intervention"}],"explanation":"Mapping the delay and watching a leading indicator distinguish slow response from failed response; immediately doubling can produce oscillation or overshoot.","id":"check-delay-response","mode":"multiple","outcome_ids":["map-loop","choose-intervention"],"prompt":"Which actions help when a delayed balancing loop appears unresponsive?","retry":true,"source_ids":[],"type":"knowledge_check"}],"id":"delays-and-leverage","title":"Delays change what you see"},{"blocks":[{"choices":[{"feedback":"This treats visible damage before checking how density, pest reproduction, and predator populations interact.","id":"pest-spray","label":"Immediately increase pesticide use","quality":"weak"},{"feedback":"This exposes both reinforcing pest pressure and a potentially delayed balancing response from predators.","id":"pest-map","label":"Map plant density, pest pressure, predator response, and their delays","quality":"best"},{"feedback":"A balancing response may be too weak or delayed to prevent serious damage; observation needs a decision threshold.","id":"pest-ignore","label":"Wait indefinitely because nature always balances itself","quality":"harmful"}],"debrief":"A thoughtful intervention begins by locating the important loops, their relative strength, and the delay before each response becomes visible.","id":"pest-density-scenario","outcome_ids":["choose-intervention"],"prompt":"Pest damage rises as garden beds become denser. What should you inspect first before choosing an intervention?","source_ids":[],"type":"scenario"},{"guidance":"Name the changing quantity, trace how it eventually affects itself, and identify one delay before proposing an intervention.","id":"project-reflection","outcome_ids":["map-loop","choose-intervention"],"placeholder":"Draft a private loop map in words…","prompt":"Where might a delayed feedback loop be shaping a project you know?","source_ids":[],"type":"reflection"}],"id":"garden-decision","title":"Practice a gardening decision"}],"summary":"Use a loop map to avoid treating symptoms and to anticipate delayed effects.","title":"Intervene with the whole loop in view"}],"outcomes":[{"id":"identify-loop","text":"Identify reinforcing and balancing feedback in a familiar system."},{"id":"map-loop","text":"Map a feedback loop by tracing a changing quantity back to itself."},{"id":"choose-intervention","text":"Choose an intervention that accounts for feedback structure and delays."}],"schema_version":"1.1","sources":[{"authors":["Donella H. Meadows"],"id":"meadows-2008","note":"General background on feedback structures, delays, and intervention in systems.","published":"2008","title":"Thinking in Systems: A Primer","url":"https://www.chelseagreen.com/product/thinking-in-systems/"}]}</script><script>(() => {
+</style></head><body><a class="skip-link" href="#guide-main">Skip to course content</a><div class="live-region visually-hidden" data-role="nav-announcement" role="status" aria-live="polite"></div><div class="error-shell" data-guide-status role="alert">Loading course…</div><div data-guide-shell hidden><header class="course-header"><h1>Thinking in Feedback Loops</h1><p>A practical introduction through projects and gardens</p><p>Learn to recognize feedback, map its structure, and choose thoughtful interventions.</p><p>15 minutes · introductory</p><div class="progress-summary" data-role="progress-summary" role="status" aria-live="polite"></div></header><div class="progress-migration" data-role="progress-migration" role="status" aria-live="polite" hidden><p class="progress-migration-message">You have progress from a previous version of this course. <span data-role="progress-migration-detail"></span></p><div class="progress-migration-controls"><button type="button" data-role="resume-progress">Resume that progress</button><button type="button" data-role="dismiss-progress">Start fresh</button></div></div><div class="course-controls" aria-label="Course controls"><h2 class="sr-only">Course controls</h2><label class="theme-control">Theme<select data-role="theme-select"><option value="system">Match system</option><option value="light">Light</option><option value="dark">Dark</option></select></label><button type="button" data-role="reset-progress">Reset progress…</button><button type="button" data-role="download-progress">Download progress</button><button type="button" data-role="restore-progress">Restore progress…</button><input class="progress-file-input" type="file" accept="application/json" data-role="progress-file-input" aria-label="Progress file to restore" hidden><p class="local-data-note">Your progress and reflection notes are stored only in this browser, for this exported file, and never leave your device. A downloaded progress file is yours to keep and stays on your device too.</p><p class="progress-file-status" data-role="progress-file-status" role="status" aria-live="polite"></p><p class="storage-notice" data-role="storage-notice" role="status" aria-live="polite" hidden></p></div><div class="layout"><nav class="guide-nav" aria-label="Course sections"><button type="button" class="nav-toggle" data-role="nav-toggle" aria-expanded="false" aria-controls="guide-nav-list">Sections</button><h2>Course navigation</h2><ol id="guide-nav-list"><li><a href="#feedback-foundations" data-role="nav-link" data-section-id="feedback-foundations">How loops behave — From events to loops</a></li><li><a href="#recognize-loop-types" data-role="nav-link" data-section-id="recognize-loop-types">How loops behave — Recognize loop behavior</a></li><li><a href="#delays-and-leverage" data-role="nav-link" data-section-id="delays-and-leverage">Intervene with the whole loop in view — Delays change what you see</a></li><li><a href="#garden-decision" data-role="nav-link" data-section-id="garden-decision">Intervene with the whole loop in view — Practice a gardening decision</a></li></ol></nav><main id="guide-main"><section id="feedback-foundations" data-role="guide-section" data-module-id="loop-basics" data-module-title="How loops behave" data-section-title="From events to loops"><p class="module-context">How loops behave</p><h2>From events to loops</h2><article class="block rich_text" id="loop-introduction"><p>A <strong>feedback loop</strong> exists when a change travels through a system and eventually influences its starting quantity. Reinforcing loops amplify direction; balancing loops resist a gap or move toward a goal.</p></article><article class="block callout" id="garden-connection"><h3>Connect it to gardening</h3><p>More leaf growth can capture more sunlight, enabling still more growth—a reinforcing loop. A thermostat-like watering controller instead compares soil moisture with a target and reduces the gap.</p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section><section id="recognize-loop-types" data-role="guide-section" data-module-id="loop-basics" data-module-title="How loops behave" data-section-title="Recognize loop behavior"><p class="module-context">How loops behave</p><h2>Recognize loop behavior</h2><article class="block knowledge_check" id="check-loop-type" data-interactive="true" data-mode="single" data-retry="true"><h3>A project team learns from each successful release, making later releases smoother and creating more opportunities to learn. What kind of loop dominates?</h3><div class="choice-group" role="group" aria-label="Answer choices"><ul class="choices"><li class="choice-item" id="release-reinforcing"><label class="choice-label-wrap"><input type="radio" name="kc-input-check-loop-type" value="release-reinforcing" data-choice-id="release-reinforcing" data-correct="true" data-role="kc-choice"><span class="choice-label">Reinforcing</span></label><span class="choice-feedback" data-role="answer-marker">Answer: correct</span></li><li class="choice-item" id="release-balancing"><label class="choice-label-wrap"><input type="radio" name="kc-input-check-loop-type" value="release-balancing" data-choice-id="release-balancing" data-correct="false" data-role="kc-choice"><span class="choice-label">Balancing</span></label><span class="choice-feedback" data-role="answer-marker">Answer: incorrect</span></li><li class="choice-item" id="release-unrelated"><label class="choice-label-wrap"><input type="radio" name="kc-input-check-loop-type" value="release-unrelated" data-choice-id="release-unrelated" data-correct="false" data-role="kc-choice"><span class="choice-label">No feedback loop</span></label><span class="choice-feedback" data-role="answer-marker">Answer: incorrect</span></li></ul></div><div class="kc-controls"><button type="button" class="kc-submit" data-role="kc-submit" disabled>Submit answer</button><button type="button" class="kc-retry" data-role="kc-retry" hidden>Try again</button></div><div class="live-region" data-role="kc-result" role="status" aria-live="polite"></div><p class="explanation" data-role="kc-explanation"><strong>Explanation:</strong> Success increases learning, which improves later success: the change amplifies itself.</p></article><article class="block worked_reveal" id="map-growth-loop" data-interactive="true"><h3>Map the reinforcing loop in a young garden&#x27;s plant growth.</h3><div class="wr-controls"><button type="button" class="wr-reveal" data-role="wr-reveal-next">Reveal first step</button><button type="button" class="wr-show-all" data-role="wr-show-all">Show all</button><button type="button" class="wr-reset" data-role="wr-reset" hidden>Reset steps</button></div><div class="live-region" data-role="wr-live" role="status" aria-live="polite"></div><ol class="reveal-steps" data-role="reveal-steps" data-total-steps="3"><li class="reveal-step" id="choose-biomass" data-role="reveal-step" data-step-index="1"><strong>Choose the quantity</strong><p>Start with <strong>plant biomass</strong>, something that can rise or fall over time.</p></li><li class="reveal-step" id="trace-leaf-area" data-role="reveal-step" data-step-index="2"><strong>Trace the first effect</strong><p>More biomass usually creates more leaf area, assuming the plant remains healthy.</p></li><li class="reveal-step" id="close-growth-loop" data-role="reveal-step" data-step-index="3"><strong>Close the loop</strong><p>More leaf area captures more sunlight, which supports growth and increases biomass again.</p></li></ol><p class="conclusion" data-role="wr-conclusion">The loop reinforces growth until water, nutrients, space, or another limiting factor becomes important.</p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section><section id="delays-and-leverage" data-role="guide-section" data-module-id="intervention-practice" data-module-title="Intervene with the whole loop in view" data-section-title="Delays change what you see"><p class="module-context">Intervene with the whole loop in view</p><h2>Delays change what you see</h2><article class="block rich_text" id="delay-explanation"><p>A <strong>delay</strong> separates an action from its visible result. Teams may add work when progress looks slow, just as gardeners may water again before moisture reaches deeper roots. Mapping the delay helps prevent overcorrection.</p></article><article class="block callout" id="delay-warning"><h3>Watch for overcorrection</h3><p>Before acting twice, ask whether the first action is still moving through the system.</p></article><article class="block knowledge_check" id="check-delay-response" data-interactive="true" data-mode="multiple" data-retry="true"><h3>Which actions help when a delayed balancing loop appears unresponsive?</h3><div class="choice-group" role="group" aria-label="Answer choices"><ul class="choices"><li class="choice-item" id="delay-map"><label class="choice-label-wrap"><input type="checkbox" name="kc-input-check-delay-response" value="delay-map" data-choice-id="delay-map" data-correct="true" data-role="kc-choice"><span class="choice-label">Map when the intervention should affect the measured quantity</span></label><span class="choice-feedback" data-role="answer-marker">Answer: correct</span></li><li class="choice-item" id="delay-observe"><label class="choice-label-wrap"><input type="checkbox" name="kc-input-check-delay-response" value="delay-observe" data-choice-id="delay-observe" data-correct="true" data-role="kc-choice"><span class="choice-label">Observe a leading indicator while waiting</span></label><span class="choice-feedback" data-role="answer-marker">Answer: correct</span></li><li class="choice-item" id="delay-double"><label class="choice-label-wrap"><input type="checkbox" name="kc-input-check-delay-response" value="delay-double" data-choice-id="delay-double" data-correct="false" data-role="kc-choice"><span class="choice-label">Immediately double the intervention</span></label><span class="choice-feedback" data-role="answer-marker">Answer: incorrect</span></li></ul></div><div class="kc-controls"><button type="button" class="kc-submit" data-role="kc-submit" disabled>Submit answer</button><button type="button" class="kc-retry" data-role="kc-retry" hidden>Try again</button></div><div class="live-region" data-role="kc-result" role="status" aria-live="polite"></div><p class="explanation" data-role="kc-explanation"><strong>Explanation:</strong> Mapping the delay and watching a leading indicator distinguish slow response from failed response; immediately doubling can produce oscillation or overshoot.</p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section><section id="garden-decision" data-role="guide-section" data-module-id="intervention-practice" data-module-title="Intervene with the whole loop in view" data-section-title="Practice a gardening decision"><p class="module-context">Intervene with the whole loop in view</p><h2>Practice a gardening decision</h2><article class="block scenario" id="pest-density-scenario" data-interactive="true"><h3>Pest damage rises as garden beds become denser. What should you inspect first before choosing an intervention?</h3><div class="choice-group" role="group" aria-label="Scenario choices"><ul class="scenario-choices"><li class="choice-item" id="pest-spray"><label class="choice-label-wrap"><input type="radio" name="sc-input-pest-density-scenario" value="pest-spray" data-choice-id="pest-spray" data-quality="weak" data-role="sc-choice"><span class="choice-label">Immediately increase pesticide use</span></label><span class="choice-feedback" data-role="sc-feedback">weak: This treats visible damage before checking how density, pest reproduction, and predator populations interact.</span></li><li class="choice-item" id="pest-map"><label class="choice-label-wrap"><input type="radio" name="sc-input-pest-density-scenario" value="pest-map" data-choice-id="pest-map" data-quality="best" data-role="sc-choice"><span class="choice-label">Map plant density, pest pressure, predator response, and their delays</span></label><span class="choice-feedback" data-role="sc-feedback">best: This exposes both reinforcing pest pressure and a potentially delayed balancing response from predators.</span></li><li class="choice-item" id="pest-ignore"><label class="choice-label-wrap"><input type="radio" name="sc-input-pest-density-scenario" value="pest-ignore" data-choice-id="pest-ignore" data-quality="harmful" data-role="sc-choice"><span class="choice-label">Wait indefinitely because nature always balances itself</span></label><span class="choice-feedback" data-role="sc-feedback">harmful: A balancing response may be too weak or delayed to prevent serious damage; observation needs a decision threshold.</span></li></ul></div><div class="sc-controls"><button type="button" class="sc-submit" data-role="sc-submit" disabled>Submit choice</button><button type="button" class="sc-retry" data-role="sc-retry" hidden>Try again</button></div><div class="live-region" data-role="sc-result" role="status" aria-live="polite"></div><p class="debrief" data-role="sc-debrief"><strong>Debrief:</strong> A thoughtful intervention begins by locating the important loops, their relative strength, and the delay before each response becomes visible.</p></article><article class="block reflection" id="project-reflection" data-interactive="true"><h3 id="project-reflection-prompt">Where might a delayed feedback loop be shaping a project you know?</h3><p class="guidance">Name the changing quantity, trace how it eventually affects itself, and identify one delay before proposing an intervention.</p><p class="local-data-note">Notes are stored only in this browser, for this file, and are never included in print or export.</p><textarea class="reflection-input" data-role="reflection-input" aria-labelledby="project-reflection-prompt" placeholder="Draft a private loop map in words…" rows="4"></textarea><div class="rf-controls"><button type="button" class="rf-skip" data-role="rf-skip">Skip this reflection</button><button type="button" class="rf-reset" data-role="rf-reset" hidden>Clear my note</button></div><p class="rf-status" data-role="rf-status" role="status" aria-live="polite"></p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section></main></div><aside class="course-info"><h2>Learning outcomes</h2><ul><li id="identify-loop">Identify reinforcing and balancing feedback in a familiar system.</li><li id="map-loop">Map a feedback loop by tracing a changing quantity back to itself.</li><li id="choose-intervention">Choose an intervention that accounts for feedback structure and delays.</li></ul><h2>Glossary</h2><dl><dt id="feedback-loop-term">Feedback loop</dt><dd><p>A chain of cause and effect that eventually influences its starting quantity.</p></dd><dt id="reinforcing-loop-term">Reinforcing loop</dt><dd><p>A loop that amplifies change in the same direction.</p></dd><dt id="balancing-loop-term">Balancing loop</dt><dd><p>A loop that counteracts a gap or moves a system toward a goal.</p></dd><dt id="delay-term">Delay</dt><dd><p>The elapsed time between a cause and an observable effect in a feedback structure.</p></dd></dl><h2>Sources</h2><ol><li id="meadows-2008"><strong>Thinking in Systems: A Primer</strong>: Donella H. Meadows (2008) — <p>General background on feedback structures, delays, and intervention in systems.</p> <a href="https://www.chelseagreen.com/product/thinking-in-systems/" rel="noopener noreferrer" aria-label="External link">Source</a></li></ol></aside></div><script id="guide-data" type="application/json">{"course":{"blueprint":"conceptual-foundations","description":"Learn to recognize feedback, map its structure, and choose thoughtful interventions.","difficulty":"introductory","estimated_minutes":15,"id":"feedback-loops","language":"en","learner_summary":"Designed for a project manager who values concrete gardening examples and scenario practice.","subtitle":"A practical introduction through projects and gardens","title":"Thinking in Feedback Loops"},"glossary":[{"definition":"A chain of cause and effect that eventually influences its starting quantity.","id":"feedback-loop-term","term":"Feedback loop"},{"definition":"A loop that amplifies change in the same direction.","id":"reinforcing-loop-term","term":"Reinforcing loop"},{"definition":"A loop that counteracts a gap or moves a system toward a goal.","id":"balancing-loop-term","term":"Balancing loop"},{"definition":"The elapsed time between a cause and an observable effect in a feedback structure.","id":"delay-term","term":"Delay"}],"modules":[{"estimated_minutes":7,"id":"loop-basics","outcome_ids":["identify-loop","map-loop"],"sections":[{"blocks":[{"id":"loop-introduction","markdown":"A **feedback loop** exists when a change travels through a system and eventually influences its starting quantity. Reinforcing loops amplify direction; balancing loops resist a gap or move toward a goal.","outcome_ids":["identify-loop"],"source_ids":["meadows-2008"],"type":"rich_text"},{"id":"garden-connection","kind":"connection","markdown":"More leaf growth can capture more sunlight, enabling still more growth—a reinforcing loop. A thermostat-like watering controller instead compares soil moisture with a target and reduces the gap.","outcome_ids":["identify-loop"],"source_ids":[],"title":"Connect it to gardening","type":"callout"}],"id":"feedback-foundations","title":"From events to loops"},{"blocks":[{"choices":[{"correct":true,"id":"release-reinforcing","label":"Reinforcing"},{"correct":false,"id":"release-balancing","label":"Balancing"},{"correct":false,"id":"release-unrelated","label":"No feedback loop"}],"explanation":"Success increases learning, which improves later success: the change amplifies itself.","id":"check-loop-type","mode":"single","outcome_ids":["identify-loop"],"prompt":"A project team learns from each successful release, making later releases smoother and creating more opportunities to learn. What kind of loop dominates?","retry":true,"source_ids":[],"type":"knowledge_check"},{"conclusion":"The loop reinforces growth until water, nutrients, space, or another limiting factor becomes important.","id":"map-growth-loop","outcome_ids":["map-loop"],"prompt":"Map the reinforcing loop in a young garden's plant growth.","source_ids":[],"steps":[{"id":"choose-biomass","markdown":"Start with **plant biomass**, something that can rise or fall over time.","title":"Choose the quantity"},{"id":"trace-leaf-area","markdown":"More biomass usually creates more leaf area, assuming the plant remains healthy.","title":"Trace the first effect"},{"id":"close-growth-loop","markdown":"More leaf area captures more sunlight, which supports growth and increases biomass again.","title":"Close the loop"}],"type":"worked_reveal"}],"id":"recognize-loop-types","title":"Recognize loop behavior"}],"summary":"Recognize the structures that amplify change or move a system toward a goal.","title":"How loops behave"},{"estimated_minutes":8,"id":"intervention-practice","outcome_ids":["map-loop","choose-intervention"],"sections":[{"blocks":[{"id":"delay-explanation","markdown":"A **delay** separates an action from its visible result. Teams may add work when progress looks slow, just as gardeners may water again before moisture reaches deeper roots. Mapping the delay helps prevent overcorrection.","outcome_ids":["map-loop","choose-intervention"],"source_ids":["meadows-2008"],"type":"rich_text"},{"id":"delay-warning","kind":"warning","markdown":"Before acting twice, ask whether the first action is still moving through the system.","outcome_ids":["choose-intervention"],"source_ids":[],"title":"Watch for overcorrection","type":"callout"},{"choices":[{"correct":true,"id":"delay-map","label":"Map when the intervention should affect the measured quantity"},{"correct":true,"id":"delay-observe","label":"Observe a leading indicator while waiting"},{"correct":false,"id":"delay-double","label":"Immediately double the intervention"}],"explanation":"Mapping the delay and watching a leading indicator distinguish slow response from failed response; immediately doubling can produce oscillation or overshoot.","id":"check-delay-response","mode":"multiple","outcome_ids":["map-loop","choose-intervention"],"prompt":"Which actions help when a delayed balancing loop appears unresponsive?","retry":true,"source_ids":[],"type":"knowledge_check"}],"id":"delays-and-leverage","title":"Delays change what you see"},{"blocks":[{"choices":[{"feedback":"This treats visible damage before checking how density, pest reproduction, and predator populations interact.","id":"pest-spray","label":"Immediately increase pesticide use","quality":"weak"},{"feedback":"This exposes both reinforcing pest pressure and a potentially delayed balancing response from predators.","id":"pest-map","label":"Map plant density, pest pressure, predator response, and their delays","quality":"best"},{"feedback":"A balancing response may be too weak or delayed to prevent serious damage; observation needs a decision threshold.","id":"pest-ignore","label":"Wait indefinitely because nature always balances itself","quality":"harmful"}],"debrief":"A thoughtful intervention begins by locating the important loops, their relative strength, and the delay before each response becomes visible.","id":"pest-density-scenario","outcome_ids":["choose-intervention"],"prompt":"Pest damage rises as garden beds become denser. What should you inspect first before choosing an intervention?","source_ids":[],"type":"scenario"},{"guidance":"Name the changing quantity, trace how it eventually affects itself, and identify one delay before proposing an intervention.","id":"project-reflection","outcome_ids":["map-loop","choose-intervention"],"placeholder":"Draft a private loop map in words…","prompt":"Where might a delayed feedback loop be shaping a project you know?","source_ids":[],"type":"reflection"}],"id":"garden-decision","title":"Practice a gardening decision"}],"summary":"Use a loop map to avoid treating symptoms and to anticipate delayed effects.","title":"Intervene with the whole loop in view"}],"outcomes":[{"id":"identify-loop","text":"Identify reinforcing and balancing feedback in a familiar system."},{"id":"map-loop","text":"Map a feedback loop by tracing a changing quantity back to itself."},{"id":"choose-intervention","text":"Choose an intervention that accounts for feedback structure and delays."}],"schema_version":"1.1","sources":[{"authors":["Donella H. Meadows"],"id":"meadows-2008","note":"General background on feedback structures, delays, and intervention in systems.","published":"2008","title":"Thinking in Systems: A Primer","url":"https://www.chelseagreen.com/product/thinking-in-systems/"}]}</script><script>(() => {
   "use strict";
 
   // ---------------------------------------------------------------------
@@ -148,10 +158,15 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
   // ---------------------------------------------------------------------
 
   const STORAGE_NS = "education-pipeline";
+  const PROGRESS_FILE_FORMAT = "education-pipeline.guide-progress";
+  const PROGRESS_FILE_VERSION = 1;
+
+  function schemaMajor(schemaVersion) {
+    return String(schemaVersion).split(".")[0];
+  }
 
   function storageKey(courseId, hash, schemaVersion) {
-    const major = String(schemaVersion).split(".")[0];
-    return `${STORAGE_NS}:guide:${courseId}:${hash}:v${major}`;
+    return `${STORAGE_NS}:guide:${courseId}:${hash}:v${schemaMajor(schemaVersion)}`;
   }
 
   function emptyState() {
@@ -188,6 +203,11 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
     }
     if (typeof raw.lastSection === "string") out.lastSection = raw.lastSection;
     if (raw.theme === "light" || raw.theme === "dark" || raw.theme === "system") out.theme = raw.theme;
+    // Optional: exports before this field existed stored no timestamp, and a
+    // state without one stays valid -- it only sorts last when choosing which
+    // earlier version's progress to offer. Anything non-finite is dropped
+    // rather than carried forward.
+    if (Number.isFinite(raw.updatedAt)) out.updatedAt = raw.updatedAt;
     return out;
   }
 
@@ -251,7 +271,24 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       }
     }
 
-    return { read, write };
+    // Every key currently in storage, for callers that must look beyond their
+    // own. Reading the index is silent about availability: whoever needed the
+    // notice has already tried a real read or write.
+    function keys() {
+      if (!probe()) return [];
+      try {
+        const out = [];
+        for (let i = 0; i < window.localStorage.length; i++) {
+          const key = window.localStorage.key(i);
+          if (typeof key === "string") out.push(key);
+        }
+        return out;
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    return { read, write, keys };
   })();
 
   // ---------------------------------------------------------------------
@@ -266,11 +303,22 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       key = storageKeyValue;
       data = loaded || emptyState();
     }
+    // Stamped on every write so a later export can tell which of this
+    // course's stored records is the most recent one to offer.
     function save() {
-      if (key) Persistence.write(key, data);
+      if (!key) return false;
+      data.updatedAt = Date.now();
+      return Persistence.write(key, data);
     }
     function get() {
       return data;
+    }
+    // Replace the whole record (migration or a restored progress file).
+    // Returns whether it reached storage, which decides whether the caller
+    // can safely reload to rebuild the interactive blocks.
+    function adopt(next) {
+      data = next || emptyState();
+      return save();
     }
     function setTheme(theme) {
       data.theme = theme;
@@ -300,6 +348,8 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
     return {
       init,
       get,
+      save,
+      adopt,
       setTheme,
       markSectionComplete,
       setLastSection,
@@ -892,7 +942,286 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
   }
 
   // ---------------------------------------------------------------------
-  // Course controls: theme, progress reset, nav drawer
+  // Adopting progress recorded elsewhere (an earlier export, or a file)
+  // ---------------------------------------------------------------------
+
+  const Restore = (() => {
+    // Progress that came from another export can name sections and blocks
+    // this document no longer has. Adopting it unfiltered would count ids
+    // nothing here can display, so it is always narrowed to what this exact
+    // guide contains before anything is stored.
+    function filterToDocument(state) {
+      const sectionIds = new Set(qsa('main section[data-role="guide-section"]').map((el) => el.id));
+      const interactionIds = new Set(qsa('[data-interactive="true"]').map((el) => el.id));
+      const out = emptyState();
+      out.theme = state.theme;
+      out.completedSections = state.completedSections.filter((id) => sectionIds.has(id));
+      Object.keys(state.interactions).forEach((id) => {
+        if (interactionIds.has(id)) out.interactions[id] = state.interactions[id];
+      });
+      if (state.lastSection && sectionIds.has(state.lastSection)) out.lastSection = state.lastSection;
+      return out;
+    }
+
+    function refreshTheme(theme) {
+      applyTheme(theme);
+      const select = qs('[data-role="theme-select"]');
+      if (select) select.value = theme || "system";
+    }
+
+    // Reloading is how reset-progress refreshes, and it is the only honest
+    // way to rebuild submitted answers, revealed steps and saved notes: each
+    // block enhancer reads stored state once, at boot, and re-running them
+    // over the live DOM would bind every listener a second time.
+    function adopt(state) {
+      const filtered = filterToDocument(state);
+      if (State.adopt(filtered)) {
+        window.location.reload();
+        return true;
+      }
+      // Storage refused the write, so a reload would throw the adopted
+      // progress away. Keep it for this viewing and refresh what can be
+      // refreshed without re-enhancing the blocks.
+      refreshTheme(filtered.theme);
+      Progress.update();
+      return false;
+    }
+
+    return { adopt, filterToDocument };
+  })();
+
+  // ---------------------------------------------------------------------
+  // Progress files: download the current record, restore a saved one
+  // ---------------------------------------------------------------------
+
+  const ProgressFile = (() => {
+    let courseId = null;
+    let schemaVersion = null;
+
+    function setStatus(message, isError) {
+      try {
+        const el = qs('[data-role="progress-file-status"]');
+        if (!el) return;
+        el.textContent = message;
+        if (isError) el.dataset.state = "error";
+        else delete el.dataset.state;
+      } catch (_error) {
+        /* the status line must never be the thing that breaks */
+      }
+    }
+
+    function download() {
+      try {
+        const payload = {
+          format: PROGRESS_FILE_FORMAT,
+          version: PROGRESS_FILE_VERSION,
+          course_id: courseId,
+          schema_version: schemaVersion,
+          saved_at: new Date().toISOString(),
+          // The in-memory record, so the download still works in browsers
+          // that refuse local storage for this file.
+          state: State.get(),
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2) + "\n"], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${courseId}-progress.json`;
+        // Appended only for the duration of the click: some browsers ignore
+        // a download from an anchor that was never in the document. No paint
+        // happens inside one task, so nothing flashes on screen.
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        // Revoking in the same task can cancel the download the click just
+        // started, so let this one finish first.
+        window.setTimeout(() => {
+          try {
+            URL.revokeObjectURL(url);
+          } catch (_error) {
+            /* already released */
+          }
+        }, 0);
+        setStatus("Progress file downloaded.");
+      } catch (_error) {
+        setStatus("This browser would not save a progress file here.", true);
+      }
+    }
+
+    // Reads one chosen file. Every rejection path ends in a visible message
+    // and leaves the stored progress exactly as it was.
+    function applyText(text) {
+      let payload = null;
+      try {
+        payload = JSON.parse(text);
+      } catch (_error) {
+        payload = null;
+      }
+      if (!isPlainObject(payload) || payload.format !== PROGRESS_FILE_FORMAT) {
+        setStatus(
+          "That is not an Education Pipeline progress file, so nothing was changed.",
+          true
+        );
+        return false;
+      }
+      const state = validateState(payload.state);
+      if (!state) {
+        setStatus("That progress file holds no readable progress, so nothing was changed.", true);
+        return false;
+      }
+      const fileCourse = typeof payload.course_id === "string" ? payload.course_id : "";
+      if (fileCourse !== courseId) {
+        const named = fileCourse ? `"${fileCourse}"` : "another course";
+        if (
+          !window.confirm(
+            `That progress file was saved from ${named}, not this course. Apply it here anyway?`
+          )
+        ) {
+          setStatus("Restore cancelled. Your progress is unchanged.");
+          return false;
+        }
+      }
+      setStatus("Progress restored from the file you chose.");
+      Restore.adopt(state);
+      return true;
+    }
+
+    function readChosenFile(input) {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      try {
+        const reader = new FileReader();
+        reader.onerror = () => {
+          input.value = "";
+          setStatus("That file could not be read.", true);
+        };
+        reader.onload = () => {
+          applyText(typeof reader.result === "string" ? reader.result : "");
+          // Clear the picker so choosing the same file again still fires.
+          input.value = "";
+        };
+        reader.readAsText(file);
+      } catch (_error) {
+        input.value = "";
+        setStatus("That file could not be read.", true);
+      }
+    }
+
+    function init(course, schema) {
+      courseId = course;
+      schemaVersion = schema;
+      const downloadBtn = qs('[data-role="download-progress"]');
+      const restoreBtn = qs('[data-role="restore-progress"]');
+      const input = qs('[data-role="progress-file-input"]');
+      if (downloadBtn) downloadBtn.addEventListener("click", download);
+      if (restoreBtn && input) {
+        restoreBtn.addEventListener("click", () => {
+          try {
+            input.value = "";
+            input.click();
+          } catch (_error) {
+            setStatus("This browser would not open a file picker here.", true);
+          }
+        });
+      }
+      if (input) input.addEventListener("change", () => readChosenFile(input));
+    }
+
+    return { init };
+  })();
+
+  // ---------------------------------------------------------------------
+  // Progress carried over from a previous export of the same course
+  // ---------------------------------------------------------------------
+
+  const Migration = (() => {
+    // Re-exporting after any content change gives the guide a new content
+    // hash, so the learner's progress stays behind under the previous key.
+    // This offers it -- never imposes it -- and never removes the old key:
+    // the older exported file may still be in use somewhere.
+    function candidates(courseId, hash, schemaVersion) {
+      const prefix = `${STORAGE_NS}:guide:${courseId}:`;
+      const suffix = `:v${schemaMajor(schemaVersion)}`;
+      const currentKey = storageKey(courseId, hash, schemaVersion);
+      const found = [];
+      Persistence.keys().forEach((key) => {
+        if (key === currentKey || !key.startsWith(prefix) || !key.endsWith(suffix)) return;
+        const otherHash = key.slice(prefix.length, key.length - suffix.length);
+        // Exactly one segment between course id and schema: anything else is
+        // some other product's key that happens to share the prefix.
+        if (!otherHash || otherHash.indexOf(":") !== -1) return;
+        const state = Persistence.read(key);
+        if (state) found.push({ key, state });
+      });
+      return found;
+    }
+
+    function newest(list) {
+      return list.reduce((winner, entry) => {
+        if (!winner) return entry;
+        const at = Number.isFinite(entry.state.updatedAt) ? entry.state.updatedAt : 0;
+        const winnerAt = Number.isFinite(winner.state.updatedAt) ? winner.state.updatedAt : 0;
+        if (at !== winnerAt) return at > winnerAt ? entry : winner;
+        // Same timestamp (or neither has one): prefer the fuller record.
+        return entry.state.completedSections.length > winner.state.completedSections.length
+          ? entry
+          : winner;
+      }, null);
+    }
+
+    function describe(state) {
+      const sections = state.completedSections.length;
+      const answers = Object.keys(state.interactions).length;
+      return (
+        `It records ${sections} completed section${sections === 1 ? "" : "s"} and ` +
+        `${answers} saved interaction${answers === 1 ? "" : "s"} that still fit this version.`
+      );
+    }
+
+    function offer(courseId, hash, schemaVersion) {
+      try {
+        const banner = qs('[data-role="progress-migration"]');
+        if (!banner) return false;
+        const winner = newest(candidates(courseId, hash, schemaVersion));
+        if (!winner) return false;
+
+        const detail = qs('[data-role="progress-migration-detail"]', banner);
+        if (detail) detail.textContent = describe(Restore.filterToDocument(winner.state));
+        const resume = qs('[data-role="resume-progress"]', banner);
+        const dismiss = qs('[data-role="dismiss-progress"]', banner);
+        if (resume) {
+          resume.addEventListener("click", () => {
+            banner.hidden = true;
+            try {
+              Restore.adopt(winner.state);
+            } catch (_error) {
+              /* the guide keeps working with the progress it already had */
+            }
+          });
+        }
+        if (dismiss) {
+          dismiss.addEventListener("click", () => {
+            banner.hidden = true;
+            // Persist this export's own (empty) record so the same offer
+            // does not come back the next time this file is opened.
+            State.save();
+          });
+        }
+        banner.hidden = false;
+        return true;
+      } catch (_error) {
+        // A guide that cannot offer earlier progress is still a whole guide.
+        return false;
+      }
+    }
+
+    return { offer };
+  })();
+
+  // ---------------------------------------------------------------------
+  // Course controls: theme, progress reset, progress files, nav drawer
   // ---------------------------------------------------------------------
 
   function applyTheme(pref) {
@@ -901,7 +1230,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
     else delete root.dataset.theme;
   }
 
-  function enhanceCourseControls() {
+  function enhanceCourseControls(guide) {
     const select = qs('[data-role="theme-select"]');
     if (select) {
       select.value = State.get().theme || "system";
@@ -925,6 +1254,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
         window.location.reload();
       });
     }
+    ProgressFile.init(guide.course.id, guide.schema_version);
     const navToggle = qs('[data-role="nav-toggle"]');
     if (navToggle) navToggle.addEventListener("click", () => Nav.toggleDrawer());
   }
@@ -959,11 +1289,15 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       State.init(key, loaded || undefined);
 
       document.documentElement.classList.add("js-enhanced");
-      enhanceCourseControls();
+      enhanceCourseControls(guide);
       enhanceBlocks();
       Nav.boot();
       installPreviewEvidenceBridge(guide);
       Progress.update();
+      // Only when this exact export has nothing stored yet: booting itself
+      // records a last section, so the offer is made against the state read
+      // before any of that happened.
+      if (!loaded) Migration.offer(guide.course.id, hash, guide.schema_version);
     } catch (error) {
       shell.hidden = true;
       status.hidden = false;

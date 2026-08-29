@@ -43,6 +43,32 @@ describe("useAction", () => {
     expect(result.current.feedback).toBe("Approved.");
   });
 
+  it("builds the message from the value the action resolved with", async () => {
+    const { result } = renderHook(() => useAction());
+    await act(() =>
+      result.current.run(() => Promise.resolve({ started: "qa" }), {
+        successMessage: (value) => `Started ${value.started}.`,
+      }),
+    );
+    expect(result.current.feedback).toBe("Started qa.");
+    expect(result.current.isError).toBe(false);
+  });
+
+  it("builds the message from the overwrite retry's value", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { result } = renderHook(() => useAction());
+    await act(() =>
+      result.current.run(
+        () => Promise.reject(new ApiRequestError(409, "already_exists", "already approved")),
+        {
+          retryWithOverwrite: () => Promise.resolve({ started: "qa" }),
+          successMessage: (value) => `Started ${value.started}.`,
+        },
+      ),
+    );
+    expect(result.current.feedback).toBe("Started qa.");
+  });
+
   it("does not retry when the confirm is declined", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
     const retry = vi.fn();
