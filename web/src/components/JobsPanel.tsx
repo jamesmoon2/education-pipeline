@@ -1,9 +1,8 @@
-import { Fragment, useCallback, useState } from "react";
-import { cancelJob, getJobs } from "../api/client";
+import { Fragment, useState } from "react";
+import { cancelJob } from "../api/client";
 import type { Job } from "../api/types";
 import { useAction } from "../hooks/useAction";
 import { useNow } from "../hooks/useNow";
-import { usePolling } from "../hooks/usePolling";
 import { formatDurationMs, jobElapsedMs } from "../lib/time";
 import JobLogView from "./JobLogView";
 import ErrorNotice from "./ErrorNotice";
@@ -30,11 +29,21 @@ function TickingJobTiming({ job }: { job: Job }) {
   return <>{ms === null ? "—" : formatDurationMs(ms)}</>;
 }
 
-export default function JobsPanel({ topicId }: { topicId: string }) {
-  const fetchJobs = useCallback(() => getJobs(topicId), [topicId]);
-  const { data, error } = usePolling(fetchJobs, 2_000);
+export default function JobsPanel({
+  data,
+  error,
+  onChanged,
+}: {
+  /** Jobs payload, polled by the caller (the run board keeps the single 2s
+   *  poll of this endpoint -- see RunBoardPage.tsx). */
+  data: { jobs: Job[] } | null;
+  error: Error | null;
+  /** Called after a successful cancel so the caller's poll can refetch
+   *  immediately instead of waiting out its interval. */
+  onChanged?: () => void;
+}) {
   const [openJobId, setOpenJobId] = useState<string | null>(null);
-  const cancel = useAction();
+  const cancel = useAction(onChanged);
 
   if (error) return <ErrorNotice prefix="Failed to load jobs" error={error} />;
   if (!data) return <p>Loading jobs…</p>;

@@ -373,6 +373,24 @@ describe("RunBoardPage", () => {
     expect(getPersonalization).not.toHaveBeenCalled();
   });
 
+  it("polls the jobs endpoint once per interval, not once per consumer", async () => {
+    // Before this change, the board and JobsPanel each ran their own 2s
+    // poll of the same endpoint, so two ticks meant four calls. JobsPanel
+    // now renders off the board's single poll, so two ticks must mean two
+    // calls.
+    vi.mocked(getRunStatus).mockResolvedValue(status);
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    renderAt("/topics/t");
+
+    await screen.findByText(/Run the outline prompt/);
+    await waitFor(() => expect(getJobs).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getJobs).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+    // A trailing pause catches a second poller that would have queued its
+    // own follow-up call around the same tick.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(getJobs).toHaveBeenCalledTimes(2);
+  });
+
   it("surfaces a running job at the top of the board instead of 'ready to run'", async () => {
     vi.mocked(getRunStatus).mockResolvedValue(status);
     vi.mocked(getJobs).mockResolvedValue({
