@@ -63,6 +63,25 @@ describe("ProfileEditorPage", () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
+  it("registers the navigation guard once instead of on every keystroke", async () => {
+    vi.mocked(getProfile).mockResolvedValue(detail);
+    renderPage("/profiles/p1");
+    await screen.findByDisplayValue("Synthetic learner");
+    const addDocument = vi.spyOn(document, "addEventListener");
+    const removeDocument = vi.spyOn(document, "removeEventListener");
+    const addWindow = vi.spyOn(window, "addEventListener");
+
+    await userEvent.type(screen.getByLabelText("Target learner"), " edited");
+
+    // The draft is read only when a navigation is declined, so a keystroke has
+    // no business tearing down a capture-phase document click listener.
+    const captureClicks = (calls: unknown[][]) =>
+      calls.filter(([type, , options]) => type === "click" && options === true);
+    expect(captureClicks(addDocument.mock.calls)).toHaveLength(1);
+    expect(captureClicks(removeDocument.mock.calls)).toHaveLength(0);
+    expect(addWindow.mock.calls.filter(([type]) => type === "popstate")).toHaveLength(1);
+  });
+
   it("keeps unsaved input after a 409 and reloads only when chosen", async () => {
     vi.mocked(getProfile).mockResolvedValueOnce(detail).mockResolvedValueOnce({ ...detail, content_sha256: "sha-current", parsed: { ...profile, target_learner: "Disk value" } });
     vi.mocked(putProfile).mockRejectedValue(new ApiRequestError(409, "stale_content", "reload profiles", { current_sha256: "sha-current" }));

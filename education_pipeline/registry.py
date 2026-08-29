@@ -16,9 +16,10 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from education_pipeline.atomic_io import atomic_write_text
 
 _REGISTRY_DIR = "education-pipeline"
 _REGISTRY_FILE = "workspaces.json"
@@ -99,23 +100,14 @@ def _parse_registry(data: object) -> WorkspaceRegistry | None:
 
 def _save_registry(registry: WorkspaceRegistry) -> None:
     path = registry_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "workspaces": list(registry.workspaces),
         "last_used": registry.last_used,
     }
     content = json.dumps(payload, indent=2) + "\n"
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    atomic_write_text(
+        path, content, tmp_prefix=f".{path.name}.", tmp_suffix=".tmp"
     )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(content)
-        os.replace(temporary_path, path)
-    except BaseException:
-        temporary_path.unlink(missing_ok=True)
-        raise
 
 
 def _warn(message: str) -> None:

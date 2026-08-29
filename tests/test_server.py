@@ -94,7 +94,9 @@ def _start_server(tmp_path, monkeypatch, web_dist=None, catalog=None, plan=None)
     srv = build_server(context)
     import threading
 
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(
+        target=lambda: srv.serve_forever(poll_interval=0.02), daemon=True
+    ).start()
     worker.start()
     return srv, worker, context
 
@@ -3026,7 +3028,9 @@ def test_put_config_plan_unknown_model_returns_400_and_writes_nothing(tmp_path, 
     srv = build_server(context)
     import threading
 
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(
+        target=lambda: srv.serve_forever(poll_interval=0.02), daemon=True
+    ).start()
     worker.start()
     try:
         plan_file = tmp_path / "config" / "model-plan.toml"
@@ -3079,7 +3083,9 @@ def _start_workspace_config_server(tmp_path):
     srv = build_server(context)
     import threading
 
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(
+        target=lambda: srv.serve_forever(poll_interval=0.02), daemon=True
+    ).start()
     worker.start()
     return srv, worker, config
 
@@ -3379,7 +3385,9 @@ def test_get_run_plan_degrades_stage_when_stored_override_invalidated_by_catalog
     srv = build_server(context)
     import threading
 
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(
+        target=lambda: srv.serve_forever(poll_interval=0.02), daemon=True
+    ).start()
     worker.start()
     try:
         # Store a valid override while the "premium" model still exists.

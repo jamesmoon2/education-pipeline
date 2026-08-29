@@ -46,6 +46,51 @@ def test_serve_writes_discovery_and_serves_health(tmp_path):
     assert lifecycle.read_discovery(tmp_path) is None
 
 
+def test_serve_polls_for_shutdown_at_a_responsive_interval(tmp_path, monkeypatch):
+    """serve_forever's poll interval bounds how long shutdown() blocks.
+
+    ``BaseServer.serve_forever`` only notices the shutdown flag once per poll
+    interval, and the stdlib default is 0.5s -- so every daemon stop (and
+    every test that starts and stops one) paid up to half a second of pure
+    waiting. The production thread must pass a tighter interval.
+    """
+
+    from education_pipeline import daemon as daemon_module
+
+    captured = {}
+    real_build_server = daemon_module.build_server
+
+    def spy_build_server(context):
+        server = real_build_server(context)
+        real_serve_forever = server.serve_forever
+
+        def serve_forever(poll_interval=0.5):
+            captured["poll_interval"] = poll_interval
+            return real_serve_forever(poll_interval)
+
+        server.serve_forever = serve_forever
+        return server
+
+    monkeypatch.setattr(daemon_module, "build_server", spy_build_server)
+
+    RunStore(tmp_path).create_run("t", content_contract=ContentContract.legacy_markdown())
+    ready = threading.Event()
+    thread = threading.Thread(target=serve, args=(tmp_path,), kwargs={"ready": ready}, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=10)
+    record = lifecycle.read_discovery(tmp_path)
+    assert _health(record["port"], record["token"])[0] == 200
+
+    conn = http.client.HTTPConnection("127.0.0.1", record["port"])
+    conn.request("POST", "/v1/shutdown", headers={"X-EP-Token": record["token"]})
+    conn.getresponse().read()
+    conn.close()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+    assert captured["poll_interval"] <= 0.1
+
+
 def test_serve_refuses_when_workspace_already_claimed(tmp_path):
     RunStore(tmp_path).create_run("t", content_contract=ContentContract.legacy_markdown())
     lifecycle.write_discovery(tmp_path, pid=os.getpid(), port=1, token="x", version="0.1.0")
@@ -419,3 +464,39 @@ def test_worker_restamps_plan_source_when_overrides_edited_while_queued(tmp_path
     finally:
         _post(port, token, "/v1/shutdown")
         thread.join(timeout=10)
+
+
+def test_workspace_config_source_write_plan_retries_replace_on_permission_error(
+    tmp_path, monkeypatch
+):
+    # Windows sharing semantics: os.replace onto model-plan.toml while a
+    # reader holds it open fails with PermissionError. The plan writer shares
+    # the package-wide atomic writer, so it polls through it instead of
+    # dropping the edit.
+    from education_pipeline import atomic_io
+    from education_pipeline.config import emit_model_plan_toml, parse_model_plan
+
+    source = WorkspaceConfigSource(tmp_path)
+    catalog, _ = source.load()
+    toml_text = emit_model_plan_toml(
+        parse_model_plan({"provider": "manual", "stages": {}}, catalog=catalog)
+    )
+
+    real_replace = os.replace
+    calls = {"count": 0}
+
+    def flaky_replace(src, dst):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise PermissionError("sharing violation")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(atomic_io.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(os, "replace", flaky_replace)
+
+    source.write_plan(toml_text)
+
+    assert calls["count"] == 2
+    written_path = tmp_path / "config" / "model-plan.toml"
+    assert written_path.read_text(encoding="utf-8") == toml_text
+    assert [p.name for p in written_path.parent.iterdir()] == ["model-plan.toml"]

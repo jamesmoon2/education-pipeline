@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import ClassVar
 import hashlib
 import json
-import re
+import stat
 import threading
 import tomllib
 
@@ -101,7 +101,16 @@ from education_pipeline.guides.blueprints import (
     get_blueprint,
     recommend_blueprint,
 )
-from education_pipeline.workspace import ProfileStore, TopicStore
+from education_pipeline.atomic_io import atomic_write_bytes
+from education_pipeline.workspace import (
+    ProfileStore,
+    TopicStore,
+    # Run ids are workspace artifact ids: one validator, one message, no
+    # matter which surface rejected the id (``workspace`` is upstream of
+    # ``runs``, so the shared definition lives there).
+    artifact_id as _artifact_id,
+    is_artifact_id as _is_artifact_id,
+)
 
 _GUIDE_CONTRACT_FILENAME = "guide-contract.json"
 
@@ -123,8 +132,6 @@ MANIFEST_SCHEMA_VERSION = 1
 RUN_SUBDIRS = ("inputs", "prompts", "responses", "approved", "reports", "final")
 
 _PROMPT_SUFFIX = ".prompt.md"
-_RESPONSE_SUFFIX = ".response.md"
-_STUB_SUFFIX = ".SAVE_RESPONSE_HERE.md"
 
 MARKDOWN_CONTENT_TYPE = "text/markdown"
 JSON_CONTENT_TYPE = "application/json"
@@ -135,8 +142,6 @@ GUIDE_V1_CONTENT_TYPE = (
 #: The stage whose approved output is assembled into the final guide.
 _FINAL_SOURCE_STAGE = "repair"
 _FINAL_FILENAME = "guide.md"
-
-_ARTIFACT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 @dataclass(frozen=True)
@@ -1005,12 +1010,18 @@ class RunStore:
             return None
         newest = None
         for path in run.rglob("*"):
+            # One stat() answers both questions this loop asks. ``is_file()``
+            # is itself a stat() that swallows OSError into False, so the
+            # try/except below covers exactly the entries it used to skip --
+            # a racing deletion, a dangling symlink, an unreadable parent --
+            # and S_ISREG covers the rest (directories, sockets, devices).
             try:
-                if not path.is_file():
-                    continue
-                mtime = path.stat().st_mtime
+                status = path.stat()
             except OSError:
                 continue  # racing deletion; skip
+            if not stat.S_ISREG(status.st_mode):
+                continue
+            mtime = status.st_mtime
             if newest is None or mtime > newest:
                 newest = mtime
         if newest is None:
@@ -1705,8 +1716,14 @@ class RunStore:
         report_path = self.export_report_path(safe_id)
         if not export_path.is_file() or not report_path.is_file():
             return "missing"
+        # One read serves both the schema check here and the byte comparison
+        # against the recomputed report below -- and pins both to the same
+        # generation of the file. Report sidecars are written only by
+        # _write_bytes_atomic from canonical_report_bytes (JSON, LF-only), so
+        # read_text's universal-newline translation was a no-op on them.
         try:
-            existing = json.loads(report_path.read_text(encoding="utf-8"))
+            report_bytes = report_path.read_bytes()
+            existing = json.loads(report_bytes.decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return "stale"
         if (
@@ -1776,7 +1793,7 @@ class RunStore:
                 audit_snapshot=audit_snapshot,
                 trace_projection=trace_projection,
             )
-            return "current" if report_path.read_bytes() == expected else "stale"
+            return "current" if report_bytes == expected else "stale"
         except (ConfigError, OSError, UnicodeError, ValueError):
             return "stale"
 
@@ -1795,14 +1812,6 @@ class RunStore:
             return ValidationReport.from_dict(payload)
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
             raise ConfigError(f"invalid validation report: {path}") from exc
-
-    def _current_safe_audit_evidence(
-        self, topic_id: str
-    ) -> tuple[tuple[Finding, ...], str | None]:
-        safe_id = _artifact_id(topic_id, "topic id")
-        with self._manifest_write_lock(safe_id):
-            snapshot = self._public_audit_snapshot_locked(safe_id)
-        return snapshot.findings, snapshot.projection_sha256
 
     def _parse_safe_audit_projection(
         self, projection_bytes: bytes
@@ -2318,8 +2327,14 @@ class RunStore:
         if not source_path.is_file() or not report_path.is_file():
             return "missing"
 
+        # One read serves both the parse and the digest below. Report files
+        # are written only by _write_bytes_atomic from canonical_report_bytes
+        # (JSON, LF-terminated, every \r escaped), so read_text's
+        # universal-newline translation was a no-op on them -- and decoding
+        # here raises the same UnicodeDecodeError read_text did.
         try:
-            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report_bytes = report_path.read_bytes()
+            report = json.loads(report_bytes.decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return "stale"
         if not isinstance(report, dict) or report.get("phase") != phase:
@@ -2342,7 +2357,7 @@ class RunStore:
         if recorded != _guide_source_sha(source_text):
             return "stale"
 
-        report_sha256 = hashlib.sha256(report_path.read_bytes()).hexdigest()
+        report_sha256 = hashlib.sha256(report_bytes).hexdigest()
         validation_event = next(
             (
                 event
@@ -3895,10 +3910,48 @@ class RunStore:
         _write_manifest(run / "manifest.json", manifest)
 
 
-def _guide_source_sha(text: str) -> str:
-    """Hash the guide source the same way ``validate_guide`` records ``guide_sha256``."""
+#: Bound for the guide-source digest memo. The live working set is a couple of
+#: sources per open run (draft and final), so a few hundred entries covers a
+#: whole workspace's poll traffic; each entry is two short hex strings.
+_GUIDE_SOURCE_SHA_MEMO_LIMIT = 256
+_GUIDE_SOURCE_SHA_MEMO: dict[str, str] = {}
+_GUIDE_SOURCE_SHA_MEMO_LOCK = threading.Lock()
 
-    return validation_guide_sha256(text)
+
+def _guide_source_sha(text: str) -> str:
+    """Hash the guide source the same way ``validate_guide`` records ``guide_sha256``.
+
+    Memoized on the exact input bytes. ``report_state`` answers "is this
+    report still current?" on every cockpit poll -- once per phase, per
+    course, per tick -- and each answer costs a codepoint sanitize, a full
+    parse + normalize, and a canonical re-encode of the entire guide, for
+    content that has almost never changed since the previous tick.
+
+    The key is the SHA-256 of the raw input, which makes this a pure-function
+    cache rather than run state: equal bytes have equal digests by
+    construction, so an edited guide simply misses (no invalidation window,
+    no path or topic to go stale) and no content can leak between workspaces
+    (identical bytes must hash identically anyway). It is module level
+    because ``RunStore`` is constructed freely -- fresh per CLI command, per
+    test -- so an instance-scoped memo would rarely be the one that is asked
+    twice.
+
+    Bounded by clear-on-full rather than an LRU: overflow costs one
+    recomputation per live source and never a wrong answer, which does not
+    justify carrying eviction bookkeeping on this path.
+    """
+
+    key = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    with _GUIDE_SOURCE_SHA_MEMO_LOCK:
+        memoized = _GUIDE_SOURCE_SHA_MEMO.get(key)
+    if memoized is not None:
+        return memoized
+    digest = validation_guide_sha256(text)
+    with _GUIDE_SOURCE_SHA_MEMO_LOCK:
+        if len(_GUIDE_SOURCE_SHA_MEMO) >= _GUIDE_SOURCE_SHA_MEMO_LIMIT:
+            _GUIDE_SOURCE_SHA_MEMO.clear()
+        _GUIDE_SOURCE_SHA_MEMO[key] = digest
+    return digest
 
 
 def _stub_text(paths: StagePaths) -> str:
@@ -3937,30 +3990,7 @@ def _write_text_atomic(path: Path, text: str) -> None:
 
 
 def _write_bytes_atomic(path: Path, data: bytes) -> None:
-    import os
-    import tempfile
-    import time
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=path.suffix)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-        # Windows sharing semantics: replacing a file another process or
-        # thread holds open for reading fails with PermissionError. Readers
-        # (manifest polls, API reads) are transient, so retry briefly.
-        for attempt in range(10):
-            try:
-                os.replace(tmp, path)
-                break
-            except PermissionError:
-                if attempt == 9:
-                    raise
-                time.sleep(0.05)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+    atomic_write_bytes(path, data)
 
 
 def _supported_stage(stage: str) -> str:
@@ -4014,13 +4044,3 @@ def _guide_content_type(schema_version: str | None) -> str:
     raise ConfigError(f"unsupported interactive guide schema {schema_version!r}")
 
 
-def _artifact_id(value: str, context: str) -> str:
-    if not _is_artifact_id(value):
-        raise ConfigError(
-            f"{context} must match {_ARTIFACT_ID_PATTERN.pattern!r}; got {value!r}"
-        )
-    return value
-
-
-def _is_artifact_id(value: str) -> bool:
-    return isinstance(value, str) and _ARTIFACT_ID_PATTERN.fullmatch(value) is not None

@@ -139,31 +139,48 @@ interface RawJsonNumber {
   readonly [rawJsonNumberMarker]: true;
 }
 
-function parseProfileResponse(response: Response): Promise<unknown> {
-  return response.text().then((text) => {
-    const numberSources: string[] = [];
-    let inString = false;
-    let escaped = false;
-    for (let index = 0; index < text.length; index += 1) {
-      const char = text[index];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (char === "\\") escaped = true;
-        else if (char === '"') inString = false;
-        continue;
-      }
-      if (char === '"') {
-        inString = true;
-        continue;
-      }
-      if (char === "-" || /\d/.test(char)) {
-        const match = text.slice(index).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-        if (match) {
-          numberSources.push(match[0]);
-          index += match[0].length - 1;
-        }
+// Sticky, so it can be anchored at an offset without copying the tail of the
+// body for every number in it.
+const jsonNumberAt = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+
+/**
+ * Every JSON number literal in `text`, in document order, skipping the insides
+ * of strings. The reviver visits numbers in that same order, so position i
+ * here is the source text of the i-th number the reviver sees.
+ */
+function scanNumberSources(text: string): string[] {
+  const sources: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "-" || (char >= "0" && char <= "9")) {
+      jsonNumberAt.lastIndex = index;
+      const match = jsonNumberAt.exec(text);
+      if (match) {
+        sources.push(match[0]);
+        index += match[0].length - 1;
       }
     }
+  }
+  return sources;
+}
+
+function parseProfileResponse(response: Response): Promise<unknown> {
+  return response.text().then((text) => {
+    // Engines that hand the reviver each number's own source text never need
+    // the scan; the rest pay for it once, when the first number asks.
+    let numberSources: string[] | null = null;
     let numberIndex = 0;
     const parseWithSource = JSON.parse as (
       source: string,
@@ -171,10 +188,15 @@ function parseProfileResponse(response: Response): Promise<unknown> {
     ) => unknown;
     const parsed = parseWithSource(text, (_key, value, context) => {
       if (typeof value !== "number") return value;
-      const fallbackSource = numberSources[numberIndex];
+      const position = numberIndex;
       numberIndex += 1;
+      let source = context?.source;
+      if (source === undefined) {
+        if (numberSources === null) numberSources = scanNumberSources(text);
+        source = numberSources[position];
+      }
       return {
-        source: context?.source ?? fallbackSource ?? JSON.stringify(value),
+        source: source ?? JSON.stringify(value),
         [rawJsonNumberMarker]: true,
       } satisfies RawJsonNumber;
     });
@@ -326,12 +348,6 @@ export const recommendBlueprints = (
         time_budget_minutes?: number;
       },
 ) => apiPost<BlueprintsPayload>("/v1/blueprints/recommend", body);
-export const getBlueprints = (topicId?: string) =>
-  api<BlueprintsPayload>(
-    topicId
-      ? `/v1/blueprints?topic=${encodeURIComponent(topicId)}`
-      : "/v1/blueprints",
-  );
 export const getRepairModules = (topicId: string) =>
   api<RepairModulesPayload>(
     `/v1/runs/${encodeURIComponent(topicId)}/repair/modules`,

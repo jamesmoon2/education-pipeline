@@ -57,7 +57,6 @@ _ROOT_FIELDS = {
 }
 _ASSESSMENT_FIELDS = {"goal_id", "verdict", "evidence", "rationale"}
 _FACET_FIELDS = {"facet_id", "verdict", "evidence", "rationale"}
-_EVIDENCE_FIELDS = {"kind", "id"}
 _GENERIC_FIELDS = {"location", "reason_code", "rationale"}
 _PRIVATE_DETAIL_FIELDS = {"location", "category", "confidence", "rationale"}
 _LOCATION_FIELDS = {"kind", "id"}
@@ -276,16 +275,6 @@ def parse_audit_response(
         ),
         overall_summary=overall_summary,
     )
-
-
-def guide_location_fingerprint(guide: Guide, *, kind: str, id: str) -> str:
-    """Return an application-owned fingerprint of one resolved guide location."""
-
-    reference = GuideReference(kind, id)
-    locations = _guide_locations(public_guide_projection(guide))
-    if reference not in locations:
-        raise AuditResponseError("guide location does not reference an existing element")
-    return _resolved_location_fingerprint(reference, locations[reference])
 
 
 def safe_audit_findings(

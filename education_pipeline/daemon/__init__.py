@@ -5,11 +5,11 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
-import tempfile
 import threading
 from pathlib import Path
 
 from education_pipeline import __version__
+from education_pipeline.atomic_io import atomic_write_text
 from education_pipeline.config import (
     ConfigError,
     ModelCatalog,
@@ -66,17 +66,7 @@ class WorkspaceConfigSource:
         return hashlib.sha256(self.plan_path().read_bytes()).hexdigest()
 
     def write_plan(self, toml_text: str) -> None:
-        target = self.root / "config" / "model-plan.toml"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".tmp-", suffix=".toml")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(toml_text)
-            os.replace(tmp, target)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+        atomic_write_text(self.root / "config" / "model-plan.toml", toml_text)
 
 
 class StaticConfigSource:
@@ -99,15 +89,6 @@ class StaticConfigSource:
         data = tomllib.loads(toml_text)
         self.plan = parse_model_plan(data, self.catalog)
         self.held_text = toml_text
-
-
-def load_workspace_config(root: str | Path) -> tuple[ModelCatalog, ModelPlan]:
-    """Load the workspace model catalog + plan, falling back to packaged examples.
-
-    Thin compatibility wrapper around :class:`WorkspaceConfigSource`.
-    """
-
-    return WorkspaceConfigSource(root).load()
 
 
 def serve(
@@ -174,7 +155,13 @@ def serve(
         server = build_server(context)
         lifecycle.write_discovery(root, pid=os.getpid(), port=server.server_port, token=token,
                                   version=__version__)
-        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        # serve_forever checks the shutdown flag once per poll interval, so
+        # that interval is the floor on how long the shutdown() below blocks.
+        # The stdlib default is 0.5s; 0.1s bounds a daemon stop at ~100ms for
+        # the cost of a handful of extra idle select() wakeups per second.
+        server_thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
+        )
         server_thread.start()
         if ready is not None:
             ready.set()

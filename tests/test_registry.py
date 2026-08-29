@@ -134,3 +134,34 @@ def test_record_workspace_leaves_no_temp_files(tmp_path: Path) -> None:
 
 def test_last_used_workspace_none_when_unset() -> None:
     assert last_used_workspace() is None
+
+
+def test_record_workspace_retries_replace_on_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows sharing semantics: os.replace onto a file another process holds
+    # open for reading fails with PermissionError. The registry writer shares
+    # the package-wide atomic writer, so it polls through it like every other
+    # writer instead of losing the recorded workspace.
+    from education_pipeline import atomic_io
+
+    real_replace = os.replace
+    calls = {"count": 0}
+
+    def flaky_replace(source, target):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise PermissionError("sharing violation")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(atomic_io.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(os, "replace", flaky_replace)
+
+    record_workspace(tmp_path / "ws")
+
+    assert calls["count"] == 2
+    assert load_registry().workspaces == (str((tmp_path / "ws").resolve()),)
+    leftovers = [
+        p.name for p in registry_path().parent.iterdir() if p.name != "workspaces.json"
+    ]
+    assert leftovers == []

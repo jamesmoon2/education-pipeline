@@ -482,3 +482,53 @@ def test_exact_private_fingerprint_identity_is_not_redacted_by_an_overlapping_va
     assert leak.id == f"privacy.exact_private_value:{fingerprint}"
     assert fingerprint in leak.message
     assert leak.waivable is True
+
+
+# ---------------------------------------------------------------------------
+# ``privacy.py`` uses ``Mapping`` as an ``isinstance`` target in the canonical
+# TOML writer and in the protected-string walk; importing it from
+# ``collections.abc`` must not change which profile shapes serialize.
+
+
+def test_canonical_profile_toml_accepts_every_registered_mapping_type() -> None:
+    from collections import ChainMap, OrderedDict, UserDict
+    from types import MappingProxyType
+
+    from education_pipeline.privacy import canonical_profile_toml_bytes
+
+    source = {"id": "mapping-kinds", "target_learner": "cohort"}
+    variants = [
+        source,
+        MappingProxyType(source),
+        OrderedDict(source),
+        ChainMap(source),
+        UserDict(source),
+    ]
+
+    rendered = [canonical_profile_toml_bytes(variant) for variant in variants]
+
+    assert all(item == rendered[0] for item in rendered)
+    assert b'id = "mapping-kinds"' in rendered[0]
+
+
+def test_nested_mapping_metadata_still_serializes_and_is_walked_for_leaks() -> None:
+    from types import MappingProxyType
+
+    from education_pipeline.privacy import (
+        canonical_profile_toml_bytes,
+        profile_private_values,
+    )
+    from education_pipeline.profiles import parse_learner_profile
+
+    profile = parse_learner_profile(
+        {
+            "id": "nested-metadata",
+            "target_learner": "cohort",
+            "metadata": MappingProxyType(
+                {"enrolment": MappingProxyType({"campus": "Northgate Campus"})}
+            ),
+        }
+    )
+
+    assert "northgate campus" in profile_private_values(profile)
+    assert b"Northgate Campus" in canonical_profile_toml_bytes(profile)

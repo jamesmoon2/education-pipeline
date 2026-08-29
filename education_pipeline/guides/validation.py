@@ -9,6 +9,11 @@ import re
 from typing import Iterable
 
 from education_pipeline.privacy import normalize_private_value, private_value_fingerprint
+from education_pipeline.text_scalars import (
+    SURROGATE_REPLACEMENT,
+    has_surrogates,
+    replace_surrogates,
+)
 
 from .canonical import guide_sha256
 from .model import Callout, Guide, KnowledgeCheck, RichText, Scenario, WorkedReveal
@@ -162,8 +167,66 @@ RULES = {
 
 _PLACEHOLDER = re.compile(r"\b(?:todo|tbd|lorem ipsum|insert (?:text|content) here)\b", re.I)
 _PROMPT_LEAK = re.compile(r"(?:system prompt|ignore (?:all |the )?previous instructions|you are (?:an? )?(?:ai|language model))", re.I)
-_POSSIBLE_ID = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 _GENERIC_PRIVATE = {"none", "unknown", "n/a", "na", "user", "learner", "student", "private"}
+
+#: The three halves of the historical identifier pattern
+#: ``\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b`` (case-insensitive), kept as
+#: separate compiled pieces so the scan can be anchored on ``@`` instead of
+#: retried from every start position. See ``_contains_possible_identifier``.
+_LOCAL_RUN = re.compile(r"[A-Z0-9._%+-]+", re.I)
+_DOMAIN_TAIL = re.compile(r"[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
+_WORD_CHARACTER = re.compile(r"\w")
+_NON_WORD_CHARACTER = re.compile(r"\W")
+
+
+def _local_run_has_word_boundary(text: str, start: int, end: int) -> bool:
+    r"""Does ``\b`` hold anywhere in ``text[start:end]``?
+
+    ``text[start:end]`` is a maximal local-class run, and the local class mixes
+    word characters (``A-Z0-9_`` plus the letters ``re.IGNORECASE`` folds into
+    them) with non-word ones (``.%+-``). Inside the run every neighbouring pair
+    is local-class, so a boundary exists exactly where the run's word-ness
+    first flips; at ``start`` the real preceding character decides.
+    """
+
+    first_is_word = _WORD_CHARACTER.match(text, start) is not None
+    previous_is_word = start > 0 and _WORD_CHARACTER.match(text, start - 1) is not None
+    if first_is_word != previous_is_word:
+        return True
+    scanner = _NON_WORD_CHARACTER if first_is_word else _WORD_CHARACTER
+    return scanner.search(text, start, end) is not None
+
+
+def _contains_possible_identifier(text: str) -> bool:
+    r"""Whether ``text`` contains an email-shaped private identifier.
+
+    Boolean-equivalent to searching
+    ``\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b`` case-insensitively, but
+    linear instead of quadratic. That pattern retries its greedy local part
+    from every word-boundary start, which costs seconds on one 20,000-character
+    field (``parse.MAX_TEXT``) of ``'@'``-free prose.
+
+    Neither ``@`` nor any domain-class character belongs to the local class, so
+    every candidate match is pinned to one literal ``@``: the local part is
+    exactly the maximal local-class run ending at that ``@``, the match may
+    start anywhere in that run where ``\b`` holds, and the domain must match
+    immediately after it. Runs (and the domain spans that follow them) are
+    disjoint, so the whole scan is one pass.
+    """
+
+    if "@" not in text:
+        return False
+    length = len(text)
+    for run in _LOCAL_RUN.finditer(text):
+        end = run.end()
+        if (
+            end < length
+            and text[end] == "@"
+            and _local_run_has_word_boundary(text, run.start(), end)
+            and _DOMAIN_TAIL.match(text, end + 1) is not None
+        ):
+            return True
+    return False
 
 
 def _finding(rule_id: str, path: str, message: str, identity: str = "", related_ids: tuple[str, ...] = ()) -> Finding:
@@ -199,14 +262,13 @@ def _diagnostic_finding(item: ParseDiagnostic, private_values: tuple[str, ...]) 
 
 
 def _replace_invalid_scalar_codepoints(value: str) -> str:
-    return "".join(
-        "\N{REPLACEMENT CHARACTER}" if 0xD800 <= ord(character) <= 0xDFFF else character
-        for character in value
-    )
+    """Substitute U+FFFD for every lone surrogate; identity when there is none."""
+
+    return replace_surrogates(value, SURROGATE_REPLACEMENT)
 
 
 def _has_invalid_scalar_codepoints(value: str) -> bool:
-    return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+    return has_surrogates(value)
 
 
 def _normalize_validation_text(value: str) -> str:
@@ -216,18 +278,32 @@ def _normalize_validation_text(value: str) -> str:
 
 
 def _sanitize_guide_value(value: object) -> object:
+    """Return ``value`` with every lone surrogate replaced by U+FFFD.
+
+    Identity-preserving: a subtree with nothing to replace is returned as the
+    same object rather than rebuilt. Guides are almost always already clean, so
+    the eager rebuild copied the whole document on every validation and every
+    digest. Every guide dataclass is frozen and every consumer only reads them,
+    so sharing a clean subtree is indistinguishable from copying it.
+    """
+
     if isinstance(value, str):
         return _replace_invalid_scalar_codepoints(value)
     if isinstance(value, tuple):
-        return tuple(_sanitize_guide_value(child) for child in value)
+        children = tuple(_sanitize_guide_value(child) for child in value)
+        if all(new is old for new, old in zip(children, value)):
+            return value
+        return children
     if is_dataclass(value):
-        return replace(
-            value,
-            **{
-                field.name: _sanitize_guide_value(getattr(value, field.name))
-                for field in fields(value)
-            },
-        )
+        changed = {}
+        for field in fields(value):
+            old = getattr(value, field.name)
+            new = _sanitize_guide_value(old)
+            if new is not old:
+                changed[field.name] = new
+        if not changed:
+            return value
+        return replace(value, **changed)
     return value
 
 
@@ -705,11 +781,14 @@ def validate_guide(
     for supplied in supplied_private:
         denylist.append((supplied, private_value_fingerprint(supplied)))
     for path, text in texts:
-        folded = _normalize_validation_text(text)
-        for private, fingerprint in denylist:
-            if private in folded:
-                findings.append(_finding("privacy.exact_private_value", path, f"Content matches a private denylist value (fingerprint {fingerprint}).", fingerprint))
-        if _POSSIBLE_ID.search(text):
+        # The fold is read only by the denylist loop, so an empty denylist
+        # skips an NFC normalization plus a casefold per text field.
+        if denylist:
+            folded = _normalize_validation_text(text)
+            for private, fingerprint in denylist:
+                if private in folded:
+                    findings.append(_finding("privacy.exact_private_value", path, f"Content matches a private denylist value (fingerprint {fingerprint}).", fingerprint))
+        if _contains_possible_identifier(text):
             findings.append(_finding("privacy.possible_identifier", path, "Content may contain a private identifier; the suspected value is redacted."))
         if _PROMPT_LEAK.search(text):
             findings.append(_finding("content.prompt_leak", path, "Content appears to include model or prompt instructions."))
@@ -758,7 +837,11 @@ def validate_guide(
     return _validation_report(
         guide.schema_version,
         phase,
-        validation_guide_sha256(guide),
+        # ``guide`` came out of ``_sanitize_guide_value`` above, and
+        # sanitization is idempotent, so this is exactly what
+        # ``validation_guide_sha256(guide)`` would compute — without a second
+        # walk of the whole document.
+        guide_sha256(guide),
         findings,
         supplied_private,
     )

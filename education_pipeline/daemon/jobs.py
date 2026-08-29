@@ -14,7 +14,6 @@ import secrets
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -22,18 +21,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from education_pipeline.atomic_io import atomic_write_text
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
 from education_pipeline.providers import get_runner
 from education_pipeline.runs import RunStore, StaleContentError
 
-JOB_STATUSES = (
-    "queued",
-    "running",
-    "succeeded",
-    "failed",
-    "canceled",
-    "interrupted",
-)
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled", "interrupted"})
 
 
@@ -74,6 +66,26 @@ class Job:
         fields = {f: data.get(f) for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         fields["metadata"] = data.get("metadata") or {}
         return cls(**fields)
+
+
+def _is_path_segment(name: str) -> bool:
+    """True when ``name`` is a single, non-traversing path component.
+
+    Topic and job ids reach the scoped lookups below straight off the HTTP
+    routes (``/v1/jobs/<id>``, ``/v1/jobs?topic=<id>``). Those lookups join an
+    id into a filesystem path, so the id must first be proven to name one
+    child directory and nothing else. Refusing anything else is behaviour
+    preserving: job records are only ever created through
+    ``DaemonContext.enqueue_stage``, which validates the topic against
+    ``RunStore``'s artifact-id pattern first, so no stored record can carry an
+    id that fails this check -- the old workspace-wide scan matched nothing
+    for such ids either.
+    """
+
+    if not name or name in (os.curdir, os.pardir):
+        return False
+    probe = Path(name)
+    return len(probe.parts) == 1 and not probe.is_absolute() and probe.name == name
 
 
 def _read_job_record(path: Path) -> dict:
@@ -132,32 +144,22 @@ class JobStore:
         return job
 
     def save(self, job: Job) -> None:
-        target = self._job_json(job.topic_id, job.id)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".tmp-", suffix=".json")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(job.to_dict(), handle, indent=2)
-            # Windows sharing semantics: replacing job.json while an API
-            # reader holds it open fails with PermissionError. Readers are
-            # transient, so retry briefly instead of crashing the worker.
-            for attempt in range(10):
-                try:
-                    os.replace(tmp, target)
-                    break
-                except PermissionError:
-                    if attempt == 9:
-                        raise
-                    time.sleep(0.05)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+        atomic_write_text(
+            self._job_json(job.topic_id, job.id),
+            json.dumps(job.to_dict(), indent=2),
+        )
 
     def load(self, topic_id: str, job_id: str) -> Job:
         return Job.from_dict(_read_job_record(self._job_json(topic_id, job_id)))
 
     def all_jobs(self) -> list[Job]:
+        """Every job record in the workspace.
+
+        The genuinely workspace-wide listing (``list()`` with no topic, and
+        ``Worker.reconcile``). Topic- and id-scoped callers must not pay for
+        it: see :meth:`list` and :meth:`find`.
+        """
+
         jobs: list[Job] = []
         if not self.runs_dir.exists():
             return jobs
@@ -168,12 +170,59 @@ class JobStore:
                     jobs.append(Job.from_dict(_read_job_record(record)))
         return jobs
 
+    def _topic_jobs(self, topic_id: str) -> list[Job]:
+        """Records under one topic's ``jobs`` directory, unordered."""
+
+        if not _is_path_segment(topic_id):
+            return []
+        jobs_dir = self.runs_dir / topic_id / "jobs"
+        if not jobs_dir.is_dir():
+            return []
+        jobs: list[Job] = []
+        for job_dir in jobs_dir.iterdir():
+            record = job_dir / "job.json"
+            if not record.is_file():
+                continue
+            job = Job.from_dict(_read_job_record(record))
+            # ``save`` always writes a record under its own topic, so this
+            # only ever drops a hand-edited record whose stored topic_id
+            # disagrees with its directory -- which the old filter over
+            # ``all_jobs()`` dropped too. Keeps the postcondition every
+            # caller relies on: everything listed belongs to ``topic_id``.
+            if job.topic_id == topic_id:
+                jobs.append(job)
+        return jobs
+
     def list(self, topic_id: str | None = None) -> list[Job]:
-        jobs = [j for j in self.all_jobs() if topic_id is None or j.topic_id == topic_id]
+        """Jobs newest-first, for one topic or (``topic_id=None``) all of them.
+
+        The per-topic case reads only ``runs/<topic_id>/jobs`` instead of
+        parsing every record in the workspace: ``active_for`` and
+        ``any_active_for`` are built on it, and those sit on the enqueue path
+        under ``Worker``'s lock.
+        """
+
+        jobs = self.all_jobs() if topic_id is None else self._topic_jobs(topic_id)
         return sorted(jobs, key=lambda j: j.id, reverse=True)
 
     def find(self, job_id: str) -> Job | None:
-        for job in self.all_jobs():
+        """The job with this id, read by its deterministic path.
+
+        ``save`` writes every record to ``runs/<topic_id>/jobs/<job_id>/
+        job.json``, so the only unknown is which topic owns the id: probe that
+        exact path under each topic rather than parsing (and then linearly
+        scanning) every record in the workspace. This is on the daemon's 1s
+        log poll and the CLI's 0.25s job poll, and ``Worker.cancel``/
+        ``Worker._loop`` call it per job.
+        """
+
+        if not _is_path_segment(job_id):
+            return None
+        for jobs_dir in self.runs_dir.glob("*/jobs"):
+            record = jobs_dir / job_id / "job.json"
+            if not record.is_file():
+                continue
+            job = Job.from_dict(_read_job_record(record))
             if job.id == job_id:
                 return job
         return None

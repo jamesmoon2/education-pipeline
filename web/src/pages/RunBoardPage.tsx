@@ -13,7 +13,7 @@ import PersonalizationPanel from "../components/PersonalizationPanel";
 import PipelineStepper from "../components/PipelineStepper";
 import PrimaryAction from "../components/PrimaryAction";
 import RunPlanPanel from "../components/RunPlanPanel";
-import ValidationFindingsPanel from "../components/ValidationFindingsPanel";
+import ValidationFindingsPanel, { NO_FINDINGS } from "../components/ValidationFindingsPanel";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 
@@ -146,7 +146,7 @@ function InteractiveGuidePanels({
             state={status.validations[phase].state}
             effectiveBlocking={status.validations[phase].effective_blocking}
             supplementalFindings={
-              phase === "final" ? currentPersonalization?.audit.findings : []
+              phase === "final" ? currentPersonalization?.audit.findings : NO_FINDINGS
             }
             onChanged={refreshWorkspace}
           />
@@ -159,11 +159,14 @@ function InteractiveGuidePanels({
 function RunBoardForTopic({ topicId }: { topicId: string }) {
   const fetchStatus = useCallback(() => getRunStatus(topicId), [topicId]);
   const { data: status, error, refresh: refreshStatus } = usePolling(fetchStatus, 5_000);
-  // Poll jobs at the board level too (JobsPanel polls for its own table):
-  // a queued/running job must be visible at the TOP of the board — in the
-  // action area and on its stage row — not only after scrolling to Jobs.
+  // Single poll of the jobs endpoint, held here at the board level. JobsPanel
+  // used to run its own identical poll for its table, doubling this request
+  // stream; it now takes this payload (and error) as props instead, so there
+  // is exactly one 2s poll. A queued/running job still surfaces at the TOP of
+  // the board (action area and stage row) on the same cadence the Jobs table
+  // below renders from.
   const fetchJobs = useCallback(() => getJobs(topicId), [topicId]);
-  const { data: jobsData, error: jobsError } = usePolling(fetchJobs, 2_000);
+  const { data: jobsData, error: jobsError, refresh: refreshJobs } = usePolling(fetchJobs, 2_000);
   // While the jobs poll is failing, usePolling keeps its last payload; a job
   // that terminated during the outage would stay presented as "Running…" in
   // the action area and on its stepper node. Treat the snapshot as unusable
@@ -243,7 +246,7 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
         />
       )}
       <RunPlanPanel topicId={status.topic_id} nextStage={status.next_action.stage} />
-      <JobsPanel topicId={status.topic_id} />
+      <JobsPanel data={jobsData} error={jobsError} onChanged={refreshJobs} />
     </div>
   );
 }

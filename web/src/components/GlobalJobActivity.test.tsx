@@ -252,6 +252,43 @@ describe("GlobalJobActivity toasts", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("toasts a job that terminates in the same tick another job leaves the payload", async () => {
+    vi.mocked(getJobs)
+      .mockResolvedValueOnce({
+        jobs: [
+          makeJob("j1", "running"),
+          makeJob("j2", "running", { topic_id: "feedback-loops", stage: "draft" }),
+        ],
+      })
+      .mockResolvedValue({
+        jobs: [
+          makeJob("j2", "failed", {
+            topic_id: "feedback-loops",
+            stage: "draft",
+            error: "provider exited 1",
+          }),
+        ],
+      });
+    renderActivity();
+
+    const toast = await screen.findByRole("alert");
+    expect(toast).toHaveTextContent("The draft stage failed on feedback-loops — provider exited 1");
+    // j1 left without a terminal status of its own; there is nothing to announce.
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
+  it("forgets a job the payload drops, so its reappearance is history, not news", async () => {
+    vi.mocked(getJobs)
+      .mockResolvedValueOnce({ jobs: [makeJob("j1", "running")] })
+      .mockResolvedValueOnce({ jobs: [] })
+      .mockResolvedValue({ jobs: [makeJob("j1", "succeeded")] });
+    renderActivity();
+
+    await waitFor(() => expect(getJobs).toHaveBeenCalledTimes(4));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Job notifications")).not.toBeInTheDocument();
+  });
+
   it("never toasts a job first seen in a terminal state", async () => {
     vi.mocked(getJobs).mockResolvedValue({ jobs: [makeJob("j1", "succeeded")] });
     renderActivity();

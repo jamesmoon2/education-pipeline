@@ -250,3 +250,46 @@ def test_emit_topic_toml_omits_empty_optional_fields() -> None:
 
     round_tripped = parse_topic(tomllib.loads(toml_text))
     assert round_tripped == topic
+
+
+# ---------------------------------------------------------------------------
+# ``Mapping`` is both an annotation and an ``isinstance`` target here, so the
+# import source must not change which values parse.
+
+
+def test_parse_topic_accepts_every_registered_mapping_type() -> None:
+    from collections import ChainMap, OrderedDict, UserDict
+    from types import MappingProxyType
+
+    source = {"id": "mapping-kinds", "title": "Mapping Kinds"}
+    variants = [
+        source,
+        MappingProxyType(source),
+        OrderedDict(source),
+        ChainMap(source),
+        UserDict(source),
+    ]
+
+    parsed = [parse_topic(variant) for variant in variants]
+
+    assert all(item == parsed[0] for item in parsed)
+
+
+@pytest.mark.parametrize("value", [None, [], "id = 1", 7, ("id", "x")])
+def test_parse_topic_rejects_non_mappings(value: object) -> None:
+    with pytest.raises(ConfigError, match="topic must be a table"):
+        parse_topic(value)  # type: ignore[arg-type]
+
+
+def test_topic_metadata_accepts_a_mapping_proxy() -> None:
+    from types import MappingProxyType
+
+    topic = parse_topic(
+        {
+            "id": "proxy-metadata",
+            "title": "Proxy Metadata",
+            "metadata": MappingProxyType({"cohort": "spring"}),
+        }
+    )
+
+    assert topic.metadata["cohort"] == "spring"

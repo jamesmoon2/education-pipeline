@@ -12,6 +12,13 @@ type ValidationState = "missing" | "current" | "stale";
 type SeverityFilter = "all" | ValidationFinding["severity"];
 type StatusFilter = "all" | "blocking" | "waivable" | "waived";
 
+/**
+ * The stable "no aggregate findings" value. A fresh `[]` — whether written at
+ * a call site or as this component's default parameter — changes identity on
+ * every render and recomputes `combinedFindings` on every render with it.
+ */
+export const NO_FINDINGS: ValidationFinding[] = [];
+
 function feedbackFor(error: unknown): string {
   if (error instanceof ApiRequestError) return error.message;
   return error instanceof Error ? error.message : "Validation request failed.";
@@ -35,7 +42,7 @@ export default function ValidationFindingsPanel({
   phase,
   state,
   effectiveBlocking,
-  supplementalFindings = [],
+  supplementalFindings = NO_FINDINGS,
   onChanged,
 }: {
   topicId: string;

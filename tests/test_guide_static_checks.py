@@ -214,3 +214,29 @@ def test_static_checks_assemble_the_exact_public_projection(monkeypatch):
     assert result.document is not None
     assert source.course.goal_exclusions
     assert not assembled[0].course.goal_exclusions
+
+
+def test_tampered_javascript_fails_assets_match(guide):
+    """Both asset comparisons are real: css and javascript each gate the check.
+
+    ``compute_static_checks`` compares the asset strings directly; the css case
+    above would still pass if only the css arm were wired up.
+    """
+    packaged = load_runtime_assets()
+    tampered = RuntimeAssets(css=packaged.css, javascript=packaged.javascript + "\n//x")
+    result = compute_static_checks(guide, assets=tampered)
+    assert result.context.assets_match is False
+    assert result.context.render_succeeded is True
+
+
+def test_equal_but_not_identical_asset_strings_still_match(guide):
+    """Equality, not object identity, decides ``assets_match``."""
+    packaged = load_runtime_assets()
+    copied = RuntimeAssets(
+        css="".join(packaged.css), javascript="".join(packaged.javascript)
+    )
+    assert copied.css is not packaged.css
+    assert copied.javascript is not packaged.javascript
+
+    result = compute_static_checks(guide, assets=copied, packaged_assets=packaged)
+    assert result.context.assets_match is True

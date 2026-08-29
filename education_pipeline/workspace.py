@@ -7,18 +7,19 @@ import hashlib
 import os
 from pathlib import Path
 import re
-import tempfile
 import threading
 from typing import Any, Mapping
 import tomllib
 
+from education_pipeline.atomic_io import atomic_write_bytes
 from education_pipeline.config import ConfigError
 from education_pipeline.privacy import canonical_profile_toml_bytes, profile_to_dict
 from education_pipeline.profiles import LearnerProfile, load_learner_profile, parse_learner_profile
 from education_pipeline.topics import Topic, load_topic, parse_topic
 
 
-_ARTIFACT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+#: The one artifact-id shape every workspace artifact (and every run) uses.
+ARTIFACT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _PROFILE_LOCKS: dict[str, threading.Lock] = {}
 _PROFILE_LOCKS_GUARD = threading.Lock()
 
@@ -205,11 +206,11 @@ class ProfileStore:
         return self.root / "runs"
 
     def profile_path(self, profile_id: str) -> Path:
-        safe_id = _artifact_id(profile_id, "profile id")
+        safe_id = artifact_id(profile_id, "profile id")
         return self.profiles_dir / f"{safe_id}.toml"
 
     def topic_profile_snapshot_path(self, topic_id: str) -> Path:
-        safe_id = _artifact_id(topic_id, "topic id")
+        safe_id = artifact_id(topic_id, "topic id")
         return self.runs_dir / safe_id / "inputs" / "profile.toml"
 
     def topic_profile_snapshot_lock(self, topic_id: str) -> threading.Lock:
@@ -229,7 +230,7 @@ class ProfileStore:
         ids = [
             path.stem
             for path in self.profiles_dir.glob("*.toml")
-            if path.is_file() and _is_artifact_id(path.stem)
+            if path.is_file() and is_artifact_id(path.stem)
         ]
         return tuple(sorted(ids))
 
@@ -237,7 +238,7 @@ class ProfileStore:
         return self.read_profile_record(profile_id).profile
 
     def read_profile_record(self, profile_id: str) -> ProfileRecord:
-        safe_id = _artifact_id(profile_id, "profile id")
+        safe_id = artifact_id(profile_id, "profile id")
         path = self.profile_path(safe_id)
         source_bytes = _read_bytes(path, "learner profile file")
         profile = _parse_profile_bytes(source_bytes, f"profile {safe_id!r}")
@@ -258,7 +259,7 @@ class ProfileStore:
         *,
         overwrite: bool = False,
     ) -> LearnerProfile:
-        safe_id = _artifact_id(profile_id, "profile id")
+        safe_id = artifact_id(profile_id, "profile id")
         profile = _parse_profile_toml(toml_text, f"profile {safe_id!r}")
         _require_matching_profile_id(profile, safe_id)
         if not overwrite:
@@ -290,7 +291,7 @@ class ProfileStore:
     ) -> ProfileRecord:
         """Atomically import canonical TOML under one target lock."""
 
-        safe_id = _artifact_id(profile_id, "profile id")
+        safe_id = artifact_id(profile_id, "profile id")
         profile = _parse_profile_toml(toml_text, f"profile {safe_id!r}")
         _require_matching_profile_id(profile, safe_id)
         candidate = _profile_record(profile)
@@ -333,13 +334,13 @@ class ProfileStore:
 
         source = self.read_profile_record(profile_id)
         duplicate = profile_to_dict(source.profile)
-        duplicate["id"] = _artifact_id(new_id, "profile id")
+        duplicate["id"] = artifact_id(new_id, "profile id")
         return self.create_profile(new_id, duplicate)
 
     def profile_attachment_count(self, profile_id: str) -> int:
         """Count valid run snapshots whose embedded id matches the profile."""
 
-        safe_id = _artifact_id(profile_id, "profile id")
+        safe_id = artifact_id(profile_id, "profile id")
         if not self.runs_dir.exists():
             return 0
         count = 0
@@ -361,7 +362,7 @@ class ProfileStore:
         *,
         base_sha256: str | None,
     ) -> ProfileRecord:
-        safe_id = _artifact_id(profile_id, "profile id")
+        safe_id = artifact_id(profile_id, "profile id")
         profile = value if isinstance(value, LearnerProfile) else parse_learner_profile(value)
         _require_matching_profile_id(profile, safe_id)
         candidate = _profile_record(profile)
@@ -405,8 +406,8 @@ class ProfileStore:
         *,
         overwrite: bool = False,
     ) -> ProfileAttachment:
-        safe_profile_id = _artifact_id(profile_id, "profile id")
-        safe_topic_id = _artifact_id(topic_id, "topic id")
+        safe_profile_id = artifact_id(profile_id, "profile id")
+        safe_topic_id = artifact_id(topic_id, "topic id")
         source_path = self.profile_path(safe_profile_id)
         source_bytes = _read_bytes(source_path, "learner profile file")
         profile = _parse_profile_bytes(source_bytes, f"profile {safe_profile_id!r}")
@@ -443,7 +444,7 @@ class TopicStore:
         return self.root / "topics"
 
     def topic_path(self, topic_id: str) -> Path:
-        safe_id = _artifact_id(topic_id, "topic id")
+        safe_id = artifact_id(topic_id, "topic id")
         return self.topics_dir / f"{safe_id}.toml"
 
     def list_topic_ids(self) -> tuple[str, ...]:
@@ -452,7 +453,7 @@ class TopicStore:
         ids = [
             path.stem
             for path in self.topics_dir.glob("*.toml")
-            if path.is_file() and _is_artifact_id(path.stem)
+            if path.is_file() and is_artifact_id(path.stem)
         ]
         return tuple(sorted(ids))
 
@@ -473,7 +474,7 @@ class TopicStore:
         *,
         overwrite: bool = False,
     ) -> Topic:
-        safe_id = _artifact_id(topic_id, "topic id")
+        safe_id = artifact_id(topic_id, "topic id")
         topic = _parse_topic_toml(toml_text, f"topic {safe_id!r}")
         if topic.id != safe_id:
             raise ConfigError("topic id mismatch with artifact path")
@@ -586,29 +587,37 @@ def _profile_lock_key(path: Path) -> str:
 
 
 def _atomic_replace_bytes(path: Path, content: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
+    """Durably replace ``path``: profile artifacts are fsynced before landing."""
+
+    atomic_write_bytes(
+        path,
+        content,
+        fsync=True,
+        tmp_prefix=f".{path.name}.",
+        tmp_suffix=".tmp",
     )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
-    except BaseException:
-        temporary_path.unlink(missing_ok=True)
-        raise
 
 
-def _artifact_id(value: str, context: str) -> str:
-    if not _is_artifact_id(value):
-        raise ConfigError(f"{context} must match required artifact-id format")
+def artifact_id(value: str, context: str) -> str:
+    """Return ``value`` when it is a valid artifact id, else raise ``ConfigError``.
+
+    The single validator behind every workspace artifact id -- profile ids,
+    topic ids, and (via ``runs``) run ids -- so one invalid id produces one
+    message no matter which entry path rejected it.
+
+    The rejected id is deliberately *not* echoed: ids arrive from CLI
+    arguments and HTTP routes, and the message travels into logs and error
+    surfaces that must not reflect caller-supplied content back
+    (``test_profile_store_rejects_path_traversal_ids``). Naming the required
+    pattern is the actionable half anyway.
+    """
+
+    if not is_artifact_id(value):
+        raise ConfigError(f"{context} must match {ARTIFACT_ID_PATTERN.pattern!r}")
     return value
 
 
-def _is_artifact_id(value: str) -> bool:
-    return isinstance(value, str) and _ARTIFACT_ID_PATTERN.fullmatch(value) is not None
+def is_artifact_id(value: object) -> bool:
+    """Return whether ``value`` is a string in the artifact-id format."""
+
+    return isinstance(value, str) and ARTIFACT_ID_PATTERN.fullmatch(value) is not None

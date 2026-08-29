@@ -7,7 +7,6 @@ HTML string export will ship.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -97,10 +96,6 @@ def _analyze_document(document: str) -> _DocumentFacts:
     return _DocumentFacts(analyzer.controls_ok, analyzer.heading_ok)
 
 
-def _sha(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 def compute_static_checks(
     guide: Guide,
     assets: RuntimeAssets | None = None,
@@ -110,10 +105,12 @@ def compute_static_checks(
     packaged = packaged_assets if packaged_assets is not None else load_runtime_assets()
     if assets is None:
         assets = packaged
+    # String equality answers this directly; hashing both sides first only
+    # added two full SHA-256 passes over the packaged runtime per call.
     assets_match = (
         assets.version == RUNTIME_VERSION
-        and _sha(assets.css) == _sha(packaged.css)
-        and _sha(assets.javascript) == _sha(packaged.javascript)
+        and assets.css == packaged.css
+        and assets.javascript == packaged.javascript
     )
     projected = public_guide_projection(guide)
     try:

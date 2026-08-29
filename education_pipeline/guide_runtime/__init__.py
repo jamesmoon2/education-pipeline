@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from importlib import resources
 
 RUNTIME_VERSION = "1.0"
-SUPPORTED_SCHEMA_VERSION = "1.0"
 SUPPORTED_SCHEMA_VERSIONS = frozenset({"1.0", "1.1"})
 
 
@@ -28,7 +27,6 @@ def load_runtime_assets() -> RuntimeAssets:
 
 __all__ = [
     "RUNTIME_VERSION",
-    "SUPPORTED_SCHEMA_VERSION",
     "SUPPORTED_SCHEMA_VERSIONS",
     "RuntimeAssets",
     "load_runtime_assets",

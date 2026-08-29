@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from education_pipeline.atomic_io import atomic_write_text
 
 _DISCOVERY_DIR = ".education-pipeline"
 _DISCOVERY_FILE = "daemon.json"
@@ -22,8 +22,6 @@ def discovery_path(root: str | Path) -> Path:
 
 
 def write_discovery(root: str | Path, *, pid: int, port: int, token: str, version: str) -> None:
-    target = discovery_path(root)
-    target.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "pid": pid,
         "port": port,
@@ -31,27 +29,11 @@ def write_discovery(root: str | Path, *, pid: int, port: int, token: str, versio
         "started_at": datetime.now(timezone.utc).isoformat(),
         "version": version,
     }
-    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".tmp-", suffix=".json")
-    try:
-        os.chmod(tmp, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(record, handle, indent=2)
-        # Windows sharing semantics: replacing a file another process holds
-        # open for reading fails with PermissionError. Concurrent readers are
-        # transient (clients poll this file), so retry briefly.
-        for attempt in range(10):
-            try:
-                os.replace(tmp, target)
-                break
-            except PermissionError:
-                if attempt == 9:
-                    raise
-                time.sleep(0.05)
-        os.chmod(target, 0o600)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+    # mode=0o600 lands on the temp file before the token is written to it, and
+    # again on the replaced discovery file.
+    atomic_write_text(
+        discovery_path(root), json.dumps(record, indent=2), mode=0o600
+    )
 
 
 def read_discovery(root: str | Path) -> dict | None:

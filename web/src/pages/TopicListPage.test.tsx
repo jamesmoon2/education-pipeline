@@ -295,6 +295,30 @@ describe("TopicListPage filtering and sorting", () => {
     await userEvent.selectOptions(screen.getByLabelText("Learner"), "learner-a");
     expect(rowIds()).toEqual(["alpha"]);
   });
+
+  it("does not refilter when a re-render changes none of the filter inputs", async () => {
+    // A topic the query excludes never reaches the table, so its title is read
+    // by the filter pass and by nothing else — one read per pass.
+    let titleReads = 0;
+    const excluded: TopicSummary = {
+      ...makeTopic("omega"),
+      get title() {
+        titleReads += 1;
+        return "Omega Course";
+      },
+    };
+    vi.mocked(getTopics).mockResolvedValue({ topics: [...topics, excluded] });
+    renderPage();
+    await screen.findByRole("link", { name: "alpha" });
+    await userEvent.type(screen.getByLabelText("Filter courses"), "alpha");
+    expect(rowIds()).toEqual(["alpha"]);
+    const readsAfterFiltering = titleReads;
+    expect(readsAfterFiltering).toBeGreaterThan(0);
+
+    // Opening the import form re-renders the page without touching a filter.
+    await userEvent.click(screen.getByRole("button", { name: "Import topic…" }));
+    expect(titleReads).toBe(readsAfterFiltering);
+  });
 });
 
 describe("TopicListPage actions", () => {

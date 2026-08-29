@@ -3179,6 +3179,85 @@ def test_current_v2_report_stays_current(tmp_path: Path) -> None:
     assert runs.report_state(tid, "final") == "current"
 
 
+# --- guide source digest: content-keyed memo on the cockpit poll path ---
+
+
+def test_report_state_follows_the_approved_guide_edited_in_process(tmp_path: Path) -> None:
+    """The digest memo is content-keyed, so it can never report stale content.
+
+    Polls report_state, mutates the approved guide *in the same process*
+    (exactly what a cached-by-path or cached-by-topic memo would miss), and
+    re-polls. Editing back must return "current" again -- a memo entry from
+    before the edit must neither shadow the new content nor poison the old.
+    """
+
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_finalize_ready(runs, tid)
+    approved = runs.stage_paths(tid, "repair").approved_path
+    original = approved.read_bytes()
+
+    assert runs.report_state(tid, "final") == "current"
+
+    edited = _edit_course_description(
+        original.decode("utf-8"), "Edited out from under the poll loop."
+    )
+    approved.write_bytes(edited.encode("utf-8"))
+    assert runs.report_state(tid, "final") == "stale"
+
+    approved.write_bytes(original)
+    assert runs.report_state(tid, "final") == "current"
+
+
+def test_guide_source_sha_memo_matches_the_unmemoized_derivation(tmp_path: Path) -> None:
+    """Cold and warm calls must both equal the raw validation derivation."""
+
+    from education_pipeline.guides.validation import validation_guide_sha256
+    from education_pipeline.runs import _guide_source_sha
+
+    sources = [
+        GUIDE_FIXTURE,
+        PERSONALIZED_GUIDE_FIXTURE,
+        GUIDE_FIXTURE.replace("Feedback", "Feedback\N{ZERO WIDTH SPACE}"),
+        "not a guide at all",
+        "",
+        json.dumps({"schema_version": 1}),
+    ]
+    for source in sources:
+        expected = validation_guide_sha256(source)
+        assert _guide_source_sha(source) == expected  # cold
+        assert _guide_source_sha(source) == expected  # warm (memo hit)
+    # Distinct sources must not collide onto one another's digests.
+    digests = {source: _guide_source_sha(source) for source in sources}
+    assert len(set(digests.values())) == len(set(sources))
+
+
+def test_guide_source_sha_memo_is_bounded(tmp_path: Path) -> None:
+    """Filling past the bound clears rather than growing without limit."""
+
+    from education_pipeline.guides.validation import validation_guide_sha256
+    from education_pipeline import runs as runs_module
+
+    limit = runs_module._GUIDE_SOURCE_SHA_MEMO_LIMIT
+    with runs_module._GUIDE_SOURCE_SHA_MEMO_LOCK:
+        runs_module._GUIDE_SOURCE_SHA_MEMO.clear()
+    try:
+        sources = [f'{{"schema_version": 1, "n": {n}}}' for n in range(limit * 2 + 3)]
+        for source in sources:
+            assert runs_module._guide_source_sha(source) == validation_guide_sha256(
+                source
+            )
+            assert len(runs_module._GUIDE_SOURCE_SHA_MEMO) <= limit
+        # Every source still hashes correctly after the memo has cycled.
+        for source in sources:
+            assert runs_module._guide_source_sha(source) == validation_guide_sha256(
+                source
+            )
+    finally:
+        with runs_module._GUIDE_SOURCE_SHA_MEMO_LOCK:
+            runs_module._GUIDE_SOURCE_SHA_MEMO.clear()
+
+
 def test_guide_v1_waivable_blocker_waiver_and_staleness(tmp_path: Path) -> None:
     tid = "systems-thinking"
     leak_json = _prompt_leak_guide_json()
@@ -4601,3 +4680,85 @@ class TestLastActivity:
 
     def test_last_activity_none_without_run_dir(self, tmp_path: Path) -> None:
         assert RunStore(tmp_path).last_activity_at("missing") is None
+
+
+def test_last_activity_at_reports_the_newest_regular_file(tmp_path: Path) -> None:
+    # One stat() per entry decides both "is it a regular file?" and "how old
+    # is it?"; directories must never win the mtime race even when they are
+    # the newest thing under the run.
+    import os
+    from datetime import datetime, timezone
+
+    runs = _create_legacy_run(tmp_path)
+    run_dir = runs.run_dir("systems-thinking")
+    nested = run_dir / "nested"
+    nested.mkdir(parents=True, exist_ok=True)
+    older = run_dir / "older.txt"
+    newer = nested / "newer.txt"
+    older.write_text("a", encoding="utf-8")
+    newer.write_text("b", encoding="utf-8")
+    for path in run_dir.rglob("*"):
+        os.utime(path, (1_000_000, 1_000_000))
+    os.utime(older, (1_700_000_000, 1_700_000_000))
+    os.utime(newer, (1_700_000_500, 1_700_000_500))
+    os.utime(nested, (1_900_000_000, 1_900_000_000))
+
+    assert runs.last_activity_at("systems-thinking") == datetime.fromtimestamp(
+        1_700_000_500, timezone.utc
+    ).isoformat()
+
+
+def test_last_activity_at_skips_entries_that_cannot_be_stat_ed(tmp_path: Path) -> None:
+    import os
+    from datetime import datetime, timezone
+
+    from conftest import symlink_or_skip
+
+    runs = _create_legacy_run(tmp_path)
+    run_dir = runs.run_dir("systems-thinking")
+    for path in run_dir.rglob("*"):
+        if path.is_file():
+            os.utime(path, (1_700_000_000, 1_700_000_000))
+    symlink_or_skip(run_dir / "dangling", run_dir / "missing-target")
+
+    assert runs.last_activity_at("systems-thinking") == datetime.fromtimestamp(
+        1_700_000_000, timezone.utc
+    ).isoformat()
+
+
+def test_last_activity_at_is_none_without_a_run(tmp_path: Path) -> None:
+    assert RunStore(tmp_path).last_activity_at("systems-thinking") is None
+
+
+def test_report_state_is_stale_for_an_unreadable_report_file(tmp_path: Path) -> None:
+    # report_state parses the report and digests the same bytes. Both come
+    # from one read, so a corrupt file must still be reported stale rather
+    # than raising -- for invalid JSON and for invalid UTF-8 alike.
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_draft_approved(runs, tid)
+    runs.validate_run(tid, "draft")
+    assert runs.report_state(tid, "draft") == "current"
+
+    report_path = runs.draft_report_path(tid)
+    report_path.write_bytes(b"{ not json")
+    assert runs.report_state(tid, "draft") == "stale"
+
+    report_path.write_bytes(b"\xff\xfe not utf-8")
+    assert runs.report_state(tid, "draft") == "stale"
+
+
+def test_export_state_is_stale_for_an_unreadable_export_report(tmp_path: Path) -> None:
+    tid = "systems-thinking"
+    runs = _create_guide_run(tmp_path, tid)
+    _drive_guide_to_finalize_ready(runs, tid)
+    runs.finalize_run(tid)
+    runs.export_run(tid, format="html")
+    assert runs.export_state(tid) == "current"
+
+    sidecar_path = runs.export_report_path(tid)
+    sidecar_path.write_bytes(b"{ not json")
+    assert runs.export_state(tid) == "stale"
+
+    sidecar_path.write_bytes(b"\xff\xfe not utf-8")
+    assert runs.export_state(tid) == "stale"
