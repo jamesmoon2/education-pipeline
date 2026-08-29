@@ -97,6 +97,70 @@ const DECOY_STATE = {
   updatedAt: 1_900_000_000_000,
 };
 
+// Answers and a note that must come back visible inside their blocks, not
+// only in the progress summary.
+const RICH_STATE = {
+  completedSections: ["feedback-foundations"],
+  interactions: {
+    "check-loop-type": {
+      type: "knowledge_check",
+      completed: true,
+      submittedCount: 1,
+      selectedIds: ["release-reinforcing"],
+    },
+    "map-growth-loop": { type: "worked_reveal", completed: false, revealedCount: 2 },
+    "project-reflection": {
+      type: "reflection",
+      completed: true,
+      text: "A note that must survive the restore.",
+      skipped: false,
+    },
+  },
+  lastSection: "feedback-foundations",
+  theme: "system",
+  updatedAt: 1_700_000_004_000,
+};
+
+// Every interaction here still names a block that exists, but each one has
+// drifted: the ids were reused for a different kind of block, or the choice
+// the learner picked is gone from the current version.
+const DRIFTED_STATE = {
+  completedSections: ["feedback-foundations"],
+  interactions: {
+    // Right id, wrong type: this block is a knowledge check today.
+    "check-loop-type": { type: "reflection", completed: true, text: "stale", skipped: false },
+    // Right type, but this choice id no longer exists in the block.
+    "check-delay-response": {
+      type: "knowledge_check",
+      completed: true,
+      submittedCount: 1,
+      selectedIds: ["delay-map", "delay-removed"],
+    },
+    // Right type, but this scenario choice was rewritten away.
+    "pest-density-scenario": { type: "scenario", completed: true, selectedId: "pest-removed" },
+    // Untouched and still valid.
+    "project-reflection": {
+      type: "reflection",
+      completed: true,
+      text: "Still mine.",
+      skipped: false,
+    },
+  },
+  lastSection: "feedback-foundations",
+  theme: "system",
+  updatedAt: 1_700_000_005_000,
+};
+
+// What merely *opening* an older export leaves behind: a last section and a
+// theme, no progress, and the newest timestamp of them all.
+const TOUCHED_BUT_EMPTY_STATE = {
+  completedSections: [],
+  interactions: {},
+  lastSection: "feedback-foundations",
+  theme: "system",
+  updatedAt: 1_800_000_000_000,
+};
+
 // Valid, but every id in it was cut from the course: nothing survives the
 // filter, so there is nothing to offer.
 const GHOST_ONLY_STATE = {
@@ -276,6 +340,61 @@ test.describe("progress carried over from a previous export", () => {
     await expect(page.locator(banner)).toBeHidden();
   });
 
+  test("a newer but empty record does not outrank an older one with progress", async ({ page }) => {
+    // Opening an older export stamps its record with a fresh timestamp and no
+    // progress. Picking by recency alone would choose that one and then find
+    // nothing to offer, stranding the record that actually has progress.
+    await seed(page, {
+      [OLD_KEY]: TOUCHED_BUT_EMPTY_STATE,
+      [OLDER_KEY]: OLDER_STATE,
+      [`${COURSE_KEY_PREFIX}c0ffee11:v1`]: GHOST_ONLY_STATE,
+    });
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+
+    const offer = page.locator(banner);
+    await expect(offer).toBeVisible();
+    await expect(offer).toContainText("1 completed section and 0 saved interactions");
+
+    await page.getByRole("button", { name: "Resume that progress" }).click();
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "1 of 4 sections complete",
+    );
+  });
+
+  test("interactions whose block changed shape are dropped, valid ones survive", async ({
+    page,
+  }) => {
+    await seed(page, { [OLD_KEY]: DRIFTED_STATE });
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+
+    // Only the reflection still matches its block; the reused id, the missing
+    // knowledge-check choice and the missing scenario choice are all dropped.
+    const offer = page.locator(banner);
+    await expect(offer).toBeVisible();
+    await expect(offer).toContainText("1 completed section and 1 saved interaction");
+
+    await page.getByRole("button", { name: "Resume that progress" }).click();
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "1 of 5 interactions complete",
+    );
+
+    const records = await currentRecords(page, [OLD_KEY]);
+    const adopted = Object.values(records)[0] as Record<string, unknown>;
+    expect(Object.keys(adopted.interactions as object)).toEqual(["project-reflection"]);
+
+    // The knowledge check whose entry was dropped is answerable, not stuck in
+    // a submitted-but-unanswered state.
+    await page.evaluate(() => {
+      location.hash = "#recognize-loop-types";
+    });
+    const kc = page.locator("article.knowledge_check").first();
+    await expect(kc).not.toHaveClass(/is-submitted/);
+    await expect(kc.locator('[data-role="kc-submit"]')).toBeVisible();
+    await kc.locator('[data-role="kc-choice"][data-correct="true"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+    await expect(kc.locator('[data-role="kc-result"]')).toContainText("Correct");
+  });
+
   test("no previous record means no offer at all", async ({ page }) => {
     await seed(page, { [OTHER_COURSE_KEY]: DECOY_STATE, [OTHER_MAJOR_KEY]: DECOY_STATE });
     await page.goto(httpBaseUrl, { waitUntil: "load" });
@@ -425,6 +544,58 @@ test.describe("progress files", () => {
     expect(messages.join(" ")).toContain("some-other-course");
   });
 
+  test("a progress file from a future format version is refused, not half-applied", async ({
+    page,
+  }) => {
+    // A later format may store progress in a shape this runtime would read as
+    // "empty", silently wiping real progress. Refuse the file instead.
+    await page.locator("section.is-current").locator('[data-role="mark-complete"]').click();
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "1 of 4 sections complete",
+    );
+
+    const future = path.join(tempDir, "future-version.json");
+    writeFileSync(
+      future,
+      JSON.stringify({
+        format: "education-pipeline.guide-progress",
+        version: 2,
+        course_id: "feedback-loops",
+        schema_version: "1.0",
+        saved_at: "2026-01-01T00:00:00.000Z",
+        state: { completedSections: [], interactions: {}, lastSection: null, theme: "system" },
+      }),
+      "utf8",
+    );
+    const missing = path.join(tempDir, "no-version.json");
+    writeFileSync(
+      missing,
+      JSON.stringify({
+        format: "education-pipeline.guide-progress",
+        course_id: "feedback-loops",
+        state: OLDER_STATE,
+      }),
+      "utf8",
+    );
+
+    const status = page.locator('[data-role="progress-file-status"]');
+    const input = page.locator('[data-role="progress-file-input"]');
+
+    await input.setInputFiles(future);
+    await expect(status).toContainText("format version 2");
+    await input.setInputFiles(missing);
+    await expect(status).toContainText("cannot read");
+
+    // Untouched: the progress made before the failed restores is still there.
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "1 of 4 sections complete",
+    );
+    await page.reload({ waitUntil: "load" });
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "1 of 4 sections complete",
+    );
+  });
+
   test("a file that is not a progress file reports an error and leaves the guide working", async ({
     page,
   }) => {
@@ -495,7 +666,9 @@ test.describe("progress files without local storage", () => {
     expect(payload.state.completedSections).toEqual(["feedback-foundations"]);
   });
 
-  test("restoring a file still updates the progress shown for this viewing", async ({ page }) => {
+  test("restoring a file applies the progress to the blocks, not just the summary", async ({
+    page,
+  }) => {
     const filePath = path.join(tempDir, "session-only.json");
     writeFileSync(
       filePath,
@@ -505,7 +678,7 @@ test.describe("progress files without local storage", () => {
         course_id: "feedback-loops",
         schema_version: "1.0",
         saved_at: "2026-01-01T00:00:00.000Z",
-        state: NEWEST_STATE,
+        state: RICH_STATE,
       }),
       "utf8",
     );
@@ -513,12 +686,37 @@ test.describe("progress files without local storage", () => {
     await page.locator('[data-role="progress-file-input"]').setInputFiles(filePath);
 
     // Nothing can be stored, so the guide must not reload itself: it keeps
-    // the restored record in memory and refreshes the summary in place.
+    // the restored record in memory and rebuilds the blocks in place.
     await expect(page.locator('[data-role="progress-summary"]')).toContainText(
-      "2 of 4 sections complete",
+      "1 of 4 sections complete",
     );
     await expect(page.locator('[data-role="progress-file-status"]')).toContainText(
       "Progress restored",
+    );
+
+    await page.evaluate(() => {
+      location.hash = "#recognize-loop-types";
+    });
+    const kc = page.locator("article.knowledge_check").first();
+    await expect(kc).toHaveClass(/is-submitted/);
+    await expect(kc.locator('[data-role="kc-choice"][data-correct="true"]')).toBeChecked();
+    await expect(kc.locator('[data-role="kc-explanation"]')).toBeVisible();
+
+    // The worked reveal is mid-way through, and its own counter came back
+    // with it: the next reveal continues instead of restarting.
+    const wr = page.locator("article.worked_reveal").first();
+    const steps = wr.locator('[data-role="reveal-step"]');
+    await expect(steps.nth(0)).toBeVisible();
+    await expect(steps.nth(1)).toBeVisible();
+    await expect(steps.nth(2)).toBeHidden();
+    await wr.locator('[data-role="wr-reveal-next"]').click();
+    await expect(steps.nth(2)).toBeVisible();
+
+    await page.evaluate(() => {
+      location.hash = "#garden-decision";
+    });
+    await expect(page.locator('[data-role="reflection-input"]').first()).toHaveValue(
+      "A note that must survive the restore.",
     );
   });
 });

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.0" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-g8aO0jiwJl6gNe3EJ3rIpsomad2nyXsL+124/0cOo2E='; script-src 'sha256-zD48OlOeFxKpFn5PtBrPtG++AMQyoZN4H9AHL+kUjJI='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
+<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.0" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-g8aO0jiwJl6gNe3EJ3rIpsomad2nyXsL+124/0cOo2E='; script-src 'sha256-IBmdIM9l7eeen0/mgEVtUEK9gKnNPIOJf9cNRIuntIM='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
  * Derives from the product token system in docs/design-system.md (§4.2):
  * the guide surface reads with Literata on a white surface, interface
  * chrome uses the Plex Sans stack, and status is never color alone.
@@ -594,7 +594,12 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       if (restored && indexOf(restored) > -1) startId = restored;
       show(startId);
     }
-    return { boot, toggleDrawer, revealEvidenceTarget };
+    // Shows a section by id when it exists, without moving focus: used after
+    // a record is adopted in place, to land on the section it left off at.
+    function showSection(id) {
+      return Boolean(id) && show(id, { focus: false });
+    }
+    return { boot, toggleDrawer, revealEvidenceTarget, showSection };
   })();
 
   // ---------------------------------------------------------------------
@@ -694,6 +699,22 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       if (retryBtn) retryBtn.hidden = !retryAllowed;
     }
 
+    // The pristine, unanswered view. Retry uses it, and so does hydrate --
+    // which is why hydrate can run a second time without layering a new
+    // answer on top of the one already shown.
+    function clear() {
+      inputs.forEach((i) => {
+        i.checked = false;
+        i.disabled = false;
+      });
+      items.forEach((li) => (li.dataset.state = ""));
+      article.classList.remove("is-submitted");
+      resultEl.textContent = "";
+      submitBtn.hidden = false;
+      if (retryBtn) retryBtn.hidden = true;
+      updateSubmitEnabled();
+    }
+
     inputs.forEach((i) => i.addEventListener("change", updateSubmitEnabled));
     submitBtn.addEventListener("click", () => {
       const selected = selectedIds();
@@ -709,31 +730,23 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       });
       Progress.update();
     });
-    if (retryBtn) {
-      retryBtn.addEventListener("click", () => {
-        inputs.forEach((i) => {
-          i.checked = false;
-          i.disabled = false;
-        });
-        items.forEach((li) => (li.dataset.state = ""));
-        article.classList.remove("is-submitted");
-        resultEl.textContent = "";
-        submitBtn.hidden = false;
-        retryBtn.hidden = true;
-        updateSubmitEnabled();
-      });
-    }
+    if (retryBtn) retryBtn.addEventListener("click", clear);
 
-    const entry = State.interaction(id);
-    if (entry && entry.completed) {
-      (entry.selectedIds || []).forEach((cid) => {
-        const input = inputs.find((i) => i.dataset.choiceId === cid);
-        if (input) input.checked = true;
-      });
-      applySubmittedView(entry.selectedIds || []);
-      lock();
+    function hydrate() {
+      clear();
+      const entry = State.interaction(id);
+      if (entry && entry.completed) {
+        (entry.selectedIds || []).forEach((cid) => {
+          const input = inputs.find((i) => i.dataset.choiceId === cid);
+          if (input) input.checked = true;
+        });
+        applySubmittedView(entry.selectedIds || []);
+        lock();
+      }
+      updateSubmitEnabled();
     }
-    updateSubmitEnabled();
+    hydrate();
+    return hydrate;
   }
 
   // ---------------------------------------------------------------------
@@ -789,11 +802,19 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       });
     }
 
-    const entry = State.interaction(id);
-    if (entry && Number.isFinite(entry.revealedCount)) {
-      revealed = Math.min(entry.revealedCount, steps.length);
+    // Rereads the record into the block's own counter, so a record adopted
+    // after boot continues from its step rather than from the stale one.
+    function hydrate() {
+      const entry = State.interaction(id);
+      revealed =
+        entry && Number.isFinite(entry.revealedCount)
+          ? Math.min(entry.revealedCount, steps.length)
+          : 0;
+      if (live) live.textContent = "";
+      apply();
     }
-    apply();
+    hydrate();
+    return hydrate;
   }
 
   // ---------------------------------------------------------------------
@@ -835,6 +856,19 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       if (retryBtn) retryBtn.hidden = false;
     }
 
+    function clear() {
+      inputs.forEach((i) => {
+        i.checked = false;
+        i.disabled = false;
+      });
+      items.forEach((li) => (li.dataset.state = ""));
+      article.classList.remove("is-submitted");
+      resultEl.textContent = "";
+      submitBtn.hidden = false;
+      if (retryBtn) retryBtn.hidden = true;
+      updateSubmitEnabled();
+    }
+
     inputs.forEach((i) => i.addEventListener("change", updateSubmitEnabled));
     submitBtn.addEventListener("click", () => {
       const choiceId = selectedId();
@@ -844,29 +878,21 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       State.setInteraction(id, { type: "scenario", completed: true, selectedId: choiceId });
       Progress.update();
     });
-    if (retryBtn) {
-      retryBtn.addEventListener("click", () => {
-        inputs.forEach((i) => {
-          i.checked = false;
-          i.disabled = false;
-        });
-        items.forEach((li) => (li.dataset.state = ""));
-        article.classList.remove("is-submitted");
-        resultEl.textContent = "";
-        submitBtn.hidden = false;
-        retryBtn.hidden = true;
-        updateSubmitEnabled();
-      });
-    }
+    if (retryBtn) retryBtn.addEventListener("click", clear);
 
-    const entry = State.interaction(id);
-    if (entry && entry.completed && entry.selectedId) {
-      const input = inputs.find((i) => i.dataset.choiceId === entry.selectedId);
-      if (input) input.checked = true;
-      applySubmittedView(entry.selectedId);
-      lock();
+    function hydrate() {
+      clear();
+      const entry = State.interaction(id);
+      if (entry && entry.completed && entry.selectedId) {
+        const input = inputs.find((i) => i.dataset.choiceId === entry.selectedId);
+        if (input) input.checked = true;
+        applySubmittedView(entry.selectedId);
+        lock();
+      }
+      updateSubmitEnabled();
     }
-    updateSubmitEnabled();
+    hydrate();
+    return hydrate;
   }
 
   // ---------------------------------------------------------------------
@@ -922,15 +948,21 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       });
     }
 
-    const entry = State.interaction(id);
-    if (entry) {
-      textarea.value = entry.text || "";
-      if (resetBtn) resetBtn.hidden = !entry.text;
+    function hydrate() {
+      // Drop any pending debounced save first: it would otherwise write the
+      // note that was on screen before the record was replaced.
+      if (debounceHandle) window.clearTimeout(debounceHandle);
+      const entry = State.interaction(id);
+      textarea.value = entry && typeof entry.text === "string" ? entry.text : "";
+      if (resetBtn) resetBtn.hidden = textarea.value.trim().length === 0;
       if (status) {
-        if (entry.skipped) status.textContent = "Skipped.";
-        else if (entry.text) status.textContent = "Saved locally.";
+        if (entry && entry.skipped) status.textContent = "Skipped.";
+        else if (textarea.value.trim()) status.textContent = "Saved locally.";
+        else status.textContent = "";
       }
     }
+    hydrate();
+    return hydrate;
   }
 
   // ---------------------------------------------------------------------
@@ -944,15 +976,40 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
     reflection: enhanceReflection,
   };
 
+  const INTERACTION_TYPES = Object.keys(ENHANCERS);
+
+  // The kind of interaction a block is *now*, read from the document rather
+  // than from anything a stored record claims about it.
+  function interactionTypeOf(article) {
+    return INTERACTION_TYPES.find((type) => article.classList.contains(type)) || null;
+  }
+
+  // Each enhancer hands back a function that re-applies the current record to
+  // its own DOM. Collected here so a record adopted after boot can be shown
+  // without re-running the enhancers (which would bind every listener twice).
+  const HYDRATORS = [];
+
   function enhanceBlocks() {
+    HYDRATORS.length = 0;
     qsa('[data-interactive="true"]').forEach((article) => {
-      const type = Object.keys(ENHANCERS).find((t) => article.classList.contains(t));
+      const type = interactionTypeOf(article);
       const fn = type && ENHANCERS[type];
       if (!fn) return;
       try {
-        fn(article);
+        const hydrate = fn(article);
+        if (typeof hydrate === "function") HYDRATORS.push(hydrate);
       } catch (error) {
         reportBlockError(article, error);
+      }
+    });
+  }
+
+  function rehydrateBlocks() {
+    HYDRATORS.forEach((hydrate) => {
+      try {
+        hydrate();
+      } catch (_error) {
+        /* one block failing to refresh must not stop the others */
       }
     });
   }
@@ -962,18 +1019,62 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
   // ---------------------------------------------------------------------
 
   const Restore = (() => {
+    // A surviving block id is not enough. A revised export can reuse an id
+    // for a different kind of block, or rewrite away the very choice the
+    // learner picked; either way the enhancer would restore an answer it can
+    // no longer show -- a knowledge check locked as submitted with nothing
+    // selected, which is permanent where retry is off. So every entry is
+    // checked against the block as it exists now and dropped whole when it no
+    // longer lines up: losing one answer beats displaying a false one.
+    function usableInteraction(id, entry) {
+      const el = document.getElementById(id);
+      if (!el || el.dataset.interactive !== "true") return null;
+      const type = interactionTypeOf(el);
+      if (type !== entry.type) return null;
+      if (type === "knowledge_check") {
+        const choiceIds = new Set(
+          qsa('[data-role="kc-choice"]', el).map((input) => input.dataset.choiceId)
+        );
+        if (entry.completed && entry.selectedIds.length === 0) return null;
+        if (!entry.selectedIds.every((choiceId) => choiceIds.has(choiceId))) return null;
+        return entry;
+      }
+      if (type === "scenario") {
+        if (entry.selectedId === null) return entry.completed ? null : entry;
+        const choiceIds = new Set(
+          qsa('[data-role="sc-choice"]', el).map((input) => input.dataset.choiceId)
+        );
+        return choiceIds.has(entry.selectedId) ? entry : null;
+      }
+      if (type === "worked_reveal") {
+        // Nothing here references an id -- only a count, which means something
+        // solely against the current step list. Clamp it and recompute
+        // completion instead of trusting a flag from a different step count.
+        const total = qsa('[data-role="reveal-step"]', el).length;
+        const revealedCount = Math.min(entry.revealedCount, total);
+        return { type, completed: total > 0 && revealedCount >= total, revealedCount };
+      }
+      // Reflection: the note is the learner's own prose, so it always
+      // survives; completion follows from the note rather than a stale flag.
+      return {
+        type,
+        completed: entry.skipped || entry.text.trim().length > 0,
+        text: entry.text,
+        skipped: entry.skipped,
+      };
+    }
+
     // Progress that came from another export can name sections and blocks
-    // this document no longer has. Adopting it unfiltered would count ids
-    // nothing here can display, so it is always narrowed to what this exact
-    // guide contains before anything is stored.
+    // this document no longer has, so it is always narrowed to what this
+    // exact guide contains before anything is stored.
     function filterToDocument(state) {
       const sectionIds = new Set(qsa('main section[data-role="guide-section"]').map((el) => el.id));
-      const interactionIds = new Set(qsa('[data-interactive="true"]').map((el) => el.id));
       const out = emptyState();
       out.theme = state.theme;
       out.completedSections = state.completedSections.filter((id) => sectionIds.has(id));
       Object.keys(state.interactions).forEach((id) => {
-        if (interactionIds.has(id)) out.interactions[id] = state.interactions[id];
+        const entry = usableInteraction(id, state.interactions[id]);
+        if (entry) out.interactions[id] = entry;
       });
       if (state.lastSection && sectionIds.has(state.lastSection)) out.lastSection = state.lastSection;
       return out;
@@ -1001,9 +1102,13 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
         return true;
       }
       // Storage refused the write, so a reload would throw the adopted
-      // progress away. Keep it for this viewing and refresh what can be
-      // refreshed without re-enhancing the blocks.
+      // progress away. Rebuild the page from the record in memory instead:
+      // every block re-applies it through the hydrator it registered at boot,
+      // so restored answers, revealed steps and notes are actually on screen
+      // and each block's own counters match what is stored.
       refreshTheme(filtered.theme);
+      rehydrateBlocks();
+      Nav.showSection(filtered.lastSection);
       Progress.update();
       return false;
     }
@@ -1083,6 +1188,20 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       if (!isPlainObject(payload) || payload.format !== PROGRESS_FILE_FORMAT) {
         setStatus(
           "That is not an Education Pipeline progress file, so nothing was changed.",
+          true
+        );
+        return false;
+      }
+      // A later format version may hold progress in a shape this runtime
+      // would read as "empty" -- applying it would quietly wipe real
+      // progress -- so an unknown version is refused rather than degraded.
+      if (payload.version !== PROGRESS_FILE_VERSION) {
+        const named = Number.isInteger(payload.version)
+          ? `format version ${payload.version}`
+          : "an unknown format version";
+        setStatus(
+          `That progress file uses ${named}, which this guide cannot read, ` +
+            "so nothing was changed.",
           true
         );
         return false;
@@ -1174,7 +1293,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
         // some other product's key that happens to share the prefix.
         if (!otherHash || otherHash.indexOf(":") !== -1) return;
         const state = Persistence.read(key);
-        if (state) found.push({ key, state });
+        if (state) found.push(state);
       });
       return found;
     }
@@ -1185,11 +1304,26 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
         const at = Number.isFinite(entry.state.updatedAt) ? entry.state.updatedAt : 0;
         const winnerAt = Number.isFinite(winner.state.updatedAt) ? winner.state.updatedAt : 0;
         if (at !== winnerAt) return at > winnerAt ? entry : winner;
-        // Same timestamp (or neither has one): prefer the fuller record.
-        return entry.state.completedSections.length > winner.state.completedSections.length
+        // Same timestamp (or neither has one): prefer the fuller offer.
+        return entry.transferable.completedSections.length >
+          winner.transferable.completedSections.length
           ? entry
           : winner;
       }, null);
+    }
+
+    // Recency alone is the wrong test: merely opening an older export
+    // re-stamps its record with a fresh timestamp and no progress, so the
+    // emptiest record would win and the offer would be abandoned while a
+    // record with real progress sat right next to it. Rank only the records
+    // that still have something to give this version of the course.
+    function transferable(states) {
+      const out = [];
+      states.forEach((state) => {
+        const filtered = Restore.filterToDocument(state);
+        if (hasProgress(filtered)) out.push({ state, transferable: filtered });
+      });
+      return out;
     }
 
     function hasProgress(state) {
@@ -1219,15 +1353,13 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       try {
         const banner = qs('[data-role="progress-migration"]');
         if (!banner || !shouldOffer(State.get())) return false;
-        const winner = newest(candidates(courseId, hash, schemaVersion));
-        // Only worth raising if something in it survives the filter: a banner
-        // announcing nothing to carry over is noise, not an offer.
+        // Only records with something left to carry over are candidates at
+        // all, so a banner announcing nothing can never be raised.
+        const winner = newest(transferable(candidates(courseId, hash, schemaVersion)));
         if (!winner) return false;
-        const preview = Restore.filterToDocument(winner.state);
-        if (!hasProgress(preview)) return false;
 
         const detail = qs('[data-role="progress-migration-detail"]', banner);
-        if (detail) detail.textContent = describe(preview);
+        if (detail) detail.textContent = describe(winner.transferable);
         const resume = qs('[data-role="resume-progress"]', banner);
         const dismiss = qs('[data-role="dismiss-progress"]', banner);
         if (resume) {
