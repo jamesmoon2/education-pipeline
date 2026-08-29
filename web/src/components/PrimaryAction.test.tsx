@@ -19,7 +19,7 @@ vi.mock("../api/client", async () => {
     getStageContent: vi.fn(),
     // Read by the "Approve & continue" chain (lib/continueRun.ts).
     getRunStatus: vi.fn(),
-    getConfigPlan: vi.fn(),
+    getRunPlan: vi.fn(),
     downloadFinal: vi.fn(),
     downloadExport: vi.fn(),
     // Read by JobLogView's tail, mounted for a running activeJob.
@@ -30,8 +30,8 @@ vi.mock("../api/client", async () => {
 import {
   ApiRequestError,
   enqueueJob,
-  getConfigPlan,
   getJobLog,
+  getRunPlan,
   getRunStatus,
   getStageContent,
   postAdvance,
@@ -205,7 +205,7 @@ describe("PrimaryAction", () => {
       performed: "write_prompt",
       status: makeStatus("save_response", "qa"),
     });
-    vi.mocked(getConfigPlan).mockResolvedValue(makePlan("claude-code"));
+    vi.mocked(getRunPlan).mockResolvedValue(makePlan("claude-code"));
     vi.mocked(enqueueJob).mockResolvedValue({} as never);
     const onChanged = renderAction(makeStatus("approve", "draft"));
 
@@ -222,7 +222,7 @@ describe("PrimaryAction", () => {
   it("Approve & continue hands a manual stage back to the copy/paste loop", async () => {
     vi.mocked(postApprove).mockResolvedValue({} as never);
     vi.mocked(getRunStatus).mockResolvedValue(makeStatus("save_response", "qa"));
-    vi.mocked(getConfigPlan).mockResolvedValue(makePlan("manual"));
+    vi.mocked(getRunPlan).mockResolvedValue(makePlan("manual"));
     renderAction(makeStatus("approve", "draft"));
 
     await userEvent.click(screen.getByRole("button", { name: "Approve draft & continue" }));
@@ -268,7 +268,7 @@ describe("PrimaryAction", () => {
   it("keeps the success tone for a stage left to the manual loop", async () => {
     vi.mocked(postApprove).mockResolvedValue({} as never);
     vi.mocked(getRunStatus).mockResolvedValue(makeStatus("save_response", "qa"));
-    vi.mocked(getConfigPlan).mockRejectedValue(new Error("plan unreadable"));
+    vi.mocked(getRunPlan).mockRejectedValue(new Error("plan unreadable"));
     renderAction(makeStatus("approve", "draft"));
 
     await userEvent.click(screen.getByRole("button", { name: "Approve draft & continue" }));
@@ -436,7 +436,42 @@ describe("PrimaryAction active job", () => {
       vi.fn(),
       makeJob("queued", { started_at: null, created_at: "2026-07-10T00:04:18.000Z" }),
     );
-    expect(screen.getByText("Queued for 42s")).toBeInTheDocument();
+    const status = screen.getByRole("status");
+    const elapsed = screen.getByText("Queued for 42s");
+    expect(elapsed).toBeInTheDocument();
+    // A screen reader must not be able to re-announce the ticking readout
+    // via the live region: it has to live outside it.
+    expect(status).not.toContainElement(elapsed);
     expect(getJobLog).not.toHaveBeenCalled();
+  });
+
+  it("keeps the ticking elapsed readout out of the live region", async () => {
+    vi.mocked(getJobLog).mockResolvedValue({ data: "", offset: 0 });
+    renderAction(
+      makeStatus("save_response", "draft"),
+      vi.fn(),
+      makeJob("running", { started_at: "2026-07-10T00:01:00.000Z" }),
+    );
+
+    const status = screen.getByRole("status");
+    const elapsed = screen.getByText("Running for 4m 00s");
+    // The elapsed readout is a sibling of the live region, not nested
+    // inside it -- assistive tech reads it on demand, but the region
+    // itself never re-announces it.
+    expect(status).not.toContainElement(elapsed);
+    // Still reachable/readable: not hidden from the accessibility tree.
+    expect(elapsed).toBeVisible();
+    expect(elapsed).not.toHaveAttribute("aria-hidden");
+
+    const initialStatusText = status.textContent;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    // The tick changed the elapsed readout...
+    expect(screen.getByText("Running for 5m 00s")).toBeInTheDocument();
+    // ...but the live region's own announced text did not change, so a
+    // screen reader has nothing to re-announce every second.
+    expect(status.textContent).toBe(initialStatusText);
   });
 });

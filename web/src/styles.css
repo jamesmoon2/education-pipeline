@@ -785,6 +785,9 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   background: var(--ep-color-accent-soft);
 }
 .primary-action { margin: 0 0 var(--ep-space-6); }
+/* Outer flex row holding the role="status" live region and the ticking
+   elapsed readout as siblings (see PrimaryAction.tsx) -- they must not be
+   nested, but still read as one adjacent block. */
 .active-job-status {
   display: flex;
   flex-wrap: wrap;
@@ -795,6 +798,15 @@ tbody tr:hover { background: color-mix(in srgb, var(--ep-color-surface-subtle) 5
   border-left: 3px solid var(--ep-color-accent);
   border-radius: 0 var(--ep-radius-control) var(--ep-radius-control) 0;
   background: var(--ep-color-accent-soft);
+}
+.active-job-status p {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ep-space-2);
+  min-width: 0;
+  margin: 0;
 }
 .active-job-elapsed {
   margin-left: auto;

@@ -33,15 +33,23 @@ function ActiveJobStatus({ job }: { job: Job }) {
 
   return (
     <div className="primary-action">
-      <p className="active-job-status" role="status">
-        <span className="state state-running">{queued ? "Queued" : "Running"}</span>
-        <span>
-          The {job.stage} stage is {queued ? "queued" : "running"} with {job.provider}
-          {job.model ? ` / ${job.model}` : ""}. The board updates automatically; the
-          full log is in Jobs below.
-        </span>
+      <div className="active-job-status">
+        {/* The live region announces the job's state once when it changes;
+            the ticking elapsed readout below is a sibling, not a child, so
+            a screen reader is never re-prompted to re-announce this whole
+            block every second for the life of a run. */}
+        <p role="status">
+          <span className="state state-running">{queued ? "Queued" : "Running"}</span>
+          <span>
+            The {job.stage} stage is {queued ? "queued" : "running"} with {job.provider}
+            {job.model ? ` / ${job.model}` : ""}. The board updates automatically; the
+            full log is in Jobs below.
+          </span>
+        </p>
+        {/* Not aria-hidden: still reachable/readable on demand, just outside
+            the live region above. */}
         {elapsedLabel && <span className="active-job-elapsed">{elapsedLabel}</span>}
-      </p>
+      </div>
       {/* A queued job has no process running yet, so there is no log to tail. */}
       {job.status === "running" && <JobLogView jobId={job.id} active tail={3} />}
     </div>
