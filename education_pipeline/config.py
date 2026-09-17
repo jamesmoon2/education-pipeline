@@ -235,6 +235,15 @@ def parse_model_plan(
         )
         model = _optional_string(raw_stage, "model", None, f"stage {stage_name!r}")
         effort = _optional_string(raw_stage, "effort", None, f"stage {stage_name!r}")
+        if effort is not None and effort not in _EFFORT_VALUES:
+            # Stage effort reaches the provider CLI verbatim, so an
+            # unsupported value must fail here -- where the stage name is
+            # still in hand -- instead of at spawn time. Same allowlist the
+            # preset loader already enforces.
+            raise ConfigError(
+                f"stage {stage_name!r} effort must be one of low, medium, high; "
+                f"got {effort!r}"
+            )
         stage_provider = _optional_string(raw_stage, "provider", provider_id, f"stage {stage_name!r}")
         timeout_seconds = _optional_positive_number(
             raw_stage, "timeout_seconds", f"stage {stage_name!r}"

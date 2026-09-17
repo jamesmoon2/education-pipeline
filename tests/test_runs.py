@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from education_pipeline import atomic_io
 from education_pipeline import (
     AdvanceResult,
     ConfigError,
@@ -1017,6 +1018,51 @@ def test_concurrent_mixed_manifest_writers_all_recorded(tmp_path: Path) -> None:
 
     # File must still be valid JSON (no torn write from either writer path)
     json.loads(store.manifest_path("mixed-writers-topic").read_text(encoding="utf-8"))
+
+
+def test_append_event_retries_a_windows_sharing_violation_on_the_hashed_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows CI regression (the read side of the same race as
+    ``test_concurrent_mixed_manifest_writers_all_recorded``): while one thread
+    replaces ``responses/spec.response.md`` via ``os.replace``, another
+    thread's ``_append_event_locked`` hashes that very path and gets
+    ``PermissionError: [Errno 13]``. ``atomic_io`` already polls the *write*
+    side; the read must poll too, so the event still lands.
+    """
+
+    store = _create_legacy_run(tmp_path, "sharing-violation-topic")
+    store.write_spec_prompt("sharing-violation-topic", title="Sharing Violation")
+    store.ingest_response("sharing-violation-topic", "spec", "initial response")
+
+    response_path = store.stage_paths("sharing-violation-topic", "spec").response_path
+    real_read_bytes = Path.read_bytes
+    failures = {"count": 0}
+
+    def flaky_read_bytes(self: Path):
+        if self == response_path and failures["count"] == 0:
+            failures["count"] += 1
+            raise PermissionError(13, "The process cannot access the file")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(atomic_io.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+
+    store.ingest_response(
+        "sharing-violation-topic", "spec", "replacement response", force=True
+    )
+
+    monkeypatch.undo()
+    assert failures["count"] == 1
+    manifest = store.read_manifest("sharing-violation-topic")
+    replaced = [e for e in manifest["events"] if e.get("action") == "response_replaced"]
+    assert len(replaced) == 1
+    # The event hashes the file it is *about* -- the response as it stood
+    # before the replacement -- and that hash is what the flaky read produced.
+    assert replaced[0]["replaced_response_file_sha256"] == hashlib.sha256(
+        b"initial response"
+    ).hexdigest()
+    assert response_path.read_text(encoding="utf-8") == "replacement response"
 
 
 def test_concurrent_record_waiver_calls_all_survive(tmp_path: Path) -> None:

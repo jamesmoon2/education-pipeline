@@ -103,7 +103,11 @@ from education_pipeline.guides.blueprints import (
     get_blueprint,
     recommend_blueprint,
 )
-from education_pipeline.atomic_io import atomic_write_bytes, atomic_write_text
+from education_pipeline.atomic_io import (
+    atomic_write_bytes,
+    atomic_write_text,
+    read_bytes_retrying,
+)
 from education_pipeline.workspace_lock import workspace_lock
 from education_pipeline.workspace import (
     ProfileStore,
@@ -1108,7 +1112,7 @@ class RunStore:
         prompt_event = self._latest_stage_event(topic_id, stage, "prompt_written")
         draft_path = self.stage_paths(topic_id, "draft").approved_path
         draft_sha = (
-            hashlib.sha256(draft_path.read_bytes()).hexdigest()
+            hashlib.sha256(read_bytes_retrying(draft_path)).hexdigest()
             if draft_path.is_file()
             else None
         )
@@ -1119,7 +1123,7 @@ class RunStore:
             if stage in {"factcheck", "repair"} and not needs_prompt:
                 qa_path = self.stage_paths(topic_id, "qa").approved_path
                 qa_sha = (
-                    hashlib.sha256(qa_path.read_bytes()).hexdigest()
+                    hashlib.sha256(read_bytes_retrying(qa_path)).hexdigest()
                     if qa_path.is_file()
                     else None
                 )
@@ -1128,7 +1132,7 @@ class RunStore:
             if stage == "repair" and not needs_prompt:
                 fc_path = self.stage_paths(topic_id, "factcheck").approved_path
                 fc_sha = (
-                    hashlib.sha256(fc_path.read_bytes()).hexdigest()
+                    hashlib.sha256(read_bytes_retrying(fc_path)).hexdigest()
                     if fc_path.is_file()
                     else None
                 )
@@ -1369,7 +1373,7 @@ class RunStore:
             raise ConfigError(
                 f"approved draft not found for {topic_id!r}; a scoped repair needs its base draft"
             )
-        draft_bytes = draft_path.read_bytes()
+        draft_bytes = read_bytes_retrying(draft_path)
         recorded = (
             prompt_event.get("source_draft_file_sha256")
             if prompt_event is not None
@@ -1453,7 +1457,7 @@ class RunStore:
             raise ConfigError(
                 f"no response to edit for stage {paths.stage!r}: {paths.response_path}"
             )
-        current = hashlib.sha256(paths.response_path.read_bytes()).hexdigest()
+        current = hashlib.sha256(read_bytes_retrying(paths.response_path)).hexdigest()
         if current != base_sha256:
             raise StaleContentError(
                 f"the {paths.stage} response changed on disk since it was loaded; "
@@ -1678,7 +1682,7 @@ class RunStore:
             return False
         try:
             inputs = self._current_audit_inputs(safe_id)
-            prompt_sha = hashlib.sha256(paths.prompt_path.read_bytes()).hexdigest()
+            prompt_sha = hashlib.sha256(read_bytes_retrying(paths.prompt_path)).hexdigest()
         except (ConfigError, OSError, UnicodeError):
             return False
         return (
@@ -1748,10 +1752,10 @@ class RunStore:
         try:
             paths = self.stage_paths(safe_id, "audit")
             projection_path = self.audit_projection_path(safe_id)
-            projection_bytes = projection_path.read_bytes()
+            projection_bytes = read_bytes_retrying(projection_path)
             file_hashes = {
-                "prompt_file_sha256": hashlib.sha256(paths.prompt_path.read_bytes()).hexdigest(),
-                "approved_file_sha256": hashlib.sha256(paths.approved_path.read_bytes()).hexdigest(),
+                "prompt_file_sha256": hashlib.sha256(read_bytes_retrying(paths.prompt_path)).hexdigest(),
+                "approved_file_sha256": hashlib.sha256(read_bytes_retrying(paths.approved_path)).hexdigest(),
                 "audit_projection_file_sha256": hashlib.sha256(projection_bytes).hexdigest(),
             }
         except (ConfigError, OSError, UnicodeError):
@@ -1815,7 +1819,7 @@ class RunStore:
                     trace_state = "missing"
                 else:
                     try:
-                        trace_bytes = trace_path.read_bytes()
+                        trace_bytes = read_bytes_retrying(trace_path)
                         trace = parse_personalization_trace(trace_bytes)
                     except (OSError, PersonalizationTraceError):
                         trace_state = "invalid"
@@ -4041,7 +4045,7 @@ class RunStore:
             return False
         if not draft_path.is_file():
             return True
-        if recorded_draft != hashlib.sha256(draft_path.read_bytes()).hexdigest():
+        if recorded_draft != hashlib.sha256(read_bytes_retrying(draft_path)).hexdigest():
             return True
 
         if stage in {"factcheck", "repair"}:
@@ -4051,7 +4055,7 @@ class RunStore:
             qa_path = self.stage_paths(topic_id, "qa").approved_path
             if not qa_path.is_file():
                 return True
-            if recorded_qa != hashlib.sha256(qa_path.read_bytes()).hexdigest():
+            if recorded_qa != hashlib.sha256(read_bytes_retrying(qa_path)).hexdigest():
                 return True
 
         if stage == "repair":
@@ -4061,7 +4065,7 @@ class RunStore:
             fc_path = self.stage_paths(topic_id, "factcheck").approved_path
             if not fc_path.is_file():
                 return True
-            if recorded_fc != hashlib.sha256(fc_path.read_bytes()).hexdigest():
+            if recorded_fc != hashlib.sha256(read_bytes_retrying(fc_path)).hexdigest():
                 return True
         return False
 
@@ -4166,7 +4170,7 @@ class RunStore:
             if bound is not None:
                 event[f"{label}_sha256"] = bound
             elif path.is_file():
-                event[f"{label}_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                event[f"{label}_sha256"] = hashlib.sha256(read_bytes_retrying(path)).hexdigest()
         if extra:
             event.update(extra)
         event["recorded_at"] = datetime.now(timezone.utc).isoformat()

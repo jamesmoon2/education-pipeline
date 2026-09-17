@@ -229,3 +229,74 @@ def test_atomic_write_text_forwards_options(
     assert calls["count"] == 2
     assert Path(calls["sources"][0]).name.startswith(".workspaces.json.")
     assert target.read_text(encoding="utf-8") == "{}\n"
+
+
+def _flaky_read_bytes(monkeypatch: pytest.MonkeyPatch, failures: int) -> dict:
+    """Make ``Path.read_bytes`` raise PermissionError ``failures`` times."""
+
+    real_read_bytes = Path.read_bytes
+    calls = {"count": 0}
+
+    def read_bytes(self):
+        calls["count"] += 1
+        if calls["count"] <= failures:
+            raise PermissionError("sharing violation")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    return calls
+
+
+def test_read_bytes_retrying_retries_permission_error_and_returns_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The mirror image of the write-side retry: on Windows, *reading* a file a
+    # concurrent writer is replacing with os.replace fails with
+    # PermissionError. Same transient, so the same retry policy.
+    sleeps: list[float] = []
+    monkeypatch.setattr(atomic_io.time, "sleep", sleeps.append)
+    target = tmp_path / "spec.response.md"
+    target.write_bytes(b"response body\n")
+    calls = _flaky_read_bytes(monkeypatch, failures=2)
+
+    assert atomic_io.read_bytes_retrying(target) == b"response body\n"
+
+    assert calls["count"] == 3
+    assert sleeps == [atomic_io.REPLACE_RETRY_SECONDS] * 2
+
+
+def test_read_bytes_retrying_can_opt_out_of_the_permission_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(atomic_io.time, "sleep", sleeps.append)
+    target = tmp_path / "spec.response.md"
+    target.write_bytes(b"response body\n")
+    calls = _flaky_read_bytes(monkeypatch, failures=1)
+
+    with pytest.raises(PermissionError, match="sharing violation"):
+        atomic_io.read_bytes_retrying(target, retry=False)
+
+    assert calls["count"] == 1
+    assert sleeps == []
+
+
+def test_read_bytes_retrying_raises_after_retries_are_exhausted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(atomic_io.time, "sleep", sleeps.append)
+    target = tmp_path / "spec.response.md"
+    target.write_bytes(b"response body\n")
+    calls = _flaky_read_bytes(monkeypatch, failures=atomic_io.REPLACE_ATTEMPTS)
+
+    with pytest.raises(PermissionError, match="sharing violation"):
+        atomic_io.read_bytes_retrying(target)
+
+    assert calls["count"] == atomic_io.REPLACE_ATTEMPTS
+    assert len(sleeps) == atomic_io.REPLACE_ATTEMPTS - 1
+
+
+def test_read_bytes_retrying_does_not_swallow_other_os_errors(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        atomic_io.read_bytes_retrying(tmp_path / "absent.md")

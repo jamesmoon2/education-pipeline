@@ -26,7 +26,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 #: How many ``os.replace`` attempts a transient sharing violation gets.
 REPLACE_ATTEMPTS = 10
@@ -36,6 +36,8 @@ REPLACE_RETRY_SECONDS = 0.05
 
 #: Temp-file prefix used unless a caller asks for another one.
 DEFAULT_TMP_PREFIX = ".tmp-"
+
+_T = TypeVar("_T")
 
 
 def atomic_write_bytes(
@@ -103,22 +105,53 @@ def atomic_write_text(
     atomic_write_bytes(path, text.encode("utf-8"), **options)
 
 
+def read_bytes_retrying(
+    path: str | os.PathLike[str], *, retry: bool = True
+) -> bytes:
+    """Read ``path`` whole, polling through a transient sharing violation.
+
+    The mirror image of the retry :func:`atomic_write_bytes` already does. On
+    Windows, *opening* a file another thread is replacing via ``os.replace``
+    fails with :class:`PermissionError` just as the replace itself does
+    against an open reader, so a reader that hashes a run artifact while a
+    writer swaps it needs the same brief poll -- same attempt count, same
+    backoff, same opt-out flag. Every other :class:`OSError` (a missing file
+    above all) propagates on the first attempt.
+    """
+
+    target = Path(path)
+    return _retrying_on_permission_error(target.read_bytes, retry=retry)
+
+
 def _replace(source: str, target: Path, *, retry: bool) -> None:
-    if not retry:
-        os.replace(source, target)
-        return
     # Windows sharing semantics: replacing a file another process or thread
     # holds open for reading fails with PermissionError. Readers here are
     # transient (manifest polls, API reads, discovery-file polls), so retry
     # briefly instead of surfacing the failure.
+    _retrying_on_permission_error(
+        lambda: os.replace(source, target), retry=retry
+    )
+
+
+def _retrying_on_permission_error(
+    operation: Callable[[], _T], *, retry: bool
+) -> _T:
+    """Run ``operation``, polling it through transient sharing violations.
+
+    One retry policy shared by both sides of the race, so the read side can
+    never drift from the write side's attempt count or backoff.
+    """
+
+    if not retry:
+        return operation()
     for attempt in range(REPLACE_ATTEMPTS):
         try:
-            os.replace(source, target)
-            return
+            return operation()
         except PermissionError:
             if attempt == REPLACE_ATTEMPTS - 1:
                 raise
             time.sleep(REPLACE_RETRY_SECONDS)
+    raise AssertionError("unreachable: the loop returns or raises")  # pragma: no cover
 
 
 __all__ = [
@@ -127,4 +160,5 @@ __all__ = [
     "REPLACE_RETRY_SECONDS",
     "atomic_write_bytes",
     "atomic_write_text",
+    "read_bytes_retrying",
 ]
