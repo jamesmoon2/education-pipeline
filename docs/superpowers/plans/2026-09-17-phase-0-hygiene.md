@@ -22,7 +22,7 @@
 | T06 | Cost in the API | `GET /v1/runs/{id}` carries a `cost` object with provenance; workspace total; Codex byte-based estimate labeled as such; CLI `status` prints it. | - [x] |
 | T07 | Cost in the cockpit | Cost on run board, stage viewer header, library column; Settings rows show last-observed cost. | - [ ] |
 | T08 | Effort: wire it or remove it | Effort reaches the provider CLI where a flag exists; control hidden with a note where none does; decision recorded. | - [ ] |
-| T09 | Docs truth-up and issue #18 | Shipped plan steps ticked, design status lines updated; preset buttons show "no mapping for this provider" instead of a silent no-op. | - [ ] |
+| T09 | Docs truth-up and issue #18 | Shipped plan steps ticked, design status lines updated; preset buttons show "no mapping for this provider" instead of a silent no-op. | - [x] |
 
 ## Closeout log
 
@@ -30,3 +30,4 @@
 
 - **T02** landed: `runs.py:_write_text` delegates to `atomic_io.atomic_write_text`; 7 new tests in `tests/test_atomic_artifact_writes.py`. Suite 1535 passed / 1 skipped. Follow-up noted in the audit: `workspace.py:_write_text` (topic TOML saves) is still a plain write.
 - **T06** landed: `cost.py` (estimate + aggregation), `Job.cost_usd`/`cost_source`, `cost` blocks on `/v1/runs/{id}` and `/v1/topics`, CLI status line; 15 new tests. Suite 1543 passed / 1 skipped. Accepted limitation: the price table is a placeholder, not a vendor price sheet.
+- **T09** landed: #18 fixed in `SettingsPage.tsx` (disabled preset + visible hint); factcheck plan 29/34 steps ticked, cockpit-usability plan 58/68, remaining are TDD 'verify it fails' steps; both design docs read Shipped; full Playwright run 86 passed. vitest 509.
