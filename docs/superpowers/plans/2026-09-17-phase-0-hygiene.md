@@ -15,7 +15,7 @@
 | ID | Thread | Exit criteria | Status |
 | --- | --- | --- | --- |
 | T01 | Cache final validation | Warm status read performs zero parse/validate calls; 20-topic poll under 50 ms; cache invalidates on approve, waive, and on-disk edit. | - [ ] |
-| T02 | Atomic approved and prompt writes | Approved, prompt, final and export writes go through `atomic_io`; fault-injection tests leave the previous file intact. | - [ ] |
+| T02 | Atomic approved and prompt writes | Approved, prompt, final and export writes go through `atomic_io`; fault-injection tests leave the previous file intact. | - [x] |
 | T03 | Cross-process guard for the CLI | Workspace lock file (`fcntl`/`msvcrt`); CLI mutating commands refuse with a catalog error while a job is active or the course is archived. | - [ ] |
 | T04 | Never lose model output | Audit output is logged; parse failure writes `<stage>.failed.<ts>.txt`; salvage-as-response action; Codex adapter validates shape. | - [ ] |
 | T05 | Worker safety | PID-reuse guard on reconcile; per-stage timeout from the plan (default 1800 s); socket timeout on request body reads. | - [ ] |
@@ -27,3 +27,5 @@
 ## Closeout log
 
 (One line per thread as it lands: what changed, test counts, accepted limitations.)
+
+- **T02** landed: `runs.py:_write_text` delegates to `atomic_io.atomic_write_text`; 7 new tests in `tests/test_atomic_artifact_writes.py`. Suite 1535 passed / 1 skipped. Follow-up noted in the audit: `workspace.py:_write_text` (topic TOML saves) is still a plain write.
