@@ -51,6 +51,9 @@ class Job:
     effort: str | None
     status: str = "queued"
     pid: int | None = None
+    # Identity of the spawned process (see ``_process_identity``), recorded so
+    # crash recovery can tell "still our child" from "this pid was recycled".
+    pid_identity: str | None = None
     created_at: str = ""
     started_at: str | None = None
     ended_at: str | None = None
@@ -483,6 +486,7 @@ class JobRunner:
                 **popen_kwargs(),
             )
         job.pid = proc.pid
+        job.pid_identity = _process_identity(proc.pid)
         self.store.save(job)
 
         # Providers (e.g. Codex) write progress to stderr and the final answer
@@ -682,12 +686,17 @@ class Worker:
     def reconcile(self) -> None:
         for job in self.store.all_jobs():
             if job.status == "running":
-                if job.pid and _pid_plausibly_alive(job.pid):
+                if (
+                    job.pid
+                    and _pid_plausibly_alive(job.pid)
+                    and _identity_still_matches(job.pid, job.pid_identity)
+                ):
                     _best_effort_kill(job.pid)
                 job.status = "interrupted"
                 job.error = "daemon restarted while job was running"
                 job.ended_at = _utcnow().isoformat()
                 job.pid = None
+                job.pid_identity = None
                 self.store.save(job)
         for job in sorted(
             (j for j in self.store.all_jobs() if j.status == "queued"), key=lambda j: j.id
@@ -729,6 +738,67 @@ class Worker:
                     fresh.ended_at = _utcnow().isoformat()
                     fresh.pid = None
                     self.store.save(fresh)
+
+
+def _process_identity(pid: int) -> str | None:
+    """A stable identity for a live pid, or ``None`` when it can't be had.
+
+    Pids are recycled, so a pid alone cannot prove that the process running
+    now is the one a job record was spawned for -- after a reboot the same
+    number may belong to something unrelated. On Linux the process start time
+    (field 22 of ``/proc/<pid>/stat``, in clock ticks since boot) pins the
+    identity: it is fixed for the life of the process and a recycled pid gets
+    a different one. The field is parsed after the last ``)`` because the
+    process name (field 2) may itself contain spaces and parentheses.
+
+    Other platforms have no equally cheap, dependency-free equivalent, so this
+    returns ``None`` there and callers fall back to today's pid-only
+    behaviour.
+    """
+
+    if sys.platform != "linux":
+        return None
+    try:
+        stat = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8", errors="replace")
+        fields = stat[stat.rindex(")") + 1 :].split()
+        # fields[0] is field 3 (state), so field 22 (starttime) is index 19.
+        starttime = int(fields[19])
+    except (OSError, ValueError, IndexError):
+        return None
+    return f"linux-start:{starttime}"
+
+
+def _identity_still_matches(pid: int, recorded: str | None) -> bool:
+    """True when signalling ``pid`` is safe for a job that recorded ``recorded``.
+
+    A record written before process identities existed (``recorded is None``)
+    keeps the old pid-only behaviour; a recorded identity must match the live
+    process, otherwise the pid has been recycled and belongs to someone else.
+    """
+
+    if recorded is None:
+        return True
+    return _process_identity(pid) == recorded
+
+
+def effective_timeout_seconds(
+    plan: ModelPlan,
+    stage: str,
+    model: str | None = None,
+    *,
+    default: float = DEFAULT_TIMEOUT_SECONDS,
+) -> float:
+    """How long one job for ``stage`` may run before it is timed out.
+
+    The stage's ``timeout_seconds`` wins when the effective plan sets one,
+    otherwise ``default`` (the daemon-wide value). ``model`` is accepted for a
+    future per-model layer; the plan carries no per-model settings today.
+    """
+
+    stage_plan = plan.stages.get(stage)
+    if stage_plan is not None and stage_plan.timeout_seconds is not None:
+        return float(stage_plan.timeout_seconds)
+    return default
 
 
 def _pid_plausibly_alive(pid: int) -> bool:

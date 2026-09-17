@@ -347,6 +347,51 @@ describe("SettingsPage", () => {
     expect(stages.spec).toEqual({ provider: "claude-code", model: "sonnet", effort: "high" });
   });
 
+  it("keeps a hand-set timeout_seconds on Save (the cockpit has no editor for it)", async () => {
+    // model-plan.toml may set [stages.spec] timeout_seconds by hand, and the
+    // daemon honors it. PUT /v1/config/plan is a full replace, so Save must
+    // transmit the value back untouched or editing any other row silently
+    // deletes it.
+    const plan = makePlan();
+    const spec = plan.stages.find((s) => s.stage === "spec")!;
+    spec.timeout_seconds = 900;
+    setup(plan);
+    await screen.findByLabelText("Effort for draft");
+    vi.mocked(putConfigPlan).mockResolvedValue(plan);
+
+    // edit a DIFFERENT row
+    await userEvent.selectOptions(screen.getByLabelText("Effort for draft"), "high");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const [, , stages] = vi.mocked(putConfigPlan).mock.calls[0];
+    expect(stages.spec).toEqual({
+      provider: "claude-code",
+      model: "sonnet",
+      effort: undefined,
+      timeout_seconds: 900,
+    });
+  });
+
+  it("keeps a hand-set timeout_seconds when its own row is edited", async () => {
+    const plan = makePlan();
+    const spec = plan.stages.find((s) => s.stage === "spec")!;
+    spec.timeout_seconds = 900;
+    setup(plan);
+    await screen.findByLabelText("Effort for spec");
+    vi.mocked(putConfigPlan).mockResolvedValue(plan);
+
+    await userEvent.selectOptions(screen.getByLabelText("Effort for spec"), "high");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const [, , stages] = vi.mocked(putConfigPlan).mock.calls[0];
+    expect(stages.spec).toEqual({
+      provider: "claude-code",
+      model: "sonnet",
+      effort: "high",
+      timeout_seconds: 900,
+    });
+  });
+
   it("surfaces the reload affordance on a 409 stale_content from save", async () => {
     setup();
     await screen.findByLabelText("Effort for outline");

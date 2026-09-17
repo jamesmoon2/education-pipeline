@@ -61,14 +61,23 @@ export default function PlanStageRow({
   const selectedProviderLabel =
     selectedAvailability?.label ?? selectedCatalogProvider?.label ?? currentProviderId;
 
+  // This row edits provider/model/effort only; timeout_seconds is hand-set in
+  // model-plan.toml, so every change must carry the current one through.
+  const timeout = stage.timeout_seconds ?? undefined;
   const handleProviderChange = (value: string) => {
-    onChange(stage.stage, { provider: value, model: undefined, effort: stage.effort ?? undefined });
+    onChange(stage.stage, {
+      provider: value,
+      model: undefined,
+      effort: stage.effort ?? undefined,
+      timeout_seconds: timeout,
+    });
   };
   const handleModelChange = (value: string) => {
     onChange(stage.stage, {
       provider: currentProviderId,
       model: value === "" ? undefined : value,
       effort: stage.effort ?? undefined,
+      timeout_seconds: timeout,
     });
   };
   const handleEffortChange = (value: string) => {
@@ -76,6 +85,7 @@ export default function PlanStageRow({
       provider: currentProviderId,
       model: stage.model ?? undefined,
       effort: value === "default" ? undefined : value,
+      timeout_seconds: timeout,
     });
   };
   const resetToDefault = () =>

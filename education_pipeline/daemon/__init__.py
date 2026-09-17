@@ -26,6 +26,7 @@ from education_pipeline.daemon.jobs import (
     JobRunner,
     JobStore,
     Worker,
+    effective_timeout_seconds,
 )
 from education_pipeline.daemon.server import DaemonContext, build_server
 from education_pipeline.daemon.static import default_web_dist
@@ -130,7 +131,13 @@ def serve(
             job.metadata["plan_source"] = (
                 "override" if job.stage in overrides.get("stages", {}) else "default"
             )
-            return JobRunner(store, runs, catalog, plan, timeout=timeout,
+            # The effective plan (global + this run's overrides) may set a
+            # per-stage timeout_seconds; the serve()-level value stays the
+            # fallback for every stage that does not.
+            job_timeout = effective_timeout_seconds(
+                plan, job.stage, job.model, default=timeout
+            )
+            return JobRunner(store, runs, catalog, plan, timeout=job_timeout,
                               force=bool(job.metadata.get("force")))
 
         worker = Worker(store, _runner_for)

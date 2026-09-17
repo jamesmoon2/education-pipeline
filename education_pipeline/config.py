@@ -8,6 +8,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 import json
+import math
 import tomllib
 
 
@@ -118,6 +119,7 @@ class StageModelPlan:
     model: str | None = None
     effort: str | None = None
     provider: str | None = None
+    timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -234,6 +236,9 @@ def parse_model_plan(
         model = _optional_string(raw_stage, "model", None, f"stage {stage_name!r}")
         effort = _optional_string(raw_stage, "effort", None, f"stage {stage_name!r}")
         stage_provider = _optional_string(raw_stage, "provider", provider_id, f"stage {stage_name!r}")
+        timeout_seconds = _optional_positive_number(
+            raw_stage, "timeout_seconds", f"stage {stage_name!r}"
+        )
 
         active_provider = base_provider
         if catalog is not None and stage_provider != provider_id:
@@ -252,6 +257,7 @@ def parse_model_plan(
             model=model,
             effort=effort,
             recommendation=recommendation,
+            timeout_seconds=timeout_seconds,
         )
 
     return ModelPlan(provider=provider_id, stages=stages)
@@ -275,6 +281,8 @@ def emit_model_plan_toml(plan: ModelPlan) -> str:
             body.append(f"model = {q(stage.model)}")
         if stage.effort is not None:
             body.append(f"effort = {q(stage.effort)}")
+        if stage.timeout_seconds is not None:
+            body.append(f"timeout_seconds = {stage.timeout_seconds!r}")
         if stage.recommendation != DEFAULT_STAGE_RECOMMENDATIONS[stage_name]:
             body.append(f"recommendation = {q(stage.recommendation)}")
         if body:
@@ -284,7 +292,9 @@ def emit_model_plan_toml(plan: ModelPlan) -> str:
     return "\n".join(lines)
 
 
-_STAGE_OVERRIDE_KEYS = frozenset({"provider", "model", "effort", "recommendation"})
+_STAGE_OVERRIDE_KEYS = frozenset(
+    {"provider", "model", "effort", "recommendation", "timeout_seconds"}
+)
 
 
 def apply_overrides(
@@ -307,6 +317,8 @@ def apply_overrides(
             body["model"] = stage.model
         if stage.effort is not None:
             body["effort"] = stage.effort
+        if stage.timeout_seconds is not None:
+            body["timeout_seconds"] = stage.timeout_seconds
         if stage.recommendation != DEFAULT_STAGE_RECOMMENDATIONS[stage_name]:
             body["recommendation"] = stage.recommendation
         if body:
@@ -523,6 +535,26 @@ def _required_string(data: Mapping[str, Any], key: str, context: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{context} must define non-empty string {key!r}")
     return value
+
+
+def _optional_positive_number(
+    data: Mapping[str, Any],
+    key: str,
+    context: str,
+) -> float | None:
+    """A positive, finite number, or ``None`` when the key is absent/null."""
+
+    if key not in data:
+        return None
+    value = data[key]
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{context} field {key!r} must be a positive number when set")
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ConfigError(f"{context} field {key!r} must be a positive number when set")
+    return number
 
 
 def _optional_string(

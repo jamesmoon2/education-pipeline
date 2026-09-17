@@ -88,7 +88,10 @@ either way) control what runs:
   `default_effort`, `argv_model` (what is actually passed to `--model`),
   and `extra_args` (extra CLI flags, e.g. `["--reasoning", "high"]`).
 - `<workspace>/config/model-plan.toml` — which provider/model/effort each
-  stage uses, with "recommended" defaults you can reset to.
+  stage uses, with "recommended" defaults you can reset to. A stage may also
+  set `timeout_seconds` (a positive number) to cap how long that stage's
+  provider job may run before the daemon fails it as a timeout; stages without
+  one use the daemon-wide default of 1800 seconds.
 
 `config/model-catalog.example.toml` and `config/model-plan.example.toml` in
 the repository show the full shape. Model names change over time by design:

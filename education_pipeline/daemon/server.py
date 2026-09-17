@@ -56,6 +56,11 @@ class ConfigSource(Protocol):
 
     def write_plan(self, toml_text: str) -> None: ...
 MAX_REQUEST_BODY_BYTES = 1024 * 1024  # 1 MiB; job POST bodies are tiny
+# Every route is plain request/response (no long polling), so a connection
+# that goes quiet mid-request is a stalled or truncated client, not normal
+# traffic. Bounding blocking reads keeps one such client from parking a
+# handler thread forever.
+DEFAULT_SOCKET_TIMEOUT_SECONDS = 30.0
 
 
 def _require_str(body: dict, key: str) -> str:
@@ -143,8 +148,16 @@ class _LoopbackHTTPServer(ThreadingHTTPServer):
         self.server_port = port
 
 
-def build_server(context: DaemonContext) -> ThreadingHTTPServer:
+def build_server(
+    context: DaemonContext,
+    *,
+    socket_timeout: float | None = DEFAULT_SOCKET_TIMEOUT_SECONDS,
+) -> ThreadingHTTPServer:
     handler = _make_handler(context)
+    # StreamRequestHandler.setup() applies this to the accepted connection, so
+    # every blocking read on it -- the request line, the headers, and the body
+    # read inside _read_body -- is bounded by it.
+    handler.timeout = socket_timeout
     server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
     return server
 
@@ -254,7 +267,14 @@ def _make_handler(context: DaemonContext):
                     f"{MAX_REQUEST_BODY_BYTES}-byte cap"
                 )
             try:
-                value = json.loads(self.rfile.read(length) or b"{}")
+                raw = self.rfile.read(length)
+            except TimeoutError:  # socket.timeout is an alias of this
+                # The client promised more body than it sent and then went
+                # quiet. The headers are already parsed, so answer with the
+                # ordinary 400 shape rather than dropping the connection.
+                raise ConfigError("timed out reading the request body")
+            try:
+                value = json.loads(raw or b"{}")
             except json.JSONDecodeError:
                 raise ConfigError("request body is not valid JSON")
             if not isinstance(value, dict):

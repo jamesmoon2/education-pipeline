@@ -355,6 +355,16 @@ def test_emit_model_plan_toml_round_trips():
     assert parse_model_plan(tomllib.loads(text), catalog=catalog) == plan
 
 
+def test_emit_model_plan_toml_round_trips_stage_timeout_seconds():
+    plan = parse_model_plan(
+        {"provider": "manual", "stages": {"draft": {"timeout_seconds": 90}}}
+    )
+    text = emit_model_plan_toml(plan)
+    reparsed = parse_model_plan(tomllib.loads(text))
+    assert reparsed == plan
+    assert reparsed.stage("draft").timeout_seconds == 90
+
+
 def test_emit_escapes_special_characters():
     plan = parse_model_plan({"provider": 'we"ird\\id'}, catalog=None)
     assert parse_model_plan(tomllib.loads(emit_model_plan_toml(plan))) == plan
