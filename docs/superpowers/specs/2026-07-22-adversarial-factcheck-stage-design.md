@@ -1,7 +1,7 @@
 # Adversarial Fact-Check Stage — Design
 
 - **Date:** 2026-07-22
-- **Status:** Implementation plan ready — see `docs/superpowers/plans/2026-07-22-adversarial-factcheck-stage.md`
+- **Status:** Shipped — see [`docs/superpowers/plans/2026-07-22-adversarial-factcheck-stage.md`](../plans/2026-07-22-adversarial-factcheck-stage.md)
 - **Branch:** `feature/adversarial-factcheck-stage`
 - **Related:** interactive-guide validation pipeline
   ([`2026-07-11-interactive-guide-v1-validation-pipeline.md`](2026-07-11-interactive-guide-v1-validation-pipeline.md)),

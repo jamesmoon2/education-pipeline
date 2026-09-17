@@ -1,7 +1,7 @@
 # Cockpit Usability + Real Model Catalog — Design
 
 Date: 2026-07-17
-Status: Draft for review
+Status: Shipped — see [`docs/superpowers/plans/2026-07-17-cockpit-usability-model-catalog.md`](../plans/2026-07-17-cockpit-usability-model-catalog.md)
 
 ## Problem
 
