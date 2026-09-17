@@ -238,3 +238,54 @@ def test_runs_module_has_no_direct_path_write_text_calls() -> None:
         "writes through atomic_io.atomic_write_text/atomic_write_bytes "
         "(or the runs.py helpers backed by them) instead"
     )
+
+
+# ---------------------------------------------------------------------------
+# 5. TopicStore.save_topic_toml: the last plain artifact write in the package.
+#    Re-saving a topic over an existing TOML must be crash-safe too.
+# ---------------------------------------------------------------------------
+
+
+def test_resaving_a_topic_toml_survives_a_crash_mid_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    topics = TopicStore(tmp_path)
+    topics.save_topic_toml("systems-thinking", TOPIC_TOML)
+    path = tmp_path / "topics" / "systems-thinking.toml"
+    before = path.read_bytes()
+    assert before
+
+    _crash_os_replace(monkeypatch, "simulated crash mid-write")
+    with pytest.raises(OSError, match="simulated crash mid-write"):
+        topics.save_topic_toml(
+            "systems-thinking",
+            TOPIC_TOML.replace('title = "Systems Thinking"', 'title = "Systems Thinking, revised"'),
+            overwrite=True,
+        )
+
+    assert path.read_bytes() == before
+    assert _tmp_leftovers(path.parent) == []
+
+
+def test_save_topic_toml_without_overwrite_refuses_and_does_not_touch_the_file(
+    tmp_path: Path,
+) -> None:
+    topics = TopicStore(tmp_path)
+    topics.save_topic_toml("systems-thinking", TOPIC_TOML)
+    path = tmp_path / "topics" / "systems-thinking.toml"
+    before = path.read_bytes()
+
+    with pytest.raises(ConfigError, match="refusing to overwrite"):
+        topics.save_topic_toml("systems-thinking", TOPIC_TOML + "\n# edited\n")
+
+    assert path.read_bytes() == before
+
+
+def test_workspace_module_has_no_direct_path_write_text_calls() -> None:
+    """Structural guard, same shape as the runs.py check above: every
+    artifact write in workspace.py must go through atomic_io."""
+
+    import education_pipeline.workspace as workspace_module
+
+    source = Path(workspace_module.__file__).read_text(encoding="utf-8")
+    assert not re.search(r"\.write_text\(", source)

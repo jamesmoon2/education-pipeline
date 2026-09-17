@@ -11,7 +11,7 @@ import threading
 from typing import Any, Mapping
 import tomllib
 
-from education_pipeline.atomic_io import atomic_write_bytes
+from education_pipeline.atomic_io import atomic_write_bytes, atomic_write_text
 from education_pipeline.config import ConfigError
 from education_pipeline.privacy import canonical_profile_toml_bytes, profile_to_dict
 from education_pipeline.profiles import LearnerProfile, load_learner_profile, parse_learner_profile
@@ -529,12 +529,16 @@ def _require_matching_profile_id(profile: LearnerProfile, expected_id: str) -> N
 
 
 def _write_text(path: Path, text: str, *, overwrite: bool) -> None:
+    # The refusal is checked before anything is created on disk, so a rejected
+    # write leaves the directory exactly as it found it -- no stray temp file.
     if path.exists() and not overwrite:
         raise ConfigError(f"refusing to overwrite existing file: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # newline="": topic/profile TOMLs feed canonical-bytes comparisons, so
-    # Windows text-mode \n -> \r\n translation must never rewrite them.
-    path.write_text(text, encoding="utf-8", newline="")
+    # atomic_write_text encodes UTF-8 and writes in binary mode, the
+    # byte-for-byte equivalent of write_text(encoding="utf-8", newline=""):
+    # topic/profile TOMLs feed canonical-bytes comparisons, so Windows
+    # text-mode \n -> \r\n translation must never rewrite them. Going through
+    # the temp file means a crash mid-rewrite leaves the previous TOML intact.
+    atomic_write_text(path, text)
 
 
 def _read_bytes(path: Path, context: str) -> bytes:

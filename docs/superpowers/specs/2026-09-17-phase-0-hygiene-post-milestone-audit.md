@@ -47,9 +47,11 @@ docstrings promise. The waiver invalidation test needed no change.
 
 ## Accepted limitations
 
-- **T02:** `workspace.py:_write_text` (topic TOML saves) is still a plain
-  `Path.write_text`; outside T02's scope, candidate for a later hygiene
-  thread.
+- **T02 (closed at closeout):** `workspace.py:_write_text` (topic TOML
+  saves) was the last plain `Path.write_text` in the package; it now goes
+  through `atomic_io` as well, with the same fault-injection and structural
+  tests as the run artifacts. No plain artifact write remains in
+  `education_pipeline/`.
 - **T03:** a `workspace_locked` timeout raised inside the daemon surfaces as
   HTTP 400 `invalid_request` with the catalog text in the message, not as a
   `workspace_locked`/409 envelope. The CLI surface is correct. Mapping it in

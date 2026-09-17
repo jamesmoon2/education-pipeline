@@ -28,7 +28,7 @@
 
 (One line per thread as it lands: what changed, test counts, accepted limitations.)
 
-- **T02** landed: `runs.py:_write_text` delegates to `atomic_io.atomic_write_text`; 7 new tests in `tests/test_atomic_artifact_writes.py`. Suite 1535 passed / 1 skipped. Follow-up noted in the audit: `workspace.py:_write_text` (topic TOML saves) is still a plain write.
+- **T02** landed: `runs.py:_write_text` delegates to `atomic_io.atomic_write_text`; 7 new tests in `tests/test_atomic_artifact_writes.py`. Suite 1535 passed / 1 skipped. Follow-up closed at closeout: `workspace.py:_write_text` (topic TOML saves) now goes through `atomic_io` too.
 - **T06** landed: `cost.py` (estimate + aggregation), `Job.cost_usd`/`cost_source`, `cost` blocks on `/v1/runs/{id}` and `/v1/topics`, CLI status line; 15 new tests. Suite 1543 passed / 1 skipped. Accepted limitation: the price table is a placeholder, not a vendor price sheet.
 - **T09** landed: #18 fixed in `SettingsPage.tsx` (disabled preset + visible hint); factcheck plan 29/34 steps ticked, cockpit-usability plan 58/68, remaining are TDD 'verify it fails' steps; both design docs read Shipped; full Playwright run 86 passed. vitest 509.
 - **T08** landed: both CLIs support effort (Claude Code `--effort`, Codex `-c model_reasoning_effort=`), so it is wired for both; `supports_effort` capability on every runner and in `/v1/config/providers`; Settings hides the control for providers without it; help copy corrected; decision recorded in the model-plan audit. pytest 1536, vitest 510.
@@ -40,4 +40,4 @@
 
 ## Phase closeout
 
-All nine threads merged into `claude/engineering-manager-phase-0-xquocr`, one merge commit per thread. Final gate on the merged branch: pytest 1609 passed / 1 skipped (baseline 1528), vitest 538 (baseline 508), `npm run build` clean, `education-pipeline --help` clean, Playwright 86 passed on the preinstalled Chromium (one later full run showed a single unrelated flake in the guide-runtime file:// resume test; see the ledger). Accepted limitations and the three plan-text departures are in the audit ledger.
+All nine threads merged into `claude/engineering-manager-phase-0-xquocr`, one merge commit per thread. Final gate on the merged branch: pytest 1612 passed / 1 skipped (baseline 1528), vitest 538 (baseline 508), `npm run build` clean, `education-pipeline --help` clean, Playwright 86 passed on the preinstalled Chromium (one later full run showed a single unrelated flake in the guide-runtime file:// resume test; see the ledger). Accepted limitations and the three plan-text departures are in the audit ledger.
