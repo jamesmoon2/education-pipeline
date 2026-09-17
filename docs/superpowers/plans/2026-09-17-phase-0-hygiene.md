@@ -19,7 +19,7 @@
 | T03 | Cross-process guard for the CLI | Workspace lock file (`fcntl`/`msvcrt`); CLI mutating commands refuse with a catalog error while a job is active or the course is archived. | - [ ] |
 | T04 | Never lose model output | Audit output is logged; parse failure writes `<stage>.failed.<ts>.txt`; salvage-as-response action; Codex adapter validates shape. | - [ ] |
 | T05 | Worker safety | PID-reuse guard on reconcile; per-stage timeout from the plan (default 1800 s); socket timeout on request body reads. | - [ ] |
-| T06 | Cost in the API | `GET /v1/runs/{id}` carries a `cost` object with provenance; workspace total; Codex byte-based estimate labeled as such; CLI `status` prints it. | - [ ] |
+| T06 | Cost in the API | `GET /v1/runs/{id}` carries a `cost` object with provenance; workspace total; Codex byte-based estimate labeled as such; CLI `status` prints it. | - [x] |
 | T07 | Cost in the cockpit | Cost on run board, stage viewer header, library column; Settings rows show last-observed cost. | - [ ] |
 | T08 | Effort: wire it or remove it | Effort reaches the provider CLI where a flag exists; control hidden with a note where none does; decision recorded. | - [ ] |
 | T09 | Docs truth-up and issue #18 | Shipped plan steps ticked, design status lines updated; preset buttons show "no mapping for this provider" instead of a silent no-op. | - [ ] |
@@ -29,3 +29,4 @@
 (One line per thread as it lands: what changed, test counts, accepted limitations.)
 
 - **T02** landed: `runs.py:_write_text` delegates to `atomic_io.atomic_write_text`; 7 new tests in `tests/test_atomic_artifact_writes.py`. Suite 1535 passed / 1 skipped. Follow-up noted in the audit: `workspace.py:_write_text` (topic TOML saves) is still a plain write.
+- **T06** landed: `cost.py` (estimate + aggregation), `Job.cost_usd`/`cost_source`, `cost` blocks on `/v1/runs/{id}` and `/v1/topics`, CLI status line; 15 new tests. Suite 1543 passed / 1 skipped. Accepted limitation: the price table is a placeholder, not a vendor price sheet.
