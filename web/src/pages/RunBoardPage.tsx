@@ -226,7 +226,12 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
       <p className="next-action">
         <strong>Next:</strong> {status.next_action.detail}
       </p>
-      <RunCostLine usd={status.cost?.run_usd ?? null} source={status.cost?.run_source ?? null} />
+      <RunCostLine
+        usd={status.cost?.run_usd ?? null}
+        source={status.cost?.run_source ?? null}
+        unpricedJobs={status.cost?.unpriced_jobs}
+        complete={status.cost?.complete}
+      />
       <PrimaryAction status={status} activeJob={activeJob} onChanged={refresh} />
       <PipelineStepper
         status={status}

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { costSourceLabel, formatUsd } from "./cost";
+import {
+  costCompletenessLabel,
+  costCompletenessTitle,
+  costSourceLabel,
+  formatUsd,
+} from "./cost";
 
 describe("formatUsd", () => {
   it("formats a known amount to two decimal places with a leading dollar sign", () => {
@@ -35,5 +40,41 @@ describe("costSourceLabel", () => {
 
   it("returns an empty label for a null (unknown) source", () => {
     expect(costSourceLabel(null)).toBe("");
+  });
+});
+
+describe("costCompletenessLabel", () => {
+  it("names the number of unpriced jobs in a partial subtotal", () => {
+    expect(costCompletenessLabel(2)).toBe("partial: 2 jobs unpriced");
+  });
+
+  it("uses the singular for a single unpriced job", () => {
+    expect(costCompletenessLabel(1)).toBe("partial: 1 job unpriced");
+  });
+
+  it("still reads as partial when the unpriced count is unknown", () => {
+    // A payload may report completeness without a usable count; the figure is
+    // still a subtotal and must not read as a total.
+    expect(costCompletenessLabel(0)).toBe("partial: some jobs unpriced");
+  });
+});
+
+describe("costCompletenessTitle", () => {
+  it("explains that the named jobs have no known cost", () => {
+    expect(costCompletenessTitle(2)).toBe(
+      "Known-cost subtotal: 2 jobs have no known cost and are not counted.",
+    );
+  });
+
+  it("uses the singular for a single unpriced job", () => {
+    expect(costCompletenessTitle(1)).toBe(
+      "Known-cost subtotal: 1 job has no known cost and is not counted.",
+    );
+  });
+
+  it("falls back to an unquantified explanation when the count is unknown", () => {
+    expect(costCompletenessTitle(0)).toBe(
+      "Known-cost subtotal: some jobs have no known cost and are not counted.",
+    );
   });
 });

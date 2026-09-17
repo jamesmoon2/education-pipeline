@@ -1067,5 +1067,60 @@ describe("StageViewerPage", () => {
       expect(await screen.findByRole("heading", { name: "the prompt" })).toBeInTheDocument();
       expect(screen.queryByText(/Cost \$/)).not.toBeInTheDocument();
     });
+
+    it("marks a stage cost that leaves jobs unpriced as a known-cost subtotal", async () => {
+      vi.mocked(getStageContent).mockResolvedValue({
+        topic_id: "t",
+        stage: "draft",
+        prompt: "# the prompt",
+        response: "# the response",
+        approved: null,
+        response_sha256: null,
+        content_type: "text/markdown",
+      });
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...makeRunStatus({ action: "done", stage: null }),
+        cost: {
+          stages: { draft: { usd: 1.23, source: "estimate", jobs: 3, unpriced_jobs: 2 } },
+          run_usd: 1.23,
+          run_source: "estimate",
+          unpriced_jobs: 2,
+          complete: false,
+        },
+      });
+      renderAt("/topics/t/stages/draft");
+
+      expect(
+        await screen.findByText("Cost $1.23 (estimated, partial: 2 jobs unpriced)"),
+      ).toBeInTheDocument();
+    });
+
+    it("leaves a fully priced stage unmarked even when the run total is partial", async () => {
+      // The line states THIS stage's cost, so another stage's unpriced jobs
+      // must not make this figure read as a subtotal.
+      vi.mocked(getStageContent).mockResolvedValue({
+        topic_id: "t",
+        stage: "draft",
+        prompt: "# the prompt",
+        response: "# the response",
+        approved: null,
+        response_sha256: null,
+        content_type: "text/markdown",
+      });
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...makeRunStatus({ action: "done", stage: null }),
+        cost: {
+          stages: { draft: { usd: 1.23, source: "estimate", jobs: 3, unpriced_jobs: 0 } },
+          run_usd: 1.23,
+          run_source: "estimate",
+          unpriced_jobs: 2,
+          complete: false,
+        },
+      });
+      renderAt("/topics/t/stages/draft");
+
+      expect(await screen.findByText("Cost $1.23 (estimated)")).toBeInTheDocument();
+      expect(screen.queryByText(/partial/i)).not.toBeInTheDocument();
+    });
   });
 });

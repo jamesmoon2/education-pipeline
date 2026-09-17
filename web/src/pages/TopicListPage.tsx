@@ -16,7 +16,7 @@ import ImportForm from "../components/ImportForm";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 import { nextActionLabel } from "../lib/labels";
-import { formatUsd } from "../lib/cost";
+import { costCompletenessTitle, formatUsd } from "../lib/cost";
 import type { ProfileSummary, TopicSummary } from "../api/types";
 
 type StatusFilter = "all" | "no_run" | "in_progress" | "finalized";
@@ -261,6 +261,14 @@ export default function TopicListPage() {
           {data.cost && data.cost.workspace_usd !== null && (
             <p className="muted">
               Workspace total: {formatUsd(data.cost.workspace_usd)}
+              {data.cost.complete === false && (
+                <>
+                  {" "}
+                  <span title={costCompletenessTitle(data.cost.unpriced_jobs ?? 0)}>
+                    (partial)
+                  </span>
+                </>
+              )}
             </p>
           )}
           <table>
@@ -313,7 +321,19 @@ export default function TopicListPage() {
                         (t.completion.exported ? " · exported" : "")
                       : "—"}
                   </td>
-                  <td>{formatUsd(t.cost?.run_usd ?? null)}</td>
+                  <td>
+                    {formatUsd(t.cost?.run_usd ?? null)}
+                    {t.cost?.complete === false && t.cost.run_usd !== null && (
+                      <>
+                        {" "}
+                        {/* This row carries no unpriced count of its own, so
+                            the tooltip explains the gap without a number. */}
+                        <span className="muted" title={costCompletenessTitle(0)}>
+                          (partial)
+                        </span>
+                      </>
+                    )}
+                  </td>
                   <td>
                     {t.profile_id && (
                       <>

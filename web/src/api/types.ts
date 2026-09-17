@@ -68,6 +68,10 @@ export interface StageCost {
   usd: number | null;
   source: CostSource;
   jobs: number;
+  // How many of those jobs carry no usable price, so `usd` covers only the
+  // rest. Optional: payloads and fixtures predating the field omit it, and a
+  // missing value means nothing is known to be missing.
+  unpriced_jobs?: number;
 }
 
 /** A run's cost block: every supported stage plus the run totals. */
@@ -75,11 +79,19 @@ export interface RunCost {
   stages: Record<string, StageCost>;
   run_usd: number | null;
   run_source: CostSource;
+  // Completeness of `run_usd`: false when some jobs have no usable price, so
+  // the total is a known-cost subtotal. Both optional -- a payload without
+  // them is treated as complete.
+  unpriced_jobs?: number;
+  complete?: boolean;
 }
 
 /** One library row's cost (GET /v1/topics per-entry `cost`). */
 export interface TopicCost {
   run_usd: number | null;
+  // False when `run_usd` leaves unpriced jobs out. The row carries no count
+  // of its own; absent means complete.
+  complete?: boolean;
 }
 
 /** The most recent job in the workspace with a known cost for a stage --
@@ -95,6 +107,10 @@ export interface ObservedStageCost {
 export interface WorkspaceCost {
   workspace_usd: number | null;
   stages?: Record<string, ObservedStageCost>;
+  // As RunCost: false when the workspace total omits unpriced jobs, with the
+  // count of them. Absent means complete.
+  complete?: boolean;
+  unpriced_jobs?: number;
 }
 
 export interface StageProvenance {

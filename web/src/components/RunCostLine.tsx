@@ -1,9 +1,14 @@
 import type { CostSource } from "../lib/cost";
-import { costSourceLabel, formatUsd } from "../lib/cost";
+import { costCompletenessLabel, costSourceLabel, formatUsd } from "../lib/cost";
 
 export interface RunCostLineProps {
   usd: number | null;
   source: CostSource;
+  // How many of the jobs behind this figure carry no usable price, and (run
+  // totals only) the payload's own completeness flag. Both optional: a payload
+  // that reports neither is taken as complete.
+  unpricedJobs?: number;
+  complete?: boolean;
 }
 
 /**
@@ -18,14 +23,21 @@ export interface RunCostLineProps {
  * The provenance is always spelled out, because an estimate and a
  * provider-reported figure are not the same claim — see PRICE_TABLE in
  * education_pipeline/cost.py, whose prices are deliberately placeholders.
+ *
+ * A figure that leaves jobs unpriced says so too: it is the sum over the jobs
+ * whose cost is known, and reading it as the whole spend would understate it.
  */
-export default function RunCostLine({ usd, source }: RunCostLineProps) {
+export default function RunCostLine({ usd, source, unpricedJobs, complete }: RunCostLineProps) {
   if (usd === null) return null;
-  const label = costSourceLabel(source);
+  const partial = complete === false || (unpricedJobs ?? 0) > 0;
+  const parts = [
+    costSourceLabel(source),
+    partial ? costCompletenessLabel(unpricedJobs ?? 0) : "",
+  ].filter(Boolean);
   return (
     <p className="muted">
       Cost {formatUsd(usd)}
-      {label ? <> ({label})</> : null}
+      {parts.length > 0 ? <> ({parts.join(", ")})</> : null}
     </p>
   );
 }
