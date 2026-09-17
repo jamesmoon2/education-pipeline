@@ -53,6 +53,13 @@ export default function PlanStageRow({
   const currentProviderId = stage.provider ?? MANUAL_PROVIDER;
   const selectedCatalogProvider = catalog.find((p) => p.id === currentProviderId);
   const models = selectedCatalogProvider?.models ?? [];
+  // Only hide the effort control when the daemon says this provider's CLI has
+  // no effort option. An unknown provider (no availability row) or an older
+  // daemon that omits the field keeps the control.
+  const selectedAvailability = availabilityById.get(currentProviderId);
+  const supportsEffort = selectedAvailability?.supports_effort !== false;
+  const selectedProviderLabel =
+    selectedAvailability?.label ?? selectedCatalogProvider?.label ?? currentProviderId;
 
   const handleProviderChange = (value: string) => {
     onChange(stage.stage, { provider: value, model: undefined, effort: stage.effort ?? undefined });
@@ -134,22 +141,30 @@ export default function PlanStageRow({
         </select>
       </div>
       <div className="plan-stage-field">
-        <span className="plan-stage-field-label">
-          <label htmlFor={effortSelectId}>{`Effort for ${stage.stage}`}</label>
-          <InfoTip label={`effort for ${stage.stage}`} text={EFFORT_HELP} />
-        </span>
-        <select
-          id={effortSelectId}
-          value={stage.effort ?? "default"}
-          onChange={(e) => handleEffortChange(e.target.value)}
-        >
-          <option value="default">default</option>
-          {EFFORT_OPTIONS.map((effort) => (
-            <option key={effort} value={effort}>
-              {effort}
-            </option>
-          ))}
-        </select>
+        {supportsEffort ? (
+          <>
+            <span className="plan-stage-field-label">
+              <label htmlFor={effortSelectId}>{`Effort for ${stage.stage}`}</label>
+              <InfoTip label={`effort for ${stage.stage}`} text={EFFORT_HELP} />
+            </span>
+            <select
+              id={effortSelectId}
+              value={stage.effort ?? "default"}
+              onChange={(e) => handleEffortChange(e.target.value)}
+            >
+              <option value="default">default</option>
+              {EFFORT_OPTIONS.map((effort) => (
+                <option key={effort} value={effort}>
+                  {effort}
+                </option>
+              ))}
+            </select>
+          </>
+        ) : (
+          <span className="plan-stage-note">
+            {`Effort is not configurable for ${selectedProviderLabel}`}
+          </span>
+        )}
       </div>
       <button type="button" onClick={resetToDefault}>
         Reset to default

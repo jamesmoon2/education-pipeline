@@ -42,7 +42,7 @@ the output to the printed response path, and `approve` the stage.
 What the adapter actually runs:
 
 ```
-claude -p --output-format json --tools "" --strict-mcp-config [--model <argv_model>] [extra_args]
+claude -p --output-format json --tools "" --strict-mcp-config [--model <argv_model>] [--effort <low|medium|high>] [extra_args]
 ```
 
 The prompt is piped via stdin. `--tools ""` removes every built-in tool from
@@ -65,12 +65,17 @@ kept as job metadata.
 What the adapter actually runs:
 
 ```
-codex exec [--model <argv_model>] --sandbox read-only --skip-git-repo-check [extra_args] -
+codex exec [--model <argv_model>] --sandbox read-only --skip-git-repo-check [-c model_reasoning_effort="<low|medium|high>"] [extra_args] -
 ```
 
 Instructions arrive on stdin; the final message on stdout becomes the stage
 response. `--sandbox read-only` keeps the run from writing to your
 filesystem.
+
+Both `--effort` and the `model_reasoning_effort` config override appear only
+when the stage's plan sets an effort; with no effort configured the CLI keeps
+its own default. `extra_args` are appended last, so a flag you configure in
+the catalog wins over the plan-derived one.
 
 ## Choosing models per stage
 

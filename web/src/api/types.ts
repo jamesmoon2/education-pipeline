@@ -496,6 +496,13 @@ export interface ProviderAvailability {
   executable: boolean;
   available: boolean;
   reason: string | null;
+  /**
+   * Whether this provider's CLI accepts an effort option at all (Claude Code
+   * `--effort`, Codex `model_reasoning_effort`). Optional so fixtures and
+   * older daemons that predate the field still type-check; treat a missing
+   * value as "assume it does".
+   */
+  supports_effort?: boolean;
 }
 
 export interface CatalogModel {
