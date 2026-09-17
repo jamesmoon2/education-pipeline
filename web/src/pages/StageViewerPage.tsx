@@ -15,6 +15,7 @@ import InfoTip from "../components/InfoTip";
 import ModuleRepairControl from "../components/ModuleRepairControl";
 import ResponseEditor from "../components/ResponseEditor";
 import ResponseForm from "../components/ResponseForm";
+import RunCostLine from "../components/RunCostLine";
 import StageContentView from "../components/StageContentView";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
@@ -102,6 +103,10 @@ function StageViewerForRoute({
   }
 
   const finalized = run ? run.finalized : true; // hide Edit until status loads
+  // This stage's slice of the run's cost block. A run with no job store
+  // behind it carries no block at all, and a stage nothing ever ran for
+  // carries an all-null entry; RunCostLine renders nothing for either.
+  const stageCost = run?.cost?.stages[data.stage];
   const isAudit = data.stage === "audit";
   const prompt = data.prompt;
   const canEdit = data.response !== null && (!finalized || isAudit);
@@ -151,6 +156,7 @@ function StageViewerForRoute({
       <h2>
         {topicId} / {data.stage}
       </h2>
+      <RunCostLine usd={stageCost?.usd ?? null} source={stageCost?.source ?? null} />
       {findingPath && (
         <p className="finding-location" role="status">
           Finding location: <code>{findingPath}</code>

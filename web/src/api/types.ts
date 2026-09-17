@@ -1,3 +1,5 @@
+import type { CostSource } from "../lib/cost";
+
 export interface Session {
   token: string;
   version: string;
@@ -54,6 +56,45 @@ export interface StageStatus {
   prompt_written: boolean;
   response_ingested: boolean;
   approved: boolean;
+  // Salvaged provider output that never became a response (thread T04).
+  // Optional: fixtures and payloads predating the field simply omit it.
+  failed_outputs?: string[];
+}
+
+/** One stage's cost roll-up over its job records
+ *  (education_pipeline/cost.py summarize_job_costs). `usd` is null when
+ *  nothing about that stage's spend is known -- never 0 as a stand-in. */
+export interface StageCost {
+  usd: number | null;
+  source: CostSource;
+  jobs: number;
+}
+
+/** A run's cost block: every supported stage plus the run totals. */
+export interface RunCost {
+  stages: Record<string, StageCost>;
+  run_usd: number | null;
+  run_source: CostSource;
+}
+
+/** One library row's cost (GET /v1/topics per-entry `cost`). */
+export interface TopicCost {
+  run_usd: number | null;
+}
+
+/** The most recent job in the workspace with a known cost for a stage --
+ *  what the settings plan editor shows beside that stage's model choice. */
+export interface ObservedStageCost {
+  usd: number;
+  source: string;
+  observed_at: string | null;
+}
+
+/** GET /v1/topics' top-level cost block: the workspace total, plus the
+ *  last observed cost per stage. */
+export interface WorkspaceCost {
+  workspace_usd: number | null;
+  stages?: Record<string, ObservedStageCost>;
 }
 
 export interface StageProvenance {
@@ -104,6 +145,9 @@ export interface RunStatus {
   validations: { draft: ValidationStatus; final: ValidationStatus };
   stages: StageStatus[];
   next_action: NextAction;
+  // Present only when the daemon has a job store to sum over; a run whose
+  // stages all ran by hand carries an all-null block rather than nothing.
+  cost?: RunCost;
 }
 
 export interface WorkspacePayload {
@@ -127,6 +171,12 @@ export interface TopicSummary {
   last_activity: string | null;
   profile_id: string | null;
   completion: CompletionSummary | null;
+  cost?: TopicCost;
+}
+
+export interface TopicsPayload {
+  topics: TopicSummary[];
+  cost?: WorkspaceCost;
 }
 
 export interface ArchiveResult {

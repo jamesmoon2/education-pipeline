@@ -7,6 +7,7 @@ import type {
 } from "../api/types";
 import InfoTip from "./InfoTip";
 import { EFFORT_HELP, PROVIDER_HELP, STAGE_HELP } from "../lib/planHelp";
+import { costSourceLabel, formatUsd } from "../lib/cost";
 
 export interface PlanStageRowProps {
   stage: PlanStage;
@@ -15,6 +16,10 @@ export interface PlanStageRowProps {
   /** Show the "overridden" tag on this row (run-level override in effect). */
   overridden?: boolean;
   resetValue: StageOverride | null;
+  /** What this stage last actually cost, from the newest job in the
+   *  workspace with a known cost for it (GET /v1/topics' `cost.stages`).
+   *  Absent when nothing has ever run this stage at a determinable cost. */
+  lastObservedCost?: { usd: number; source: string };
   onChange(stage: string, override: StageOverride | null): void;
 }
 
@@ -31,6 +36,7 @@ export default function PlanStageRow({
   providers,
   overridden = false,
   resetValue,
+  lastObservedCost,
   onChange,
 }: PlanStageRowProps) {
   // Explicit label/select association. The InfoTip trigger is a labelable
@@ -179,6 +185,13 @@ export default function PlanStageRow({
       <button type="button" onClick={resetToDefault}>
         Reset to default
       </button>
+      {lastObservedCost && (
+        <p className="plan-stage-note plan-stage-observed-cost">
+          {`last observed: ${formatUsd(lastObservedCost.usd)} (${costSourceLabel(
+            lastObservedCost.source,
+          )})`}
+        </p>
+      )}
       {stage.warning && (
         <p role="alert" className="plan-stage-warning">
           {stage.warning}

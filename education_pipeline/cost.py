@@ -100,3 +100,41 @@ def summarize_job_costs(jobs: Iterable, stages: Sequence[str] = ()) -> dict:
         "run_usd": sum(known) if known else None,
         "run_source": _collapse(entry["source"] for entry in totals.values()),
     }
+
+
+def latest_stage_costs(jobs: Iterable) -> dict:
+    """The most recently observed cost per stage, over any job records.
+
+    Answers a different question from :func:`summarize_job_costs`: not "what
+    has this run spent" but "what did this stage last actually cost", which
+    is what the plan editor shows beside a stage's model choice. One entry
+    per stage that has at least one job with a known cost::
+
+        {"draft": {"usd": 0.4, "source": "provider", "observed_at": "..."}}
+
+    A stage whose jobs all ran without a determinable cost is *absent*: there
+    is no observation to report, and reporting ``None`` would invite callers
+    to render it as a figure. Recency is the job's ``ended_at`` (falling back
+    to ``created_at``, then the id -- all sort chronologically), so a retry
+    supersedes the attempt before it.
+    """
+
+    latest: dict[str, tuple[tuple[str, str], dict]] = {}
+    for job in jobs:
+        usd = getattr(job, "cost_usd", None)
+        if usd is None:
+            continue
+        observed_at = getattr(job, "ended_at", None) or getattr(job, "created_at", None)
+        key = (observed_at or "", getattr(job, "id", ""))
+        previous = latest.get(job.stage)
+        if previous is not None and key <= previous[0]:
+            continue
+        latest[job.stage] = (
+            key,
+            {
+                "usd": usd,
+                "source": getattr(job, "cost_source", None),
+                "observed_at": observed_at or None,
+            },
+        )
+    return {stage: entry for stage, (_, entry) in sorted(latest.items())}

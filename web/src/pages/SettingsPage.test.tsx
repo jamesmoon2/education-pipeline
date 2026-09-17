@@ -1,7 +1,13 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CatalogPreset, CatalogProvider, PlanPayload, ProviderAvailability } from "../api/types";
+import type {
+  CatalogPreset,
+  CatalogProvider,
+  PlanPayload,
+  ProviderAvailability,
+  TopicsPayload,
+} from "../api/types";
 import SettingsPage from "./SettingsPage";
 
 vi.mock("../api/client", async () => {
@@ -11,6 +17,7 @@ vi.mock("../api/client", async () => {
     getConfigProviders: vi.fn(),
     getConfigCatalog: vi.fn(),
     getConfigPlan: vi.fn(),
+    getTopics: vi.fn(),
     putConfigPlan: vi.fn(),
   };
 });
@@ -20,6 +27,7 @@ import {
   getConfigCatalog,
   getConfigPlan,
   getConfigProviders,
+  getTopics,
   putConfigPlan,
 } from "../api/client";
 
@@ -108,10 +116,13 @@ function makePlan(overrides: Partial<Record<string, unknown>> = {}): PlanPayload
   };
 }
 
-function setup(plan: PlanPayload = makePlan()) {
+function setup(plan: PlanPayload = makePlan(), topics: TopicsPayload = { topics: [] }) {
   vi.mocked(getConfigProviders).mockResolvedValue({ providers });
   vi.mocked(getConfigCatalog).mockResolvedValue({ providers: catalog, presets });
   vi.mocked(getConfigPlan).mockResolvedValue(plan);
+  // The plan editor reads per-stage cost observations off the library
+  // payload; a workspace that has never run a costed job carries none.
+  vi.mocked(getTopics).mockResolvedValue(topics);
   return render(<SettingsPage />);
 }
 
@@ -410,6 +421,37 @@ describe("SettingsPage", () => {
 
     expect(getConfigProviders).toHaveBeenCalledTimes(2);
     expect(getConfigPlan).toHaveBeenCalledTimes(2);
+  });
+  // Thread T07: GET /v1/topics' top-level cost block carries, per stage, the
+  // newest job in the workspace with a known cost. The plan editor shows it
+  // beside that stage's model choice, so the choice is made against what the
+  // stage actually cost rather than against a placeholder price table.
+  describe("last observed cost per stage", () => {
+    it("shows a stage's last observed cost when the topics payload carries one", async () => {
+      setup(makePlan(), {
+        topics: [],
+        cost: {
+          workspace_usd: 0.42,
+          stages: {
+            outline: {
+              usd: 0.42,
+              source: "provider",
+              observed_at: "2026-07-02T00:00:00+00:00",
+            },
+          },
+        },
+      });
+      await screen.findByLabelText("Provider for outline");
+      expect(
+        await screen.findByText(/last observed: \$0\.42 \(provider-reported\)/),
+      ).toBeInTheDocument();
+    });
+
+    it("shows nothing about a last observed cost when the payload carries none", async () => {
+      setup();
+      await screen.findByLabelText("Provider for outline");
+      expect(screen.queryByText(/last observed/i)).not.toBeInTheDocument();
+    });
   });
 });
 

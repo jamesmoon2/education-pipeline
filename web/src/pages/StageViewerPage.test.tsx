@@ -996,4 +996,76 @@ describe("StageViewerPage", () => {
       screen.getByRole("option", { name: /How loops behave \(1 open finding\)/ }),
     ).toBeInTheDocument();
   });
+
+  // Thread T07: the header should surface this stage's own entry from the
+  // run's cost.stages map (education_pipeline/daemon/read_api.py, thread
+  // T06) -- not the run total. RunStatus does not yet declare `cost`, so
+  // the fixture casts it on rather than widening the type (see PlanStageRow
+  // / RunBoardPage tests for the same pattern).
+  describe("stage cost", () => {
+    it("shows this stage's cost and provenance when known", async () => {
+      vi.mocked(getStageContent).mockResolvedValue({
+        topic_id: "t",
+        stage: "draft",
+        prompt: "# the prompt",
+        response: "# the response",
+        approved: null,
+        response_sha256: null,
+        content_type: "text/markdown",
+      });
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...makeRunStatus({ action: "done", stage: null }),
+        cost: {
+          stages: { draft: { usd: 0.42, source: "provider", jobs: 1 } },
+          run_usd: 0.42,
+          run_source: "provider",
+        },
+      });
+      renderAt("/topics/t/stages/draft");
+
+      expect(await screen.findByText(/Cost \$0\.42/)).toBeInTheDocument();
+      expect(screen.getByText(/provider-reported/)).toBeInTheDocument();
+    });
+
+    it("renders nothing cost-related for a stage with no known cost", async () => {
+      vi.mocked(getStageContent).mockResolvedValue({
+        topic_id: "t",
+        stage: "outline",
+        prompt: "# the prompt",
+        response: null,
+        approved: null,
+        response_sha256: null,
+        content_type: "text/markdown",
+      });
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...makeRunStatus({ action: "done", stage: null }),
+        cost: {
+          stages: { outline: { usd: null, source: null, jobs: 0 } },
+          run_usd: null,
+          run_source: null,
+        },
+      });
+      renderAt("/topics/t/stages/outline");
+
+      expect(await screen.findByRole("heading", { name: "the prompt" })).toBeInTheDocument();
+      expect(screen.queryByText(/Cost \$/)).not.toBeInTheDocument();
+    });
+
+    it("renders nothing cost-related when the run carries no cost block at all", async () => {
+      vi.mocked(getStageContent).mockResolvedValue({
+        topic_id: "t",
+        stage: "draft",
+        prompt: "# the prompt",
+        response: null,
+        approved: null,
+        response_sha256: null,
+        content_type: "text/markdown",
+      });
+      mockRun();
+      renderAt("/topics/t/stages/draft");
+
+      expect(await screen.findByRole("heading", { name: "the prompt" })).toBeInTheDocument();
+      expect(screen.queryByText(/Cost \$/)).not.toBeInTheDocument();
+    });
+  });
 });
