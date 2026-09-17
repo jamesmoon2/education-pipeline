@@ -62,6 +62,15 @@ CLI is not on your `PATH` or is not signed in. See
 or switch the stage to manual mode and paste the prompt into any model
 yourself.
 
+**A stage run failed and I want the model's output back.** When a provider
+answered but the response could not be parsed or ingested, the raw output is
+kept verbatim at `runs/<topic>/responses/<stage>.failed.<timestamp>.txt`
+instead of being discarded. The run status lists those names per stage as
+`failed_outputs`; `POST /v1/runs/<topic>/stages/<stage>/salvage` with
+`{"file": "<name>", "overwrite": false}` copies one into the stage's response
+file, where you can read, edit, and approve it as usual — salvaging never
+approves anything by itself.
+
 **The daemon seems stuck or a stale daemon is recorded.** Run
 `education-pipeline workspace check` — a `stale_daemon_record` finding means
 a previous daemon exited without cleaning up; `--fix` removes the record.

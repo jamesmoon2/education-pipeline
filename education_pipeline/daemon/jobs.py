@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from education_pipeline.atomic_io import atomic_write_text
+from education_pipeline.atomic_io import atomic_write_bytes, atomic_write_text
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
 from education_pipeline.providers import get_runner
 from education_pipeline.runs import RunStore, StaleContentError
@@ -340,6 +340,9 @@ class JobRunner:
         job.status = "running"
         job.started_at = _utcnow().isoformat()
         self.store.save(job)
+        # Bound outside the try so the failure arm can still see raw provider
+        # output captured before a parse/ingest error threw it away.
+        stdout: str | None = None
         try:
             # Re-stamp the job with the *effective* stage plan carried by this
             # runner (the daemon re-resolves global plan + run overrides when
@@ -413,7 +416,15 @@ class JobRunner:
                 job.metadata["manifest_event_error"] = str(exc)
             return self._terminal(job, "succeeded")
         except (ConfigError, StaleContentError) as exc:
-            return self._fail(job, str(exc))
+            # parse_response or ingest_response refused the output: the model
+            # already did the work, so the raw bytes are written beside the
+            # stage's response before the job goes terminal.
+            salvaged = self._salvage_stdout(job, stdout)
+            error = str(exc)
+            if salvaged is not None:
+                job.metadata["salvaged_output"] = salvaged.name
+                error = f"{error} (raw output salvaged to {salvaged.name})"
+            return self._fail(job, error)
         except Exception as exc:
             # A non-ConfigError exception (Popen raising FileNotFoundError/
             # OSError, os.replace failing, a parser raising ValueError, ...)
@@ -461,6 +472,16 @@ class JobRunner:
         # stderr can be proven free of narratives or profile values before it
         # is emitted. Suppress both raw streams from the job log / log API;
         # stdout is still captured separately and bounded for ingestion.
+        #
+        # This suppression is load-bearing, not an oversight: private values
+        # "never appear in API errors, warnings, findings, logs, ..." (see
+        # docs/superpowers/specs/2026-07-12-personalization-design.md, "Private
+        # values may exist in local profile, prompt, trace, and raw
+        # audit-response artifacts by design"). A failed audit parse still
+        # keeps its output — `_salvage_stdout` writes it to
+        # `<stage>.failed.<ts>.txt`, which IS a raw audit-response artifact
+        # and stays in the workspace — so nothing is lost by keeping the log
+        # itself empty here. Do not "fix" this by logging audit streams.
         #
         # Both pipes are drained on their own background threads and pushed to
         # a shared queue tagged with their stream name. This is required, not
@@ -573,6 +594,32 @@ class JobRunner:
             timed_out,
             canceled,
         )
+
+    def _salvage_stdout(self, job: Job, stdout: str | None) -> Path | None:
+        """Write raw provider output beside the stage response, or None.
+
+        ``stdout`` is None when the job failed before the provider ran (an
+        unknown model, say), and there is then nothing to salvage. Otherwise
+        the bytes land verbatim -- including empty output, which is itself the
+        evidence of what went wrong -- under a timestamped name a human and
+        ``write_api.salvage_stage_output`` can both find.
+        """
+
+        if stdout is None:
+            return None
+        try:
+            responses = self.runs.stage_paths(job.topic_id, job.stage).response_path.parent
+            stamp = _utcnow().strftime("%Y%m%dT%H%M%SZ")
+            path = responses / f"{job.stage}.failed.{stamp}.txt"
+            suffix = 1
+            while path.exists():  # two failures within one second
+                path = responses / f"{job.stage}.failed.{stamp}-{suffix}.txt"
+                suffix += 1
+            atomic_write_bytes(path, stdout.encode("utf-8"))
+            return path
+        except Exception as exc:  # salvage is best effort; never mask the real error
+            job.metadata["salvage_error"] = str(exc)
+            return None
 
     def _fail(self, job: Job, error: str) -> Job:
         return self._terminal(job, "failed", error=error)

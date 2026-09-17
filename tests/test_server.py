@@ -716,6 +716,29 @@ def test_stage_content_includes_response_sha256(server):
     assert body["response_sha256"] == hashlib.sha256(b"BODY").hexdigest()
 
 
+def test_salvage_route_promotes_a_failed_output_then_409s(server_with_context):
+    """POST /v1/runs/{topic}/stages/{stage}/salvage recovers raw provider
+    output a failed parse would otherwise have stranded on disk."""
+    port, context = server_with_context
+    paths = context.runs.stage_paths("t", "draft")
+    paths.response_path.parent.mkdir(parents=True, exist_ok=True)
+    failed = paths.response_path.parent / "draft.failed.20260917T101530Z.txt"
+    failed.write_text("RAW MODEL OUTPUT", encoding="utf-8")
+
+    status, body = _req(
+        port, "POST", "/v1/runs/t/stages/draft/salvage", body={"file": failed.name}
+    )
+    assert status == 200
+    assert body["response_path"] == "responses/draft.response.md"
+    assert paths.response_path.read_text(encoding="utf-8") == "RAW MODEL OUTPUT"
+
+    status, body = _req(
+        port, "POST", "/v1/runs/t/stages/draft/salvage", body={"file": failed.name}
+    )
+    assert status == 409
+    assert body["error"]["code"] == "already_exists"
+
+
 def test_stage_content_bad_stage_is_400(server):
     status, body = _req(server, "GET", "/v1/runs/t/stages/banana")
     assert status == 400
