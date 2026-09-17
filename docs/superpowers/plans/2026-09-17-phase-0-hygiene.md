@@ -14,7 +14,7 @@
 
 | ID | Thread | Exit criteria | Status |
 | --- | --- | --- | --- |
-| T01 | Cache final validation | Warm status read performs zero parse/validate calls; 20-topic poll under 50 ms; cache invalidates on approve, waive, and on-disk edit. | - [ ] |
+| T01 | Cache final validation | Warm status read performs zero parse/validate calls; 20-topic poll under 50 ms; cache invalidates on approve, waive, and on-disk edit. | - [x] |
 | T02 | Atomic approved and prompt writes | Approved, prompt, final and export writes go through `atomic_io`; fault-injection tests leave the previous file intact. | - [x] |
 | T03 | Cross-process guard for the CLI | Workspace lock file (`fcntl`/`msvcrt`); CLI mutating commands refuse with a catalog error while a job is active or the course is archived. | - [x] |
 | T04 | Never lose model output | Audit output is logged; parse failure writes `<stage>.failed.<ts>.txt`; salvage-as-response action; Codex adapter validates shape. | - [x] |
@@ -35,3 +35,4 @@
 - **T03** landed: `workspace_lock.py` (fcntl/msvcrt, non-blocking poll, reentrant per process) held inside `RunStore`'s manifest lock; CLI advance/audit/approve/finalize/export/waive/unwaive refuse with `job_conflict`/`archived_course`; new `workspace_locked` catalog code. 9 new tests. Accepted limitation: a lock timeout inside the daemon surfaces as HTTP 400 `invalid_request`, not a `workspace_locked` envelope.
 - **T05** landed: `Job.pid_identity` from `/proc/<pid>/stat` start time gates reconcile kills (Linux; other platforms keep pid-only behaviour, accepted); `timeout_seconds` per stage in the model plan, validated, round-tripped through the API and the cockpit Save, default 1800 s; 30 s socket timeout on request reads. 14 new tests. pytest 1540, vitest 510 in-thread.
 - **T04** landed: parse/ingest failures salvage raw stdout to `<stage>.failed.<ts>.txt`; `failed_outputs` per stage in run status; `POST .../stages/{stage}/salvage` (409 without overwrite, manifest event, never approves); Codex rejects empty output. Decision: the plan's "log audit output" line was rejected because the personalization spec forbids private values in logs; the salvage file preserves audit output as a private raw artifact instead. 11 new tests.
+- **T01** landed: validated-final-report memo (per RunStore, keyed by source digest + validation inputs, bounded 64) on the poll path; request-scoped per-thread manifest read scope opened by `run_status`/`next_action`/`run_status_payload`, discarded on write; `content_contract` no longer stats the manifest twice. Warm status read: zero validation calls; 20-topic poll 41 ms (was 228). 15 new tests. Timing test asserts the fastest of five passes, budget ×4 under `CI`.

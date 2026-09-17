@@ -81,6 +81,15 @@ docstrings promise. The waiver invalidation test needed no change.
   cockpit-usability plans stay unticked: tests and implementation landed in
   the same commits, so the pre-implementation red state cannot be reproduced.
 
+- **T01:** inside an open manifest read scope, `read_manifest` returns a
+  dict shared by every reader in that request; read-modify-write callers
+  must use `_read_manifest_for_update` (all five in-tree callers do). Copying
+  measured slower than a fresh parse, so sharing was chosen and the contract
+  is documented on both functions.
+- **T01:** the 20-topic timing test measures the fastest of five warm passes
+  against 50 ms locally and 200 ms when `CI` is set, because the hosted
+  Windows and macOS runners are slower and noisier than a workstation.
+
 ## Owner decisions still not recorded (carried from the opportunity map)
 
 - PyPI vs GitHub-release-only distribution.
