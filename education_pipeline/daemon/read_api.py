@@ -337,6 +337,21 @@ def recommend_blueprint_payload(body: object) -> dict:
     }
 
 
+def _failed_outputs(runs: RunStore, topic_id: str, stage: str) -> list[str]:
+    """Basenames of raw provider outputs salvaged after a failed stage run.
+
+    Written by ``JobRunner`` when parsing or ingesting a response fails; the
+    names are timestamped, so reverse-lexicographic order is newest-first.
+    """
+
+    try:
+        responses = runs.stage_paths(topic_id, stage).response_path.parent
+        names = [p.name for p in responses.glob(f"{stage}.failed.*.txt") if p.is_file()]
+    except (OSError, ConfigError):
+        return []
+    return sorted(names, reverse=True)
+
+
 def run_status_payload(
     runs: RunStore, topic_id: str, jobs: "JobStore | None" = None
 ) -> dict:
@@ -369,6 +384,7 @@ def run_status_payload(
                 "prompt_written": s.prompt_written,
                 "response_ingested": s.response_ingested,
                 "approved": s.approved,
+                "failed_outputs": _failed_outputs(runs, topic_id, s.stage),
             }
             for s in status.stages
         ],

@@ -10,7 +10,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from education_pipeline.config import ModelOption, StageModelPlan
+from education_pipeline.config import ConfigError, ModelOption, StageModelPlan
 from education_pipeline.providers import Invocation, ProviderResponse
 
 
@@ -43,4 +43,11 @@ class CodexRunner:
         return Invocation(argv=argv, stdin=None)
 
     def parse_response(self, stdout: str) -> ProviderResponse:
-        return ProviderResponse(text=stdout.strip(), metadata={})
+        # Codex has no JSON envelope to validate, so the one shape check it
+        # can make is the one the Claude adapter also makes: an answer that
+        # is empty (or only whitespace) is not a response. Failing here keeps
+        # the raw bytes salvageable instead of ingesting a blank artifact.
+        text = stdout.strip()
+        if not text:
+            raise ConfigError("codex returned empty output")
+        return ProviderResponse(text=text, metadata={})

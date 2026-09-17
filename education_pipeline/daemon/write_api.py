@@ -29,6 +29,7 @@ from education_pipeline.config import (
     emit_model_plan_toml,
     parse_model_plan,
 )
+from education_pipeline.atomic_io import atomic_write_bytes
 from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
@@ -315,6 +316,69 @@ def ingest_response(
         "stage": paths.stage,
         "response_path": _run_relative(runs, topic_id, path),
         "status": read_api.run_status_payload(runs, topic_id, jobs=jobs),
+    }
+
+
+def _require_failed_output(paths, file: str) -> Path:
+    """Resolve a salvage file name to a real failed-output path, or refuse.
+
+    Only a bare basename matching this stage's ``<stage>.failed.*.txt`` shape
+    is accepted, so the name can never escape the run's responses directory
+    or name an unrelated artifact.
+    """
+
+    if not file or Path(file).name != file:
+        raise ConfigError(f"invalid failed-output name: {file!r}")
+    if not (file.startswith(f"{paths.stage}.failed.") and file.endswith(".txt")):
+        raise ConfigError(
+            f"{file!r} is not a failed-output file for stage {paths.stage!r}"
+        )
+    candidate = paths.response_path.parent / file
+    if not candidate.is_file():
+        raise ConfigError(f"no such failed output for stage {paths.stage!r}: {file!r}")
+    return candidate
+
+
+def salvage_stage_output(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    stage: str,
+    file: str,
+    *,
+    overwrite: bool = False,
+) -> dict:
+    """Promote a salvaged raw provider output to the stage's response file.
+
+    The bytes are copied verbatim -- a failed output is exactly what the model
+    emitted, and a human still has to read, edit and approve it like any other
+    response. Nothing is approved here.
+    """
+
+    read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
+    _require_no_active_job(jobs, topic_id)
+    paths = runs.stage_paths(topic_id, stage)
+    source = _require_failed_output(paths, file)
+    if paths.response_path.exists() and not overwrite:
+        raise ConflictError(
+            "already_exists",
+            f"response already ingested for stage {paths.stage!r}; "
+            "retry with overwrite to replace it",
+        )
+    atomic_write_bytes(paths.response_path, source.read_bytes())
+    if paths.stub_path.exists():
+        paths.stub_path.unlink()
+    runs.append_manifest_event(
+        topic_id,
+        {"stage": paths.stage, "action": "response_salvaged", "source_file": source.name},
+    )
+    return {
+        "topic_id": paths.topic_id,
+        "stage": paths.stage,
+        "response_path": _run_relative(runs, topic_id, paths.response_path),
+        "source_file": source.name,
+        "status": read_api.run_status_payload(runs, topic_id),
     }
 
 

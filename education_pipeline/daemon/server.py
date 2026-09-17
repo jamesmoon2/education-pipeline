@@ -711,6 +711,20 @@ def _make_handler(context: DaemonContext):
                         force=bool(body.get("force")),
                     ),
                 )
+            m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/salvage$", self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.salvage_stage_output(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        m.group(2),
+                        _require_str(body, "file"),
+                        overwrite=bool(body.get("overwrite")),
+                    ),
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/approve$", self.path)
             if m:
                 body = self._read_body()
