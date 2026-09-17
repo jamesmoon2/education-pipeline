@@ -14,4 +14,4 @@ export const PROVIDER_HELP =
   "Which tool runs this stage. Claude Code and Codex run automatically through their CLIs; Manual copy/paste means you run the prompt yourself in any model UI.";
 
 export const EFFORT_HELP =
-  "Recorded guidance for how much reasoning this stage deserves. It's saved with the plan and shown in run provenance, but provider CLIs currently run with their own defaults — changing it doesn't change model behavior or cost yet.";
+  "How much reasoning this stage gets. It's saved with the plan, shown in run provenance, and passed to the provider CLI when the stage runs (Claude Code --effort, Codex model_reasoning_effort). Higher effort usually costs more and takes longer — worth it for draft, qa, factcheck, and repair.";

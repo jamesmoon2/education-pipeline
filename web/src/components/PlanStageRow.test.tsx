@@ -23,7 +23,18 @@ const catalog: CatalogProvider[] = [
 ];
 
 const providers: ProviderAvailability[] = [
-  { id: "claude-code", label: "Claude Code", description: "", executable: true, available: true, reason: null },
+  {
+    id: "claude-code",
+    label: "Claude Code",
+    description: "",
+    executable: true,
+    available: true,
+    reason: null,
+    // Whether the provider's CLI accepts an effort/reasoning-effort option at
+    // all. Both real adapters do today (see tests/test_provider_effort.py), so
+    // the regression fixtures opt in explicitly.
+    supports_effort: true,
+  },
   {
     id: "codex",
     label: "Codex",
@@ -31,6 +42,7 @@ const providers: ProviderAvailability[] = [
     executable: true,
     available: false,
     reason: "codex CLI not found on PATH",
+    supports_effort: true,
   },
 ];
 
@@ -226,5 +238,52 @@ describe("PlanStageRow", () => {
       model: "sonnet",
       effort: "high",
     });
+  });
+
+  // T08: the effort control is only meaningful for a provider whose CLI can
+  // actually take an effort/reasoning-effort argument. The cockpit learns
+  // this per-provider from /v1/config/providers via an assumed
+  // `supports_effort: boolean` field on ProviderAvailability (mirroring the
+  // existing `executable`/`available` fields there).
+  it("hides the effort control and shows a note when the selected provider does not support effort", () => {
+    const onChange = vi.fn();
+    const noEffortProviders: ProviderAvailability[] = [
+      {
+        id: "claude-code",
+        label: "Claude Code",
+        description: "",
+        executable: true,
+        available: true,
+        reason: null,
+        supports_effort: false,
+      },
+      providers[1],
+    ];
+    render(
+      <PlanStageRow
+        stage={outlineStage}
+        catalog={catalog}
+        providers={noEffortProviders}
+        resetValue={null}
+        onChange={onChange}
+      />,
+    );
+    expect(screen.queryByLabelText("Effort for outline")).toBeNull();
+    expect(screen.getByText("Effort is not configurable for Claude Code")).toBeInTheDocument();
+    // provider/model selectors remain — only the effort control is affected
+    expect(screen.getByLabelText("Provider for outline")).toBeInTheDocument();
+    expect(screen.getByLabelText("Model for outline")).toBeInTheDocument();
+  });
+
+  it("renders the effort control as usual when the selected provider supports effort (regression)", () => {
+    // Same assertion as "renders provider/model/effort selectors for a
+    // model-powered stage" above, pinned separately so a future default-value
+    // change to `supports_effort` handling cannot silently flip both.
+    const onChange = vi.fn();
+    render(
+      <PlanStageRow stage={outlineStage} catalog={catalog} providers={providers} resetValue={null} onChange={onChange} />,
+    );
+    expect(screen.getByLabelText("Effort for outline")).toBeInTheDocument();
+    expect(screen.queryByText(/Effort is not configurable/)).toBeNull();
   });
 });

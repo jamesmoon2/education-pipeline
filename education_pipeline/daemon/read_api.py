@@ -758,12 +758,16 @@ def providers_payload(catalog: ModelCatalog) -> dict:
         available = False
         reason: str | None = None
         executable = False
+        supports_effort = False
         try:
             runner = get_runner(provider.id)
         except ConfigError:
             reason = f"no runner registered for {provider.id!r}"
         else:
             executable = runner.executable
+            # Third-party/test runners predate this flag, so treat a missing
+            # attribute as "no effort option".
+            supports_effort = bool(getattr(runner, "supports_effort", False))
             if runner.is_available():
                 available = True
             else:
@@ -776,6 +780,7 @@ def providers_payload(catalog: ModelCatalog) -> dict:
                 "executable": executable,
                 "available": available,
                 "reason": reason,
+                "supports_effort": supports_effort,
             }
         )
     return {"providers": providers}

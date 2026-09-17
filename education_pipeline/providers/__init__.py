@@ -36,6 +36,10 @@ class ProviderResponse:
 class ProviderRunner(Protocol):
     provider_id: str
     executable: bool
+    # Whether this provider's CLI accepts an effort/reasoning-effort option at
+    # all. Surfaces through /v1/config/providers so the cockpit can hide the
+    # effort control for providers that would ignore it.
+    supports_effort: bool
 
     def is_available(self) -> bool:
         """Whether this provider's CLI is usable on this machine."""
@@ -54,6 +58,7 @@ class ManualRunner:
 
     provider_id = "manual"
     executable = False
+    supports_effort = False
 
     def is_available(self) -> bool:
         return True

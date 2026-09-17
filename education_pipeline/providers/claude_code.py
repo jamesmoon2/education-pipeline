@@ -18,6 +18,10 @@ from education_pipeline.providers import Invocation, ProviderResponse
 class ClaudeCodeRunner:
     provider_id = "claude-code"
     executable = True
+    # `claude --effort <low|medium|high|xhigh|max|ultracode>` steers how much
+    # reasoning the model spends; the plan exposes the low/medium/high subset.
+    # https://code.claude.com/docs/en/cli-reference
+    supports_effort = True
 
     def is_available(self) -> bool:
         return shutil.which("claude") is not None
@@ -45,6 +49,10 @@ class ClaudeCodeRunner:
         ]
         if model.argv_model:
             argv += ["--model", model.argv_model]
+        if plan.effort:
+            argv += ["--effort", plan.effort]
+        # Catalog `extra_args` come last so an explicitly configured flag wins
+        # over the plan-derived ones above.
         argv += list(model.extra_args)
         # The worker pipes prompt_path into stdin, so stdin stays None here.
         return Invocation(argv=argv, stdin=None)
