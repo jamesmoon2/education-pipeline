@@ -759,6 +759,24 @@ def test_salvage_route_promotes_a_failed_output_then_409s(server_with_context):
     assert body["error"]["code"] == "already_exists"
 
 
+def test_salvage_route_rejects_a_blank_failed_output_with_400(server_with_context):
+    """A blank salvage file (Codex's empty-output failure path) must not be
+    promoted into the response path; the route reports it as a bad request."""
+    port, context = server_with_context
+    paths = context.runs.stage_paths("t", "draft")
+    paths.response_path.parent.mkdir(parents=True, exist_ok=True)
+    failed = paths.response_path.parent / "draft.failed.20260917T101530Z.txt"
+    failed.write_text("   \n", encoding="utf-8")
+
+    status, body = _req(
+        port, "POST", "/v1/runs/t/stages/draft/salvage", body={"file": failed.name}
+    )
+    assert status == 400
+    assert body["error"]["code"] == "invalid_request"
+    assert not paths.response_path.exists()
+    assert failed.exists()
+
+
 def test_stage_content_bad_stage_is_400(server):
     status, body = _req(server, "GET", "/v1/runs/t/stages/banana")
     assert status == 400

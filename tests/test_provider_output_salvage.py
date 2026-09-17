@@ -252,3 +252,51 @@ def test_salvage_stage_output_rejects_path_traversal(tmp_path):
     outside.write_text("not yours", encoding="utf-8")
     with pytest.raises(ConfigError):
         write_api.salvage_stage_output(runs, jobs, "t", "draft", "../../secret.txt")
+
+
+def test_salvage_stage_output_refuses_a_blank_failed_file(tmp_path):
+    """Codex's empty-output failure path writes a blank salvage file. Copying
+    it into the response path would create a response ``ingest_response``
+    would never have accepted (it refuses empty text) -- and a legacy run
+    could then approve that blank response. Refuse, and keep the raw file for
+    diagnosis."""
+
+    runs, jobs, paths = _workspace_with_response_dir(tmp_path)
+    failed = paths.response_path.parent / "draft.failed.20260917T000000Z.txt"
+    failed.write_text("  \n\t\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError) as exc:
+        write_api.salvage_stage_output(runs, jobs, "t", "draft", failed.name)
+
+    assert "blank" in str(exc.value)
+    assert not paths.response_path.exists()
+    # the raw output is still on disk for diagnosis
+    assert failed.read_text(encoding="utf-8") == "  \n\t\n"
+    actions = [e["action"] for e in runs.read_manifest("t").get("events", [])]
+    assert "response_salvaged" not in actions
+
+
+def test_salvage_stage_output_refuses_an_empty_failed_file(tmp_path):
+    runs, jobs, paths = _workspace_with_response_dir(tmp_path)
+    failed = paths.response_path.parent / "draft.failed.20260917T000000Z.txt"
+    failed.write_bytes(b"")
+
+    with pytest.raises(ConfigError):
+        write_api.salvage_stage_output(runs, jobs, "t", "draft", failed.name)
+
+    assert not paths.response_path.exists()
+    assert failed.exists()
+
+
+def test_salvage_stage_output_blank_file_does_not_replace_an_existing_response(tmp_path):
+    runs, jobs, paths = _workspace_with_response_dir(tmp_path)
+    failed = paths.response_path.parent / "draft.failed.20260917T000000Z.txt"
+    failed.write_text("   ", encoding="utf-8")
+    write_api.ingest_response(runs, jobs, "t", "draft", "already here")
+
+    with pytest.raises(ConfigError):
+        write_api.salvage_stage_output(
+            runs, jobs, "t", "draft", failed.name, overwrite=True
+        )
+
+    assert paths.response_path.read_text(encoding="utf-8") == "already here"

@@ -366,7 +366,18 @@ def salvage_stage_output(
             f"response already ingested for stage {paths.stage!r}; "
             "retry with overwrite to replace it",
         )
-    atomic_write_bytes(paths.response_path, source.read_bytes())
+    salvaged = source.read_bytes()
+    # RunStore.ingest_response refuses an empty response; a byte copy must not
+    # be the one way past that check. Codex's empty-output failure path writes
+    # exactly such a blank salvage file, and on a legacy run the promoted
+    # blank could then be approved. The raw file stays put for diagnosis.
+    if not salvaged.strip():
+        raise ConfigError(
+            f"salvage file {source.name!r} is blank; there is nothing to "
+            f"promote into the {paths.stage!r} response. The raw file is kept "
+            "for diagnosis."
+        )
+    atomic_write_bytes(paths.response_path, salvaged)
     if paths.stub_path.exists():
         paths.stub_path.unlink()
     runs.append_manifest_event(
