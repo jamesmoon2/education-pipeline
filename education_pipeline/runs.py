@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -143,6 +145,40 @@ GUIDE_V1_CONTENT_TYPE = (
 #: The stage whose approved output is assembled into the final guide.
 _FINAL_SOURCE_STAGE = "repair"
 _FINAL_FILENAME = "guide.md"
+
+#: Bound for :attr:`RunStore._validation_memo`. A cockpit poll tick touches at
+#: most two entries per open run (the draft parse verdict and the final
+#: validation report), so this covers a workspace of ~32 open courses while
+#: keeping a long-lived daemon's memo from growing without limit.
+_VALIDATION_MEMO_LIMIT = 64
+
+#: Per-thread manifest read scope. While a scope is open on the calling
+#: thread, ``entries`` maps a manifest path to the dict parsed from it once,
+#: and ``depth`` counts nested opens so an inner ``with`` never ends the outer
+#: one. Both are cleared when the outermost scope exits: this is a
+#: request-scoped cache, so nothing survives from one status read to the next
+#: and a manifest written by another process is picked up on the next request.
+#: It is thread-local because the daemon serves requests on a thread pool and
+#: one request's snapshot must never be handed to another.
+_MANIFEST_READ_SCOPE = threading.local()
+
+
+def _manifest_scope_entries() -> dict[str, dict] | None:
+    """Return the calling thread's open scope map, or ``None`` if none is open."""
+
+    return getattr(_MANIFEST_READ_SCOPE, "entries", None)
+
+
+def _manifest_scope_discard(path: Path) -> None:
+    """Drop ``path`` from the calling thread's scope, if one is open.
+
+    Called from every manifest write so a read-modify-write inside one scope
+    can never observe the pre-write copy it just replaced.
+    """
+
+    entries = _manifest_scope_entries()
+    if entries is not None:
+        entries.pop(str(path), None)
 
 
 @dataclass(frozen=True)
@@ -360,11 +396,77 @@ class RunStore:
     # pull them into __init__/__repr__/__eq__ and require defaults).
     _manifest_locks: ClassVar[dict[str, _TopicWriteLock]]
     _manifest_locks_guard: ClassVar[threading.Lock]
+    _validation_memo: ClassVar[dict[tuple, object]]
+    _validation_memo_guard: ClassVar[threading.Lock]
 
     def __init__(self, root: str | Path) -> None:
         object.__setattr__(self, "root", Path(root))
         object.__setattr__(self, "_manifest_locks", {})
         object.__setattr__(self, "_manifest_locks_guard", threading.Lock())
+        object.__setattr__(self, "_validation_memo", {})
+        object.__setattr__(self, "_validation_memo_guard", threading.Lock())
+
+    def _memoized(self, key: tuple, compute: Callable[[], object]):
+        """Return ``compute()`` for ``key``, reusing this store's cached value.
+
+        The memo is per-``RunStore`` instance (never a module global, never
+        keyed on ``topic_id`` alone) so two stores over different workspaces
+        can never serve each other's verdicts, and every key below carries a
+        content digest of everything the memoized computation reads -- so a
+        changed input simply misses. There is deliberately no ``invalidate``
+        hook: correctness comes from the key, not from remembering to call
+        one.
+
+        Bounded by first-in-first-out eviction. Overflow costs one
+        recomputation, never a wrong answer.
+        """
+
+        with self._validation_memo_guard:
+            if key in self._validation_memo:
+                return self._validation_memo[key]
+        value = compute()
+        with self._validation_memo_guard:
+            self._validation_memo[key] = value
+            while len(self._validation_memo) > _VALIDATION_MEMO_LIMIT:
+                del self._validation_memo[next(iter(self._validation_memo))]
+        return value
+
+    @contextmanager
+    def manifest_read_scope(self) -> Iterator[None]:
+        """Read each run manifest from disk at most once for the duration.
+
+        ``read_manifest`` re-reads and re-parses the whole manifest file on
+        every call, and one ``run_status``/``run_status_payload`` makes dozens
+        of them for a single topic -- ``content_contract`` alone re-reads it
+        from every ``stage_paths`` call. This scope makes those reads share
+        one parse.
+
+        Deliberately request-scoped, not persistent. Entries are discarded
+        when the outermost scope exits, so a manifest written by another
+        process (a concurrent CLI invocation) is picked up by the very next
+        request, exactly as today. Within a request this is strictly *more*
+        consistent than the status quo, where those dozens of separate reads
+        can each observe a different manifest state.
+
+        Nesting is a no-op tracked by a depth counter, so a caller that
+        already holds a scope can call one that opens its own. Scopes are
+        per-thread: see :data:`_MANIFEST_READ_SCOPE`.
+
+        The dict handed back by :meth:`read_manifest` is shared for the life
+        of the scope, so callers must not mutate it. Read-modify-write paths
+        use :meth:`_read_manifest_for_update`, which never consults the scope.
+        """
+
+        depth = getattr(_MANIFEST_READ_SCOPE, "depth", 0)
+        if depth == 0:
+            _MANIFEST_READ_SCOPE.entries = {}
+        _MANIFEST_READ_SCOPE.depth = depth + 1
+        try:
+            yield
+        finally:
+            _MANIFEST_READ_SCOPE.depth = depth
+            if depth == 0:
+                _MANIFEST_READ_SCOPE.entries = None
 
     def _manifest_write_lock(self, topic_id: str) -> _TopicWriteLock:
         """Return the per-topic lock serializing writes to this run's manifest
@@ -461,12 +563,21 @@ class RunStore:
         )
 
     def content_contract(self, topic_id: str) -> ContentContract:
-        """Return the validated manifest contract without mutating legacy runs."""
+        """Return the validated manifest contract without mutating legacy runs.
 
-        path = self.manifest_path(topic_id)
-        if not path.exists():
+        A missing manifest means a legacy Markdown run. That is read off
+        ``read_manifest``'s own ``FileNotFoundError`` handling rather than a
+        separate ``exists()`` probe: the probe was an extra stat plus an extra
+        path build on the hottest read in the codebase -- ``stage_paths`` calls
+        this, and a single status read calls ``stage_paths`` dozens of times.
+        """
+
+        try:
+            manifest = self.read_manifest(topic_id)
+        except (ConfigError, NotADirectoryError):
+            # NotADirectoryError keeps this exactly equivalent to the old
+            # Path.exists() probe, which swallowed it into "no manifest".
             return ContentContract.legacy_markdown()
-        manifest = self.read_manifest(topic_id)
         return _parse_content_contract(manifest.get("content_contract"))
 
     def plan_overrides_path(self, topic_id: str) -> Path:
@@ -616,7 +727,7 @@ class RunStore:
                 "legacy runs do not support blueprints"
             )
         get_blueprint(blueprint)
-        manifest = self.read_manifest(topic_id)
+        manifest = self._read_manifest_for_update(topic_id)
         existing = manifest.get("blueprint")
         if isinstance(existing, dict):
             if existing.get("id") != blueprint:
@@ -710,14 +821,17 @@ class RunStore:
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
-        stages = tuple(self.stage_status(safe_id, stage) for stage in SUPPORTED_STAGES)
-        finalized = self.is_finalized(safe_id)
-        return RunStatus(
-            topic_id=safe_id,
-            stages=stages,
-            finalized=finalized,
-            next_action=self._next_action(safe_id, stages, finalized),
-        )
+        with self.manifest_read_scope():
+            stages = tuple(
+                self.stage_status(safe_id, stage) for stage in SUPPORTED_STAGES
+            )
+            finalized = self.is_finalized(safe_id)
+            return RunStatus(
+                topic_id=safe_id,
+                stages=stages,
+                finalized=finalized,
+                next_action=self._next_action(safe_id, stages, finalized),
+            )
 
     def advance(self, topic_id: str) -> AdvanceResult:
         """Perform the run's next machine step, pausing at human steps.
@@ -776,9 +890,10 @@ class RunStore:
         stages: tuple[StageStatus, ...],
         finalized: bool,
     ) -> NextAction:
-        if self._is_guide_v1(topic_id):
-            return self._next_action_guide_v1(topic_id, stages, finalized)
-        return self._next_action_legacy(topic_id, stages, finalized)
+        with self.manifest_read_scope():
+            if self._is_guide_v1(topic_id):
+                return self._next_action_guide_v1(topic_id, stages, finalized)
+            return self._next_action_legacy(topic_id, stages, finalized)
 
     def _next_action_legacy(
         self,
@@ -831,7 +946,17 @@ class RunStore:
             )
 
         draft_text = self.read_approved(topic_id, "draft")
-        if not parse_guide(draft_text).ok:
+        # Memoized on the draft bytes alone: parse_guide is a pure function of
+        # its input, and only the ok/not-ok verdict is needed here, so the
+        # parse result itself is never retained.
+        draft_parses = self._memoized(
+            (
+                "draft_parses",
+                hashlib.sha256(draft_text.encode("utf-8")).hexdigest(),
+            ),
+            lambda: parse_guide(draft_text).ok,
+        )
+        if not draft_parses:
             return NextAction(
                 topic_id=topic_id,
                 stage="draft",
@@ -917,7 +1042,7 @@ class RunStore:
             )
 
         source_text = self.read_approved(topic_id, "repair")
-        report, _, _ = self._validated_final(topic_id, source_text)
+        report = self._status_final_report(topic_id, source_text)
         try:
             waiver_set = self._load_waiver_set(topic_id)
         except ConfigError:
@@ -1043,7 +1168,7 @@ class RunStore:
     def _set_archived(self, topic_id: str, archived: bool) -> None:
         safe_id = _artifact_id(topic_id, "topic id")
         with self._manifest_write_lock(safe_id):
-            manifest = self.read_manifest(safe_id)  # ConfigError when no run
+            manifest = self._read_manifest_for_update(safe_id)  # ConfigError when no run
             manifest["archived"] = archived
             stamp_key = "archived_at" if archived else "unarchived_at"
             manifest[stamp_key] = datetime.now(timezone.utc).isoformat()
@@ -1087,9 +1212,39 @@ class RunStore:
         return datetime.fromtimestamp(newest, timezone.utc).isoformat()
 
     def read_manifest(self, topic_id: str) -> dict:
-        import time
+        """Return the run's parsed manifest.
+
+        Served from the calling thread's :meth:`manifest_read_scope` when one
+        is open, so a status read parses each manifest once instead of dozens
+        of times. The returned dict is then shared for the life of that scope
+        and must not be mutated; read-modify-write paths use
+        :meth:`_read_manifest_for_update` instead.
+        """
 
         path = self.manifest_path(topic_id)
+        entries = _manifest_scope_entries()
+        if entries is not None:
+            cached = entries.get(str(path))
+            if cached is not None:
+                return cached
+        manifest = self._read_manifest_file(path)
+        if entries is not None:
+            entries[str(path)] = manifest
+        return manifest
+
+    def _read_manifest_for_update(self, topic_id: str) -> dict:
+        """Return a private parsed manifest for a read-modify-write cycle.
+
+        Always reads from disk, never from (and never into) an open read
+        scope: the caller is about to mutate the dict it gets back, which a
+        scope-shared copy would leak to every other reader in the request.
+        """
+
+        return self._read_manifest_file(self.manifest_path(topic_id))
+
+    def _read_manifest_file(self, path: Path) -> dict:
+        import time
+
         # Windows sharing semantics: reading manifest.json at the moment a
         # writer os.replace()s it fails with PermissionError. The replace is
         # transient, so retry briefly instead of crashing a concurrent reader.
@@ -1338,7 +1493,7 @@ class RunStore:
 
         safe_id = _artifact_id(topic_id, "topic id")
         run = self.run_dir(safe_id)
-        manifest = self.read_manifest(safe_id)
+        manifest = self._read_manifest_for_update(safe_id)
         entry = dict(event)
         entry.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
         manifest.setdefault("events", []).append(entry)
@@ -1399,7 +1554,7 @@ class RunStore:
 
         safe_id = _artifact_id(topic_id, "topic id")
         run = self.run_dir(safe_id)
-        manifest = self.read_manifest(safe_id)
+        manifest = self._read_manifest_for_update(safe_id)
         entry = {
             "stage": stage,
             "provider": provider,
@@ -2483,6 +2638,57 @@ class RunStore:
                 f"personalization trace is {state} for {topic_id!r}; "
                 "run final validation before release"
             )
+
+    def _status_final_report(self, topic_id: str, source_text: str) -> ValidationReport:
+        """Final-phase validation report for the status/next-action path,
+        memoized per ``RunStore`` instance.
+
+        ``_next_action`` needs this full parse + normalize + static-checks +
+        validate pass to decide whether the finalize gate is open, and
+        ``run_status_payload`` calls it for every course on every cockpit
+        poll tick -- for content that has almost never changed since the
+        previous tick. This is the one caller of :meth:`_validated_final`
+        that re-asks the same question on a timer, so it is the one that
+        memoizes; the explicit recompute paths (``validate_run``,
+        ``gate_result``, export/finalize) keep computing fresh, as their
+        docstrings promise.
+
+        The key covers *every* input the computation reads, so invalidation
+        is by construction and there is no ``invalidate()`` to forget to
+        call:
+
+        * the SHA-256 of ``source_text``. A digest of the bytes in hand is
+          used in preference to the manifest's recorded ``source_file_sha256``
+          or a ``stat`` fingerprint (size + mtime_ns) of the approved file:
+          the caller has already read the approved source, so hashing it is
+          both cheaper (no second read, no manifest scan) and strictly
+          stronger -- an on-disk edit that happened to preserve size and
+          mtime still misses.
+        * the resolved profile validation inputs (protected values,
+          personalization context, calibration context) -- all frozen,
+          hashable dataclasses, so they go into the key by value.
+
+        Waivers deliberately do not appear: :meth:`_validated_final` never
+        reads them. They are applied downstream by :func:`apply_waivers`, on
+        every call, outside this memo.
+
+        Only the report is retained (not the assembled document or the
+        normalized guide), and ``ValidationReport`` is a frozen dataclass
+        over a tuple of frozen findings, so a cached value cannot be mutated
+        by a caller.
+        """
+
+        validation_inputs = self._profile_validation_inputs(topic_id)
+        return self._memoized(
+            (
+                "status_final_report",
+                hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+                *validation_inputs,
+            ),
+            lambda: self._validated_final(
+                topic_id, source_text, validation_inputs=validation_inputs
+            )[0],
+        )
 
     def _validated_final(
         self,
@@ -3949,7 +4155,7 @@ class RunStore:
 
         safe_id = _artifact_id(topic_id, "topic id")
         run = self.run_dir(safe_id)
-        manifest = self.read_manifest(safe_id)
+        manifest = self._read_manifest_for_update(safe_id)
         event: dict[str, str] = {"stage": stage, "action": action}
         for label, path in files.items():
             event[label] = _relative_to(path, run)
@@ -4032,6 +4238,9 @@ def _relative_to(path: Path, run: Path) -> str:
 
 def _write_manifest(path: Path, manifest: dict) -> None:
     _write_bytes_atomic(path, (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
+    # Every manifest write funnels through here, so this one line is the whole
+    # invalidation story for an open read scope.
+    _manifest_scope_discard(path)
 
 
 def _write_text(path: Path, text: str, *, overwrite: bool) -> None:
