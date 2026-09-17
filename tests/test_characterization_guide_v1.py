@@ -26,6 +26,7 @@ Three things are pinned, across a matrix of run states:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,7 @@ from typing import Callable
 import pytest
 
 from education_pipeline import (
+    ConfigError,
     ContentContract,
     NextAction,
     RunStore,
@@ -455,6 +457,112 @@ def _build_reapprove_only_factcheck(runs: RunStore, topic_id: str) -> None:
     runs.approve_stage(topic_id, "factcheck", overwrite=True)
 
 
+def _build_stale_qa_prompt_rebuilt(runs: RunStore, topic_id: str) -> None:
+    """Stale qa whose prompt has already been rewritten against the new draft."""
+
+    _build_full_chain_stale_after_draft_reapprove(runs, topic_id)
+    runs.write_qa_prompt(topic_id, overwrite=True)
+
+
+def _build_stale_factcheck_prompt_rebuilt(runs: RunStore, topic_id: str) -> None:
+    _build_stale_after_qa_rebuild(runs, topic_id)
+    runs.write_factcheck_prompt(topic_id, overwrite=True)
+
+
+def _build_stale_repair_prompt_rebuilt(runs: RunStore, topic_id: str) -> None:
+    _build_stale_after_factcheck_rebuild(runs, topic_id)
+    runs.write_repair_prompt(topic_id, overwrite=True)
+
+
+def _build_qa_changed_then_factcheck_rebuilt(runs: RunStore, topic_id: str) -> None:
+    """Only qa changed, and factcheck was rebuilt against it -- so repair is the
+    one stale stage, and its prompt event still carries the *old* qa hash while
+    its draft hash is current."""
+
+    _build_reapprove_only_qa(runs, topic_id)
+    fc = runs.write_factcheck_prompt(topic_id, overwrite=True)
+    fc.response_path.write_text(FACTCHECK_FIXTURE + "\n", encoding="utf-8")
+    runs.approve_stage(topic_id, "factcheck", overwrite=True)
+
+
+def _build_grandfathered_then_factcheck_approved(runs: RunStore, topic_id: str) -> None:
+    """A pre-feature (planted) repair, with a factcheck approved afterwards."""
+
+    _build_grandfathered_repair_no_factcheck(runs, topic_id)
+    fc = runs.write_factcheck_prompt(topic_id)
+    fc.response_path.write_text(FACTCHECK_FIXTURE, encoding="utf-8")
+    runs.approve_stage(topic_id, "factcheck")
+
+
+def _plant_repair_approval_event(
+    runs: RunStore, topic_id: str, *, source_labels: tuple[str, ...]
+) -> None:
+    """Plant an approved repair whose event records only ``source_labels``.
+
+    ``_plant_pre_feature_repair`` records draft+qa; this lower-level variant
+    lets a case record *fewer* source hashes, which is how a genuinely older
+    manifest (written before a given source was bound) reads on disk.
+    """
+
+    paths = runs.stage_paths(topic_id, "repair")
+    paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.prompt_path.write_text("# planted repair prompt\n", encoding="utf-8")
+    paths.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    paths.approved_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    files: dict[str, Path] = {
+        "prompt_file": paths.prompt_path,
+        "approved_file": paths.approved_path,
+    }
+    for label in source_labels:
+        files[f"source_{label}_file"] = runs.stage_paths(topic_id, label).approved_path
+    runs._append_event(
+        topic_id, stage="repair", action="response_approved", files=files
+    )
+
+
+def _reapprove_draft_with_new_bytes(runs: RunStore, topic_id: str) -> None:
+    paths = runs.stage_paths(topic_id, "draft")
+    paths.response_path.write_text(GUIDE_FIXTURE + "\n", encoding="utf-8")
+    runs.approve_stage(topic_id, "draft", overwrite=True)
+
+
+def _reapprove_qa_with_new_bytes(runs: RunStore, topic_id: str) -> None:
+    paths = runs.stage_paths(topic_id, "qa")
+    paths.response_path.write_text("# QA findings\n\nChanged.\n", encoding="utf-8")
+    runs.approve_stage(topic_id, "qa", overwrite=True)
+
+
+def _build_planted_repair_no_sources_then_draft_change(
+    runs: RunStore, topic_id: str
+) -> None:
+    _drive_guide_through_qa(runs, topic_id)
+    _plant_repair_approval_event(runs, topic_id, source_labels=())
+    _reapprove_draft_with_new_bytes(runs, topic_id)
+
+
+def _build_planted_repair_draft_source_only_then_qa_change(
+    runs: RunStore, topic_id: str
+) -> None:
+    _drive_guide_through_qa(runs, topic_id)
+    _plant_repair_approval_event(runs, topic_id, source_labels=("draft",))
+    _reapprove_qa_with_new_bytes(runs, topic_id)
+
+
+def _build_approved_draft_deleted(runs: RunStore, topic_id: str) -> None:
+    _drive_guide_to_finalize_ready(runs, topic_id)
+    runs.stage_paths(topic_id, "draft").approved_path.unlink()
+
+
+def _build_approved_qa_deleted(runs: RunStore, topic_id: str) -> None:
+    _drive_guide_to_finalize_ready(runs, topic_id)
+    runs.stage_paths(topic_id, "qa").approved_path.unlink()
+
+
+def _build_approved_factcheck_deleted(runs: RunStore, topic_id: str) -> None:
+    _drive_guide_to_finalize_ready(runs, topic_id)
+    runs.stage_paths(topic_id, "factcheck").approved_path.unlink()
+
+
 @dataclass(frozen=True)
 class NextActionCase:
     name: str
@@ -524,6 +632,54 @@ NEXT_ACTION_CASES = [
         _build_reapprove_only_factcheck,
         "repair",
         "write_prompt",
+    ),
+    # --- _stale_stage_rebuild_action's needs_prompt=False arm -------------
+    # Once the stale stage's prompt has been rewritten (so its prompt_written
+    # event records the *current* upstream hashes), the advertised rebuild
+    # action drops from "write_prompt" to "save_response" -- separately for
+    # each stage, because each checks a different depth of sources (qa:
+    # draft; factcheck: draft+qa; repair: draft+qa+factcheck).
+    #
+    # Surprising: "save_response" is advertised even though the stage's
+    # previous response file is still on disk (StageStatus.response_ingested
+    # is True in all three states) -- rewriting the prompt does not clear it,
+    # and _stale_stage_rebuild_action has no "approve" arm at all.
+    NextActionCase(
+        "stale_qa_with_rebuilt_prompt_wants_save_response",
+        _build_stale_qa_prompt_rebuilt,
+        "qa",
+        "save_response",
+    ),
+    NextActionCase(
+        "stale_factcheck_with_rebuilt_prompt_wants_save_response",
+        _build_stale_factcheck_prompt_rebuilt,
+        "factcheck",
+        "save_response",
+    ),
+    NextActionCase(
+        "stale_repair_with_rebuilt_prompt_wants_save_response",
+        _build_stale_repair_prompt_rebuilt,
+        "repair",
+        "save_response",
+    ),
+    NextActionCase(
+        # repair's *qa*-depth check in isolation: the draft never moved, and
+        # factcheck was rebuilt, so only repair's recorded qa hash is stale.
+        # Reaching "write_prompt" here means the qa arm of the rebuild
+        # decision fired (the draft arm cannot have).
+        "stale_repair_from_qa_only_change_wants_write_prompt",
+        _build_qa_changed_then_factcheck_rebuilt,
+        "repair",
+        "write_prompt",
+    ),
+    NextActionCase(
+        # The grandfather skip stops applying once factcheck is approved, but
+        # nothing changes: the planted repair event records no factcheck
+        # source, so repair never goes stale and still routes to "validate".
+        "grandfathered_repair_unchanged_after_factcheck_approved",
+        _build_grandfathered_then_factcheck_approved,
+        "repair",
+        "validate",
     ),
 ]
 
@@ -599,6 +755,51 @@ STALE_CASES = [
         "reapprove_only_factcheck_only_repair_goes_stale",
         _build_reapprove_only_factcheck,
         {"draft": False, "qa": False, "factcheck": False, "repair": True},
+    ),
+    StaleCase(
+        "qa_changed_then_factcheck_rebuilt_leaves_only_repair_stale",
+        _build_qa_changed_then_factcheck_rebuilt,
+        {"draft": False, "qa": False, "factcheck": False, "repair": True},
+    ),
+    StaleCase(
+        "grandfathered_repair_stays_current_after_factcheck_approved",
+        _build_grandfathered_then_factcheck_approved,
+        {"qa": False, "factcheck": False, "repair": False},
+    ),
+    # --- a recorded source file that has vanished from disk reads as stale --
+    # (_stage_upstream_stale's `if not <source>_path.is_file(): return True`
+    # arms, one per depth). The deleted stage itself reports approved=False,
+    # so its own `stale` flag drops back to False.
+    StaleCase(
+        "deleting_the_approved_draft_makes_the_whole_chain_stale",
+        _build_approved_draft_deleted,
+        {"draft": False, "qa": True, "factcheck": True, "repair": True},
+    ),
+    StaleCase(
+        "deleting_the_approved_qa_makes_factcheck_and_repair_stale",
+        _build_approved_qa_deleted,
+        {"draft": False, "qa": False, "factcheck": True, "repair": True},
+    ),
+    StaleCase(
+        "deleting_the_approved_factcheck_makes_only_repair_stale",
+        _build_approved_factcheck_deleted,
+        {"draft": False, "qa": False, "factcheck": False, "repair": True},
+    ),
+    # --- absent recorded hashes are grandfathered, never stale -------------
+    StaleCase(
+        # An approval event with no source_* hashes at all: the draft changes
+        # underneath it and it still reads current, while qa -- which did
+        # record the draft hash -- goes stale off the same edit.
+        "planted_repair_without_source_hashes_never_goes_stale",
+        _build_planted_repair_no_sources_then_draft_change,
+        {"qa": True, "repair": False},
+    ),
+    StaleCase(
+        # Records the draft source but not qa: a qa change is invisible to it
+        # (the first absent hash short-circuits the whole check).
+        "planted_repair_without_qa_hash_ignores_a_qa_change",
+        _build_planted_repair_draft_source_only_then_qa_change,
+        {"qa": False, "repair": False},
     ),
 ]
 
@@ -705,3 +906,146 @@ def test_grandfathered_planted_repair_event_has_no_factcheck_source(tmp_path: Pa
     event = _latest_event(runs, TID, "repair", "response_approved")
     assert event is not None
     assert _source_keys(event) == {"source_draft_file_sha256", "source_qa_file_sha256"}
+
+
+def test_module_repair_prompt_written_binds_draft_qa_and_factcheck_sources(
+    tmp_path: Path,
+) -> None:
+    """The module-scoped repair prompt binds the same three sources as the
+    whole-guide repair prompt (plus the module scope itself)."""
+
+    runs = _create_guide_run(tmp_path, TID)
+    _drive_guide_through_factcheck(runs, TID)
+    runs.write_module_repair_prompt(TID, "loop-basics")
+    event = _latest_event(runs, TID, "repair", "prompt_written")
+    assert event is not None
+    assert _source_keys(event) == {
+        "source_draft_file_sha256",
+        "source_qa_file_sha256",
+        "source_factcheck_file_sha256",
+    }
+    assert event["repair_module"] == "loop-basics"
+
+
+def test_approval_records_the_prompt_time_upstream_hash_not_the_current_one(
+    tmp_path: Path,
+) -> None:
+    """An upstream stage reapproved *after* a prompt was written never reaches
+    the model, so the approval keys itself to the prompt's (older) upstream
+    bytes -- and the stage therefore reads stale the instant it is approved."""
+
+    runs = _create_guide_run(tmp_path, TID)
+    _drive_guide_through_qa(runs, TID)
+    qa = runs.write_qa_prompt(TID, overwrite=True)
+    draft_paths = runs.stage_paths(TID, "draft")
+    prompt_time_draft_sha = hashlib.sha256(
+        draft_paths.approved_path.read_bytes()
+    ).hexdigest()
+
+    draft_paths.response_path.write_text(GUIDE_FIXTURE + "\n", encoding="utf-8")
+    runs.approve_stage(TID, "draft", overwrite=True)
+    current_draft_sha = hashlib.sha256(draft_paths.approved_path.read_bytes()).hexdigest()
+    assert current_draft_sha != prompt_time_draft_sha
+
+    qa.response_path.write_text("# QA findings\n\nSecond pass.\n", encoding="utf-8")
+    runs.approve_stage(TID, "qa", overwrite=True)
+
+    event = _latest_event(runs, TID, "qa", "response_approved")
+    assert event is not None
+    assert event["source_draft_file_sha256"] == prompt_time_draft_sha
+    assert _stage_map(runs, TID)["qa"].stale is True
+
+
+def test_approval_without_a_prompt_event_falls_back_to_current_file_hashes(
+    tmp_path: Path,
+) -> None:
+    """With no prompt_written event to bind to (a planted prompt file), the
+    approval hashes whatever is on disk -- so the stage reads current."""
+
+    runs = _create_guide_run(tmp_path, TID)
+    _drive_guide_through_qa(runs, TID)
+    repair_paths = runs.stage_paths(TID, "repair")
+    repair_paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    repair_paths.prompt_path.write_text("# planted prompt\n", encoding="utf-8")
+    repair_paths.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    runs.approve_stage(TID, "repair")
+
+    event = _latest_event(runs, TID, "repair", "response_approved")
+    assert event is not None
+    draft_sha = hashlib.sha256(
+        runs.stage_paths(TID, "draft").approved_path.read_bytes()
+    ).hexdigest()
+    assert event["source_draft_file_sha256"] == draft_sha
+    assert _stage_map(runs, TID)["repair"].stale is False
+
+
+# --------------------------------------------------------------------------
+# Part 5: the public prompt writers refuse to compile against a stale
+# upstream stage (the guard _next_action_* already routes callers around).
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StaleUpstreamRefusalCase:
+    name: str
+    build: Callable[[RunStore, str], None]
+    call: Callable[[RunStore, str], object]
+    message: str
+
+
+STALE_UPSTREAM_REFUSAL_CASES = [
+    StaleUpstreamRefusalCase(
+        "factcheck_prompt_refuses_stale_qa",
+        _build_full_chain_stale_after_draft_reapprove,
+        lambda runs, tid: runs.write_factcheck_prompt(tid, overwrite=True),
+        "the approved qa for 'systems-thinking' is stale; rebuild the qa prompt "
+        "and reapprove it before factcheck",
+    ),
+    StaleUpstreamRefusalCase(
+        "repair_prompt_refuses_stale_qa",
+        _build_full_chain_stale_after_draft_reapprove,
+        lambda runs, tid: runs.write_repair_prompt(tid, overwrite=True),
+        "the approved qa for 'systems-thinking' is stale; rebuild the qa prompt "
+        "and reapprove it before repair",
+    ),
+    StaleUpstreamRefusalCase(
+        "module_repair_prompt_refuses_stale_qa",
+        _build_full_chain_stale_after_draft_reapprove,
+        lambda runs, tid: runs.write_module_repair_prompt(
+            tid, "loop-basics", overwrite=True
+        ),
+        "the approved qa for 'systems-thinking' is stale; rebuild the qa prompt "
+        "and reapprove it before repair",
+    ),
+    StaleUpstreamRefusalCase(
+        # qa is current here (it was reapproved), factcheck is not.
+        "repair_prompt_refuses_stale_factcheck",
+        _build_reapprove_only_qa,
+        lambda runs, tid: runs.write_repair_prompt(tid, overwrite=True),
+        "the approved factcheck for 'systems-thinking' is stale; rebuild the "
+        "factcheck prompt and reapprove it before repair",
+    ),
+    StaleUpstreamRefusalCase(
+        "module_repair_prompt_refuses_stale_factcheck",
+        _build_reapprove_only_qa,
+        lambda runs, tid: runs.write_module_repair_prompt(
+            tid, "loop-basics", overwrite=True
+        ),
+        "the approved factcheck for 'systems-thinking' is stale; rebuild the "
+        "factcheck prompt and reapprove it before repair",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "case", STALE_UPSTREAM_REFUSAL_CASES, ids=lambda c: c.name
+)
+def test_prompt_writers_refuse_a_stale_upstream_stage(
+    tmp_path: Path, case: StaleUpstreamRefusalCase
+) -> None:
+    runs = _create_guide_run(tmp_path, TID)
+    case.build(runs, TID)
+
+    with pytest.raises(ConfigError) as excinfo:
+        case.call(runs, TID)
+    assert str(excinfo.value) == case.message

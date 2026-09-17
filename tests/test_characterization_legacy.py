@@ -384,6 +384,75 @@ def test_legacy_stage_never_reports_stale_after_upstream_reapproval(tmp_path: Pa
     assert by_stage["factcheck"].stale is False
 
 
+def test_legacy_next_action_ignores_upstream_changes_after_repair_is_approved(
+    tmp_path: Path,
+) -> None:
+    """PIN: staleness plays no part in the legacy next action.
+
+    _next_action_legacy walks REQUIRED_STAGES through _pending_stage_action
+    only -- it never consults StageStatus.stale and has no
+    _stale_stage_rebuild_action arm. So re-approving the draft with different
+    bytes under an already-approved repair leaves the run sitting on
+    "finalize", where a guide-v1 run would be routed back to rebuild qa.
+    """
+
+    topic_id = "systems-thinking"
+    runs = _create_legacy_run(tmp_path, topic_id)
+    _drive_all_stages_to_approved(runs, topic_id)
+    assert runs.run_status(topic_id).next_action.action == "finalize"
+
+    result = runs.write_draft_prompt(topic_id, overwrite=True)
+    result.response_path.write_text("# Systems Thinking (rewritten)\n", encoding="utf-8")
+    runs.approve_stage(topic_id, "draft", overwrite=True)
+
+    next_action = runs.run_status(topic_id).next_action
+    assert (next_action.stage, next_action.action) == (None, "finalize")
+
+
+def test_legacy_write_repair_prompt_accepts_a_changed_upstream(tmp_path: Path) -> None:
+    """PIN: _require_current_upstream is inside write_repair_prompt's
+    _is_guide_v1 branch, so a legacy run can recompile the repair prompt after
+    the draft moved underneath the approved qa -- no ConfigError, unlike the
+    guide-v1 path."""
+
+    topic_id = "systems-thinking"
+    runs = _create_legacy_run(tmp_path, topic_id)
+    _drive_all_stages_to_approved(runs, topic_id)
+    result = runs.write_draft_prompt(topic_id, overwrite=True)
+    result.response_path.write_text("# Systems Thinking (rewritten)\n", encoding="utf-8")
+    runs.approve_stage(topic_id, "draft", overwrite=True)
+
+    prompt = runs.write_repair_prompt(topic_id, overwrite=True)
+
+    assert prompt.stage == "repair"
+
+
+def test_legacy_next_action_reports_the_first_pending_required_stage(
+    tmp_path: Path,
+) -> None:
+    """PIN: the REQUIRED_STAGES walk short-circuits on the first pending stage.
+
+    An approved-looking downstream stage planted out of order (draft approved
+    while outline is untouched) does not pull the run forward: the loop still
+    stops at outline.
+    """
+
+    topic_id = "systems-thinking"
+    runs = _create_legacy_run(tmp_path, topic_id)
+    _drive_spec_to_approved(runs, topic_id)
+    draft_paths = runs.stage_paths(topic_id, "draft")
+    draft_paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    draft_paths.prompt_path.write_text("# planted draft prompt\n", encoding="utf-8")
+    draft_paths.response_path.write_text("# draft\n", encoding="utf-8")
+    draft_paths.approved_path.write_text("# draft\n", encoding="utf-8")
+
+    next_action = runs.run_status(topic_id).next_action
+
+    assert (next_action.stage, next_action.action) == ("outline", "write_prompt")
+    by_stage = {s.stage: s for s in runs.run_status(topic_id).stages}
+    assert by_stage["draft"].approved is True
+
+
 # ---------------------------------------------------------------------------
 # 3. Approve-time source binding: qa/repair response_approved events on a
 #    legacy run carry no source_*_file_sha256 keys.
@@ -439,6 +508,19 @@ def test_write_factcheck_prompt_on_legacy_run_raises_config_error(tmp_path: Path
 
     with pytest.raises(ConfigError, match="legacy Markdown run"):
         runs.write_factcheck_prompt(topic_id)
+
+
+def test_write_module_repair_prompt_on_legacy_run_raises_config_error(
+    tmp_path: Path,
+) -> None:
+    """PIN: the module-scoped repair writer refuses legacy runs on its own
+    _is_guide_v1 check, before any module id is validated."""
+
+    topic_id = "systems-thinking"
+    runs = _create_legacy_run(tmp_path, topic_id)
+
+    with pytest.raises(ConfigError, match="legacy Markdown run"):
+        runs.write_module_repair_prompt(topic_id, "loop-basics")
 
 
 @pytest.mark.parametrize("phase", ["draft", "final"])
