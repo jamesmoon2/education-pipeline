@@ -403,6 +403,55 @@ describe("SettingsPage", () => {
     });
   });
 
+  it("keeps a hand-set timeout_seconds when the row is reset to default", async () => {
+    // "Reset to default" resets the MODEL CHOICE. timeout_seconds has no
+    // editor here, so losing it must not be a side effect of that reset.
+    const plan = makePlan();
+    const spec = plan.stages.find((s) => s.stage === "spec")!;
+    spec.timeout_seconds = 900;
+    setup(plan);
+    await screen.findByLabelText("Effort for spec");
+    vi.mocked(putConfigPlan).mockResolvedValue(plan);
+
+    const specRow = document.querySelector('[data-stage="spec"]') as HTMLElement;
+    await userEvent.click(
+      within(specRow).getByRole("button", { name: "Reset to default" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const [, , saved] = vi.mocked(putConfigPlan).mock.calls[0];
+    expect(saved.spec).toEqual({
+      provider: "claude-code",
+      model: "sonnet",
+      effort: "high",
+      timeout_seconds: 900,
+    });
+  });
+
+  it("keeps a hand-set timeout_seconds when a preset is applied", async () => {
+    // Applying a preset rewrites provider/model/effort for every stage. There
+    // is no editor for timeout_seconds, so the preset-generated entry must
+    // carry the loaded value forward -- otherwise the full-replace PUT drops a
+    // hand-set timeout the moment a preset is applied and saved.
+    const plan = makePlan();
+    const spec = plan.stages.find((s) => s.stage === "spec")!;
+    spec.timeout_seconds = 900;
+    setup(plan);
+    await screen.findByText("Default model plan");
+    vi.mocked(putConfigPlan).mockResolvedValue(plan);
+
+    await userEvent.click(screen.getByRole("button", { name: /Balanced/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const [, , saved] = vi.mocked(putConfigPlan).mock.calls[0];
+    expect(saved.spec).toEqual({
+      provider: "claude-code",
+      model: "sonnet",
+      effort: "high",
+      timeout_seconds: 900,
+    });
+  });
+
   it("surfaces the reload affordance on a 409 stale_content from save", async () => {
     setup();
     await screen.findByLabelText("Effort for outline");

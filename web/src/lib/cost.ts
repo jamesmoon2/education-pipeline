@@ -35,3 +35,27 @@ export function costSourceLabel(source: string | null): string {
   if (!source) return "";
   return SOURCE_LABELS[source] ?? source;
 }
+
+/** The parenthetical that marks a cost as a known-cost subtotal: some of the
+ *  jobs it covers have no price, so the figure is a floor, not a total.
+ *  `unpriced` is the count of those jobs (education_pipeline/cost.py's
+ *  `unpriced_jobs`); a count of 0 means the payload reported incompleteness
+ *  without a usable number, which still must not read as a total. */
+export function costCompletenessLabel(unpriced: number): string {
+  if (!Number.isFinite(unpriced) || unpriced < 1) return "partial: some jobs unpriced";
+  return `partial: ${unpriced} job${unpriced === 1 ? "" : "s"} unpriced`;
+}
+
+/** The longer sentence behind a "(partial)" marker's tooltip, for the compact
+ *  surfaces (the library's total and per-row cells) that have no room to spell
+ *  the gap out inline. Same `unpriced` convention as costCompletenessLabel. */
+export function costCompletenessTitle(unpriced: number): string {
+  if (!Number.isFinite(unpriced) || unpriced < 1) {
+    return "Known-cost subtotal: some jobs have no known cost and are not counted.";
+  }
+  const jobs =
+    unpriced === 1
+      ? "1 job has no known cost and is not counted"
+      : `${unpriced} jobs have no known cost and are not counted`;
+  return `Known-cost subtotal: ${jobs}.`;
+}

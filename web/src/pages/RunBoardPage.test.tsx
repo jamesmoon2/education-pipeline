@@ -708,5 +708,44 @@ describe("RunBoardPage", () => {
       await screen.findByText(status.next_action.detail);
       expect(screen.queryByText(/Cost \$/)).not.toBeInTheDocument();
     });
+
+    it("marks a run total that leaves jobs unpriced as a known-cost subtotal", async () => {
+      // `complete: false` means the sum covers only the jobs whose cost is
+      // known, so the figure must not read as the run's whole spend.
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...status,
+        cost: {
+          stages: {},
+          run_usd: 1.23,
+          run_source: "estimate",
+          unpriced_jobs: 2,
+          complete: false,
+        },
+      });
+      vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+      renderAt("/topics/t");
+
+      expect(
+        await screen.findByText("Cost $1.23 (estimated, partial: 2 jobs unpriced)"),
+      ).toBeInTheDocument();
+    });
+
+    it("leaves a complete run total unmarked", async () => {
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...status,
+        cost: {
+          stages: {},
+          run_usd: 1.23,
+          run_source: "estimate",
+          unpriced_jobs: 0,
+          complete: true,
+        },
+      });
+      vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+      renderAt("/topics/t");
+
+      expect(await screen.findByText("Cost $1.23 (estimated)")).toBeInTheDocument();
+      expect(screen.queryByText(/partial/i)).not.toBeInTheDocument();
+    });
   });
 });

@@ -160,13 +160,17 @@ export default function SettingsPage() {
     // disabled (see the preset-buttons render below), so this should be
     // unreachable in practice — kept as a guard against stale clicks.
     if (!mapping) return;
-    setOverrides(() => {
+    setOverrides((prev) => {
       const next: Record<string, StageOverride> = {};
       for (const [stageName, choice] of Object.entries(mapping)) {
         next[stageName] = {
           provider: presetProvider,
           model: choice.model,
           effort: choice.effort ?? undefined,
+          // A preset chooses provider/model/effort only. timeout_seconds is
+          // hand-set in model-plan.toml with no editor here, so it must ride
+          // along or the full-replace PUT deletes it on the next Save.
+          timeout_seconds: prev[stageName]?.timeout_seconds,
         };
       }
       return next;
@@ -182,7 +186,15 @@ export default function SettingsPage() {
   const resetValueFor = (stageName: string, providerId: string): StageOverride | null => {
     const choice = balanced?.stages[providerId]?.[stageName];
     if (!choice) return null;
-    return { provider: providerId, model: choice.model, effort: choice.effort ?? undefined };
+    return {
+      provider: providerId,
+      model: choice.model,
+      effort: choice.effort ?? undefined,
+      // The reset is of the model choice. timeout_seconds is hand-set in
+      // model-plan.toml with no editor here, so dropping it must not be a
+      // side effect of resetting the row.
+      timeout_seconds: overrides[stageName]?.timeout_seconds,
+    };
   };
 
   const doSave = () =>
