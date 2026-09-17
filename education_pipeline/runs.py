@@ -101,7 +101,7 @@ from education_pipeline.guides.blueprints import (
     get_blueprint,
     recommend_blueprint,
 )
-from education_pipeline.atomic_io import atomic_write_bytes
+from education_pipeline.atomic_io import atomic_write_bytes, atomic_write_text
 from education_pipeline.workspace import (
     ProfileStore,
     TopicStore,
@@ -3977,12 +3977,16 @@ def _write_manifest(path: Path, manifest: dict) -> None:
 
 
 def _write_text(path: Path, text: str, *, overwrite: bool) -> None:
+    # The refusal is checked before anything is created on disk, so a rejected
+    # write leaves the directory exactly as it found it -- no stray temp file.
     if path.exists() and not overwrite:
         raise ConfigError(f"refusing to overwrite existing file: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # newline="": artifacts are sha-keyed and byte-compared, so Windows
-    # text-mode \n -> \r\n translation must never rewrite them.
-    path.write_text(text, encoding="utf-8", newline="")
+    # atomic_write_text encodes UTF-8 and writes in binary mode, which is the
+    # byte-for-byte equivalent of write_text(encoding="utf-8", newline=""):
+    # artifacts are sha-keyed and byte-compared, so Windows text-mode
+    # \n -> \r\n translation must never rewrite them. Going through the temp
+    # file means a crash mid-rewrite leaves the previous content in place.
+    atomic_write_text(path, text)
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
