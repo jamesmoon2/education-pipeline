@@ -316,6 +316,14 @@ def recommend_blueprint_payload(body: object) -> dict:
 
 def run_status_payload(runs: RunStore, topic_id: str) -> dict:
     require_run(runs, topic_id)
+    # One read scope for the whole payload: run_status, content_contract and
+    # both validation summaries otherwise re-read and re-parse the same run
+    # manifest dozens of times per poll tick.
+    with runs.manifest_read_scope():
+        return _run_status_payload_scoped(runs, topic_id)
+
+
+def _run_status_payload_scoped(runs: RunStore, topic_id: str) -> dict:
     status = runs.run_status(topic_id)
     contract = runs.content_contract(topic_id)
     manifest = runs.read_manifest(topic_id)
