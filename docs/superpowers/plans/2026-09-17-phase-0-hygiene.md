@@ -20,7 +20,7 @@
 | T04 | Never lose model output | Audit output is logged; parse failure writes `<stage>.failed.<ts>.txt`; salvage-as-response action; Codex adapter validates shape. | - [x] |
 | T05 | Worker safety | PID-reuse guard on reconcile; per-stage timeout from the plan (default 1800 s); socket timeout on request body reads. | - [x] |
 | T06 | Cost in the API | `GET /v1/runs/{id}` carries a `cost` object with provenance; workspace total; Codex byte-based estimate labeled as such; CLI `status` prints it. | - [x] |
-| T07 | Cost in the cockpit | Cost on run board, stage viewer header, library column; Settings rows show last-observed cost. | - [ ] |
+| T07 | Cost in the cockpit | Cost on run board, stage viewer header, library column; Settings rows show last-observed cost. | - [x] |
 | T08 | Effort: wire it or remove it | Effort reaches the provider CLI where a flag exists; control hidden with a note where none does; decision recorded. | - [x] |
 | T09 | Docs truth-up and issue #18 | Shipped plan steps ticked, design status lines updated; preset buttons show "no mapping for this provider" instead of a silent no-op. | - [x] |
 
@@ -36,3 +36,8 @@
 - **T05** landed: `Job.pid_identity` from `/proc/<pid>/stat` start time gates reconcile kills (Linux; other platforms keep pid-only behaviour, accepted); `timeout_seconds` per stage in the model plan, validated, round-tripped through the API and the cockpit Save, default 1800 s; 30 s socket timeout on request reads. 14 new tests. pytest 1540, vitest 510 in-thread.
 - **T04** landed: parse/ingest failures salvage raw stdout to `<stage>.failed.<ts>.txt`; `failed_outputs` per stage in run status; `POST .../stages/{stage}/salvage` (409 without overwrite, manifest event, never approves); Codex rejects empty output. Decision: the plan's "log audit output" line was rejected because the personalization spec forbids private values in logs; the salvage file preserves audit output as a private raw artifact instead. 11 new tests.
 - **T01** landed: validated-final-report memo (per RunStore, keyed by source digest + validation inputs, bounded 64) on the poll path; request-scoped per-thread manifest read scope opened by `run_status`/`next_action`/`run_status_payload`, discarded on write; `content_contract` no longer stats the manifest twice. Warm status read: zero validation calls; 20-topic poll 41 ms in isolation and 44 ms on the merged branch (was 228). 15 new tests. Merge fix: T04's per-stage `failed_outputs` glob became one directory listing per topic, and T06's `jobs` store is threaded through the scoped payload builder. Timing test asserts the fastest of five passes, budget ×4 under `CI`.
+- **T07** landed: `RunCostLine` on the run board and stage viewer; Cost column plus workspace total in the library; Settings rows show "last observed" per stage from a new workspace-wide `cost.stages` block on `/v1/topics` (`cost.latest_stage_costs`). 4 new pytest, 20 new vitest, one e2e assertion. 14 implementation files, over the 12-file guideline by decision (the ruled Settings path was already half-built on the API side).
+
+## Phase closeout
+
+All nine threads merged into `claude/engineering-manager-phase-0-xquocr`, one merge commit per thread. Final gate on the merged branch: pytest 1609 passed / 1 skipped (baseline 1528), vitest 538 (baseline 508), `npm run build` clean, `education-pipeline --help` clean, Playwright 86 passed on the preinstalled Chromium. Accepted limitations and the three plan-text departures are in the audit ledger.

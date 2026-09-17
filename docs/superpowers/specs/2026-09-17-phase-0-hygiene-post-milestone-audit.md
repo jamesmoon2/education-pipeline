@@ -90,6 +90,17 @@ docstrings promise. The waiver invalidation test needed no change.
   against 50 ms locally and 200 ms when `CI` is set, because the hosted
   Windows and macOS runners are slower and noisier than a workstation.
 
+- **T07:** "last observed cost per stage" on Settings is workspace-wide
+  (newest costed job for that stage in any topic), fetched once on mount
+  from `/v1/topics`; it is an observation, not a forecast, and a failed fetch
+  never blocks the plan editor.
+- **T07:** one test-writer assertion was rescoped: it matched the row's
+  always-present "Provider for <stage>" label, so it passed with no
+  implementation and threw on multiple matches once the feature rendered; it
+  now asserts the "last observed" line's own text.
+- **T07:** 14 implementation files, over the 12-file guideline; accepted so
+  the API half of the Settings path did not land unused.
+
 ## Owner decisions still not recorded (carried from the opportunity map)
 
 - PyPI vs GitHub-release-only distribution.
