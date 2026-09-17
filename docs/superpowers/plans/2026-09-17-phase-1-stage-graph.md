@@ -14,7 +14,7 @@
 
 | ID | Thread | Exit criteria | Status |
 | --- | --- | --- | --- |
-| T10 | Characterization tests | Table-driven tests pin `next_action`, `stage_status.stale` and approve source binding across a run-state matrix for guide-v1 and legacy runs, including the pre-factcheck grandfather fixture; ≥40 cases; no source changes. | - [ ] |
+| T10 | Characterization tests | Table-driven tests pin `next_action`, `stage_status.stale` and approve source binding across a run-state matrix for guide-v1 and legacy runs, including the pre-factcheck grandfather fixture; ≥40 cases; no source changes. | - [x] |
 | T11 | Declare the graph | `stage_graph.py` holds one frozen stage table (upstreams, content type, required-in-mode, reasoning flag, prompt-writer key); `config.py` stage tuples and `REASONING_STAGES` derive from it; factcheck now gets the weak-model warning (flagged behavior change, test-covered). | - [ ] |
 | T12 | Stale and source binding from the graph | `_stage_upstream_stale`, approve-time source binding and `_stale_stage_rebuild_action` walk the graph; three of four unrollings gone; T10 green and unchanged. | - [ ] |
 | T13 | Next action from the graph | The qa/factcheck/repair loop in `_next_action_guide_v1` walks the graph; grandfather rule is one named predicate; fourth unrolling gone; T10 green. | - [ ] |
@@ -32,6 +32,8 @@
 ## Closeout log
 
 (One line per thread as it lands: what changed, test counts, accepted limitations.)
+
+- **T10** landed: `tests/test_characterization_guide_v1.py` (47 cases) and `tests/test_characterization_legacy.py` (41 cases), no source changes. Two Sonnet writers, one per run mode; the Opus review found seven unpinned branches (the `needs_prompt=False` rebuild arm for every stage, missing-upstream-file staleness, the absent-hash grandfather arms, prompt-time hash binding values, `_require_current_upstream` refusals, module-repair source binding, the grandfather inverse) and filled them. Suite 1730 passed / 1 skipped (baseline 1642). Observations recorded in the ledger: two staleness definitions coexist (semantic hash in `report_state`, raw bytes in `StageStatus.stale`); a stale rebuild advertises `save_response` even while the old response is still ingested; legacy runs list a `factcheck` status entry they can never use.
 
 ## Phase closeout
 
