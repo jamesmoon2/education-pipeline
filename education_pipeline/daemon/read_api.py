@@ -794,6 +794,7 @@ def plan_payload(catalog: ModelCatalog, plan: ModelPlan, plan_sha256: str) -> di
                 "provider": stage_plan.provider,
                 "model": stage_plan.model,
                 "effort": stage_plan.effort,
+                "timeout_seconds": stage_plan.timeout_seconds,
                 "recommendation": stage_plan.recommendation,
                 "warning": weak_stage_warning(catalog, stage_plan),
             }

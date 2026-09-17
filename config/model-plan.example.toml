@@ -19,6 +19,8 @@ effort = "high"
 recommendation = "strong_longform_generation"
 model = "opus-4-8"
 effort = "medium"
+# Optional per-stage cap on provider run time, in seconds (default: 1800):
+# timeout_seconds = 3600
 
 [stages.qa]
 recommendation = "fast_cheap_check"

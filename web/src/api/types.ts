@@ -530,6 +530,9 @@ export interface PlanStage {
   provider: string | null;
   model: string | null;
   effort: string | null;
+  // Optional per-stage provider timeout, set by hand in model-plan.toml.
+  // Reported by the API; the cockpit has no editor for it yet.
+  timeout_seconds?: number | null;
   recommendation: string;
   warning: string | null;
   source?: "default" | "override";
@@ -547,6 +550,7 @@ export interface StageOverride {
   provider?: string;
   model?: string;
   effort?: string;
+  timeout_seconds?: number;
   recommendation?: string;
 }
 

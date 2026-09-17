@@ -38,6 +38,10 @@ function seedOverrides(stages: PlanStage[]): Record<string, StageOverride> {
       provider: stage.provider ?? undefined,
       model: stage.model ?? undefined,
       effort: stage.effort ?? undefined,
+      // Hand-set in model-plan.toml and honored by the daemon; there is no
+      // editor for it, so Save must carry it back or the full-replace PUT
+      // would delete it.
+      timeout_seconds: stage.timeout_seconds ?? undefined,
     };
   }
   return overrides;
@@ -53,13 +57,20 @@ function displayStage(
   defaultProvider: string,
 ): PlanStage {
   if (!override) {
-    return { ...stage, provider: defaultProvider, model: null, effort: null };
+    return {
+      ...stage,
+      provider: defaultProvider,
+      model: null,
+      effort: null,
+      timeout_seconds: null,
+    };
   }
   return {
     ...stage,
     provider: override.provider ?? defaultProvider,
     model: override.model ?? null,
     effort: override.effort ?? null,
+    timeout_seconds: override.timeout_seconds ?? null,
   };
 }
 
