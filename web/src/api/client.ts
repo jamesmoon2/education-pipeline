@@ -25,7 +25,7 @@ import type {
   StageContent,
   StageOverride,
   TopicDetail,
-  TopicSummary,
+  TopicsPayload,
   ArchiveResult,
   DuplicateTopicResult,
   RevealResult,
@@ -293,7 +293,7 @@ export async function download(path: string, filename: string): Promise<void> {
 }
 
 export const getWorkspace = () => api<WorkspacePayload>("/v1/workspace");
-export const getTopics = () => api<{ topics: TopicSummary[] }>("/v1/topics");
+export const getTopics = () => api<TopicsPayload>("/v1/topics");
 export const getTopic = (id: string) =>
   api<TopicDetail>(`/v1/topics/${encodeURIComponent(id)}`);
 export const getRunStatus = (topicId: string) =>

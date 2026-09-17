@@ -16,6 +16,7 @@ import RunPlanPanel from "../components/RunPlanPanel";
 import ValidationFindingsPanel, { NO_FINDINGS } from "../components/ValidationFindingsPanel";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
+import RunCostLine from "../components/RunCostLine";
 
 // Blocking-or-error findings by stage, combined across the draft and final
 // validation reports, so a stage badges up if either phase flagged it.
@@ -225,6 +226,12 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
       <p className="next-action">
         <strong>Next:</strong> {status.next_action.detail}
       </p>
+      <RunCostLine
+        usd={status.cost?.run_usd ?? null}
+        source={status.cost?.run_source ?? null}
+        unpricedJobs={status.cost?.unpriced_jobs}
+        complete={status.cost?.complete}
+      />
       <PrimaryAction status={status} activeJob={activeJob} onChanged={refresh} />
       <PipelineStepper
         status={status}

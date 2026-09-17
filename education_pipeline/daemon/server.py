@@ -43,6 +43,7 @@ from education_pipeline.guides import (
 )
 from education_pipeline.runs import RunStore, StaleContentError, SUPPORTED_STAGES
 from education_pipeline.workspace import ProfileStore, TopicStore
+from education_pipeline.workspace_lock import WorkspaceLockedError, workspace_lock
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
 
@@ -56,6 +57,11 @@ class ConfigSource(Protocol):
 
     def write_plan(self, toml_text: str) -> None: ...
 MAX_REQUEST_BODY_BYTES = 1024 * 1024  # 1 MiB; job POST bodies are tiny
+# Every route is plain request/response (no long polling), so a connection
+# that goes quiet mid-request is a stalled or truncated client, not normal
+# traffic. Bounding blocking reads keeps one such client from parking a
+# handler thread forever.
+DEFAULT_SOCKET_TIMEOUT_SECONDS = 30.0
 
 
 def _require_str(body: dict, key: str) -> str:
@@ -80,6 +86,22 @@ class DaemonContext:
     web_dist: Path | None = None
 
     def enqueue_stage(self, topic_id: str, stage: str | None, force: bool) -> Job:
+        """Admit one stage execution, atomically with its own guards.
+
+        The archive/active-job checks and the record write they guard run
+        inside a single acquisition of the workspace advisory lock, so no
+        other process can slip a mutation (or a second admission) into the
+        gap -- the same lock the CLI holds across ``_require_mutable`` and
+        the mutation that follows it. The lock is reentrant per process, so
+        ``JobStore.create`` and any ``RunStore`` write nested below re-enter
+        it rather than deadlocking. It is released as soon as the job is
+        queued: the provider subprocess runs well outside it.
+        """
+
+        with workspace_lock(self.root, timeout_seconds=self.store.lock_timeout_seconds):
+            return self._enqueue_stage_locked(topic_id, stage, force)
+
+    def _enqueue_stage_locked(self, topic_id: str, stage: str | None, force: bool) -> Job:
         if self.runs.is_archived(topic_id):
             raise write_api.ConflictError(
                 "archived_course",
@@ -143,8 +165,16 @@ class _LoopbackHTTPServer(ThreadingHTTPServer):
         self.server_port = port
 
 
-def build_server(context: DaemonContext) -> ThreadingHTTPServer:
+def build_server(
+    context: DaemonContext,
+    *,
+    socket_timeout: float | None = DEFAULT_SOCKET_TIMEOUT_SECONDS,
+) -> ThreadingHTTPServer:
     handler = _make_handler(context)
+    # StreamRequestHandler.setup() applies this to the accepted connection, so
+    # every blocking read on it -- the request line, the headers, and the body
+    # read inside _read_body -- is bounded by it.
+    handler.timeout = socket_timeout
     server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
     return server
 
@@ -254,7 +284,14 @@ def _make_handler(context: DaemonContext):
                     f"{MAX_REQUEST_BODY_BYTES}-byte cap"
                 )
             try:
-                value = json.loads(self.rfile.read(length) or b"{}")
+                raw = self.rfile.read(length)
+            except TimeoutError:  # socket.timeout is an alias of this
+                # The client promised more body than it sent and then went
+                # quiet. The headers are already parsed, so answer with the
+                # ordinary 400 shape rather than dropping the connection.
+                raise ConfigError("timed out reading the request body")
+            try:
+                value = json.loads(raw or b"{}")
             except json.JSONDecodeError:
                 raise ConfigError("request body is not valid JSON")
             if not isinstance(value, dict):
@@ -271,6 +308,11 @@ def _make_handler(context: DaemonContext):
                 return self._do_get_dispatch()
             except read_api.NotFoundError as exc:
                 return self._error(404, "not_found", str(exc))
+            except WorkspaceLockedError as exc:
+                # A ConfigError subclass, so it must be caught above the
+                # generic arm below: a contended workspace is a state
+                # conflict (retry later), not a malformed request.
+                return self._error(409, exc.code, str(exc))
             except ConfigError as exc:
                 return self._error(400, "invalid_request", str(exc))
             except Exception as exc:  # last resort: never drop the connection
@@ -346,7 +388,7 @@ def _make_handler(context: DaemonContext):
                 return self._send(
                     200,
                     read_api.list_topics(
-                        context.topics, context.runs, context.profiles
+                        context.topics, context.runs, context.profiles, jobs=context.store
                     ),
                 )
             m = re.match(r"^/v1/topics/([^/?]+)$", self.path)
@@ -444,7 +486,10 @@ def _make_handler(context: DaemonContext):
             m = re.match(r"^/v1/runs/([^/?]+)$", self.path)
             if m:
                 return self._send(
-                    200, read_api.run_status_payload(context.runs, m.group(1))
+                    200,
+                    read_api.run_status_payload(
+                        context.runs, m.group(1), jobs=context.store
+                    ),
                 )
             m = re.match(r"^/v1/jobs/([^/]+)/log(?:\?offset=(\d+))?$", self.path)
             if m:
@@ -491,6 +536,11 @@ def _make_handler(context: DaemonContext):
                 # same 422 guide_not_renderable everywhere it can surface,
                 # not fall through to a plausible-looking 500.
                 return self._error(422, "guide_not_renderable", str(exc))
+            except WorkspaceLockedError as exc:
+                # A ConfigError subclass, so it must be caught above the
+                # generic arm below: a contended workspace is a state
+                # conflict (retry later), not a malformed request.
+                return self._error(409, exc.code, str(exc))
             except ConfigError as exc:
                 return self._error(400, "invalid_request", str(exc))
             except Exception as exc:  # last resort: never drop the connection
@@ -688,6 +738,20 @@ def _make_handler(context: DaemonContext):
                         force=bool(body.get("force")),
                     ),
                 )
+            m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/salvage$", self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.salvage_stage_output(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        m.group(2),
+                        _require_str(body, "file"),
+                        overwrite=bool(body.get("overwrite")),
+                    ),
+                )
             m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/approve$", self.path)
             if m:
                 body = self._read_body()
@@ -807,6 +871,11 @@ def _make_handler(context: DaemonContext):
                 # matching arm in do_POST for why this maps to 422
                 # guide_not_renderable rather than a bare 500.
                 return self._error(422, "guide_not_renderable", str(exc))
+            except WorkspaceLockedError as exc:
+                # A ConfigError subclass, so it must be caught above the
+                # generic arm below: a contended workspace is a state
+                # conflict (retry later), not a malformed request.
+                return self._error(409, exc.code, str(exc))
             except ConfigError as exc:
                 return self._error(400, "invalid_request", str(exc))
             except Exception as exc:  # last resort: never drop the connection
@@ -866,6 +935,11 @@ def _make_handler(context: DaemonContext):
                 return self._error(422, exc.code, str(exc), exc.details)
             except (GuideDocumentError, ContractError, GuideParseError) as exc:
                 return self._error(422, "guide_not_renderable", str(exc))
+            except WorkspaceLockedError as exc:
+                # A ConfigError subclass, so it must be caught above the
+                # generic arm below: a contended workspace is a state
+                # conflict (retry later), not a malformed request.
+                return self._error(409, exc.code, str(exc))
             except ConfigError as exc:
                 return self._error(400, "invalid_request", str(exc))
             except Exception as exc:  # last resort: never drop the connection

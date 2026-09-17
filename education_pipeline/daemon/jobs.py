@@ -21,10 +21,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from education_pipeline.atomic_io import atomic_write_text
+from education_pipeline import cost as cost_module
+from education_pipeline.atomic_io import atomic_write_bytes, atomic_write_text
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
 from education_pipeline.providers import get_runner
 from education_pipeline.runs import RunStore, StaleContentError
+from education_pipeline.workspace_lock import workspace_lock
 
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled", "interrupted"})
 
@@ -50,12 +52,21 @@ class Job:
     effort: str | None
     status: str = "queued"
     pid: int | None = None
+    # Identity of the spawned process (see ``_process_identity``), recorded so
+    # crash recovery can tell "still our child" from "this pid was recycled".
+    pid_identity: str | None = None
     created_at: str = ""
     started_at: str | None = None
     ended_at: str | None = None
     exit_code: int | None = None
     response_path: str | None = None
     error: str | None = None
+    # What this execution cost, and whether the provider reported that itself
+    # ("provider") or we estimated it from byte counts ("estimate"). Both stay
+    # None when the cost could not be determined; records written before these
+    # fields existed load with both None (see ``from_dict``).
+    cost_usd: float | None = None
+    cost_source: str | None = None
     metadata: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -105,8 +116,24 @@ def _read_job_record(path: Path) -> dict:
 class JobStore:
     """Read and write job records under a workspace's ``runs`` tree."""
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, *, lock_timeout_seconds: float = 5.0) -> None:
         self.root = Path(root)
+        self.lock_timeout_seconds = lock_timeout_seconds
+
+    def lock(self):
+        """The workspace advisory lock, for admitting or starting a job.
+
+        Admission is a workspace mutation like any other: a CLI process that
+        holds the lock around its own check-and-mutate (``cli._guarded_
+        mutation``) must not have a job admitted underneath it. The lock is
+        reentrant per process, so nesting inside ``RunStore``'s manifest
+        critical sections is safe.
+
+        Never held across the provider subprocess -- only around the record
+        write that publishes a state change.
+        """
+
+        return workspace_lock(self.root, timeout_seconds=self.lock_timeout_seconds)
 
     @property
     def runs_dir(self) -> Path:
@@ -131,16 +158,17 @@ class JobStore:
         model: str | None,
         effort: str | None,
     ) -> Job:
-        job = Job(
-            id=new_job_id(),
-            topic_id=topic_id,
-            stage=stage,
-            provider=provider,
-            model=model,
-            effort=effort,
-            created_at=_utcnow().isoformat(),
-        )
-        self.job_dir(topic_id, job.id).mkdir(parents=True, exist_ok=True)
+        with self.lock():
+            job = Job(
+                id=new_job_id(),
+                topic_id=topic_id,
+                stage=stage,
+                provider=provider,
+                model=model,
+                effort=effort,
+                created_at=_utcnow().isoformat(),
+            )
+            self.job_dir(topic_id, job.id).mkdir(parents=True, exist_ok=True)
         return job
 
     def save(self, job: Job) -> None:
@@ -337,9 +365,17 @@ class JobRunner:
         self.force = force
 
     def execute(self, job: Job, cancel: threading.Event) -> Job:
-        job.status = "running"
-        job.started_at = _utcnow().isoformat()
-        self.store.save(job)
+        # queued -> running is the second half of admission: publish it under
+        # the same workspace lock, so another process cannot see "no active
+        # job" and mutate the run while this one is starting. Only the record
+        # write is inside; the provider subprocess below never is.
+        with self.store.lock():
+            job.status = "running"
+            job.started_at = _utcnow().isoformat()
+            self.store.save(job)
+        # Bound outside the try so the failure arm can still see raw provider
+        # output captured before a parse/ingest error threw it away.
+        stdout: str | None = None
         try:
             # Re-stamp the job with the *effective* stage plan carried by this
             # runner (the daemon re-resolves global plan + run overrides when
@@ -383,6 +419,7 @@ class JobRunner:
 
             parsed = runner.parse_response(stdout)
             job.metadata.update(parsed.metadata)
+            self._record_cost(job, parsed, prompt_path, model)
             response_path = self.runs.ingest_response(
                 job.topic_id, job.stage, parsed.text, force=self.force
             )
@@ -413,7 +450,15 @@ class JobRunner:
                 job.metadata["manifest_event_error"] = str(exc)
             return self._terminal(job, "succeeded")
         except (ConfigError, StaleContentError) as exc:
-            return self._fail(job, str(exc))
+            # parse_response or ingest_response refused the output: the model
+            # already did the work, so the raw bytes are written beside the
+            # stage's response before the job goes terminal.
+            salvaged = self._salvage_stdout(job, stdout)
+            error = str(exc)
+            if salvaged is not None:
+                job.metadata["salvaged_output"] = salvaged.name
+                error = f"{error} (raw output salvaged to {salvaged.name})"
+            return self._fail(job, error)
         except Exception as exc:
             # A non-ConfigError exception (Popen raising FileNotFoundError/
             # OSError, os.replace failing, a parser raising ValueError, ...)
@@ -423,6 +468,38 @@ class JobRunner:
             if job.pid:
                 _best_effort_kill(job.pid)
             return self._fail(job, f"unexpected error: {exc}")
+
+    def _record_cost(self, job: Job, parsed, prompt_path: Path, model) -> None:
+        """Stamp the job with what this execution cost, if that is knowable.
+
+        The provider's own figure wins; otherwise fall back to a byte-based
+        estimate over the prompt we fed in and the response we got back (the
+        prompt's size is taken from its stat, so the file is not read twice).
+        An unpriced model leaves both fields None rather than claiming zero.
+
+        ``model`` is the :class:`~education_pipeline.config.ModelOption` this
+        execution already resolved, and the estimate is keyed off the id the
+        provider was actually invoked with (``argv_model``, or the option id
+        when the catalog declares none) -- never ``job.model``, which is only
+        a catalog's project-local alias for it.
+        """
+
+        reported = parsed.metadata.get("total_cost_usd")
+        if isinstance(reported, (int, float)) and not isinstance(reported, bool):
+            job.cost_usd = float(reported)
+            job.cost_source = "provider"
+            return
+        try:
+            prompt_bytes = prompt_path.stat().st_size
+        except OSError:  # pragma: no cover - prompt was read moments ago
+            prompt_bytes = 0
+        estimate = cost_module.estimate_cost_usd(
+            prompt_bytes,
+            len(parsed.text.encode("utf-8")),
+            model.argv_model or model.id,
+        )
+        job.cost_usd = estimate["usd"]
+        job.cost_source = estimate["source"]
 
     def _resolve_model(self, job: Job):
         provider = self.catalog.require_provider(job.provider)
@@ -451,6 +528,7 @@ class JobRunner:
                 **popen_kwargs(),
             )
         job.pid = proc.pid
+        job.pid_identity = _process_identity(proc.pid)
         self.store.save(job)
 
         # Providers (e.g. Codex) write progress to stderr and the final answer
@@ -461,6 +539,16 @@ class JobRunner:
         # stderr can be proven free of narratives or profile values before it
         # is emitted. Suppress both raw streams from the job log / log API;
         # stdout is still captured separately and bounded for ingestion.
+        #
+        # This suppression is load-bearing, not an oversight: private values
+        # "never appear in API errors, warnings, findings, logs, ..." (see
+        # docs/superpowers/specs/2026-07-12-personalization-design.md, "Private
+        # values may exist in local profile, prompt, trace, and raw
+        # audit-response artifacts by design"). A failed audit parse still
+        # keeps its output — `_salvage_stdout` writes it to
+        # `<stage>.failed.<ts>.txt`, which IS a raw audit-response artifact
+        # and stays in the workspace — so nothing is lost by keeping the log
+        # itself empty here. Do not "fix" this by logging audit streams.
         #
         # Both pipes are drained on their own background threads and pushed to
         # a shared queue tagged with their stream name. This is required, not
@@ -574,6 +662,32 @@ class JobRunner:
             canceled,
         )
 
+    def _salvage_stdout(self, job: Job, stdout: str | None) -> Path | None:
+        """Write raw provider output beside the stage response, or None.
+
+        ``stdout`` is None when the job failed before the provider ran (an
+        unknown model, say), and there is then nothing to salvage. Otherwise
+        the bytes land verbatim -- including empty output, which is itself the
+        evidence of what went wrong -- under a timestamped name a human and
+        ``write_api.salvage_stage_output`` can both find.
+        """
+
+        if stdout is None:
+            return None
+        try:
+            responses = self.runs.stage_paths(job.topic_id, job.stage).response_path.parent
+            stamp = _utcnow().strftime("%Y%m%dT%H%M%SZ")
+            path = responses / f"{job.stage}.failed.{stamp}.txt"
+            suffix = 1
+            while path.exists():  # two failures within one second
+                path = responses / f"{job.stage}.failed.{stamp}-{suffix}.txt"
+                suffix += 1
+            atomic_write_bytes(path, stdout.encode("utf-8"))
+            return path
+        except Exception as exc:  # salvage is best effort; never mask the real error
+            job.metadata["salvage_error"] = str(exc)
+            return None
+
     def _fail(self, job: Job, error: str) -> Job:
         return self._terminal(job, "failed", error=error)
 
@@ -650,12 +764,17 @@ class Worker:
     def reconcile(self) -> None:
         for job in self.store.all_jobs():
             if job.status == "running":
-                if job.pid and _pid_plausibly_alive(job.pid):
+                if (
+                    job.pid
+                    and _pid_plausibly_alive(job.pid)
+                    and _identity_still_matches(job.pid, job.pid_identity)
+                ):
                     _best_effort_kill(job.pid)
                 job.status = "interrupted"
                 job.error = "daemon restarted while job was running"
                 job.ended_at = _utcnow().isoformat()
                 job.pid = None
+                job.pid_identity = None
                 self.store.save(job)
         for job in sorted(
             (j for j in self.store.all_jobs() if j.status == "queued"), key=lambda j: j.id
@@ -697,6 +816,67 @@ class Worker:
                     fresh.ended_at = _utcnow().isoformat()
                     fresh.pid = None
                     self.store.save(fresh)
+
+
+def _process_identity(pid: int) -> str | None:
+    """A stable identity for a live pid, or ``None`` when it can't be had.
+
+    Pids are recycled, so a pid alone cannot prove that the process running
+    now is the one a job record was spawned for -- after a reboot the same
+    number may belong to something unrelated. On Linux the process start time
+    (field 22 of ``/proc/<pid>/stat``, in clock ticks since boot) pins the
+    identity: it is fixed for the life of the process and a recycled pid gets
+    a different one. The field is parsed after the last ``)`` because the
+    process name (field 2) may itself contain spaces and parentheses.
+
+    Other platforms have no equally cheap, dependency-free equivalent, so this
+    returns ``None`` there and callers fall back to today's pid-only
+    behaviour.
+    """
+
+    if sys.platform != "linux":
+        return None
+    try:
+        stat = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8", errors="replace")
+        fields = stat[stat.rindex(")") + 1 :].split()
+        # fields[0] is field 3 (state), so field 22 (starttime) is index 19.
+        starttime = int(fields[19])
+    except (OSError, ValueError, IndexError):
+        return None
+    return f"linux-start:{starttime}"
+
+
+def _identity_still_matches(pid: int, recorded: str | None) -> bool:
+    """True when signalling ``pid`` is safe for a job that recorded ``recorded``.
+
+    A record written before process identities existed (``recorded is None``)
+    keeps the old pid-only behaviour; a recorded identity must match the live
+    process, otherwise the pid has been recycled and belongs to someone else.
+    """
+
+    if recorded is None:
+        return True
+    return _process_identity(pid) == recorded
+
+
+def effective_timeout_seconds(
+    plan: ModelPlan,
+    stage: str,
+    model: str | None = None,
+    *,
+    default: float = DEFAULT_TIMEOUT_SECONDS,
+) -> float:
+    """How long one job for ``stage`` may run before it is timed out.
+
+    The stage's ``timeout_seconds`` wins when the effective plan sets one,
+    otherwise ``default`` (the daemon-wide value). ``model`` is accepted for a
+    future per-model layer; the plan carries no per-model settings today.
+    """
+
+    stage_plan = plan.stages.get(stage)
+    if stage_plan is not None and stage_plan.timeout_seconds is not None:
+        return float(stage_plan.timeout_seconds)
+    return default
 
 
 def _pid_plausibly_alive(pid: int) -> bool:

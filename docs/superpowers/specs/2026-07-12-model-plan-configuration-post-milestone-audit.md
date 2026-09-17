@@ -222,3 +222,32 @@ Deferred with rationale: the remaining ACCEPT items in §5 stay accepted (all
 are unreachable, loopback-benign, or documented intent); they should be
 re-triaged only if their preconditions change (e.g. `metadata` nesting, a
 multi-user daemon).
+
+## 8. 2026-09-17 follow-up — `effort` is now wired to both provider CLIs
+
+Through this milestone, a stage's `effort` was recorded and displayed as
+provenance only: neither adapter passed it to the CLI it invoked. That is
+resolved. The plan-resolved effort now reaches both executable providers:
+
+- Claude Code: appended as `--effort <value>`
+  (https://code.claude.com/docs/en/cli-reference).
+- Codex: appended as the two argv entries `-c` and
+  `model_reasoning_effort="<value>"` — the CLI has no effort flag, only that
+  config key, set non-interactively via a TOML override
+  (https://developers.openai.com/codex/config-reference).
+
+Nothing is appended when a stage has no effort configured, so an unset plan
+still gets each CLI's own default. Catalog `extra_args` are appended after
+the plan-derived arguments, so a hand-configured flag still wins.
+
+Both CLIs accept values beyond the plan's `low`/`medium`/`high`
+(Claude Code also takes `xhigh`/`max`/`ultracode`; Codex also takes
+`minimal`/`xhigh`). Those are deliberately **not** exposed: `_EFFORT_VALUES`
+in `config.py` stays the three-value intersection-and-subset that means the
+same thing on both providers, so a plan remains portable when a stage's
+provider changes. Widening it would need a per-provider validation table.
+
+Providers now advertise a `supports_effort` capability (`True` for
+`claude-code` and `codex`, `False` for the non-executable `manual`
+provider), surfaced through `/v1/config/providers` so the cockpit hides the
+effort control for a provider whose CLI would ignore it.

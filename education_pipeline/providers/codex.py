@@ -10,13 +10,18 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from education_pipeline.config import ModelOption, StageModelPlan
+from education_pipeline.config import ConfigError, ModelOption, StageModelPlan
 from education_pipeline.providers import Invocation, ProviderResponse
 
 
 class CodexRunner:
     provider_id = "codex"
     executable = True
+    # Codex has no effort flag; it takes the `model_reasoning_effort` config
+    # key (minimal|low|medium|high|xhigh) as a `-c` TOML override, of which
+    # the plan exposes the low/medium/high subset.
+    # https://developers.openai.com/codex/config-reference
+    supports_effort = True
 
     def is_available(self) -> bool:
         return shutil.which("codex") is not None
@@ -28,9 +33,21 @@ class CodexRunner:
         if model.argv_model:
             argv += ["--model", model.argv_model]
         argv += ["--sandbox", "read-only", "--skip-git-repo-check"]
+        if plan.effort:
+            # TOML override: the value must carry literal inner double quotes.
+            argv += ["-c", f'model_reasoning_effort="{plan.effort}"']
+        # Catalog `extra_args` come last so an explicitly configured override
+        # wins over the plan-derived one above.
         argv += list(model.extra_args)
         argv.append("-")  # read instructions from stdin
         return Invocation(argv=argv, stdin=None)
 
     def parse_response(self, stdout: str) -> ProviderResponse:
-        return ProviderResponse(text=stdout.strip(), metadata={})
+        # Codex has no JSON envelope to validate, so the one shape check it
+        # can make is the one the Claude adapter also makes: an answer that
+        # is empty (or only whitespace) is not a response. Failing here keeps
+        # the raw bytes salvageable instead of ingesting a blank artifact.
+        text = stdout.strip()
+        if not text:
+            raise ConfigError("codex returned empty output")
+        return ProviderResponse(text=text, metadata={})

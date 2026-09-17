@@ -16,6 +16,7 @@ import ImportForm from "../components/ImportForm";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 import { nextActionLabel } from "../lib/labels";
+import { costCompletenessTitle, formatUsd } from "../lib/cost";
 import type { ProfileSummary, TopicSummary } from "../api/types";
 
 type StatusFilter = "all" | "no_run" | "in_progress" | "finalized";
@@ -257,6 +258,19 @@ export default function TopicListPage() {
               Revealed: <code>{revealedPath}</code>
             </p>
           )}
+          {data.cost && data.cost.workspace_usd !== null && (
+            <p className="muted">
+              Workspace total: {formatUsd(data.cost.workspace_usd)}
+              {data.cost.complete === false && (
+                <>
+                  {" "}
+                  <span title={costCompletenessTitle(data.cost.unpriced_jobs ?? 0)}>
+                    (partial)
+                  </span>
+                </>
+              )}
+            </p>
+          )}
           <table>
             <thead>
               <tr>
@@ -265,6 +279,13 @@ export default function TopicListPage() {
                 <th>Next action</th>
                 <th>Last activity</th>
                 <th>Completion</th>
+                <th>
+                  Cost{" "}
+                  <InfoTip
+                    label="Cost"
+                    text="What this course's provider jobs spent, when that is known. Stages you ran by hand cost nothing here, and a provider that reports no spend of its own is estimated from a placeholder price table — treat any figure as a rough guide, not a bill."
+                  />
+                </th>
                 <th>Profile</th>
                 <th>
                   Actions{" "}
@@ -299,6 +320,19 @@ export default function TopicListPage() {
                       ? `${t.completion.stages_approved}/${t.completion.stages_total}` +
                         (t.completion.exported ? " · exported" : "")
                       : "—"}
+                  </td>
+                  <td>
+                    {formatUsd(t.cost?.run_usd ?? null)}
+                    {t.cost?.complete === false && t.cost.run_usd !== null && (
+                      <>
+                        {" "}
+                        {/* This row carries no unpriced count of its own, so
+                            the tooltip explains the gap without a number. */}
+                        <span className="muted" title={costCompletenessTitle(0)}>
+                          (partial)
+                        </span>
+                      </>
+                    )}
                   </td>
                   <td>
                     {t.profile_id && (

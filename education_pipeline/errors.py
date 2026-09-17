@@ -153,6 +153,12 @@ ERROR_CATALOG: dict[str, ErrorCode] = dict(
             "The cockpit build (npm run build) failed.",
             "Fix the reported build errors in web/, then rerun.",
         ),
+        # --- cross-process workspace guard ---------------------------------
+        _entry(
+            "workspace_locked",
+            "Another education-pipeline process is writing to this workspace.",
+            "Wait for the other command (or the daemon) to finish, then retry.",
+        ),
     ]
 )
 

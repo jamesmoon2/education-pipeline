@@ -1,3 +1,5 @@
+import type { CostSource } from "../lib/cost";
+
 export interface Session {
   token: string;
   version: string;
@@ -54,6 +56,61 @@ export interface StageStatus {
   prompt_written: boolean;
   response_ingested: boolean;
   approved: boolean;
+  // Salvaged provider output that never became a response (thread T04).
+  // Optional: fixtures and payloads predating the field simply omit it.
+  failed_outputs?: string[];
+}
+
+/** One stage's cost roll-up over its job records
+ *  (education_pipeline/cost.py summarize_job_costs). `usd` is null when
+ *  nothing about that stage's spend is known -- never 0 as a stand-in. */
+export interface StageCost {
+  usd: number | null;
+  source: CostSource;
+  jobs: number;
+  // How many of those jobs carry no usable price, so `usd` covers only the
+  // rest. Optional: payloads and fixtures predating the field omit it, and a
+  // missing value means nothing is known to be missing.
+  unpriced_jobs?: number;
+}
+
+/** A run's cost block: every supported stage plus the run totals. */
+export interface RunCost {
+  stages: Record<string, StageCost>;
+  run_usd: number | null;
+  run_source: CostSource;
+  // Completeness of `run_usd`: false when some jobs have no usable price, so
+  // the total is a known-cost subtotal. Both optional -- a payload without
+  // them is treated as complete.
+  unpriced_jobs?: number;
+  complete?: boolean;
+}
+
+/** One library row's cost (GET /v1/topics per-entry `cost`). */
+export interface TopicCost {
+  run_usd: number | null;
+  // False when `run_usd` leaves unpriced jobs out. The row carries no count
+  // of its own; absent means complete.
+  complete?: boolean;
+}
+
+/** The most recent job in the workspace with a known cost for a stage --
+ *  what the settings plan editor shows beside that stage's model choice. */
+export interface ObservedStageCost {
+  usd: number;
+  source: string;
+  observed_at: string | null;
+}
+
+/** GET /v1/topics' top-level cost block: the workspace total, plus the
+ *  last observed cost per stage. */
+export interface WorkspaceCost {
+  workspace_usd: number | null;
+  stages?: Record<string, ObservedStageCost>;
+  // As RunCost: false when the workspace total omits unpriced jobs, with the
+  // count of them. Absent means complete.
+  complete?: boolean;
+  unpriced_jobs?: number;
 }
 
 export interface StageProvenance {
@@ -104,6 +161,9 @@ export interface RunStatus {
   validations: { draft: ValidationStatus; final: ValidationStatus };
   stages: StageStatus[];
   next_action: NextAction;
+  // Present only when the daemon has a job store to sum over; a run whose
+  // stages all ran by hand carries an all-null block rather than nothing.
+  cost?: RunCost;
 }
 
 export interface WorkspacePayload {
@@ -127,6 +187,12 @@ export interface TopicSummary {
   last_activity: string | null;
   profile_id: string | null;
   completion: CompletionSummary | null;
+  cost?: TopicCost;
+}
+
+export interface TopicsPayload {
+  topics: TopicSummary[];
+  cost?: WorkspaceCost;
 }
 
 export interface ArchiveResult {
@@ -496,6 +562,13 @@ export interface ProviderAvailability {
   executable: boolean;
   available: boolean;
   reason: string | null;
+  /**
+   * Whether this provider's CLI accepts an effort option at all (Claude Code
+   * `--effort`, Codex `model_reasoning_effort`). Optional so fixtures and
+   * older daemons that predate the field still type-check; treat a missing
+   * value as "assume it does".
+   */
+  supports_effort?: boolean;
 }
 
 export interface CatalogModel {
@@ -530,6 +603,9 @@ export interface PlanStage {
   provider: string | null;
   model: string | null;
   effort: string | null;
+  // Optional per-stage provider timeout, set by hand in model-plan.toml.
+  // Reported by the API; the cockpit has no editor for it yet.
+  timeout_seconds?: number | null;
   recommendation: string;
   warning: string | null;
   source?: "default" | "override";
@@ -547,6 +623,7 @@ export interface StageOverride {
   provider?: string;
   model?: string;
   effort?: string;
+  timeout_seconds?: number;
   recommendation?: string;
 }
 

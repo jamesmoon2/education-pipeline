@@ -647,4 +647,105 @@ describe("RunBoardPage", () => {
       await screen.findByText("ran on codex / gpt-5.4 / high (override)"),
     ).toBeInTheDocument();
   });
+
+  // Thread T07: GET /v1/runs/{id} carries an optional `cost` block
+  // (education_pipeline/daemon/read_api.py run_status_payload, thread T06):
+  // { stages: {...}, run_usd: number|null, run_source: "provider"|"estimate"|"mixed"|null }.
+  describe("run cost summary", () => {
+    it("shows the run cost with a provider-reported provenance hint", async () => {
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...status,
+        cost: { stages: {}, run_usd: 0.42, run_source: "provider" },
+      });
+      vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+      renderAt("/topics/t");
+
+      expect(await screen.findByText(/Cost \$0\.42/)).toBeInTheDocument();
+      expect(screen.getByText(/provider-reported/)).toBeInTheDocument();
+    });
+
+    it("visibly labels an estimated run cost as an estimate", async () => {
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...status,
+        cost: { stages: {}, run_usd: 0.55, run_source: "estimate" },
+      });
+      vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+      renderAt("/topics/t");
+
+      expect(await screen.findByText(/Cost \$0\.55/)).toBeInTheDocument();
+      expect(screen.getByText(/estimated/i)).toBeInTheDocument();
+    });
+
+    it("labels a mixed-source run cost as mixed", async () => {
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...status,
+        cost: { stages: {}, run_usd: 0.75, run_source: "mixed" },
+      });
+      vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+      renderAt("/topics/t");
+
+      expect(await screen.findByText(/Cost \$0\.75/)).toBeInTheDocument();
+      expect(screen.getByText(/mixed/i)).toBeInTheDocument();
+    });
+
+    it("renders nothing cost-related when the run's cost block has no known amount", async () => {
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...status,
+        cost: { stages: {}, run_usd: null, run_source: null },
+      });
+      vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+      renderAt("/topics/t");
+
+      await screen.findByText(status.next_action.detail);
+      expect(screen.queryByText(/Cost \$/)).not.toBeInTheDocument();
+    });
+
+    it("renders nothing cost-related when the run carries no cost block at all", async () => {
+      vi.mocked(getRunStatus).mockResolvedValue(status);
+      vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+      renderAt("/topics/t");
+
+      await screen.findByText(status.next_action.detail);
+      expect(screen.queryByText(/Cost \$/)).not.toBeInTheDocument();
+    });
+
+    it("marks a run total that leaves jobs unpriced as a known-cost subtotal", async () => {
+      // `complete: false` means the sum covers only the jobs whose cost is
+      // known, so the figure must not read as the run's whole spend.
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...status,
+        cost: {
+          stages: {},
+          run_usd: 1.23,
+          run_source: "estimate",
+          unpriced_jobs: 2,
+          complete: false,
+        },
+      });
+      vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+      renderAt("/topics/t");
+
+      expect(
+        await screen.findByText("Cost $1.23 (estimated, partial: 2 jobs unpriced)"),
+      ).toBeInTheDocument();
+    });
+
+    it("leaves a complete run total unmarked", async () => {
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...status,
+        cost: {
+          stages: {},
+          run_usd: 1.23,
+          run_source: "estimate",
+          unpriced_jobs: 0,
+          complete: true,
+        },
+      });
+      vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+      renderAt("/topics/t");
+
+      expect(await screen.findByText("Cost $1.23 (estimated)")).toBeInTheDocument();
+      expect(screen.queryByText(/partial/i)).not.toBeInTheDocument();
+    });
+  });
 });

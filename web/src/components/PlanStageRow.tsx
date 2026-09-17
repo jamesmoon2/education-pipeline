@@ -7,6 +7,7 @@ import type {
 } from "../api/types";
 import InfoTip from "./InfoTip";
 import { EFFORT_HELP, PROVIDER_HELP, STAGE_HELP } from "../lib/planHelp";
+import { costSourceLabel, formatUsd } from "../lib/cost";
 
 export interface PlanStageRowProps {
   stage: PlanStage;
@@ -15,6 +16,10 @@ export interface PlanStageRowProps {
   /** Show the "overridden" tag on this row (run-level override in effect). */
   overridden?: boolean;
   resetValue: StageOverride | null;
+  /** What this stage last actually cost, from the newest job in the
+   *  workspace with a known cost for it (GET /v1/topics' `cost.stages`).
+   *  Absent when nothing has ever run this stage at a determinable cost. */
+  lastObservedCost?: { usd: number; source: string };
   onChange(stage: string, override: StageOverride | null): void;
 }
 
@@ -31,6 +36,7 @@ export default function PlanStageRow({
   providers,
   overridden = false,
   resetValue,
+  lastObservedCost,
   onChange,
 }: PlanStageRowProps) {
   // Explicit label/select association. The InfoTip trigger is a labelable
@@ -53,15 +59,31 @@ export default function PlanStageRow({
   const currentProviderId = stage.provider ?? MANUAL_PROVIDER;
   const selectedCatalogProvider = catalog.find((p) => p.id === currentProviderId);
   const models = selectedCatalogProvider?.models ?? [];
+  // Only hide the effort control when the daemon says this provider's CLI has
+  // no effort option. An unknown provider (no availability row) or an older
+  // daemon that omits the field keeps the control.
+  const selectedAvailability = availabilityById.get(currentProviderId);
+  const supportsEffort = selectedAvailability?.supports_effort !== false;
+  const selectedProviderLabel =
+    selectedAvailability?.label ?? selectedCatalogProvider?.label ?? currentProviderId;
 
+  // This row edits provider/model/effort only; timeout_seconds is hand-set in
+  // model-plan.toml, so every change must carry the current one through.
+  const timeout = stage.timeout_seconds ?? undefined;
   const handleProviderChange = (value: string) => {
-    onChange(stage.stage, { provider: value, model: undefined, effort: stage.effort ?? undefined });
+    onChange(stage.stage, {
+      provider: value,
+      model: undefined,
+      effort: stage.effort ?? undefined,
+      timeout_seconds: timeout,
+    });
   };
   const handleModelChange = (value: string) => {
     onChange(stage.stage, {
       provider: currentProviderId,
       model: value === "" ? undefined : value,
       effort: stage.effort ?? undefined,
+      timeout_seconds: timeout,
     });
   };
   const handleEffortChange = (value: string) => {
@@ -69,6 +91,7 @@ export default function PlanStageRow({
       provider: currentProviderId,
       model: stage.model ?? undefined,
       effort: value === "default" ? undefined : value,
+      timeout_seconds: timeout,
     });
   };
   const resetToDefault = () =>
@@ -134,26 +157,41 @@ export default function PlanStageRow({
         </select>
       </div>
       <div className="plan-stage-field">
-        <span className="plan-stage-field-label">
-          <label htmlFor={effortSelectId}>{`Effort for ${stage.stage}`}</label>
-          <InfoTip label={`effort for ${stage.stage}`} text={EFFORT_HELP} />
-        </span>
-        <select
-          id={effortSelectId}
-          value={stage.effort ?? "default"}
-          onChange={(e) => handleEffortChange(e.target.value)}
-        >
-          <option value="default">default</option>
-          {EFFORT_OPTIONS.map((effort) => (
-            <option key={effort} value={effort}>
-              {effort}
-            </option>
-          ))}
-        </select>
+        {supportsEffort ? (
+          <>
+            <span className="plan-stage-field-label">
+              <label htmlFor={effortSelectId}>{`Effort for ${stage.stage}`}</label>
+              <InfoTip label={`effort for ${stage.stage}`} text={EFFORT_HELP} />
+            </span>
+            <select
+              id={effortSelectId}
+              value={stage.effort ?? "default"}
+              onChange={(e) => handleEffortChange(e.target.value)}
+            >
+              <option value="default">default</option>
+              {EFFORT_OPTIONS.map((effort) => (
+                <option key={effort} value={effort}>
+                  {effort}
+                </option>
+              ))}
+            </select>
+          </>
+        ) : (
+          <span className="plan-stage-note">
+            {`Effort is not configurable for ${selectedProviderLabel}`}
+          </span>
+        )}
       </div>
       <button type="button" onClick={resetToDefault}>
         Reset to default
       </button>
+      {lastObservedCost && (
+        <p className="plan-stage-note plan-stage-observed-cost">
+          {`last observed: ${formatUsd(lastObservedCost.usd)} (${costSourceLabel(
+            lastObservedCost.source,
+          )})`}
+        </p>
+      )}
       {stage.warning && (
         <p role="alert" className="plan-stage-warning">
           {stage.warning}

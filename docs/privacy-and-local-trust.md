@@ -16,7 +16,10 @@ as plain files:
 - **Prompts, responses, and job logs** under `runs/<topic>/` — including
   everything a provider CLI printed.
 - **Personalization traces, audit responses, and validation reports** —
-  the private trace is hash-bound to the guide and never exported.
+  the private trace is hash-bound to the guide and never exported. The
+  `responses/<stage>.failed.<timestamp>.txt` files kept when a provider's
+  output cannot be parsed are raw response artifacts like any other: they may
+  hold private values and stay in the workspace.
 
 Only two things ever leave the workspace, and both are explicit actions:
 

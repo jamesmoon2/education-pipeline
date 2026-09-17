@@ -411,4 +411,110 @@ describe("TopicListPage actions", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Unarchive" }));
     expect(unarchiveRun).toHaveBeenCalledWith("gamma");
   });
+
+  describe("cost column", () => {
+    it("has a Cost column header", async () => {
+      vi.mocked(getTopics).mockResolvedValue({ topics: [summary] });
+      vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+      renderPage();
+      expect(await screen.findByRole("columnheader", { name: "Cost" })).toBeInTheDocument();
+    });
+
+    it("shows a dash in the Cost column when a topic's cost is unknown", async () => {
+      vi.mocked(getTopics).mockResolvedValue({ topics: [summary] });
+      vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+      renderPage();
+      const link = await screen.findByRole("link", { name: "systems-thinking" });
+      const row = link.closest("tr");
+      expect(row).not.toBeNull();
+      expect(within(row as HTMLTableRowElement).getByText("—")).toBeInTheDocument();
+    });
+
+    it("shows the topic's cost in the Cost column when known", async () => {
+      vi.mocked(getTopics).mockResolvedValue({
+        topics: [
+          makeTopic("systems-thinking", { cost: { run_usd: 1.23 } }),
+        ],
+      });
+      vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+      renderPage();
+      const link = await screen.findByRole("link", { name: "systems-thinking" });
+      const row = link.closest("tr");
+      expect(row).not.toBeNull();
+      expect(within(row as HTMLTableRowElement).getByText(/\$1\.23/)).toBeInTheDocument();
+    });
+
+    it("shows a workspace cost total when the workspace total is known", async () => {
+      vi.mocked(getTopics).mockResolvedValue({
+        topics: [summary],
+        cost: { workspace_usd: 4.56 },
+      });
+      vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+      renderPage();
+      await screen.findByRole("link", { name: "systems-thinking" });
+      expect(screen.getByText(/\$4\.56/)).toBeInTheDocument();
+    });
+
+    it("shows no workspace cost total when nothing is known", async () => {
+      vi.mocked(getTopics).mockResolvedValue({ topics: [summary] });
+      vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+      renderPage();
+      await screen.findByRole("link", { name: "systems-thinking" });
+      expect(screen.queryByText(/\$\d/)).not.toBeInTheDocument();
+    });
+
+    it("marks a workspace total that leaves jobs unpriced as partial", async () => {
+      vi.mocked(getTopics).mockResolvedValue({
+        topics: [summary],
+        cost: { workspace_usd: 4.56, unpriced_jobs: 2, complete: false },
+      });
+      vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+      renderPage();
+      await screen.findByRole("link", { name: "systems-thinking" });
+      expect(screen.getByText(/\$4\.56/)).toBeInTheDocument();
+      expect(screen.getByText(/partial/i)).toHaveAttribute(
+        "title",
+        "Known-cost subtotal: 2 jobs have no known cost and are not counted.",
+      );
+    });
+
+    it("leaves a complete workspace total unmarked", async () => {
+      vi.mocked(getTopics).mockResolvedValue({
+        topics: [summary],
+        cost: { workspace_usd: 4.56, unpriced_jobs: 0, complete: true },
+      });
+      vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+      renderPage();
+      await screen.findByRole("link", { name: "systems-thinking" });
+      expect(screen.queryByText(/partial/i)).not.toBeInTheDocument();
+    });
+
+    it("marks a partial per-row cost as a known-cost subtotal", async () => {
+      // A topics row carries completeness but no count of its own, so the
+      // tooltip explains the gap without naming a number.
+      vi.mocked(getTopics).mockResolvedValue({
+        topics: [makeTopic("systems-thinking", { cost: { run_usd: 1.23, complete: false } })],
+      });
+      vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+      renderPage();
+      const link = await screen.findByRole("link", { name: "systems-thinking" });
+      const row = link.closest("tr") as HTMLTableRowElement;
+      expect(within(row).getByText(/\$1\.23/)).toBeInTheDocument();
+      expect(within(row).getByText(/partial/i)).toHaveAttribute(
+        "title",
+        "Known-cost subtotal: some jobs have no known cost and are not counted.",
+      );
+    });
+
+    it("leaves a complete per-row cost unmarked", async () => {
+      vi.mocked(getTopics).mockResolvedValue({
+        topics: [makeTopic("systems-thinking", { cost: { run_usd: 1.23, complete: true } })],
+      });
+      vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+      renderPage();
+      const link = await screen.findByRole("link", { name: "systems-thinking" });
+      const row = link.closest("tr") as HTMLTableRowElement;
+      expect(within(row).queryByText(/partial/i)).not.toBeInTheDocument();
+    });
+  });
 });

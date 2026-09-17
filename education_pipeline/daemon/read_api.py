@@ -7,11 +7,14 @@ Pure functions: stores in, JSON-serializable dicts out. Raise
 
 from __future__ import annotations
 
+import os
+
 import hashlib
 import json
 import re
 import tomllib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from education_pipeline.config import (
     STAGE_ORDER,
@@ -22,6 +25,7 @@ from education_pipeline.config import (
     apply_overrides_lenient,
     weak_stage_warning,
 )
+from education_pipeline import cost as cost_module
 from education_pipeline.providers import get_runner
 from education_pipeline.privacy import (
     profile_field_sensitivity,
@@ -37,6 +41,9 @@ from education_pipeline.export import EXPORT_FORMATS
 from education_pipeline.runs import SUPPORTED_STAGES, RunStore
 from education_pipeline.workspace import ProfileRecord, ProfileStore, TopicStore
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from education_pipeline.daemon.jobs import JobStore
+
 
 class NotFoundError(Exception):
     """A referenced workspace resource does not exist."""
@@ -49,16 +56,31 @@ def require_run(runs: RunStore, topic_id: str) -> None:
         raise NotFoundError(f"no run started for topic: {topic_id}")
 
 
-def list_topics(topics: TopicStore, runs: RunStore, profiles: ProfileStore) -> dict:
+def list_topics(
+    topics: TopicStore,
+    runs: RunStore,
+    profiles: ProfileStore,
+    jobs: "JobStore | None" = None,
+) -> dict:
     """The course-library payload, enriched server-side (spec §5.1).
 
     Adds ``last_activity`` (ISO-8601 mtime of the newest run artifact),
     ``archived`` (manifest flag; no run means ``false``), ``profile_id``
     (attached snapshot's embedded id), and ``completion`` so the cockpit
     stays presentation-only.
+
+    With a ``jobs`` store, each entry also carries ``cost.run_usd`` and the
+    payload carries ``cost.workspace_usd`` (both ``None`` when nothing is
+    known) plus ``cost.stages`` -- the last observed cost per stage across
+    the whole workspace. Both levels also carry ``cost.complete``, false when
+    some job's cost could not be determined and the figure beside it is only
+    a subtotal; the workspace block counts those jobs in
+    ``cost.unpriced_jobs``. Without a ``jobs`` store the payload is exactly
+    what it always was.
     """
 
     entries = []
+    unpriced_jobs = 0
     for topic_id in topics.list_topic_ids():
         title: str | None = None
         error: str | None = None
@@ -67,23 +89,47 @@ def list_topics(topics: TopicStore, runs: RunStore, profiles: ProfileStore) -> d
         except ConfigError as exc:
             error = str(exc)
         run = (
-            run_status_payload(runs, topic_id)
+            run_status_payload(runs, topic_id, jobs=jobs)
             if runs.manifest_path(topic_id).is_file()
             else None
         )
-        entries.append(
-            {
-                "id": topic_id,
-                "title": title,
-                "error": error,
-                "run": run,
-                "archived": runs.is_archived(topic_id) if run else False,
-                "last_activity": runs.last_activity_at(topic_id) if run else None,
-                "profile_id": _attached_profile_id(profiles, topic_id),
-                "completion": _completion_summary(runs, topic_id, run),
+        entry = {
+            "id": topic_id,
+            "title": title,
+            "error": error,
+            "run": run,
+            "archived": runs.is_archived(topic_id) if run else False,
+            "last_activity": runs.last_activity_at(topic_id) if run else None,
+            "profile_id": _attached_profile_id(profiles, topic_id),
+            "completion": _completion_summary(runs, topic_id, run),
+        }
+        if jobs is not None:
+            # ``complete`` says whether the figure beside it is the whole
+            # story: a topic with no run has nothing missing, so it is
+            # complete with a null total.
+            run_cost = run["cost"] if run else None
+            entry["cost"] = {
+                "run_usd": run_cost["run_usd"] if run_cost else None,
+                "complete": run_cost["complete"] if run_cost else True,
             }
-        )
-    return {"topics": entries}
+            unpriced_jobs += run_cost["unpriced_jobs"] if run_cost else 0
+        entries.append(entry)
+    payload = {"topics": entries}
+    if jobs is not None:
+        known = [
+            entry["cost"]["run_usd"]
+            for entry in entries
+            if entry["cost"]["run_usd"] is not None
+        ]
+        payload["cost"] = {
+            "workspace_usd": sum(known) if known else None,
+            "unpriced_jobs": unpriced_jobs,
+            "complete": unpriced_jobs == 0,
+            # Workspace-wide, not per topic: the plan editor asks what a
+            # stage last cost anywhere, so this reads every topic's jobs.
+            "stages": cost_module.latest_stage_costs(jobs.list()),
+        }
+    return payload
 
 
 def _attached_profile_id(profiles: ProfileStore, topic_id: str) -> str | None:
@@ -314,8 +360,53 @@ def recommend_blueprint_payload(body: object) -> dict:
     }
 
 
-def run_status_payload(runs: RunStore, topic_id: str) -> dict:
+def _failed_outputs_by_stage(runs: RunStore, topic_id: str) -> dict[str, list[str]]:
+    """Basenames of raw provider outputs salvaged after failed stage runs,
+    keyed by stage.
+
+    Written by ``JobRunner`` when parsing or ingesting a response fails; the
+    names are timestamped, so reverse-lexicographic order is newest-first.
+    One directory listing serves every stage: a per-stage glob costs a
+    listing per stage per topic on the poll path, which is the hot path T01
+    just made cheap.
+    """
+
+    buckets: dict[str, list[str]] = {}
+    try:
+        responses = runs.stage_paths(topic_id, SUPPORTED_STAGES[0]).response_path.parent
+        with os.scandir(responses) as it:
+            for entry in it:
+                name = entry.name
+                stage, sep, rest = name.partition(".failed.")
+                if not sep or not rest.endswith(".txt") or not entry.is_file():
+                    continue
+                buckets.setdefault(stage, []).append(name)
+    except (OSError, ConfigError):
+        return {}
+    return {stage: sorted(names, reverse=True) for stage, names in buckets.items()}
+
+
+def run_status_payload(
+    runs: RunStore, topic_id: str, jobs: "JobStore | None" = None
+) -> dict:
+    """The run-board payload for one topic.
+
+    With a ``jobs`` store the payload also carries a ``cost`` block (per
+    stage, plus run totals) summed over that topic's job records; without
+    one the payload is exactly what it always was.
+    """
+
     require_run(runs, topic_id)
+    # One read scope for the whole payload: run_status, content_contract and
+    # both validation summaries otherwise re-read and re-parse the same run
+    # manifest dozens of times per poll tick.
+    with runs.manifest_read_scope():
+        return _run_status_payload_scoped(runs, topic_id, jobs)
+
+
+def _run_status_payload_scoped(
+    runs: RunStore, topic_id: str, jobs: "JobStore | None" = None
+) -> dict:
     status = runs.run_status(topic_id)
     contract = runs.content_contract(topic_id)
     manifest = runs.read_manifest(topic_id)
@@ -323,7 +414,8 @@ def run_status_payload(runs: RunStore, topic_id: str) -> dict:
         phase: _validation_summary(runs, topic_id, phase)
         for phase in ("draft", "final")
     }
-    return {
+    failed_outputs = _failed_outputs_by_stage(runs, topic_id)
+    payload = {
         "topic_id": status.topic_id,
         "finalized": status.finalized,
         "content_contract": contract.to_manifest(),
@@ -337,6 +429,7 @@ def run_status_payload(runs: RunStore, topic_id: str) -> dict:
                 "prompt_written": s.prompt_written,
                 "response_ingested": s.response_ingested,
                 "approved": s.approved,
+                "failed_outputs": failed_outputs.get(s.stage, []),
             }
             for s in status.stages
         ],
@@ -347,6 +440,11 @@ def run_status_payload(runs: RunStore, topic_id: str) -> dict:
             "detail": status.next_action.detail,
         },
     }
+    if jobs is not None:
+        payload["cost"] = cost_module.summarize_job_costs(
+            jobs.list(topic_id), SUPPORTED_STAGES
+        )
+    return payload
 
 
 def list_runs(runs: RunStore) -> dict:
@@ -721,12 +819,16 @@ def providers_payload(catalog: ModelCatalog) -> dict:
         available = False
         reason: str | None = None
         executable = False
+        supports_effort = False
         try:
             runner = get_runner(provider.id)
         except ConfigError:
             reason = f"no runner registered for {provider.id!r}"
         else:
             executable = runner.executable
+            # Third-party/test runners predate this flag, so treat a missing
+            # attribute as "no effort option".
+            supports_effort = bool(getattr(runner, "supports_effort", False))
             if runner.is_available():
                 available = True
             else:
@@ -739,6 +841,7 @@ def providers_payload(catalog: ModelCatalog) -> dict:
                 "executable": executable,
                 "available": available,
                 "reason": reason,
+                "supports_effort": supports_effort,
             }
         )
     return {"providers": providers}
@@ -794,6 +897,7 @@ def plan_payload(catalog: ModelCatalog, plan: ModelPlan, plan_sha256: str) -> di
                 "provider": stage_plan.provider,
                 "model": stage_plan.model,
                 "effort": stage_plan.effort,
+                "timeout_seconds": stage_plan.timeout_seconds,
                 "recommendation": stage_plan.recommendation,
                 "warning": weak_stage_warning(catalog, stage_plan),
             }

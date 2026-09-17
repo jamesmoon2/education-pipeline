@@ -34,6 +34,8 @@ enforces that).
 | `cockpit_rebuild_unavailable` | --rebuild needs a source checkout containing web/src. | Packaged installs already bundle the cockpit; run `education-pipeline ui` without --rebuild. |
 | `npm_missing` | npm was not found on PATH. | Install Node.js (which provides npm), or build manually with `cd web && npm run build`. |
 | `cockpit_build_failed` | The cockpit build (npm run build) failed. | Fix the reported build errors in web/, then rerun. |
+| `workspace_locked` | Another education-pipeline process is writing to this workspace. | Wait for the other command (or the daemon) to finish, then retry. |
+| `job_conflict` (from the CLI) | A CLI command such as `approve`, `advance`, or `finalize` refused because the daemon is running a provider job for that course. | Wait for the running job to finish, or cancel it first. |
 
 ## Common first-run problems
 
@@ -61,6 +63,15 @@ CLI is not on your `PATH` or is not signed in. See
 [`docs/providers.md`](providers.md) for install and authentication steps —
 or switch the stage to manual mode and paste the prompt into any model
 yourself.
+
+**A stage run failed and I want the model's output back.** When a provider
+answered but the response could not be parsed or ingested, the raw output is
+kept verbatim at `runs/<topic>/responses/<stage>.failed.<timestamp>.txt`
+instead of being discarded. The run status lists those names per stage as
+`failed_outputs`; `POST /v1/runs/<topic>/stages/<stage>/salvage` with
+`{"file": "<name>", "overwrite": false}` copies one into the stage's response
+file, where you can read, edit, and approve it as usual — salvaging never
+approves anything by itself.
 
 **The daemon seems stuck or a stale daemon is recorded.** Run
 `education-pipeline workspace check` — a `stale_daemon_record` finding means

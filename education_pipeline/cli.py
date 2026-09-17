@@ -16,18 +16,22 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Sequence
+from typing import Iterator, Sequence
 
 from education_pipeline.client import DaemonClient, DaemonError, daemon_status, ensure_daemon
+from education_pipeline import cost as cost_module
 from education_pipeline.config import ConfigError
 from education_pipeline.daemon import lifecycle
-from education_pipeline.daemon.jobs import TERMINAL_STATUSES
+from education_pipeline.daemon.jobs import JobStore, TERMINAL_STATUSES
+from education_pipeline.errors import ERROR_CATALOG
 from education_pipeline.export import EXPORT_FORMATS
 from education_pipeline.profiles import load_learner_profile
 from education_pipeline.runs import ContentContract, RunStore
 from education_pipeline.topics import load_topic
 from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
+from education_pipeline.workspace_lock import workspace_lock
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -49,17 +53,88 @@ def main(argv: Sequence[str] | None = None) -> int:
     except DaemonError as exc:
         _print_daemon_error(exc)
         return 1
+    except _MutationRefused as exc:
+        _print_coded_error(exc, exc.code)
+        return 1
+
+
+class _MutationRefused(Exception):
+    """A CLI mutation refused by the same guards the daemon applies.
+
+    Deliberately not a ``ConfigError``: the commands that translate a
+    ``ConfigError`` into a usage exit (2) must not swallow this, which is a
+    state conflict carrying a catalog code, not bad input.
+    """
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(f"{code}: {ERROR_CATALOG[code].summary} {detail}")
+        self.code = code
+
+
+def _require_mutable(runs: RunStore, topic_id: str, *, check_jobs: bool = True) -> None:
+    """Refuse a mutation the daemon would refuse, read from the same state.
+
+    The CLI builds its own ``RunStore`` and never sees the daemon's job
+    state, so it re-derives both guards from disk -- mirroring
+    ``write_api._require_not_archived`` / ``_require_no_active_job`` and
+    reusing their catalog codes. ``check_jobs=False`` matches the actions
+    ``write_api`` guards by archive state alone (export, waive/unwaive).
+    """
+
+    if runs.is_archived(topic_id):
+        raise _MutationRefused(
+            "archived_course", f"course {topic_id!r} is archived; unarchive it first"
+        )
+    if not check_jobs:
+        return
+    job = JobStore(runs.root).any_active_for(topic_id)
+    if job is not None:
+        raise _MutationRefused(
+            "job_conflict",
+            f"job {job.id} is {job.status} for topic {topic_id!r}; "
+            "wait for it to finish or cancel it first",
+        )
+
+
+@contextmanager
+def _guarded_mutation(
+    runs: RunStore, topic_id: str, *, check_jobs: bool = True
+) -> Iterator[None]:
+    """Hold the workspace lock across ``_require_mutable`` and the mutation.
+
+    Checking first and mutating afterwards is only a guard if nothing can
+    land in between. The daemon admits jobs from another process
+    (``DaemonContext.enqueue_stage``), so without a lock spanning both, a job
+    could be admitted in the gap and the refusal this guard promises would
+    not have happened. Both sides now take the same workspace advisory lock,
+    which makes admission and check-and-mutate mutually exclusive.
+
+    The lock is reentrant per process, so ``RunStore``'s own manifest
+    critical section (which takes the per-topic thread lock and then this
+    same lock) nests inside without deadlocking. Keep the body to the
+    mutation itself -- no printing, no polling.
+    """
+
+    with workspace_lock(runs.root):
+        _require_mutable(runs, topic_id, check_jobs=check_jobs)
+        yield
+
+
+def _print_coded_error(exc: Exception, code: str | None) -> None:
+    """Print an error with its catalog remediation, when the code is known."""
+
+    from education_pipeline.errors import remediation_for
+
+    print(f"error: {exc}", file=sys.stderr)
+    remediation = remediation_for(code) if code else None
+    if remediation:
+        print(f"fix: {remediation}", file=sys.stderr)
 
 
 def _print_daemon_error(exc: DaemonError) -> None:
     """Print a proxied daemon error with the catalog remediation, if known."""
 
-    from education_pipeline.errors import remediation_for
-
-    print(f"error: {exc}", file=sys.stderr)
-    remediation = remediation_for(exc.code) if exc.code else None
-    if remediation:
-        print(f"fix: {remediation}", file=sys.stderr)
+    _print_coded_error(exc, exc.code)
 
 
 def _run_profile_command(args: argparse.Namespace) -> int:
@@ -361,11 +436,23 @@ def _cmd_blueprints(args: argparse.Namespace) -> int:
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    status = RunStore(_root(args)).run_status(args.topic_id)
+    root = _root(args)
+    status = RunStore(root).run_status(args.topic_id)
     finalized = "yes" if status.finalized else "no"
     print(f"Run: {status.topic_id}   (finalized: {finalized})")
     for stage in status.stages:
         print(f"  {stage.stage:8s} {stage.state}")
+    # Cost is reported only when some job actually recorded one: an unpriced
+    # model or a run driven entirely by hand prints no line at all rather
+    # than a $0.00 that would read as "this was free".
+    summary = cost_module.summarize_job_costs(JobStore(root).list(args.topic_id))
+    if summary["run_usd"] is not None:
+        detail = summary["run_source"]
+        if not summary["complete"]:
+            # The subtotal is real but not the whole bill: say so rather than
+            # let it read as the total.
+            detail = f"{detail}, partial: {summary['unpriced_jobs']} job(s) unpriced"
+        print(f"cost: ${summary['run_usd']:.2f} ({detail})")
     _print_next(status.next_action)
     return 0
 
@@ -375,16 +462,21 @@ def _cmd_advance(args: argparse.Namespace) -> int:
     if args.repair_module is not None:
         # A scoped repair request outside the repair stage or naming an
         # unknown module is a usage error (exit 2), distinct from ordinary
-        # run failures.
-        try:
-            prompt_exists = runs.stage_paths(
-                args.topic_id, "repair"
-            ).prompt_path.exists()
-            prompt = runs.write_module_repair_prompt(
-                args.topic_id, args.repair_module, overwrite=prompt_exists
-            )
-        except ConfigError as exc:
-            print(f"error: {exc}", file=sys.stderr)
+        # run failures. Reported after the lock is dropped so nothing slow
+        # happens inside the critical section.
+        usage_error: ConfigError | None = None
+        with _guarded_mutation(runs, args.topic_id):
+            try:
+                prompt_exists = runs.stage_paths(
+                    args.topic_id, "repair"
+                ).prompt_path.exists()
+                prompt = runs.write_module_repair_prompt(
+                    args.topic_id, args.repair_module, overwrite=prompt_exists
+                )
+            except ConfigError as exc:
+                usage_error = exc
+        if usage_error is not None:
+            print(f"error: {usage_error}", file=sys.stderr)
             return 2
         print(
             f"Performed: write_prompt (repair scoped to module {args.repair_module})"
@@ -392,7 +484,8 @@ def _cmd_advance(args: argparse.Namespace) -> int:
         print(f"  prompt: {prompt.prompt_path}")
         _print_next(runs.run_status(args.topic_id).next_action)
         return 0
-    result = runs.advance(args.topic_id)
+    with _guarded_mutation(runs, args.topic_id):
+        result = runs.advance(args.topic_id)
     print(f"Performed: {result.performed or 'nothing (waiting on you)'}")
     _print_next(result.status.next_action)
     return 0
@@ -400,10 +493,11 @@ def _cmd_advance(args: argparse.Namespace) -> int:
 
 def _cmd_audit(args: argparse.Namespace) -> int:
     runs = RunStore(_root(args))
-    prompt_exists = runs.stage_paths(args.topic_id, "audit").prompt_path.exists()
-    prepared = runs.prepare_personalization_audit(
-        args.topic_id, overwrite=prompt_exists
-    )
+    with _guarded_mutation(runs, args.topic_id):
+        prompt_exists = runs.stage_paths(args.topic_id, "audit").prompt_path.exists()
+        prepared = runs.prepare_personalization_audit(
+            args.topic_id, overwrite=prompt_exists
+        )
     prompt_path = prepared.prompt_path.relative_to(runs.run_dir(args.topic_id))
     # as_posix: the workspace-relative artifact notation is /-separated
     # everywhere (manifest, API payloads), including in Windows output.
@@ -422,20 +516,25 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 def _cmd_approve(args: argparse.Namespace) -> int:
     runs = RunStore(_root(args))
-    approved_path = runs.approve_stage(args.topic_id, args.stage)
+    with _guarded_mutation(runs, args.topic_id):
+        approved_path = runs.approve_stage(args.topic_id, args.stage)
     print(f"approved {args.stage}: {approved_path}")
     _print_next(runs.run_status(args.topic_id).next_action)
     return 0
 
 
 def _cmd_finalize(args: argparse.Namespace) -> int:
-    final_path = RunStore(_root(args)).finalize_run(args.topic_id)
+    runs = RunStore(_root(args))
+    with _guarded_mutation(runs, args.topic_id):
+        final_path = runs.finalize_run(args.topic_id)
     print(f"finalized: {final_path}")
     return 0
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
-    export_path = RunStore(_root(args)).export_run(args.topic_id, format=args.format)
+    runs = RunStore(_root(args))
+    with _guarded_mutation(runs, args.topic_id, check_jobs=False):
+        export_path = runs.export_run(args.topic_id, format=args.format)
     print(f"exported ({args.format}): {export_path}")
     return 0
 
@@ -629,22 +728,28 @@ def _cmd_waive(args: argparse.Namespace) -> int:
     """
 
     runs = RunStore(_root(args))
-    try:
-        presented = next(
-            (
-                finding
-                for finding in runs.combined_findings(
-                    args.topic_id, phase=args.phase
-                )
-                if finding.id == args.finding_id
-            ),
-            None,
-        )
-        if presented is not None and not presented.waivable:
-            raise ConfigError(f"finding {args.finding_id!r} is not waivable")
-        result = runs.record_waiver(args.topic_id, args.phase, args.finding_id, args.reason)
-    except ConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    usage_error: ConfigError | None = None
+    with _guarded_mutation(runs, args.topic_id, check_jobs=False):
+        try:
+            presented = next(
+                (
+                    finding
+                    for finding in runs.combined_findings(
+                        args.topic_id, phase=args.phase
+                    )
+                    if finding.id == args.finding_id
+                ),
+                None,
+            )
+            if presented is not None and not presented.waivable:
+                raise ConfigError(f"finding {args.finding_id!r} is not waivable")
+            result = runs.record_waiver(
+                args.topic_id, args.phase, args.finding_id, args.reason
+            )
+        except ConfigError as exc:
+            usage_error = exc
+    if usage_error is not None:
+        print(f"error: {usage_error}", file=sys.stderr)
         return 2
     state = "open" if result.gate_open else "blocked"
     print(
@@ -658,10 +763,14 @@ def _cmd_unwaive(args: argparse.Namespace) -> int:
     """Remove a previously recorded waiver, potentially closing the gate again."""
 
     runs = RunStore(_root(args))
-    try:
-        result = runs.remove_waiver(args.topic_id, args.phase, args.finding_id)
-    except ConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    usage_error: ConfigError | None = None
+    with _guarded_mutation(runs, args.topic_id, check_jobs=False):
+        try:
+            result = runs.remove_waiver(args.topic_id, args.phase, args.finding_id)
+        except ConfigError as exc:
+            usage_error = exc
+    if usage_error is not None:
+        print(f"error: {usage_error}", file=sys.stderr)
         return 2
     state = "open" if result.gate_open else "blocked"
     print(

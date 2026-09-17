@@ -176,6 +176,56 @@ def test_plan_rejects_unknown_stage_names() -> None:
         parse_model_plan({"provider": "manual", "stages": {"publish": {"recommendation": "local"}}})
 
 
+def test_parse_model_plan_rejects_unknown_stage_effort() -> None:
+    """Stage `effort` is forwarded verbatim to the provider CLIs, so an
+    unsupported value has to fail at parse (where the stage name is still
+    known) rather than at spawn time. Presets already validate against the
+    same set; the model plan did not."""
+
+    with pytest.raises(ConfigError, match="low, medium, high") as exc:
+        parse_model_plan(
+            {"provider": "manual", "stages": {"draft": {"effort": "turbo"}}}
+        )
+    assert "draft" in str(exc.value)
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high"])
+def test_parse_model_plan_accepts_every_supported_effort(effort: str) -> None:
+    plan = parse_model_plan(
+        {"provider": "manual", "stages": {"draft": {"effort": effort}}}
+    )
+    assert plan.stage("draft").effort == effort
+
+
+def test_parse_model_plan_allows_an_unset_stage_effort() -> None:
+    plan = parse_model_plan({"provider": "manual", "stages": {"draft": {}}})
+    assert plan.stage("draft").effort is None
+
+
+def test_apply_overrides_rejects_unknown_stage_effort() -> None:
+    """The daemon's plan write paths (PUT /v1/config/plan via parse_model_plan
+    with strict_keys, and the per-run override path via apply_overrides) both
+    funnel through parse_model_plan, so both inherit the same rejection."""
+
+    plan, catalog = _plan_and_catalog()
+
+    with pytest.raises(ConfigError, match="low, medium, high"):
+        apply_overrides(plan, {"stages": {"qa": {"effort": "turbo"}}}, catalog=catalog)
+
+    _, errors = apply_overrides_lenient(
+        plan, {"stages": {"qa": {"effort": "turbo"}}}, catalog=catalog
+    )
+    assert "qa" in errors and "low, medium, high" in errors["qa"]
+
+
+def test_parse_model_plan_strict_keys_rejects_unknown_stage_effort() -> None:
+    with pytest.raises(ConfigError, match="low, medium, high"):
+        parse_model_plan(
+            {"provider": "manual", "stages": {"draft": {"effort": "turbo"}}},
+            strict_keys=True,
+        )
+
+
 def test_parse_model_plan_strict_keys_rejects_unknown_stage_key() -> None:
     """The owner decided: strict at write, lenient on disk. `strict_keys=True`
     (used only by the daemon's PUT /v1/config/plan write path) must reject a
@@ -353,6 +403,16 @@ def test_emit_model_plan_toml_round_trips():
     }, catalog=catalog)
     text = emit_model_plan_toml(plan)
     assert parse_model_plan(tomllib.loads(text), catalog=catalog) == plan
+
+
+def test_emit_model_plan_toml_round_trips_stage_timeout_seconds():
+    plan = parse_model_plan(
+        {"provider": "manual", "stages": {"draft": {"timeout_seconds": 90}}}
+    )
+    text = emit_model_plan_toml(plan)
+    reparsed = parse_model_plan(tomllib.loads(text))
+    assert reparsed == plan
+    assert reparsed.stage("draft").timeout_seconds == 90
 
 
 def test_emit_escapes_special_characters():

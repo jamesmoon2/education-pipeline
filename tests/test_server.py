@@ -288,6 +288,45 @@ def test_enqueue_rejects_unknown_topic(server):
     assert "error" in body
 
 
+def test_enqueue_maps_a_workspace_lock_timeout_to_409(server, monkeypatch):
+    """Job admission now takes the workspace advisory lock, so a contended
+    workspace must surface as the catalog's own ``workspace_locked`` 409 --
+    not as a generic 400 ``invalid_request`` (``WorkspaceLockedError`` is a
+    ``ConfigError`` subclass and would otherwise fall through to that arm)."""
+
+    from education_pipeline.workspace_lock import WorkspaceLockedError, lock_path
+
+    def refuse(self, *args, **kwargs):
+        raise WorkspaceLockedError(lock_path(self.root), 5.0)
+
+    monkeypatch.setattr(JobStore, "create", refuse)
+
+    status, body = _req(server, "POST", "/v1/jobs", body={"topic_id": "t", "stage": "draft"})
+
+    assert status == 409
+    assert body["error"]["code"] == "workspace_locked"
+
+
+def test_read_routes_carry_cost_blocks(server):
+    """The live daemon hands the cockpit its job store, not just the run store."""
+
+    status, body = _req(server, "GET", "/v1/runs/t")
+    assert status == 200
+    assert "cost" in body
+    assert body["cost"]["stages"]["draft"] == {
+        "usd": None,
+        "source": None,
+        "jobs": 0,
+        "unpriced_jobs": 0,
+    }
+    assert body["cost"]["run_usd"] is None
+    assert body["cost"]["complete"] is True
+
+    status, body = _req(server, "GET", "/v1/topics")
+    assert status == 200
+    assert body["cost"]["workspace_usd"] is None
+
+
 def _raw_post(port, path, raw_body, content_length):
     conn = http.client.HTTPConnection("127.0.0.1", port)
     conn.putrequest("POST", path)
@@ -714,6 +753,47 @@ def test_stage_content_includes_response_sha256(server):
     status, body = _req(server, "GET", "/v1/runs/t/stages/draft")
     assert status == 200
     assert body["response_sha256"] == hashlib.sha256(b"BODY").hexdigest()
+
+
+def test_salvage_route_promotes_a_failed_output_then_409s(server_with_context):
+    """POST /v1/runs/{topic}/stages/{stage}/salvage recovers raw provider
+    output a failed parse would otherwise have stranded on disk."""
+    port, context = server_with_context
+    paths = context.runs.stage_paths("t", "draft")
+    paths.response_path.parent.mkdir(parents=True, exist_ok=True)
+    failed = paths.response_path.parent / "draft.failed.20260917T101530Z.txt"
+    failed.write_text("RAW MODEL OUTPUT", encoding="utf-8")
+
+    status, body = _req(
+        port, "POST", "/v1/runs/t/stages/draft/salvage", body={"file": failed.name}
+    )
+    assert status == 200
+    assert body["response_path"] == "responses/draft.response.md"
+    assert paths.response_path.read_text(encoding="utf-8") == "RAW MODEL OUTPUT"
+
+    status, body = _req(
+        port, "POST", "/v1/runs/t/stages/draft/salvage", body={"file": failed.name}
+    )
+    assert status == 409
+    assert body["error"]["code"] == "already_exists"
+
+
+def test_salvage_route_rejects_a_blank_failed_output_with_400(server_with_context):
+    """A blank salvage file (Codex's empty-output failure path) must not be
+    promoted into the response path; the route reports it as a bad request."""
+    port, context = server_with_context
+    paths = context.runs.stage_paths("t", "draft")
+    paths.response_path.parent.mkdir(parents=True, exist_ok=True)
+    failed = paths.response_path.parent / "draft.failed.20260917T101530Z.txt"
+    failed.write_text("   \n", encoding="utf-8")
+
+    status, body = _req(
+        port, "POST", "/v1/runs/t/stages/draft/salvage", body={"file": failed.name}
+    )
+    assert status == 400
+    assert body["error"]["code"] == "invalid_request"
+    assert not paths.response_path.exists()
+    assert failed.exists()
 
 
 def test_stage_content_bad_stage_is_400(server):

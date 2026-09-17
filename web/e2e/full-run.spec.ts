@@ -131,4 +131,16 @@ test("guide-v1 fixture reaches validation, finalize, export, and mixed-workspace
   await page.goto(`${baseURL}/`);
   await expect(page.getByRole("link", { name: "w", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "g", exact: true })).toBeVisible();
+
+  // Thread T07: the library gets a Cost column (GET /v1/topics' per-row
+  // cost.run_usd, thread T06). This whole run went through manual paste
+  // responses -- no provider job ever ran -- so neither "w" nor "g" has
+  // any known cost, and this asserts the null placeholder rather than a
+  // dollar figure. (The daemon test helper here has no fake-provider path
+  // that reports a cost; see full-run.spec.ts's beforeAll / model-plan.spec.ts
+  // for the one stub-provider spec in this suite, which does not drive a
+  // full run to a cost-bearing job either.)
+  await expect(page.getByRole("columnheader", { name: "Cost" })).toBeVisible();
+  const wRow = page.locator("tr").filter({ has: page.getByRole("link", { name: "w", exact: true }) });
+  await expect(wRow.getByText("—", { exact: true })).toBeVisible();
 });
