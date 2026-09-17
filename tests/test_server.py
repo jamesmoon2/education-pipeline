@@ -294,8 +294,14 @@ def test_read_routes_carry_cost_blocks(server):
     status, body = _req(server, "GET", "/v1/runs/t")
     assert status == 200
     assert "cost" in body
-    assert body["cost"]["stages"]["draft"] == {"usd": None, "source": None, "jobs": 0}
+    assert body["cost"]["stages"]["draft"] == {
+        "usd": None,
+        "source": None,
+        "jobs": 0,
+        "unpriced_jobs": 0,
+    }
     assert body["cost"]["run_usd"] is None
+    assert body["cost"]["complete"] is True
 
     status, body = _req(server, "GET", "/v1/topics")
     assert status == 200

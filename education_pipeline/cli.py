@@ -421,7 +421,12 @@ def _cmd_status(args: argparse.Namespace) -> int:
     # than a $0.00 that would read as "this was free".
     summary = cost_module.summarize_job_costs(JobStore(root).list(args.topic_id))
     if summary["run_usd"] is not None:
-        print(f"cost: ${summary['run_usd']:.2f} ({summary['run_source']})")
+        detail = summary["run_source"]
+        if not summary["complete"]:
+            # The subtotal is real but not the whole bill: say so rather than
+            # let it read as the total.
+            detail = f"{detail}, partial: {summary['unpriced_jobs']} job(s) unpriced"
+        print(f"cost: ${summary['run_usd']:.2f} ({detail})")
     _print_next(status.next_action)
     return 0
 

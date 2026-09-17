@@ -153,7 +153,7 @@ class NoCostRunner(_BaseFakeRunner):
         return ProviderResponse(text=stdout, metadata={})
 
 
-def _setup(tmp_path, runner, provider="fake", model="m"):
+def _setup(tmp_path, runner, provider="fake", model="m", argv_model="x"):
     register_runner(runner)
     from education_pipeline import parse_model_catalog, parse_model_plan
 
@@ -162,7 +162,14 @@ def _setup(tmp_path, runner, provider="fake", model="m"):
     runs.stage_paths("t", "draft").prompt_path.parent.mkdir(parents=True, exist_ok=True)
     runs.stage_paths("t", "draft").prompt_path.write_text("PROMPT", encoding="utf-8")
     catalog = parse_model_catalog(
-        {"providers": [{"id": provider, "models": [{"id": model, "argv_model": "x"}]}]}
+        {
+            "providers": [
+                {
+                    "id": provider,
+                    "models": [{"id": model, "argv_model": argv_model}],
+                }
+            ]
+        }
     )
     plan = parse_model_plan(
         {"provider": provider, "stages": {"draft": {"model": model}}}, catalog
@@ -194,7 +201,8 @@ def test_job_runner_falls_back_to_estimate_when_provider_reports_no_cost(
     from education_pipeline import cost as cost_mod
 
     monkeypatch.setenv("FAKE_STDOUT", "GENERATED\n")
-    monkeypatch.setitem(cost_mod.PRICE_TABLE, "m", 0.000001)
+    # Keyed by the provider model id (_setup's argv_model), not option id "m".
+    monkeypatch.setitem(cost_mod.PRICE_TABLE, "x", 0.000001)
     runs, catalog, plan, store = _setup(tmp_path, NoCostRunner())
     job = store.create("t", "draft", "fake", "m", None)
 
@@ -216,7 +224,7 @@ def test_job_runner_leaves_cost_null_when_model_unknown_to_price_table(
     from education_pipeline import cost as cost_mod
 
     monkeypatch.setenv("FAKE_STDOUT", "GENERATED\n")
-    monkeypatch.delitem(cost_mod.PRICE_TABLE, "m", raising=False)
+    monkeypatch.delitem(cost_mod.PRICE_TABLE, "x", raising=False)
     runs, catalog, plan, store = _setup(tmp_path, NoCostRunner())
     job = store.create("t", "draft", "fake", "m", None)
 
@@ -229,6 +237,84 @@ def test_job_runner_leaves_cost_null_when_model_unknown_to_price_table(
     raw = json.loads(store._job_json("t", job.id).read_text(encoding="utf-8"))
     assert raw.get("cost_usd") is None
     assert raw.get("cost_source") is None
+
+
+# ---------------------------------------------------------------------------
+# The price table is keyed by *provider* model identifiers (``argv_model``),
+# not by a catalog's project-local option id. A workspace that renames an
+# option must still be priced, and an unrelated model that happens to borrow
+# a priced id must not inherit that price.
+# ---------------------------------------------------------------------------
+
+EXAMPLE_CATALOG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "model-catalog.example.toml"
+)
+
+
+def test_price_table_is_keyed_by_provider_model_identifiers():
+    from education_pipeline import load_model_catalog
+    from education_pipeline.cost import PRICE_TABLE
+
+    catalog = load_model_catalog(EXAMPLE_CATALOG_PATH)
+    argv_models = {
+        option.argv_model
+        for provider in catalog.providers.values()
+        for option in provider.models.values()
+        if option.argv_model
+    }
+
+    assert argv_models, "the shipped catalog must declare provider model ids"
+    assert set(PRICE_TABLE) == argv_models
+
+
+def test_job_runner_prices_the_provider_model_behind_a_renamed_option(
+    tmp_path, monkeypatch
+):
+    """A catalog free to rename its options must still get an estimate."""
+
+    from education_pipeline.cost import PRICE_TABLE
+
+    priced = next(iter(PRICE_TABLE))
+    monkeypatch.setenv("FAKE_STDOUT", "GENERATED\n")
+    runs, catalog, plan, store = _setup(
+        tmp_path, NoCostRunner(), model="renamed", argv_model=priced
+    )
+    job = store.create("t", "draft", "fake", "renamed", None)
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(
+        job, threading.Event()
+    )
+
+    assert done.status == "succeeded"
+    assert done.cost_source == "estimate"
+    assert isinstance(done.cost_usd, float)
+    assert done.cost_usd > 0
+
+
+def test_job_runner_does_not_price_an_option_id_that_shadows_a_priced_model(
+    tmp_path, monkeypatch
+):
+    """An unrelated model aliased to a priced id must not inherit its price."""
+
+    from education_pipeline.cost import PRICE_TABLE
+
+    priced = next(iter(PRICE_TABLE))
+    monkeypatch.setenv("FAKE_STDOUT", "GENERATED\n")
+    runs, catalog, plan, store = _setup(
+        tmp_path,
+        NoCostRunner(),
+        model=priced,
+        argv_model="totally-unknown-provider-model-xyz-123",
+    )
+    job = store.create("t", "draft", "fake", priced, None)
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(
+        job, threading.Event()
+    )
+
+    assert done.status == "succeeded"
+    assert done.cost_usd is None
+    assert done.cost_source is None
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +356,11 @@ def test_run_status_payload_sums_provider_cost_across_stage_retries(tmp_path):
     assert draft_cost["usd"] == pytest.approx(0.30)
     assert draft_cost["source"] == "provider"
     assert draft_cost["jobs"] == 2
+    assert draft_cost["unpriced_jobs"] == 0
     assert payload["cost"]["run_usd"] == pytest.approx(0.30)
     assert payload["cost"]["run_source"] == "provider"
+    assert payload["cost"]["unpriced_jobs"] == 0
+    assert payload["cost"]["complete"] is True
 
 
 def test_run_status_payload_run_source_mixed_across_stages(tmp_path):
@@ -298,11 +387,23 @@ def test_run_status_payload_cost_null_when_nothing_known(tmp_path):
     payload = read_api.run_status_payload(runs, "t", jobs=store)
 
     cost = payload["cost"]
-    assert cost["stages"]["draft"] == {"usd": None, "source": None, "jobs": 1}
+    assert cost["stages"]["draft"] == {
+        "usd": None,
+        "source": None,
+        "jobs": 1,
+        "unpriced_jobs": 1,
+    }
     # A stage nothing ever ran for.
-    assert cost["stages"]["outline"] == {"usd": None, "source": None, "jobs": 0}
+    assert cost["stages"]["outline"] == {
+        "usd": None,
+        "source": None,
+        "jobs": 0,
+        "unpriced_jobs": 0,
+    }
     assert cost["run_usd"] is None
     assert cost["run_source"] is None
+    assert cost["unpriced_jobs"] == 1
+    assert cost["complete"] is False
 
 
 def test_run_status_payload_omits_no_cost_data_without_jobs_of_note(tmp_path):
@@ -315,7 +416,38 @@ def test_run_status_payload_omits_no_cost_data_without_jobs_of_note(tmp_path):
     assert payload["cost"]["run_usd"] is None
     assert payload["cost"]["run_source"] is None
     for stage_cost in payload["cost"]["stages"].values():
-        assert stage_cost == {"usd": None, "source": None, "jobs": 0}
+        assert stage_cost == {
+            "usd": None,
+            "source": None,
+            "jobs": 0,
+            "unpriced_jobs": 0,
+        }
+    # No jobs at all is not an incomplete total: there is nothing missing.
+    assert payload["cost"]["unpriced_jobs"] == 0
+    assert payload["cost"]["complete"] is True
+
+
+def test_run_status_payload_flags_jobs_whose_cost_is_unknown(tmp_path):
+    """The subtotal is still shown -- but it is labelled as partial."""
+
+    runs = _make_run(tmp_path)
+    store = JobStore(tmp_path)
+    _succeeded_job(store, "t", "draft", cost_usd=0.10, cost_source="provider")
+    # A pre-upgrade record, or a model the price table does not know.
+    _succeeded_job(store, "t", "draft", cost_usd=None, cost_source=None)
+    _succeeded_job(store, "t", "qa", cost_usd=0.20, cost_source="provider")
+
+    cost = read_api.run_status_payload(runs, "t", jobs=store)["cost"]
+
+    draft = cost["stages"]["draft"]
+    assert draft["usd"] == pytest.approx(0.10)
+    assert draft["jobs"] == 2
+    assert draft["unpriced_jobs"] == 1
+    assert cost["stages"]["qa"]["unpriced_jobs"] == 0
+    # The subtotal is not hidden, only flagged.
+    assert cost["run_usd"] == pytest.approx(0.30)
+    assert cost["unpriced_jobs"] == 1
+    assert cost["complete"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +500,57 @@ def test_list_topics_workspace_cost_null_when_nothing_known(tmp_path):
     )
 
     assert payload["cost"]["workspace_usd"] is None
+
+
+def test_list_topics_reports_cost_completeness_per_topic_and_workspace(tmp_path):
+    from education_pipeline.workspace import ProfileStore, TopicStore
+
+    runs = RunStore(tmp_path)
+    topics_dir = tmp_path / "topics"
+    topics_dir.mkdir(parents=True, exist_ok=True)
+    for topic_id in ("t", "g"):
+        runs.create_run(topic_id, content_contract=ContentContract.legacy_markdown())
+        (topics_dir / f"{topic_id}.toml").write_text(
+            f'schema_version = 1\nid = "{topic_id}"\ntitle = "{topic_id}"\n',
+            encoding="utf-8",
+        )
+    store = JobStore(tmp_path)
+    _succeeded_job(store, "t", "draft", cost_usd=0.50, cost_source="provider")
+    _succeeded_job(store, "t", "draft", cost_usd=None, cost_source=None)
+    _succeeded_job(store, "g", "draft", cost_usd=0.25, cost_source="provider")
+
+    payload = read_api.list_topics(
+        TopicStore(tmp_path), runs, ProfileStore(tmp_path), jobs=store
+    )
+
+    by_id = {entry["id"]: entry for entry in payload["topics"]}
+    assert by_id["t"]["cost"] == {"run_usd": pytest.approx(0.50), "complete": False}
+    assert by_id["g"]["cost"] == {"run_usd": pytest.approx(0.25), "complete": True}
+    assert payload["cost"]["workspace_usd"] == pytest.approx(0.75)
+    assert payload["cost"]["unpriced_jobs"] == 1
+    assert payload["cost"]["complete"] is False
+
+
+def test_list_topics_cost_is_complete_when_every_job_is_priced(tmp_path):
+    from education_pipeline.workspace import ProfileStore, TopicStore
+
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    topics_dir = tmp_path / "topics"
+    topics_dir.mkdir(parents=True, exist_ok=True)
+    (topics_dir / "t.toml").write_text(
+        'schema_version = 1\nid = "t"\ntitle = "T"\n', encoding="utf-8"
+    )
+    store = JobStore(tmp_path)
+    _succeeded_job(store, "t", "draft", cost_usd=0.50, cost_source="provider")
+
+    payload = read_api.list_topics(
+        TopicStore(tmp_path), runs, ProfileStore(tmp_path), jobs=store
+    )
+
+    assert payload["topics"][0]["cost"]["complete"] is True
+    assert payload["cost"]["complete"] is True
+    assert payload["cost"]["unpriced_jobs"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -531,3 +714,22 @@ def test_cli_status_omits_cost_line_when_unknown(tmp_path, capsys):
     assert _run(ws, "status", "systems-thinking") == 0
     out = capsys.readouterr().out
     assert "cost:" not in out
+
+
+def test_cli_status_marks_a_partial_cost_line(tmp_path, capsys):
+    ws = tmp_path / "ws"
+    topic_file = tmp_path / "topic.toml"
+    topic_file.write_text(TOPIC_TOML, encoding="utf-8")
+    _run(ws, "topic", "import", str(topic_file))
+    _run(ws, "create", "systems-thinking", "--legacy-markdown")
+    capsys.readouterr()
+
+    store = JobStore(ws)
+    _succeeded_job(
+        store, "systems-thinking", "draft", cost_usd=0.4231, cost_source="provider"
+    )
+    _succeeded_job(store, "systems-thinking", "qa", cost_usd=None, cost_source=None)
+
+    assert _run(ws, "status", "systems-thinking") == 0
+    out = capsys.readouterr().out
+    assert "cost: $0.42 (provider, partial: 1 job(s) unpriced)" in out

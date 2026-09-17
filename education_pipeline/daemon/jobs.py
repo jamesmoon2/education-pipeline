@@ -396,7 +396,7 @@ class JobRunner:
 
             parsed = runner.parse_response(stdout)
             job.metadata.update(parsed.metadata)
-            self._record_cost(job, parsed, prompt_path)
+            self._record_cost(job, parsed, prompt_path, model)
             response_path = self.runs.ingest_response(
                 job.topic_id, job.stage, parsed.text, force=self.force
             )
@@ -446,13 +446,19 @@ class JobRunner:
                 _best_effort_kill(job.pid)
             return self._fail(job, f"unexpected error: {exc}")
 
-    def _record_cost(self, job: Job, parsed, prompt_path: Path) -> None:
+    def _record_cost(self, job: Job, parsed, prompt_path: Path, model) -> None:
         """Stamp the job with what this execution cost, if that is knowable.
 
         The provider's own figure wins; otherwise fall back to a byte-based
         estimate over the prompt we fed in and the response we got back (the
         prompt's size is taken from its stat, so the file is not read twice).
         An unpriced model leaves both fields None rather than claiming zero.
+
+        ``model`` is the :class:`~education_pipeline.config.ModelOption` this
+        execution already resolved, and the estimate is keyed off the id the
+        provider was actually invoked with (``argv_model``, or the option id
+        when the catalog declares none) -- never ``job.model``, which is only
+        a catalog's project-local alias for it.
         """
 
         reported = parsed.metadata.get("total_cost_usd")
@@ -465,7 +471,9 @@ class JobRunner:
         except OSError:  # pragma: no cover - prompt was read moments ago
             prompt_bytes = 0
         estimate = cost_module.estimate_cost_usd(
-            prompt_bytes, len(parsed.text.encode("utf-8")), job.model or ""
+            prompt_bytes,
+            len(parsed.text.encode("utf-8")),
+            model.argv_model or model.id,
         )
         job.cost_usd = estimate["usd"]
         job.cost_source = estimate["source"]

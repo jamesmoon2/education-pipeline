@@ -72,11 +72,15 @@ def list_topics(
     With a ``jobs`` store, each entry also carries ``cost.run_usd`` and the
     payload carries ``cost.workspace_usd`` (both ``None`` when nothing is
     known) plus ``cost.stages`` -- the last observed cost per stage across
-    the whole workspace. Without one the payload is exactly what it always
-    was.
+    the whole workspace. Both levels also carry ``cost.complete``, false when
+    some job's cost could not be determined and the figure beside it is only
+    a subtotal; the workspace block counts those jobs in
+    ``cost.unpriced_jobs``. Without a ``jobs`` store the payload is exactly
+    what it always was.
     """
 
     entries = []
+    unpriced_jobs = 0
     for topic_id in topics.list_topic_ids():
         title: str | None = None
         error: str | None = None
@@ -100,7 +104,15 @@ def list_topics(
             "completion": _completion_summary(runs, topic_id, run),
         }
         if jobs is not None:
-            entry["cost"] = {"run_usd": run["cost"]["run_usd"] if run else None}
+            # ``complete`` says whether the figure beside it is the whole
+            # story: a topic with no run has nothing missing, so it is
+            # complete with a null total.
+            run_cost = run["cost"] if run else None
+            entry["cost"] = {
+                "run_usd": run_cost["run_usd"] if run_cost else None,
+                "complete": run_cost["complete"] if run_cost else True,
+            }
+            unpriced_jobs += run_cost["unpriced_jobs"] if run_cost else 0
         entries.append(entry)
     payload = {"topics": entries}
     if jobs is not None:
@@ -111,6 +123,8 @@ def list_topics(
         ]
         payload["cost"] = {
             "workspace_usd": sum(known) if known else None,
+            "unpriced_jobs": unpriced_jobs,
+            "complete": unpriced_jobs == 0,
             # Workspace-wide, not per topic: the plan editor asks what a
             # stage last cost anywhere, so this reads every topic's jobs.
             "stages": cost_module.latest_stage_costs(jobs.list()),
