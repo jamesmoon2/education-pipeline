@@ -26,6 +26,7 @@ from education_pipeline.atomic_io import atomic_write_bytes, atomic_write_text
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
 from education_pipeline.providers import get_runner
 from education_pipeline.runs import RunStore, StaleContentError
+from education_pipeline.workspace_lock import workspace_lock
 
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled", "interrupted"})
 
@@ -115,8 +116,24 @@ def _read_job_record(path: Path) -> dict:
 class JobStore:
     """Read and write job records under a workspace's ``runs`` tree."""
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, *, lock_timeout_seconds: float = 5.0) -> None:
         self.root = Path(root)
+        self.lock_timeout_seconds = lock_timeout_seconds
+
+    def lock(self):
+        """The workspace advisory lock, for admitting or starting a job.
+
+        Admission is a workspace mutation like any other: a CLI process that
+        holds the lock around its own check-and-mutate (``cli._guarded_
+        mutation``) must not have a job admitted underneath it. The lock is
+        reentrant per process, so nesting inside ``RunStore``'s manifest
+        critical sections is safe.
+
+        Never held across the provider subprocess -- only around the record
+        write that publishes a state change.
+        """
+
+        return workspace_lock(self.root, timeout_seconds=self.lock_timeout_seconds)
 
     @property
     def runs_dir(self) -> Path:
@@ -141,16 +158,17 @@ class JobStore:
         model: str | None,
         effort: str | None,
     ) -> Job:
-        job = Job(
-            id=new_job_id(),
-            topic_id=topic_id,
-            stage=stage,
-            provider=provider,
-            model=model,
-            effort=effort,
-            created_at=_utcnow().isoformat(),
-        )
-        self.job_dir(topic_id, job.id).mkdir(parents=True, exist_ok=True)
+        with self.lock():
+            job = Job(
+                id=new_job_id(),
+                topic_id=topic_id,
+                stage=stage,
+                provider=provider,
+                model=model,
+                effort=effort,
+                created_at=_utcnow().isoformat(),
+            )
+            self.job_dir(topic_id, job.id).mkdir(parents=True, exist_ok=True)
         return job
 
     def save(self, job: Job) -> None:
@@ -347,9 +365,14 @@ class JobRunner:
         self.force = force
 
     def execute(self, job: Job, cancel: threading.Event) -> Job:
-        job.status = "running"
-        job.started_at = _utcnow().isoformat()
-        self.store.save(job)
+        # queued -> running is the second half of admission: publish it under
+        # the same workspace lock, so another process cannot see "no active
+        # job" and mutate the run while this one is starting. Only the record
+        # write is inside; the provider subprocess below never is.
+        with self.store.lock():
+            job.status = "running"
+            job.started_at = _utcnow().isoformat()
+            self.store.save(job)
         # Bound outside the try so the failure arm can still see raw provider
         # output captured before a parse/ingest error threw it away.
         stdout: str | None = None

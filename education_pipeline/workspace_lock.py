@@ -86,9 +86,14 @@ class _Holder:
     depth: int
 
 
-# Guards ``_HELD`` *and* serializes actual acquisition: two threads racing to
-# take the file lock on two descriptors would contend with each other instead
-# of sharing one, so only one thread at a time runs the poll loop.
+# Guards ``_HELD`` and the individual non-blocking lock attempts, so the
+# "did we win the file lock?" test and the map update that publishes it are
+# one atomic step. It is deliberately *not* held across the poll loop's
+# sleeps: a thread waiting out another process (a daemon waiting on a CLI
+# invocation, up to ``timeout_seconds``) must not freeze every other thread's
+# lock bookkeeping for that long. Two threads in one process may therefore
+# poll at once on separate descriptors; the loser re-reads ``_HELD`` on its
+# next pass and joins the winner's holder by depth instead of contending.
 _STATE_LOCK = threading.Lock()
 _HELD: dict[str, _Holder] = {}
 
@@ -118,26 +123,62 @@ def workspace_lock(
         _release(key)
 
 
-def _acquire(key: str, path: Path, timeout_seconds: float) -> None:
+def workspace_lock_depth(workspace_root: str | Path) -> int:
+    """How many nested :func:`workspace_lock` blocks this process holds.
+
+    ``0`` means the lock is not held here at all. Callers that must prove a
+    check and the mutation it guards ran inside *one* acquisition compare the
+    depth at both points rather than merely asserting "held".
+    """
+
+    key = os.path.realpath(lock_path(workspace_root))
     with _STATE_LOCK:
         holder = _HELD.get(key)
-        if holder is not None:
-            holder.depth += 1
-            return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            deadline = time.monotonic() + max(timeout_seconds, 0.0)
-            while True:
+        return holder.depth if holder is not None else 0
+
+
+def workspace_lock_held(workspace_root: str | Path) -> bool:
+    """True when this process currently holds the workspace's advisory lock."""
+
+    return workspace_lock_depth(workspace_root) > 0
+
+
+def _acquire(key: str, path: Path, timeout_seconds: float) -> None:
+    """Take (or join) this process's hold on ``path``, within the timeout.
+
+    Each pass runs the ``_HELD`` lookup and one non-blocking attempt under
+    ``_STATE_LOCK``; the sleep between passes runs with it released. ``_HELD``
+    is re-read every pass because another thread here may have won the file
+    lock meanwhile -- that thread's descriptor is the process's one hold, so
+    we join it by depth rather than contending with ourselves for a second
+    one. ``fd`` is this thread's candidate descriptor: it is handed to the
+    holder on a win (and cleared so the exit path leaves it open), and closed
+    on every other way out.
+    """
+
+    deadline = time.monotonic() + max(timeout_seconds, 0.0)
+    fd: int | None = None
+    try:
+        while True:
+            with _STATE_LOCK:
+                holder = _HELD.get(key)
+                if holder is not None:
+                    holder.depth += 1
+                    return
+                if fd is None:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
                 if _try_lock(fd):
                     _HELD[key] = _Holder(fd=fd, depth=1)
+                    fd = None  # ownership passes to the holder; keep it open
                     return
-                if time.monotonic() >= deadline:
-                    raise WorkspaceLockedError(path, timeout_seconds)
-                time.sleep(_POLL_SECONDS)
-        except BaseException:
+                expired = time.monotonic() >= deadline
+            if expired:
+                raise WorkspaceLockedError(path, timeout_seconds)
+            time.sleep(_POLL_SECONDS)
+    finally:
+        if fd is not None:
             os.close(fd)
-            raise
 
 
 def _release(key: str) -> None:

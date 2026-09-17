@@ -288,6 +288,25 @@ def test_enqueue_rejects_unknown_topic(server):
     assert "error" in body
 
 
+def test_enqueue_maps_a_workspace_lock_timeout_to_409(server, monkeypatch):
+    """Job admission now takes the workspace advisory lock, so a contended
+    workspace must surface as the catalog's own ``workspace_locked`` 409 --
+    not as a generic 400 ``invalid_request`` (``WorkspaceLockedError`` is a
+    ``ConfigError`` subclass and would otherwise fall through to that arm)."""
+
+    from education_pipeline.workspace_lock import WorkspaceLockedError, lock_path
+
+    def refuse(self, *args, **kwargs):
+        raise WorkspaceLockedError(lock_path(self.root), 5.0)
+
+    monkeypatch.setattr(JobStore, "create", refuse)
+
+    status, body = _req(server, "POST", "/v1/jobs", body={"topic_id": "t", "stage": "draft"})
+
+    assert status == 409
+    assert body["error"]["code"] == "workspace_locked"
+
+
 def test_read_routes_carry_cost_blocks(server):
     """The live daemon hands the cockpit its job store, not just the run store."""
 

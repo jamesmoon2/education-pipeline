@@ -16,8 +16,9 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Sequence
+from typing import Iterator, Sequence
 
 from education_pipeline.client import DaemonClient, DaemonError, daemon_status, ensure_daemon
 from education_pipeline import cost as cost_module
@@ -30,6 +31,7 @@ from education_pipeline.profiles import load_learner_profile
 from education_pipeline.runs import ContentContract, RunStore
 from education_pipeline.topics import load_topic
 from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
+from education_pipeline.workspace_lock import workspace_lock
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -92,6 +94,30 @@ def _require_mutable(runs: RunStore, topic_id: str, *, check_jobs: bool = True) 
             f"job {job.id} is {job.status} for topic {topic_id!r}; "
             "wait for it to finish or cancel it first",
         )
+
+
+@contextmanager
+def _guarded_mutation(
+    runs: RunStore, topic_id: str, *, check_jobs: bool = True
+) -> Iterator[None]:
+    """Hold the workspace lock across ``_require_mutable`` and the mutation.
+
+    Checking first and mutating afterwards is only a guard if nothing can
+    land in between. The daemon admits jobs from another process
+    (``DaemonContext.enqueue_stage``), so without a lock spanning both, a job
+    could be admitted in the gap and the refusal this guard promises would
+    not have happened. Both sides now take the same workspace advisory lock,
+    which makes admission and check-and-mutate mutually exclusive.
+
+    The lock is reentrant per process, so ``RunStore``'s own manifest
+    critical section (which takes the per-topic thread lock and then this
+    same lock) nests inside without deadlocking. Keep the body to the
+    mutation itself -- no printing, no polling.
+    """
+
+    with workspace_lock(runs.root):
+        _require_mutable(runs, topic_id, check_jobs=check_jobs)
+        yield
 
 
 def _print_coded_error(exc: Exception, code: str | None) -> None:
@@ -433,20 +459,24 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 def _cmd_advance(args: argparse.Namespace) -> int:
     runs = RunStore(_root(args))
-    _require_mutable(runs, args.topic_id)
     if args.repair_module is not None:
         # A scoped repair request outside the repair stage or naming an
         # unknown module is a usage error (exit 2), distinct from ordinary
-        # run failures.
-        try:
-            prompt_exists = runs.stage_paths(
-                args.topic_id, "repair"
-            ).prompt_path.exists()
-            prompt = runs.write_module_repair_prompt(
-                args.topic_id, args.repair_module, overwrite=prompt_exists
-            )
-        except ConfigError as exc:
-            print(f"error: {exc}", file=sys.stderr)
+        # run failures. Reported after the lock is dropped so nothing slow
+        # happens inside the critical section.
+        usage_error: ConfigError | None = None
+        with _guarded_mutation(runs, args.topic_id):
+            try:
+                prompt_exists = runs.stage_paths(
+                    args.topic_id, "repair"
+                ).prompt_path.exists()
+                prompt = runs.write_module_repair_prompt(
+                    args.topic_id, args.repair_module, overwrite=prompt_exists
+                )
+            except ConfigError as exc:
+                usage_error = exc
+        if usage_error is not None:
+            print(f"error: {usage_error}", file=sys.stderr)
             return 2
         print(
             f"Performed: write_prompt (repair scoped to module {args.repair_module})"
@@ -454,7 +484,8 @@ def _cmd_advance(args: argparse.Namespace) -> int:
         print(f"  prompt: {prompt.prompt_path}")
         _print_next(runs.run_status(args.topic_id).next_action)
         return 0
-    result = runs.advance(args.topic_id)
+    with _guarded_mutation(runs, args.topic_id):
+        result = runs.advance(args.topic_id)
     print(f"Performed: {result.performed or 'nothing (waiting on you)'}")
     _print_next(result.status.next_action)
     return 0
@@ -462,11 +493,11 @@ def _cmd_advance(args: argparse.Namespace) -> int:
 
 def _cmd_audit(args: argparse.Namespace) -> int:
     runs = RunStore(_root(args))
-    _require_mutable(runs, args.topic_id)
-    prompt_exists = runs.stage_paths(args.topic_id, "audit").prompt_path.exists()
-    prepared = runs.prepare_personalization_audit(
-        args.topic_id, overwrite=prompt_exists
-    )
+    with _guarded_mutation(runs, args.topic_id):
+        prompt_exists = runs.stage_paths(args.topic_id, "audit").prompt_path.exists()
+        prepared = runs.prepare_personalization_audit(
+            args.topic_id, overwrite=prompt_exists
+        )
     prompt_path = prepared.prompt_path.relative_to(runs.run_dir(args.topic_id))
     # as_posix: the workspace-relative artifact notation is /-separated
     # everywhere (manifest, API payloads), including in Windows output.
@@ -485,8 +516,8 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 def _cmd_approve(args: argparse.Namespace) -> int:
     runs = RunStore(_root(args))
-    _require_mutable(runs, args.topic_id)
-    approved_path = runs.approve_stage(args.topic_id, args.stage)
+    with _guarded_mutation(runs, args.topic_id):
+        approved_path = runs.approve_stage(args.topic_id, args.stage)
     print(f"approved {args.stage}: {approved_path}")
     _print_next(runs.run_status(args.topic_id).next_action)
     return 0
@@ -494,16 +525,16 @@ def _cmd_approve(args: argparse.Namespace) -> int:
 
 def _cmd_finalize(args: argparse.Namespace) -> int:
     runs = RunStore(_root(args))
-    _require_mutable(runs, args.topic_id)
-    final_path = runs.finalize_run(args.topic_id)
+    with _guarded_mutation(runs, args.topic_id):
+        final_path = runs.finalize_run(args.topic_id)
     print(f"finalized: {final_path}")
     return 0
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
     runs = RunStore(_root(args))
-    _require_mutable(runs, args.topic_id, check_jobs=False)
-    export_path = runs.export_run(args.topic_id, format=args.format)
+    with _guarded_mutation(runs, args.topic_id, check_jobs=False):
+        export_path = runs.export_run(args.topic_id, format=args.format)
     print(f"exported ({args.format}): {export_path}")
     return 0
 
@@ -697,23 +728,28 @@ def _cmd_waive(args: argparse.Namespace) -> int:
     """
 
     runs = RunStore(_root(args))
-    _require_mutable(runs, args.topic_id, check_jobs=False)
-    try:
-        presented = next(
-            (
-                finding
-                for finding in runs.combined_findings(
-                    args.topic_id, phase=args.phase
-                )
-                if finding.id == args.finding_id
-            ),
-            None,
-        )
-        if presented is not None and not presented.waivable:
-            raise ConfigError(f"finding {args.finding_id!r} is not waivable")
-        result = runs.record_waiver(args.topic_id, args.phase, args.finding_id, args.reason)
-    except ConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    usage_error: ConfigError | None = None
+    with _guarded_mutation(runs, args.topic_id, check_jobs=False):
+        try:
+            presented = next(
+                (
+                    finding
+                    for finding in runs.combined_findings(
+                        args.topic_id, phase=args.phase
+                    )
+                    if finding.id == args.finding_id
+                ),
+                None,
+            )
+            if presented is not None and not presented.waivable:
+                raise ConfigError(f"finding {args.finding_id!r} is not waivable")
+            result = runs.record_waiver(
+                args.topic_id, args.phase, args.finding_id, args.reason
+            )
+        except ConfigError as exc:
+            usage_error = exc
+    if usage_error is not None:
+        print(f"error: {usage_error}", file=sys.stderr)
         return 2
     state = "open" if result.gate_open else "blocked"
     print(
@@ -727,11 +763,14 @@ def _cmd_unwaive(args: argparse.Namespace) -> int:
     """Remove a previously recorded waiver, potentially closing the gate again."""
 
     runs = RunStore(_root(args))
-    _require_mutable(runs, args.topic_id, check_jobs=False)
-    try:
-        result = runs.remove_waiver(args.topic_id, args.phase, args.finding_id)
-    except ConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    usage_error: ConfigError | None = None
+    with _guarded_mutation(runs, args.topic_id, check_jobs=False):
+        try:
+            result = runs.remove_waiver(args.topic_id, args.phase, args.finding_id)
+        except ConfigError as exc:
+            usage_error = exc
+    if usage_error is not None:
+        print(f"error: {usage_error}", file=sys.stderr)
         return 2
     state = "open" if result.gate_open else "blocked"
     print(
