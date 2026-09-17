@@ -346,7 +346,7 @@ def _make_handler(context: DaemonContext):
                 return self._send(
                     200,
                     read_api.list_topics(
-                        context.topics, context.runs, context.profiles
+                        context.topics, context.runs, context.profiles, jobs=context.store
                     ),
                 )
             m = re.match(r"^/v1/topics/([^/?]+)$", self.path)
@@ -444,7 +444,10 @@ def _make_handler(context: DaemonContext):
             m = re.match(r"^/v1/runs/([^/?]+)$", self.path)
             if m:
                 return self._send(
-                    200, read_api.run_status_payload(context.runs, m.group(1))
+                    200,
+                    read_api.run_status_payload(
+                        context.runs, m.group(1), jobs=context.store
+                    ),
                 )
             m = re.match(r"^/v1/jobs/([^/]+)/log(?:\?offset=(\d+))?$", self.path)
             if m:

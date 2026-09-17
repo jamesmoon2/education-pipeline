@@ -288,6 +288,20 @@ def test_enqueue_rejects_unknown_topic(server):
     assert "error" in body
 
 
+def test_read_routes_carry_cost_blocks(server):
+    """The live daemon hands the cockpit its job store, not just the run store."""
+
+    status, body = _req(server, "GET", "/v1/runs/t")
+    assert status == 200
+    assert "cost" in body
+    assert body["cost"]["stages"]["draft"] == {"usd": None, "source": None, "jobs": 0}
+    assert body["cost"]["run_usd"] is None
+
+    status, body = _req(server, "GET", "/v1/topics")
+    assert status == 200
+    assert body["cost"]["workspace_usd"] is None
+
+
 def _raw_post(port, path, raw_body, content_length):
     conn = http.client.HTTPConnection("127.0.0.1", port)
     conn.putrequest("POST", path)
