@@ -122,6 +122,9 @@ export default function SettingsPage() {
 
   const applyPreset = (preset: CatalogPreset) => {
     const mapping = preset.stages[presetProvider];
+    // Defensive no-op: the button for a preset lacking this mapping is
+    // disabled (see the preset-buttons render below), so this should be
+    // unreachable in practice — kept as a guard against stale clicks.
     if (!mapping) return;
     setOverrides(() => {
       const next: Record<string, StageOverride> = {};
@@ -243,12 +246,29 @@ export default function SettingsPage() {
               ))}
             </fieldset>
             <div className="preset-buttons" role="group" aria-label="Recommended presets">
-              {presets.map((preset) => (
-                <button key={preset.id} type="button" onClick={() => applyPreset(preset)}>
-                  <span className="preset-label">{preset.label}</span>
-                  <span className="preset-description">{preset.description}</span>
-                </button>
-              ))}
+              {presets.map((preset) => {
+                const hasMapping = Boolean(preset.stages[presetProvider]);
+                const providerLabel =
+                  catalog.find((p) => p.id === presetProvider)?.label ?? presetProvider;
+                const hintId = `preset-unavailable-${preset.id}`;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => applyPreset(preset)}
+                    disabled={!hasMapping}
+                    aria-describedby={hasMapping ? undefined : hintId}
+                  >
+                    <span className="preset-label">{preset.label}</span>
+                    <span className="preset-description">{preset.description}</span>
+                    {!hasMapping && (
+                      <span id={hintId} className="preset-unavailable-hint">
+                        No mapping for {providerLabel}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
             <p className="field-help">
               A preset fills every stage below; adjust any row before saving.

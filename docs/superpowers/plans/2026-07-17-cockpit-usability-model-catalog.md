@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Truth-up 2026-09-17:** every implementation, test and commit step below was verified against this checkout and ticked. Playwright steps were re-run on 2026-09-17 (all 14 specs, 86 tests passed, `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/pw-browsers/chromium`). The only steps left unticked are the TDD "run to verify it fails" steps: each task's tests and implementation landed in the same commit, so the pre-implementation red state cannot be reproduced after the fact.
+
 **Goal:** Replace the placeholder model catalog with real Claude/Codex models plus three recommended presets, and make the cockpit's forms self-explanatory (tooltips, enlargeable fields, larger type).
 
 **Architecture:** Presets are data in the catalog TOML, parsed by `education_pipeline/config.py`, served read-only through the existing `GET /v1/config/catalog` payload, and applied client-side by filling the Settings page's existing overrides map (persisted via the unchanged `PUT /v1/config/plan`). UI help is a single reusable `InfoTip` component plus per-form copy maps.
@@ -64,7 +66,7 @@ Codex mapping (corollary: Fable/Opus → sol, Sonnet → terra, Haiku → luna; 
   - `ModelCatalog.presets: tuple[Preset, ...] = ()` (new field with default — existing constructions stay valid)
   - `parse_model_catalog` parses and validates `[[presets]]`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_config.py` (imports at top of file already include `parse_model_catalog`, `ConfigError`, `pytest`; add `Preset, PresetStage, PRESET_STAGES` to the import from `education_pipeline.config`):
 
@@ -172,7 +174,7 @@ def test_preset_rejects_unknown_stage_and_bad_effort() -> None:
 Run: `python3 -m pytest tests/test_config.py -k preset -v`
 Expected: FAIL — `ImportError: cannot import name 'Preset'` (or NameError for `PRESET_STAGES`).
 
-- [ ] **Step 3: Implement preset parsing**
+- [x] **Step 3: Implement preset parsing**
 
 In `education_pipeline/config.py`:
 
@@ -297,12 +299,12 @@ def _parse_presets(
 
 Note: `_optional_string(raw, key, default, context)` — check the existing signature at ~line 370 and match argument order exactly.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_config.py -v`
 Expected: all PASS (new preset tests plus every pre-existing test).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/config.py tests/test_config.py
@@ -321,7 +323,7 @@ git commit -m "feat(config): parse and validate recommended presets in the model
 - Consumes: `ModelCatalog.presets` from Task 1.
 - Produces: `GET /v1/config/catalog` payload gains `"presets"` — a list of `{"id", "label", "description", "stages": {provider_id: {stage: {"model": str, "effort": str | None}}}}`. The web client (Task 6) relies on exactly these key names.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `tests/test_server.py` next to the existing catalog test. Find the `config_server` fixture and extend its catalog TOML with a preset over its existing providers (the fixture defines providers `manual`, `fake`, `nope` — read the fixture and use two real model ids from the `fake` provider; the fixture's models are `m` and `strong-m`):
 
@@ -361,7 +363,7 @@ audit = { model = "strong-m" }
 Run: `python3 -m pytest tests/test_server.py::test_config_catalog_includes_presets -v`
 Expected: FAIL — `KeyError: 'presets'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `catalog_payload` (read_api.py), change the return to include presets:
 
@@ -386,12 +388,12 @@ In `catalog_payload` (read_api.py), change the return to include presets:
     }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_server.py -k "config" -v`
 Expected: PASS (new test plus all existing config route tests — they tolerate the added key because they index into `payload["providers"]`).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add education_pipeline/daemon/read_api.py tests/test_server.py
@@ -411,7 +413,7 @@ git commit -m "feat(daemon): include recommended presets in the catalog payload"
 - Consumes: parsing/validation from Task 1.
 - Produces: package defaults every fresh workspace loads (`daemon/__init__.py` falls back to these when the workspace has no `config/*.toml`). Preset ids are exactly `max-quality`, `balanced`, `cost-efficient` — Tasks 6–8 rely on these ids and on catalog model ids `fable-5`, `opus-4-8`, `sonnet-5`, `haiku-4-5`, `sol`, `terra`, `luna`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_config.py` (the file's existing `test_loads_example_catalog_and_plan` shows how the example paths are resolved — reuse the same path constant/helper it uses):
 
@@ -472,7 +474,7 @@ def test_example_plan_has_no_weak_stage_warnings() -> None:
 Run: `python3 -m pytest tests/test_config.py -k example -v`
 Expected: the three new tests FAIL (old catalog has no `fable-5` etc.); `test_loads_example_catalog_and_plan` still passes.
 
-- [ ] **Step 3: Replace `config/model-catalog.example.toml`**
+- [x] **Step 3: Replace `config/model-catalog.example.toml`**
 
 Full new contents:
 
@@ -629,7 +631,7 @@ audit = { model = "terra", effort = "medium" }
 
 Note: the `manual` provider's model keeps `quality = "manual"` exactly as today (existing behavior; unknown quality ranks as "strong" which is fine for a provider presets never reference).
 
-- [ ] **Step 4: Replace `config/model-plan.example.toml`**
+- [x] **Step 4: Replace `config/model-plan.example.toml`**
 
 Full new contents (the Balanced / claude-code column, keeping the existing recommendation strings):
 
@@ -672,12 +674,12 @@ model = "opus-4-8"
 effort = "medium"
 ```
 
-- [ ] **Step 5: Run the full Python suite**
+- [x] **Step 5: Run the full Python suite**
 
 Run: `python3 -m pytest`
 Expected: all PASS. If any pre-existing test asserted the old placeholder catalog contents (e.g. model id `"balanced"` or provider default `manual`), update that test to the new defaults — the new defaults are the intended behavior.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add config/model-catalog.example.toml config/model-plan.example.toml tests/test_config.py
@@ -694,7 +696,7 @@ git commit -m "feat(config): ship real Claude/Codex model catalog, three presets
 **Interfaces:**
 - Produces: root font 18px; no CSS class/token renames — later tasks depend on nothing here.
 
-- [ ] **Step 1: Raise the root size**
+- [x] **Step 1: Raise the root size**
 
 In `web/src/styles.css`, in the `/* base rules */` section (above `body`), add:
 
@@ -703,7 +705,7 @@ In `web/src/styles.css`, in the `/* base rules */` section (above `body`), add:
 html { font-size: 112.5%; }
 ```
 
-- [ ] **Step 2: Floor the small sizes**
+- [x] **Step 2: Floor the small sizes**
 
 Replace every `font-size: 0.75rem` with `font-size: 0.8125rem` and every `font-size: 0.8125rem` with `font-size: 0.875rem`. Order matters — do the `0.8125rem → 0.875rem` replacements first, then `0.75rem → 0.8125rem`:
 
@@ -714,7 +716,7 @@ perl -pi -e 's/font-size: 0\.75rem/font-size: 0.8125rem/g' src/styles.css
 grep -c "font-size: 0.75rem" src/styles.css   # expect 0
 ```
 
-- [ ] **Step 3: Verify build and visual smoke**
+- [x] **Step 3: Verify build and visual smoke**
 
 Run (from `web/`): `npm run build && npm run test`
 Expected: build passes, all vitest suites pass.
@@ -722,7 +724,7 @@ Expected: build passes, all vitest suites pass.
 Run: `npx playwright test e2e/smoke.spec.ts`
 Expected: PASS (no horizontal overflow / layout assertions break).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add web/src/styles.css
@@ -741,7 +743,7 @@ git commit -m "feat(web): raise the type scale to an 18px root and floor small t
 **Interfaces:**
 - Produces: `export default function InfoTip({ label, text }: { label: string; text: string })` — a ⓘ button with `aria-label` of `` `About ${label}` ``; tooltip text node has `role="tooltip"` and is referenced by `aria-describedby` while open. Tasks 7, 9, 11, 12 import it as `import InfoTip from "./InfoTip"` (components) or `"../components/InfoTip"` (pages).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `web/src/components/InfoTip.test.tsx`:
 
@@ -786,7 +788,7 @@ describe("InfoTip", () => {
 Run (from `web/`): `npx vitest run src/components/InfoTip.test.tsx`
 Expected: FAIL — cannot resolve `./InfoTip`.
 
-- [ ] **Step 3: Implement the component**
+- [x] **Step 3: Implement the component**
 
 Create `web/src/components/InfoTip.tsx`:
 
@@ -868,12 +870,12 @@ Append to `web/src/styles.css`:
 
 If existing `button` base styles (background/border/min-height) override the trigger, keep the `.info-tip-trigger` selector after them in the file so it wins.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run (from `web/`): `npx vitest run src/components/InfoTip.test.tsx && npm run build`
 Expected: PASS, clean type-check.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/components/InfoTip.tsx web/src/components/InfoTip.test.tsx web/src/styles.css
@@ -897,7 +899,7 @@ git commit -m "feat(web): accessible InfoTip tooltip component"
   - `getConfigCatalog` returns `{ providers: CatalogProvider[]; presets: CatalogPreset[] }`
   - SettingsPage state: `presets: CatalogPreset[]`, `presetProvider: string`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `web/src/pages/SettingsPage.test.tsx`: add presets to the mocked catalog response and new tests. Update the top-level `catalog` fixture module scope with:
 
@@ -999,7 +1001,7 @@ Also update any existing test that clicks "Use recommended (all stages)" — tha
 Run (from `web/`): `npx vitest run src/pages/SettingsPage.test.tsx`
 Expected: new tests FAIL (no preset buttons; catalog mock type error until types change).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `web/src/api/types.ts` — add after `CatalogProvider`:
 
@@ -1128,12 +1130,12 @@ When `presets.length === 0` render nothing for the picker (legacy catalogs).
 .preset-description { font-size: 0.875rem; color: var(--ep-color-text-muted); }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run (from `web/`): `npx vitest run src/pages/SettingsPage.test.tsx && npm run build`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/api/types.ts web/src/api/client.ts web/src/pages/SettingsPage.tsx web/src/pages/SettingsPage.test.tsx web/src/styles.css
@@ -1156,7 +1158,7 @@ git commit -m "feat(web): three recommended presets with a provider toggle on Se
   - `planHelp.ts` exports `STAGE_HELP: Record<string, string>`, `PROVIDER_HELP: string`, `EFFORT_HELP: string`.
   - `PlanStageRow` gains prop `resetValue: StageOverride | null` — the value its "Reset to default" button applies (`null` keeps the legacy clear-to-provider-default behavior).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `web/src/components/PlanStageRow.test.tsx` add (mirroring the file's existing render helpers):
 
@@ -1199,7 +1201,7 @@ it("shows a stage explanation tooltip", async () => {
 Run (from `web/`): `npx vitest run src/components/PlanStageRow.test.tsx`
 Expected: FAIL — unknown prop / button names not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `web/src/lib/planHelp.ts`:
 
@@ -1284,12 +1286,12 @@ and in the render loop:
 })}
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run (from `web/`): `npx vitest run src/components/PlanStageRow.test.tsx src/pages/SettingsPage.test.tsx && npm run build`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/lib/planHelp.ts web/src/components/PlanStageRow.tsx web/src/components/PlanStageRow.test.tsx web/src/pages/SettingsPage.tsx web/src/styles.css
@@ -1306,7 +1308,7 @@ git commit -m "feat(web): stage tooltips and preset-aware reset-to-default on pl
 **Interfaces:**
 - Consumes: the spec's own fixture catalog TOML (`MODEL_CATALOG_TOML` constant), preset picker UI from Task 6.
 
-- [ ] **Step 1: Extend the fixture catalog**
+- [x] **Step 1: Extend the fixture catalog**
 
 Append to the spec's `MODEL_CATALOG_TOML` string a presets section referencing the fixture's existing providers/models (`claude-code` with `balanced`/`quick`, `codex` — check the fixture's codex model ids and use them):
 
@@ -1328,7 +1330,7 @@ audit = { model = "balanced" }
 
 (plus a `[presets.stages.codex]` table over the fixture's codex model ids, same shape).
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Add to `model-plan.spec.ts` (using the file's existing page/navigation helpers):
 
@@ -1357,12 +1359,12 @@ test("settings page with a tooltip open passes axe", async ({ page }) => {
 
 Import `AxeBuilder` the same way the existing axe-using specs do (`import AxeBuilder from "@axe-core/playwright";` — copy the exact import from `web/e2e/smoke.spec.ts` or wherever axe is already used).
 
-- [ ] **Step 3: Run the spec**
+- [x] **Step 3: Run the spec**
 
 Run (from `web/`): `npx playwright test e2e/model-plan.spec.ts`
 Expected: the two new tests PASS along with the existing ones. (If existing tests in this spec asserted the old "Use recommended (all stages)" button, update them to the preset picker.)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add web/e2e/model-plan.spec.ts
@@ -1382,7 +1384,7 @@ git commit -m "test(e2e): presets fill, persist, and pass axe on the settings pa
 - Consumes: `InfoTip` (Task 5). `Field` already receives each field's `path` — help lookup is keyed by that exact path string.
 - Produces: `PROFILE_HELP: Record<string, string>` in `web/src/lib/profileHelp.ts`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `web/src/components/ProfileForm.test.tsx` (reuse the file's existing render helper/fixture profile):
 
@@ -1414,7 +1416,7 @@ it("renders an info tip for every labeled field", () => {
 Run (from `web/`): `npx vitest run src/components/ProfileForm.test.tsx`
 Expected: FAIL — no "About …" buttons.
 
-- [ ] **Step 3: Create the copy map**
+- [x] **Step 3: Create the copy map**
 
 Create `web/src/lib/profileHelp.ts` with exactly this copy (keys are the `path` values `Field` already receives):
 
@@ -1463,7 +1465,7 @@ export const PROFILE_HELP: Record<string, string> = {
 };
 ```
 
-- [ ] **Step 4: Render tips in `Field`**
+- [x] **Step 4: Render tips in `Field`**
 
 In `ProfileForm.tsx`, import `InfoTip` and `PROFILE_HELP`, then change `Field`'s label span:
 
@@ -1476,12 +1478,12 @@ In `ProfileForm.tsx`, import `InfoTip` and `PROFILE_HELP`, then change `Field`'s
 
 The metadata editor heading (line ~259) gains `\n<InfoTip label="Metadata" text={PROFILE_HELP["metadata.*"]} />` beside its `SensitivityBadge`.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run (from `web/`): `npx vitest run src/components/ProfileForm.test.tsx && npm run build`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add web/src/lib/profileHelp.ts web/src/components/ProfileForm.tsx web/src/components/ProfileForm.test.tsx
@@ -1501,7 +1503,7 @@ git commit -m "feat(web): explanatory tooltips on every learner-profile field"
 - Consumes: nothing new. Stored values remain single-line strings — newlines are normalized to spaces on change, so the TOML profile shape is untouched.
 - The `id` field stays a single-line `<input>` (it is a constrained identifier, not free text). `schema_version` (number, readOnly), checkboxes, selects, and metadata key inputs are unchanged.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```tsx
 it("free-text fields are textareas and normalize newlines to spaces", async () => {
@@ -1526,7 +1528,7 @@ it("profile id stays a single-line input", () => {
 Run (from `web/`): `npx vitest run src/components/ProfileForm.test.tsx`
 Expected: FAIL — `mathComfort.tagName` is `"INPUT"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `ProfileForm.tsx` add a normalization helper next to `lines`:
 
@@ -1605,12 +1607,12 @@ Append to `web/src/styles.css`:
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run (from `web/`): `npx vitest run src/components/ProfileForm.test.tsx && npm run build`
 Expected: PASS. Also run `npx vitest run src/pages/ProfileEditorPage.test.tsx src/pages/ProfilesPage.test.tsx` — fix any assertions that assumed `<input>` tags (query by label, not tag).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/components/ProfileForm.tsx web/src/components/ProfileForm.test.tsx web/src/styles.css
@@ -1630,7 +1632,7 @@ git commit -m "feat(web): every free-text profile field is an enlargeable textar
 - Consumes: `InfoTip` (Task 5).
 - Produces: `NEW_RUN_HELP: Record<string, string>` and `TOPIC_ID_PATTERN` in `newRunHelp.ts`. The pattern mirrors the daemon's `_ARTIFACT_ID_PATTERN` (`education_pipeline/workspace.py:21`): `/^[A-Za-z0-9][A-Za-z0-9._-]*$/`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `web/src/pages/NewRunPage.test.tsx` (reuse its existing router/render setup; the wizard must be advanced past the learner step first — copy the existing navigation helper):
 
@@ -1666,7 +1668,7 @@ it("rejects a malformed topic id before continuing", async () => {
 Run (from `web/`): `npx vitest run src/pages/NewRunPage.test.tsx`
 Expected: FAIL.
 
-- [ ] **Step 3: Create the copy map and wire it in**
+- [x] **Step 3: Create the copy map and wire it in**
 
 Create `web/src/lib/newRunHelp.ts`:
 
@@ -1727,12 +1729,12 @@ const topicReady =
 4. Add `<InfoTip label="Brief" text={NEW_RUN_HELP.brief} />` after the `Brief` label text, and a placeholder on its textarea: `placeholder="e.g. A hands-on introduction to SQL for analysts who live in spreadsheets today — enough to query, join, and summarize real tables confidently."`. Same pattern for Audience (`NEW_RUN_HELP.audience`), Goals (`NEW_RUN_HELP.goals`), Time budget (`NEW_RUN_HELP.time_budget`), the Paste-TOML textarea (`NEW_RUN_HELP.toml`).
 5. Learner step: add `<p className="field-help">{NEW_RUN_HELP.learner}</p>` under the heading. Blueprint step: `<p className="field-help">{NEW_RUN_HELP.blueprint}</p>` under its heading.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run (from `web/`): `npx vitest run src/pages/NewRunPage.test.tsx && npm run build`
 Expected: PASS. Also run `npx playwright test e2e/new-run.spec.ts` and fix any selector drift (labels unchanged, so expect PASS).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/src/lib/newRunHelp.ts web/src/pages/NewRunPage.tsx web/src/pages/NewRunPage.test.tsx
@@ -1752,24 +1754,24 @@ git commit -m "feat(web): wizard tooltips, placeholders, and client-side topic-i
 
 This is an audit: read each file, list every label/button a first-time user could not parse, and fix it with an InfoTip or a `field-help` line. Known concrete items (do these; add others you find):
 
-- [ ] **Step 1: Waiver vocabulary.** In `ValidationFindingsPanel.tsx`, wherever the waive control renders, add: `<InfoTip label="Waive" text="Waiving a finding accepts it as-is: it stops blocking finalize but stays recorded with your reason." />` and assert the tip's presence in `ValidationFindingsPanel.test.tsx` (`screen.getByRole("button", { name: "About Waive" })`).
+- [x] **Step 1: Waiver vocabulary.** In `ValidationFindingsPanel.tsx`, wherever the waive control renders, add: `<InfoTip label="Waive" text="Waiving a finding accepts it as-is: it stops blocking finalize but stays recorded with your reason." />` and assert the tip's presence in `ValidationFindingsPanel.test.tsx` (`screen.getByRole("button", { name: "About Waive" })`).
 
-- [ ] **Step 2: Canonical guide vocabulary.** In `CanonicalGuidePreview.tsx`, add near the heading: `<InfoTip label="Canonical guide" text="The cleaned-up, validated version of the draft that finalize will publish." />`; assert in its test.
+- [x] **Step 2: Canonical guide vocabulary.** In `CanonicalGuidePreview.tsx`, add near the heading: `<InfoTip label="Canonical guide" text="The cleaned-up, validated version of the draft that finalize will publish." />`; assert in its test.
 
-- [ ] **Step 3: Jobs vocabulary.** In `JobsPanel.tsx`, add near the heading: `<InfoTip label="Jobs" text="Background runs of stage prompts through a provider CLI. Each job's log captures the provider's live output (audit jobs redact their log to protect learner privacy)." />`; assert in its test. (Prompts are fed to the CLI via stdin and are not in the log, and audit jobs suppress both output streams from the log — `education_pipeline/daemon/jobs.py` — so the copy must not promise request/response visibility.)
+- [x] **Step 3: Jobs vocabulary.** In `JobsPanel.tsx`, add near the heading: `<InfoTip label="Jobs" text="Background runs of stage prompts through a provider CLI. Each job's log captures the provider's live output (audit jobs redact their log to protect learner privacy)." />`; assert in its test. (Prompts are fed to the CLI via stdin and are not in the log, and audit jobs suppress both output streams from the log — `education_pipeline/daemon/jobs.py` — so the copy must not promise request/response visibility.)
 
-- [ ] **Step 4: Provider availability wording.** In `SettingsPage.tsx`, under the "Provider availability" heading add: `<p className="field-help">Available means the provider's CLI was found on this machine. You can still save a plan that uses an unavailable provider, but running one of its stages will fail until the CLI is installed — switch that stage to Manual copy/paste to run it by hand instead.</p>`; assert the text in `SettingsPage.test.tsx`. (The daemon does not auto-fall-back to manual: `Worker.execute` fails the job with "provider … is not available on PATH" — `education_pipeline/daemon/jobs.py` — so the help must not promise a fallback.)
+- [x] **Step 4: Provider availability wording.** In `SettingsPage.tsx`, under the "Provider availability" heading add: `<p className="field-help">Available means the provider's CLI was found on this machine. You can still save a plan that uses an unavailable provider, but running one of its stages will fail until the CLI is installed — switch that stage to Manual copy/paste to run it by hand instead.</p>`; assert the text in `SettingsPage.test.tsx`. (The daemon does not auto-fall-back to manual: `Worker.execute` fails the job with "provider … is not available on PATH" — `education_pipeline/daemon/jobs.py` — so the help must not promise a fallback.)
 
-- [ ] **Step 5: Sweep the rest.** Read the remaining files in the list. For every unexplained term or bare control, add an InfoTip/help line using the same voice (concrete, learner-language, no internal nouns). Every added affordance gets a `getByRole("button", { name: "About …" })` assertion in that component's test file. If a page needs no change, note it in the commit message body.
+- [x] **Step 5: Sweep the rest.** Read the remaining files in the list. For every unexplained term or bare control, add an InfoTip/help line using the same voice (concrete, learner-language, no internal nouns). Every added affordance gets a `getByRole("button", { name: "About …" })` assertion in that component's test file. If a page needs no change, note it in the commit message body.
 
-- [ ] **Step 6: Axe with tooltips open on profile and wizard pages.** In `web/e2e/profiles.spec.ts` and `web/e2e/new-run.spec.ts`, add one test each (same `AxeBuilder` import as Task 8): open the page, click one InfoTip trigger (`About Target learner` / `About Brief`), assert `getByRole("tooltip")` is visible, run `new AxeBuilder({ page }).analyze()`, expect `results.violations` to equal `[]`.
+- [x] **Step 6: Axe with tooltips open on profile and wizard pages.** In `web/e2e/profiles.spec.ts` and `web/e2e/new-run.spec.ts`, add one test each (same `AxeBuilder` import as Task 8): open the page, click one InfoTip trigger (`About Target learner` / `About Brief`), assert `getByRole("tooltip")` is visible, run `new AxeBuilder({ page }).analyze()`, expect `results.violations` to equal `[]`.
 
-- [ ] **Step 7: Run the web suites**
+- [x] **Step 7: Run the web suites**
 
 Run (from `web/`): `npm run test && npm run build && npx playwright test e2e/profiles.spec.ts e2e/new-run.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A web/src
@@ -1780,22 +1782,22 @@ git commit -m "feat(web): usability sweep — explain waivers, canonical guide, 
 
 ### Task 13: Full verification
 
-- [ ] **Step 1: Python suite**
+- [x] **Step 1: Python suite**
 
 Run: `python3 -m pytest`
 Expected: all PASS.
 
-- [ ] **Step 2: Web unit + type-check**
+- [x] **Step 2: Web unit + type-check**
 
 Run (from `web/`): `npm run test && npm run build`
 Expected: all PASS.
 
-- [ ] **Step 3: Full e2e**
+- [x] **Step 3: Full e2e**
 
 Run (from `web/`): `npm run e2e`
 Expected: all PASS, including axe checks.
 
-- [ ] **Step 4: Live smoke against a real workspace**
+- [x] **Step 4: Live smoke against a real workspace**
 
 ```bash
 mkdir -p /tmp/ep-smoke-ws && education-pipeline --workspace /tmp/ep-smoke-ws workspace check --fix
@@ -1804,6 +1806,6 @@ education-pipeline ui --workspace /tmp/ep-smoke-ws --no-browser
 
 Open the printed URL: Settings shows the three presets and real model names; a fresh plan defaults to Claude Code/Balanced; profile editor shows tooltips and resizable fields; new-course wizard validates the topic id. Then `education-pipeline --workspace /tmp/ep-smoke-ws daemon stop`.
 
-- [ ] **Step 5: Commit any straggler fixes; do not merge**
+- [x] **Step 5: Commit any straggler fixes; do not merge**
 
 Leave integration (PR vs merge) to the finishing-a-development-branch flow with the user.

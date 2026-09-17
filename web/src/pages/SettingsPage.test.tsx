@@ -269,6 +269,58 @@ describe("SettingsPage", () => {
     ).toHaveValue("gpt");
   });
 
+  it("shows an explicit 'no mapping' state instead of silently no-opping when a preset lacks the selected provider (issue #18)", async () => {
+    const user = userEvent.setup();
+    // "quick" only defines a claude-code mapping; codex is a real, selectable
+    // preset-provider (balanced supports it) but this preset has nothing for it.
+    const presetsWithGap: CatalogPreset[] = [
+      presets[0],
+      {
+        id: "quick",
+        label: "Quick",
+        description: "Fast placeholder-quality pass.",
+        stages: {
+          "claude-code": {
+            spec: { model: "sonnet", effort: "low" },
+          },
+        },
+      },
+    ];
+    vi.mocked(getConfigProviders).mockResolvedValue({ providers });
+    vi.mocked(getConfigCatalog).mockResolvedValue({ providers: catalog, presets: presetsWithGap });
+    vi.mocked(getConfigPlan).mockResolvedValue(makePlan());
+    render(<SettingsPage />);
+    await screen.findByText("Default model plan");
+
+    await user.click(screen.getByRole("radio", { name: "Codex" }));
+    const specRow = document.querySelector('[data-stage="spec"]')!;
+    const modelBefore = within(specRow as HTMLElement).getByLabelText("Model for spec");
+    expect(modelBefore).toHaveValue("sonnet"); // loaded default, unaffected so far
+
+    const quickButton = screen.getByRole("button", { name: /Quick/ });
+    await user.click(quickButton);
+
+    // Regression guard for the silent no-op: the row must NOT have been
+    // touched by a preset that has nothing to apply.
+    expect(
+      within(specRow as HTMLElement).getByLabelText("Model for spec"),
+    ).toHaveValue("sonnet");
+
+    // The control must surface WHY nothing happened. Either approach is
+    // acceptable per issue #18: an explicit "no mapping" message somewhere in
+    // the picker, OR the button itself disabled with an accessible reason
+    // (aria-describedby pointing at "no mapping" text). We accept both so the
+    // implementer can pick either.
+    const explicitMessage = screen.queryByText(/no mapping for/i);
+    const describedBy = quickButton.getAttribute("aria-describedby");
+    const describedText = describedBy
+      ? (document.getElementById(describedBy)?.textContent ?? "")
+      : "";
+    const disabledWithReason =
+      quickButton.hasAttribute("disabled") && /no mapping/i.test(describedText);
+    expect(Boolean(explicitMessage) || disabledWithReason).toBe(true);
+  });
+
   it("falls back to a provider that has presets when the plan provider has none", async () => {
     const user = userEvent.setup();
     const codexOnly = [{ ...presets[0], stages: { codex: presets[0].stages.codex } }];
