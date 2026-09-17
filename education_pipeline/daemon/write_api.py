@@ -29,7 +29,7 @@ from education_pipeline.config import (
     emit_model_plan_toml,
     parse_model_plan,
 )
-from education_pipeline.atomic_io import atomic_write_bytes
+from education_pipeline.atomic_io import atomic_write_bytes, read_bytes_retrying
 from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
@@ -420,7 +420,7 @@ def edit_response(
         "topic_id": paths.topic_id,
         "stage": paths.stage,
         "response_path": _run_relative(runs, topic_id, path),
-        "response_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "response_sha256": hashlib.sha256(read_bytes_retrying(path)).hexdigest(),
     }
 
 
