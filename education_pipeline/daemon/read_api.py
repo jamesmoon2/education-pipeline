@@ -71,7 +71,9 @@ def list_topics(
 
     With a ``jobs`` store, each entry also carries ``cost.run_usd`` and the
     payload carries ``cost.workspace_usd`` (both ``None`` when nothing is
-    known). Without one the payload is exactly what it always was.
+    known) plus ``cost.stages`` -- the last observed cost per stage across
+    the whole workspace. Without one the payload is exactly what it always
+    was.
     """
 
     entries = []
@@ -107,7 +109,12 @@ def list_topics(
             for entry in entries
             if entry["cost"]["run_usd"] is not None
         ]
-        payload["cost"] = {"workspace_usd": sum(known) if known else None}
+        payload["cost"] = {
+            "workspace_usd": sum(known) if known else None,
+            # Workspace-wide, not per topic: the plan editor asks what a
+            # stage last cost anywhere, so this reads every topic's jobs.
+            "stages": cost_module.latest_stage_costs(jobs.list()),
+        }
     return payload
 
 

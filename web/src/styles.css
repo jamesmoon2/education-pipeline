@@ -1035,6 +1035,7 @@ pre.log-tail { max-height: none; font-size: 0.8125rem; color: var(--ep-color-tex
 }
 .plan-stage-row--local .plan-stage-local { grid-column: 2 / -1; }
 .plan-stage-row > .plan-stage-warning,
+.plan-stage-row > .plan-stage-observed-cost,
 .plan-stage-row > .plan-stage-override-error { grid-column: 1 / -1; margin: 0; }
 .plan-stage-local, .plan-stage-note, .plan-stage-warning { color: var(--ep-color-text-muted); font-size: 0.875rem; }
 @media (max-width: 48rem) {

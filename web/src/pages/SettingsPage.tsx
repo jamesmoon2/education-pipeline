@@ -4,12 +4,14 @@ import {
   getConfigCatalog,
   getConfigPlan,
   getConfigProviders,
+  getTopics,
   putConfigPlan,
 } from "../api/client";
 import PlanStageRow from "../components/PlanStageRow";
 import type {
   CatalogPreset,
   CatalogProvider,
+  ObservedStageCost,
   PlanPayload,
   PlanStage,
   ProviderAvailability,
@@ -84,6 +86,10 @@ export default function SettingsPage() {
   const [overrides, setOverrides] = useState<Record<string, StageOverride>>({});
   const [stale, setStale] = useState(false);
   const [welcomeReset, setWelcomeReset] = useState(false);
+  // What each stage last actually cost, so a model choice is made next to a
+  // real observation instead of a price table. Workspace-wide, and read off
+  // the library payload rather than a new endpoint.
+  const [observed, setObserved] = useState<Record<string, ObservedStageCost>>({});
   const save = useAction();
 
   const load = async () => {
@@ -117,6 +123,23 @@ export default function SettingsPage() {
 
   useEffect(() => {
     void load();
+  }, []);
+
+  // Deliberately outside `load`: a cost observation is a nicety, so neither
+  // its latency nor its failure may hold up or break the plan editor.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const payload = await getTopics();
+        if (!cancelled) setObserved(payload?.cost?.stages ?? {});
+      } catch {
+        /* no observations to show */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleRowChange = (stageName: string, override: StageOverride | null) => {
@@ -300,6 +323,7 @@ export default function SettingsPage() {
               catalog={catalog}
               providers={providers}
               resetValue={resetValueFor(stage.stage, display.provider ?? plan.provider)}
+              lastObservedCost={observed[stage.stage]}
               onChange={handleRowChange}
             />
           );

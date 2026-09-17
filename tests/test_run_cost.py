@@ -371,6 +371,123 @@ def test_list_topics_workspace_cost_null_when_nothing_known(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# read_api.list_topics: last observed cost per stage (thread T07)
+#
+# The settings plan editor shows, beside each stage's model choice, what the
+# most recent run of that stage actually cost -- so the person choosing a
+# model is looking at a real observation rather than a price table. That is a
+# workspace-wide question, not a per-topic one, so it rides on the topics
+# payload's existing top-level ``cost`` block as
+# ``stages: {<stage>: {"usd": float, "source": str, "observed_at": str|None}}``.
+# Only stages with at least one costed job appear; the newest costed job for a
+# stage wins, by its ``ended_at`` timestamp.
+# ---------------------------------------------------------------------------
+
+
+def _topics_workspace(tmp_path, *topic_ids):
+    from education_pipeline.workspace import ProfileStore, TopicStore
+
+    runs = RunStore(tmp_path)
+    topics_dir = tmp_path / "topics"
+    topics_dir.mkdir(parents=True, exist_ok=True)
+    for topic_id in topic_ids:
+        runs.create_run(topic_id, content_contract=ContentContract.legacy_markdown())
+        (topics_dir / f"{topic_id}.toml").write_text(
+            f'schema_version = 1\nid = "{topic_id}"\ntitle = "{topic_id}"\n',
+            encoding="utf-8",
+        )
+    return TopicStore(tmp_path), runs, ProfileStore(tmp_path)
+
+
+def _costed_job(store, topic_id, stage, *, cost_usd, cost_source, ended_at):
+    job = _succeeded_job(
+        store, topic_id, stage, cost_usd=cost_usd, cost_source=cost_source
+    )
+    job.ended_at = ended_at
+    store.save(job)
+    return job
+
+
+def test_list_topics_reports_the_newest_costed_job_per_stage(tmp_path):
+    topics, runs, profiles = _topics_workspace(tmp_path, "t")
+    store = JobStore(tmp_path)
+    _costed_job(
+        store,
+        "t",
+        "draft",
+        cost_usd=0.10,
+        cost_source="estimate",
+        ended_at="2026-07-01T00:00:00+00:00",
+    )
+    _costed_job(
+        store,
+        "t",
+        "draft",
+        cost_usd=0.40,
+        cost_source="provider",
+        ended_at="2026-07-02T00:00:00+00:00",
+    )
+
+    payload = read_api.list_topics(topics, runs, profiles, jobs=store)
+
+    draft = payload["cost"]["stages"]["draft"]
+    assert draft["usd"] == pytest.approx(0.40)
+    assert draft["source"] == "provider"
+    assert draft["observed_at"] == "2026-07-02T00:00:00+00:00"
+
+
+def test_list_topics_omits_stages_with_no_costed_job(tmp_path):
+    topics, runs, profiles = _topics_workspace(tmp_path, "t")
+    store = JobStore(tmp_path)
+    _costed_job(
+        store,
+        "t",
+        "draft",
+        cost_usd=0.10,
+        cost_source="estimate",
+        ended_at="2026-07-01T00:00:00+00:00",
+    )
+    # Ran, but nothing is known about what it cost: not an observation.
+    _costed_job(
+        store,
+        "t",
+        "qa",
+        cost_usd=None,
+        cost_source=None,
+        ended_at="2026-07-03T00:00:00+00:00",
+    )
+
+    stages = read_api.list_topics(topics, runs, profiles, jobs=store)["cost"]["stages"]
+
+    assert set(stages) == {"draft"}
+    assert "outline" not in stages
+
+
+def test_list_topics_last_observed_cost_spans_topics(tmp_path):
+    """The plan editor is workspace-wide, so every topic's jobs count."""
+    topics, runs, profiles = _topics_workspace(tmp_path, "t", "g")
+    store = JobStore(tmp_path)
+    _costed_job(
+        store,
+        "g",
+        "outline",
+        cost_usd=0.25,
+        cost_source="provider",
+        ended_at="2026-07-04T00:00:00+00:00",
+    )
+
+    stages = read_api.list_topics(topics, runs, profiles, jobs=store)["cost"]["stages"]
+
+    assert stages["outline"]["usd"] == pytest.approx(0.25)
+
+
+def test_list_topics_last_observed_cost_absent_without_a_job_store(tmp_path):
+    topics, runs, profiles = _topics_workspace(tmp_path, "t")
+
+    assert "cost" not in read_api.list_topics(topics, runs, profiles)
+
+
+# ---------------------------------------------------------------------------
 # CLI: `education-pipeline status <topic>` cost line
 # ---------------------------------------------------------------------------
 
