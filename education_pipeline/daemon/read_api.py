@@ -7,6 +7,8 @@ Pure functions: stores in, JSON-serializable dicts out. Raise
 
 from __future__ import annotations
 
+import os
+
 import hashlib
 import json
 import re
@@ -337,19 +339,30 @@ def recommend_blueprint_payload(body: object) -> dict:
     }
 
 
-def _failed_outputs(runs: RunStore, topic_id: str, stage: str) -> list[str]:
-    """Basenames of raw provider outputs salvaged after a failed stage run.
+def _failed_outputs_by_stage(runs: RunStore, topic_id: str) -> dict[str, list[str]]:
+    """Basenames of raw provider outputs salvaged after failed stage runs,
+    keyed by stage.
 
     Written by ``JobRunner`` when parsing or ingesting a response fails; the
     names are timestamped, so reverse-lexicographic order is newest-first.
+    One directory listing serves every stage: a per-stage glob costs a
+    listing per stage per topic on the poll path, which is the hot path T01
+    just made cheap.
     """
 
+    buckets: dict[str, list[str]] = {}
     try:
-        responses = runs.stage_paths(topic_id, stage).response_path.parent
-        names = [p.name for p in responses.glob(f"{stage}.failed.*.txt") if p.is_file()]
+        responses = runs.stage_paths(topic_id, SUPPORTED_STAGES[0]).response_path.parent
+        with os.scandir(responses) as it:
+            for entry in it:
+                name = entry.name
+                stage, sep, rest = name.partition(".failed.")
+                if not sep or not rest.endswith(".txt") or not entry.is_file():
+                    continue
+                buckets.setdefault(stage, []).append(name)
     except (OSError, ConfigError):
-        return []
-    return sorted(names, reverse=True)
+        return {}
+    return {stage: sorted(names, reverse=True) for stage, names in buckets.items()}
 
 
 def run_status_payload(
@@ -367,10 +380,12 @@ def run_status_payload(
     # both validation summaries otherwise re-read and re-parse the same run
     # manifest dozens of times per poll tick.
     with runs.manifest_read_scope():
-        return _run_status_payload_scoped(runs, topic_id)
+        return _run_status_payload_scoped(runs, topic_id, jobs)
 
 
-def _run_status_payload_scoped(runs: RunStore, topic_id: str) -> dict:
+def _run_status_payload_scoped(
+    runs: RunStore, topic_id: str, jobs: "JobStore | None" = None
+) -> dict:
     status = runs.run_status(topic_id)
     contract = runs.content_contract(topic_id)
     manifest = runs.read_manifest(topic_id)
@@ -378,6 +393,7 @@ def _run_status_payload_scoped(runs: RunStore, topic_id: str) -> dict:
         phase: _validation_summary(runs, topic_id, phase)
         for phase in ("draft", "final")
     }
+    failed_outputs = _failed_outputs_by_stage(runs, topic_id)
     payload = {
         "topic_id": status.topic_id,
         "finalized": status.finalized,
@@ -392,7 +408,7 @@ def _run_status_payload_scoped(runs: RunStore, topic_id: str) -> dict:
                 "prompt_written": s.prompt_written,
                 "response_ingested": s.response_ingested,
                 "approved": s.approved,
-                "failed_outputs": _failed_outputs(runs, topic_id, s.stage),
+                "failed_outputs": failed_outputs.get(s.stage, []),
             }
             for s in status.stages
         ],
