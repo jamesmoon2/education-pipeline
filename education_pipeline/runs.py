@@ -102,6 +102,7 @@ from education_pipeline.guides.blueprints import (
     recommend_blueprint,
 )
 from education_pipeline.atomic_io import atomic_write_bytes, atomic_write_text
+from education_pipeline.workspace_lock import workspace_lock
 from education_pipeline.workspace import (
     ProfileStore,
     TopicStore,
@@ -293,6 +294,61 @@ class AdvanceResult:
     status: RunStatus
 
 
+class _TopicWriteLock:
+    """A per-topic thread lock paired with the workspace's file lock.
+
+    Exposes exactly the ``threading.Lock`` protocol its callers use --
+    ``with``, ``acquire(timeout=...)``, ``release()`` -- and additionally
+    holds :func:`~education_pipeline.workspace_lock.workspace_lock` for the
+    same critical section, so a second *process* (a CLI invocation running
+    beside the daemon) cannot interleave its own manifest read-modify-write
+    with this one.
+
+    The thread lock stays plain and non-reentrant and is taken first: an
+    attempted nested acquire still blocks loudly rather than silently losing
+    an update, and a failed acquisition never touches the workspace lock.
+    """
+
+    __slots__ = ("_lock", "_root", "_workspace_locks")
+
+    def __init__(self, lock: threading.Lock, root: Path) -> None:
+        self._lock = lock
+        self._root = root
+        # Held-lock stack: one entry per successful acquire, popped in
+        # release. The thread lock makes this at most one deep.
+        self._workspace_locks: list = []
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if not self._lock.acquire(blocking, timeout):
+            return False
+        guard = workspace_lock(self._root)
+        try:
+            guard.__enter__()
+        except BaseException:
+            self._lock.release()
+            raise
+        self._workspace_locks.append(guard)
+        return True
+
+    def release(self) -> None:
+        guard = self._workspace_locks.pop()
+        try:
+            guard.__exit__(None, None, None)
+        finally:
+            self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    def __enter__(self) -> "_TopicWriteLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        self.release()
+        return False
+
+
 @dataclass(frozen=True)
 class RunStore:
     """Create run directories and write stage prompt/response artifacts."""
@@ -302,7 +358,7 @@ class RunStore:
     # object.__setattr__ because the dataclass is frozen. Annotated as ClassVar
     # so the dataclass machinery does not treat them as fields (which would
     # pull them into __init__/__repr__/__eq__ and require defaults).
-    _manifest_locks: ClassVar[dict[str, threading.Lock]]
+    _manifest_locks: ClassVar[dict[str, _TopicWriteLock]]
     _manifest_locks_guard: ClassVar[threading.Lock]
 
     def __init__(self, root: str | Path) -> None:
@@ -310,17 +366,19 @@ class RunStore:
         object.__setattr__(self, "_manifest_locks", {})
         object.__setattr__(self, "_manifest_locks_guard", threading.Lock())
 
-    def _manifest_write_lock(self, topic_id: str) -> threading.Lock:
+    def _manifest_write_lock(self, topic_id: str) -> _TopicWriteLock:
         """Return the per-topic lock serializing writes to this run's manifest
         and waivers file.
 
-        Serialization is scoped to this ``RunStore`` instance only: it
+        Thread serialization is scoped to this ``RunStore`` instance: it
         protects concurrent threads (e.g. daemon workers) sharing one
         ``RunStore`` over the same workspace from racing on the same run's
-        manifest or waivers file. Two ``RunStore`` instances over the same
-        workspace share no locks, and cross-process concurrency (e.g.
-        concurrent CLI invocations) is out of scope here. Callers must share
-        a single ``RunStore`` per workspace to get this guarantee.
+        manifest or waivers file, so callers must share a single
+        ``RunStore`` per workspace to get that guarantee. Concurrency
+        *between processes* (a CLI invocation beside the daemon) is covered
+        by the workspace file lock this lock also holds for the critical
+        section -- see :class:`_TopicWriteLock`. Critical sections must
+        therefore stay short, and are never held across a provider job.
 
         This is a plain, non-reentrant ``threading.Lock``, deliberately: the
         invariant is exactly one manifest (or waivers) read-modify-write
@@ -347,7 +405,7 @@ class RunStore:
         with self._manifest_locks_guard:
             existing = self._manifest_locks.get(topic_id)
             if existing is None:
-                existing = threading.Lock()
+                existing = _TopicWriteLock(threading.Lock(), self.root)
                 self._manifest_locks[topic_id] = existing
             return existing
 
