@@ -101,6 +101,15 @@ docstrings promise. The waiver invalidation test needed no change.
 - **T07:** 14 implementation files, over the 12-file guideline; accepted so
   the API half of the Settings path did not land unused.
 
+- **Closeout e2e:** three full Playwright runs on the merged branch: 86/86,
+  86/86, then 85/86 with one failure in
+  `guide-progress.spec.ts` ("the offer works the same way from a file://
+  URL": resumed progress read back as 0 of 4 sections). No Phase 0 thread
+  touched `guide_runtime/`, `export.py`, `guides/` or that spec, and the spec
+  passed 18/18 on two immediate re-runs, so it is recorded as a pre-existing
+  flake in the file:// resume path, not a Phase 0 regression. Worth a look
+  when the runtime is next in scope (Phase 4).
+
 ## Owner decisions still not recorded (carried from the opportunity map)
 
 - PyPI vs GitHub-release-only distribution.

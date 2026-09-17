@@ -40,4 +40,4 @@
 
 ## Phase closeout
 
-All nine threads merged into `claude/engineering-manager-phase-0-xquocr`, one merge commit per thread. Final gate on the merged branch: pytest 1609 passed / 1 skipped (baseline 1528), vitest 538 (baseline 508), `npm run build` clean, `education-pipeline --help` clean, Playwright 86 passed on the preinstalled Chromium. Accepted limitations and the three plan-text departures are in the audit ledger.
+All nine threads merged into `claude/engineering-manager-phase-0-xquocr`, one merge commit per thread. Final gate on the merged branch: pytest 1609 passed / 1 skipped (baseline 1528), vitest 538 (baseline 508), `npm run build` clean, `education-pipeline --help` clean, Playwright 86 passed on the preinstalled Chromium (one later full run showed a single unrelated flake in the guide-runtime file:// resume test; see the ledger). Accepted limitations and the three plan-text departures are in the audit ledger.
