@@ -12,6 +12,7 @@ import json
 import re
 import tomllib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from education_pipeline.config import (
     STAGE_ORDER,
@@ -22,6 +23,7 @@ from education_pipeline.config import (
     apply_overrides_lenient,
     weak_stage_warning,
 )
+from education_pipeline import cost as cost_module
 from education_pipeline.providers import get_runner
 from education_pipeline.privacy import (
     profile_field_sensitivity,
@@ -37,6 +39,9 @@ from education_pipeline.export import EXPORT_FORMATS
 from education_pipeline.runs import SUPPORTED_STAGES, RunStore
 from education_pipeline.workspace import ProfileRecord, ProfileStore, TopicStore
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from education_pipeline.daemon.jobs import JobStore
+
 
 class NotFoundError(Exception):
     """A referenced workspace resource does not exist."""
@@ -49,13 +54,22 @@ def require_run(runs: RunStore, topic_id: str) -> None:
         raise NotFoundError(f"no run started for topic: {topic_id}")
 
 
-def list_topics(topics: TopicStore, runs: RunStore, profiles: ProfileStore) -> dict:
+def list_topics(
+    topics: TopicStore,
+    runs: RunStore,
+    profiles: ProfileStore,
+    jobs: "JobStore | None" = None,
+) -> dict:
     """The course-library payload, enriched server-side (spec §5.1).
 
     Adds ``last_activity`` (ISO-8601 mtime of the newest run artifact),
     ``archived`` (manifest flag; no run means ``false``), ``profile_id``
     (attached snapshot's embedded id), and ``completion`` so the cockpit
     stays presentation-only.
+
+    With a ``jobs`` store, each entry also carries ``cost.run_usd`` and the
+    payload carries ``cost.workspace_usd`` (both ``None`` when nothing is
+    known). Without one the payload is exactly what it always was.
     """
 
     entries = []
@@ -67,23 +81,32 @@ def list_topics(topics: TopicStore, runs: RunStore, profiles: ProfileStore) -> d
         except ConfigError as exc:
             error = str(exc)
         run = (
-            run_status_payload(runs, topic_id)
+            run_status_payload(runs, topic_id, jobs=jobs)
             if runs.manifest_path(topic_id).is_file()
             else None
         )
-        entries.append(
-            {
-                "id": topic_id,
-                "title": title,
-                "error": error,
-                "run": run,
-                "archived": runs.is_archived(topic_id) if run else False,
-                "last_activity": runs.last_activity_at(topic_id) if run else None,
-                "profile_id": _attached_profile_id(profiles, topic_id),
-                "completion": _completion_summary(runs, topic_id, run),
-            }
-        )
-    return {"topics": entries}
+        entry = {
+            "id": topic_id,
+            "title": title,
+            "error": error,
+            "run": run,
+            "archived": runs.is_archived(topic_id) if run else False,
+            "last_activity": runs.last_activity_at(topic_id) if run else None,
+            "profile_id": _attached_profile_id(profiles, topic_id),
+            "completion": _completion_summary(runs, topic_id, run),
+        }
+        if jobs is not None:
+            entry["cost"] = {"run_usd": run["cost"]["run_usd"] if run else None}
+        entries.append(entry)
+    payload = {"topics": entries}
+    if jobs is not None:
+        known = [
+            entry["cost"]["run_usd"]
+            for entry in entries
+            if entry["cost"]["run_usd"] is not None
+        ]
+        payload["cost"] = {"workspace_usd": sum(known) if known else None}
+    return payload
 
 
 def _attached_profile_id(profiles: ProfileStore, topic_id: str) -> str | None:
@@ -314,7 +337,16 @@ def recommend_blueprint_payload(body: object) -> dict:
     }
 
 
-def run_status_payload(runs: RunStore, topic_id: str) -> dict:
+def run_status_payload(
+    runs: RunStore, topic_id: str, jobs: "JobStore | None" = None
+) -> dict:
+    """The run-board payload for one topic.
+
+    With a ``jobs`` store the payload also carries a ``cost`` block (per
+    stage, plus run totals) summed over that topic's job records; without
+    one the payload is exactly what it always was.
+    """
+
     require_run(runs, topic_id)
     status = runs.run_status(topic_id)
     contract = runs.content_contract(topic_id)
@@ -323,7 +355,7 @@ def run_status_payload(runs: RunStore, topic_id: str) -> dict:
         phase: _validation_summary(runs, topic_id, phase)
         for phase in ("draft", "final")
     }
-    return {
+    payload = {
         "topic_id": status.topic_id,
         "finalized": status.finalized,
         "content_contract": contract.to_manifest(),
@@ -347,6 +379,11 @@ def run_status_payload(runs: RunStore, topic_id: str) -> dict:
             "detail": status.next_action.detail,
         },
     }
+    if jobs is not None:
+        payload["cost"] = cost_module.summarize_job_costs(
+            jobs.list(topic_id), SUPPORTED_STAGES
+        )
+    return payload
 
 
 def list_runs(runs: RunStore) -> dict:

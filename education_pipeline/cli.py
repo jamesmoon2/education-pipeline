@@ -20,9 +20,10 @@ from pathlib import Path
 from typing import Sequence
 
 from education_pipeline.client import DaemonClient, DaemonError, daemon_status, ensure_daemon
+from education_pipeline import cost as cost_module
 from education_pipeline.config import ConfigError
 from education_pipeline.daemon import lifecycle
-from education_pipeline.daemon.jobs import TERMINAL_STATUSES
+from education_pipeline.daemon.jobs import TERMINAL_STATUSES, JobStore
 from education_pipeline.export import EXPORT_FORMATS
 from education_pipeline.profiles import load_learner_profile
 from education_pipeline.runs import ContentContract, RunStore
@@ -361,11 +362,18 @@ def _cmd_blueprints(args: argparse.Namespace) -> int:
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    status = RunStore(_root(args)).run_status(args.topic_id)
+    root = _root(args)
+    status = RunStore(root).run_status(args.topic_id)
     finalized = "yes" if status.finalized else "no"
     print(f"Run: {status.topic_id}   (finalized: {finalized})")
     for stage in status.stages:
         print(f"  {stage.stage:8s} {stage.state}")
+    # Cost is reported only when some job actually recorded one: an unpriced
+    # model or a run driven entirely by hand prints no line at all rather
+    # than a $0.00 that would read as "this was free".
+    summary = cost_module.summarize_job_costs(JobStore(root).list(args.topic_id))
+    if summary["run_usd"] is not None:
+        print(f"cost: ${summary['run_usd']:.2f} ({summary['run_source']})")
     _print_next(status.next_action)
     return 0
 

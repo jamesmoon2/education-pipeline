@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from education_pipeline import cost as cost_module
 from education_pipeline.atomic_io import atomic_write_text
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
 from education_pipeline.providers import get_runner
@@ -56,6 +57,12 @@ class Job:
     exit_code: int | None = None
     response_path: str | None = None
     error: str | None = None
+    # What this execution cost, and whether the provider reported that itself
+    # ("provider") or we estimated it from byte counts ("estimate"). Both stay
+    # None when the cost could not be determined; records written before these
+    # fields existed load with both None (see ``from_dict``).
+    cost_usd: float | None = None
+    cost_source: str | None = None
     metadata: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -383,6 +390,7 @@ class JobRunner:
 
             parsed = runner.parse_response(stdout)
             job.metadata.update(parsed.metadata)
+            self._record_cost(job, parsed, prompt_path)
             response_path = self.runs.ingest_response(
                 job.topic_id, job.stage, parsed.text, force=self.force
             )
@@ -423,6 +431,30 @@ class JobRunner:
             if job.pid:
                 _best_effort_kill(job.pid)
             return self._fail(job, f"unexpected error: {exc}")
+
+    def _record_cost(self, job: Job, parsed, prompt_path: Path) -> None:
+        """Stamp the job with what this execution cost, if that is knowable.
+
+        The provider's own figure wins; otherwise fall back to a byte-based
+        estimate over the prompt we fed in and the response we got back (the
+        prompt's size is taken from its stat, so the file is not read twice).
+        An unpriced model leaves both fields None rather than claiming zero.
+        """
+
+        reported = parsed.metadata.get("total_cost_usd")
+        if isinstance(reported, (int, float)) and not isinstance(reported, bool):
+            job.cost_usd = float(reported)
+            job.cost_source = "provider"
+            return
+        try:
+            prompt_bytes = prompt_path.stat().st_size
+        except OSError:  # pragma: no cover - prompt was read moments ago
+            prompt_bytes = 0
+        estimate = cost_module.estimate_cost_usd(
+            prompt_bytes, len(parsed.text.encode("utf-8")), job.model or ""
+        )
+        job.cost_usd = estimate["usd"]
+        job.cost_source = estimate["source"]
 
     def _resolve_model(self, job: Job):
         provider = self.catalog.require_provider(job.provider)

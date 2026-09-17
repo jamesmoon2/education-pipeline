@@ -123,12 +123,12 @@ def advance_run(
         )
         return {
             "performed": "write_prompt",
-            "status": read_api.run_status_payload(runs, topic_id),
+            "status": read_api.run_status_payload(runs, topic_id, jobs=jobs),
         }
     result = runs.advance(topic_id)
     return {
         "performed": result.performed,
-        "status": read_api.run_status_payload(runs, result.topic_id),
+        "status": read_api.run_status_payload(runs, result.topic_id, jobs=jobs),
     }
 
 
@@ -190,7 +190,7 @@ def validate_run(runs: RunStore, jobs: JobStore, topic_id: str, phase: str) -> d
     runs.validate_run(topic_id, phase)
     return {
         **read_api.validation_payload(runs, topic_id, phase),
-        "status": read_api.run_status_payload(runs, topic_id),
+        "status": read_api.run_status_payload(runs, topic_id, jobs=jobs),
     }
 
 
@@ -314,7 +314,7 @@ def ingest_response(
         "topic_id": paths.topic_id,
         "stage": paths.stage,
         "response_path": _run_relative(runs, topic_id, path),
-        "status": read_api.run_status_payload(runs, topic_id),
+        "status": read_api.run_status_payload(runs, topic_id, jobs=jobs),
     }
 
 
@@ -376,7 +376,7 @@ def approve_stage(
         "topic_id": paths.topic_id,
         "stage": paths.stage,
         "approved_path": _run_relative(runs, topic_id, path),
-        "status": read_api.run_status_payload(runs, topic_id),
+        "status": read_api.run_status_payload(runs, topic_id, jobs=jobs),
     }
 
 
@@ -399,7 +399,7 @@ def finalize_run(
     return {
         "topic_id": topic_id,
         "final_path": _run_relative(runs, topic_id, path),
-        "status": read_api.run_status_payload(runs, topic_id),
+        "status": read_api.run_status_payload(runs, topic_id, jobs=jobs),
     }
 
 
