@@ -34,6 +34,8 @@ enforces that).
 | `cockpit_rebuild_unavailable` | --rebuild needs a source checkout containing web/src. | Packaged installs already bundle the cockpit; run `education-pipeline ui` without --rebuild. |
 | `npm_missing` | npm was not found on PATH. | Install Node.js (which provides npm), or build manually with `cd web && npm run build`. |
 | `cockpit_build_failed` | The cockpit build (npm run build) failed. | Fix the reported build errors in web/, then rerun. |
+| `workspace_locked` | Another education-pipeline process is writing to this workspace. | Wait for the other command (or the daemon) to finish, then retry. |
+| `job_conflict` (from the CLI) | A CLI command such as `approve`, `advance`, or `finalize` refused because the daemon is running a provider job for that course. | Wait for the running job to finish, or cancel it first. |
 
 ## Common first-run problems
 
