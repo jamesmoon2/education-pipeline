@@ -52,10 +52,14 @@ docstrings promise. The waiver invalidation test needed no change.
   through `atomic_io` as well, with the same fault-injection and structural
   tests as the run artifacts. No plain artifact write remains in
   `education_pipeline/`.
-- **T03:** a `workspace_locked` timeout raised inside the daemon surfaces as
-  HTTP 400 `invalid_request` with the catalog text in the message, not as a
-  `workspace_locked`/409 envelope. The CLI surface is correct. Mapping it in
-  `daemon/server.py` is a small follow-up.
+- **T03 (closed):** a `workspace_locked` timeout raised inside the daemon now
+  surfaces as HTTP 409 `workspace_locked` on every verb, not as a generic 400
+  `invalid_request` (`WorkspaceLockedError` is a `ConfigError` subclass, so
+  its arm sits above the generic one in `daemon/server.py`). Closed alongside
+  the admission fix: job admission (`DaemonContext.enqueue_stage`,
+  `JobStore.create`, and the queued -> running transition) now takes the same
+  workspace lock the CLI holds across its check-and-mutate, so a job can no
+  longer be admitted in the gap between the CLI's guard and its mutation.
 - **T03:** the four lock tests that spawn a child interpreter import the
   installed package, so they require the editable install to point at the
   checkout under test (true on the main checkout and in CI).
