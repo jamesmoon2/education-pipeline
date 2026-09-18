@@ -144,3 +144,122 @@ test("guide-v1 fixture reaches validation, finalize, export, and mixed-workspace
   const wRow = page.locator("tr").filter({ has: page.getByRole("link", { name: "w", exact: true }) });
   await expect(wRow.getByText("—", { exact: true })).toBeVisible();
 });
+
+test("guide run drafts module by module through the paste loop", async ({ page }) => {
+  // Per-module drafting (docs/superpowers/specs/
+  // 2026-09-18-per-module-drafting-design.md §8): the draft stage fans out
+  // into a skeleton unit plus one unit per module instead of one whole-guide
+  // response. This drives spec/outline through the ordinary paste loop, then
+  // exercises the unit-level flow at draft only -- skeleton paste, the
+  // per-module "Paste response for <title>" loop in DraftProgressPanel, the
+  // automatic assembly once every module is saved, and a plain approval.
+  const fixture: {
+    outcomes: { id: string; text: string }[];
+    modules: { id: string; title: string; sections: unknown[] }[];
+  } = JSON.parse(
+    readFileSync(
+      resolve(import.meta.dirname, "../../tests/fixtures/guides/feedback-loops.guide.json"),
+      "utf-8",
+    ),
+  );
+
+  const spec = `# Course Specification\n\n\`\`\`education-pipeline-contract+json\n${JSON.stringify({
+    contract_version: 1,
+    guide_schema_version: "1.0",
+    blueprint: "conceptual-foundations",
+    estimated_minutes: 30,
+    outcomes: fixture.outcomes,
+    required_interactions: ["knowledge_check", "worked_reveal", "scenario", "reflection"],
+    personalization_requirements: ["Use gardening examples where useful."],
+    source_policy: "Sources required for factual claims that are not common knowledge.",
+  })}\n\`\`\``;
+  // Module order and per-module fields must match the fixture's own modules
+  // (runs.py's draft unit layer reads the authored module order off this
+  // approved outline contract, not off the guide contract).
+  const outline = `# Course Outline\n\n\`\`\`education-pipeline-outline+json\n${JSON.stringify({
+    contract_version: 1,
+    modules: {
+      "loop-basics": {
+        outcome_ids: ["identify-loop", "map-loop"],
+        estimated_minutes: 14,
+        interaction_types: ["knowledge_check", "worked_reveal"],
+      },
+      "intervention-practice": {
+        outcome_ids: ["map-loop", "choose-intervention"],
+        estimated_minutes: 16,
+        interaction_types: ["knowledge_check", "scenario", "reflection"],
+      },
+    },
+  })}\n\`\`\``;
+  // The skeleton: the same guide with every module reduced to a sectionless
+  // stub (check_skeleton's contract) -- derived from the fixture rather than
+  // hand-authored, so it always matches the module JSON pasted per row below.
+  const skeletonText = JSON.stringify({
+    ...fixture,
+    modules: fixture.modules.map((module) => ({ ...module, sections: [] })),
+  });
+
+  await page.goto(`${baseURL}/`);
+  await page.getByRole("button", { name: "Import topic…" }).click();
+  await page
+    .getByLabel("topic TOML")
+    .fill('schema_version = 1\nid = "md"\ntitle = "Module Drafting Topic"\n');
+  await page.getByRole("button", { name: "Import", exact: true }).click();
+  await page.getByRole("link", { name: "md", exact: true }).click();
+
+  for (const [stage, response] of [["spec", spec], ["outline", outline]] as const) {
+    await page.getByRole("button", { name: "Advance" }).click();
+    await page.getByRole("button", { name: "Paste response…" }).click();
+    await page.getByLabel(`Response for ${stage}`).fill(response);
+    await page.getByRole("button", { name: "Save response" }).click();
+    await page.getByRole("button", { name: `Approve ${stage} only`, exact: true }).click();
+  }
+
+  // draft: Advance writes the skeleton prompt (draft/skeleton/prompt.md).
+  await page.getByRole("button", { name: "Advance" }).click();
+
+  // The stage-level "Paste response…" loop always writes straight to the
+  // whole-stage response file (the deliberate whole-guide bypass the other
+  // guide-v1 test in this file exercises), so the skeleton goes through
+  // DraftProgressPanel's own skeleton paste instead, landing in
+  // draft/skeleton/response.json via the unit route and keeping per-module
+  // drafting intact.
+  await page.getByRole("button", { name: "Paste skeleton response" }).click();
+  await page.getByLabel("Response for skeleton").fill(skeletonText);
+  await page.getByRole("button", { name: "Save" }).click();
+
+  // Ingesting the skeleton response auto-writes the per-module prompts
+  // (design decision 9); Advance again only if the daemon left that step
+  // pending, so this works whichever route actually landed the skeleton.
+  const firstModulePaste = page.getByRole("button", {
+    name: `Paste response for ${fixture.modules[0].title}`,
+  });
+  await page.getByRole("button", { name: "Advance" }).or(firstModulePaste).first().waitFor();
+  const advanceButton = page.getByRole("button", { name: "Advance" });
+  if (await advanceButton.isVisible()) {
+    await advanceButton.click();
+  }
+  await firstModulePaste.waitFor();
+
+  // One module at a time: DraftProgressPanel's "Save" button is not
+  // per-row-qualified, so only one row's paste editor is open at once (it
+  // closes itself on a successful save).
+  for (const module of fixture.modules) {
+    await page.getByRole("button", { name: `Paste response for ${module.title}` }).click();
+    await page.getByLabel(`Response for ${module.title}`).fill(JSON.stringify(module));
+    await page.getByRole("button", { name: "Save" }).click();
+  }
+
+  // The last module's ingest assembles the draft automatically; approve the
+  // assembled response without continuing into qa.
+  await page.getByRole("button", { name: "Approve draft only", exact: true }).click();
+  await expect(page.getByText("Approved draft.")).toBeVisible();
+
+  const approvedDraft = JSON.parse(
+    readFileSync(join(ws, "runs", "md", "approved", "draft.json"), "utf-8"),
+  ) as { modules: { id: string }[] };
+  expect(approvedDraft.modules.map((module) => module.id)).toEqual([
+    "loop-basics",
+    "intervention-practice",
+  ]);
+});

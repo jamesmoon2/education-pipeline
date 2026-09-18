@@ -225,9 +225,14 @@ describe("DraftProgressPanel paste", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "Paste response for How loops behave" }),
     );
+    // userEvent.type() (per @testing-library/user-event v14) parses a bare
+    // "{"/"}" as special-key syntax (e.g. "{enter}"), so literal braces in
+    // typed JSON must be escaped by doubling them -- otherwise it throws
+    // regardless of what the component does. Provable test bug, fixed here
+    // rather than left red.
     await userEvent.type(
       screen.getByLabelText("Response for How loops behave"),
-      '{"id":"loop-basics"}',
+      '{{"id":"loop-basics"}',
     );
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(postDraftUnitResponse).toHaveBeenCalledWith(

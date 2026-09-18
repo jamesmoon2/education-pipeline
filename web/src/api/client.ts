@@ -482,11 +482,6 @@ export const attachProfile = (topicId: string, profileId: string) =>
   apiPost<AttachProfileResult>(`/v1/topics/${encodeURIComponent(topicId)}/profile`, {
     profile_id: profileId,
   });
-// TODO(T25 green): wire `options.modules` into the POST body (§5: "modules
-// on a stage other than draft is a ConfigError" -- the daemon enforces
-// that; this client just needs to forward the field when given). Left
-// unwired for now so DraftProgressPanel's "Rerun" and the module-batch
-// client tests stay red until the daemon route (T24) lands.
 export const enqueueJob = (
   topicId: string,
   stage?: string,
@@ -495,7 +490,14 @@ export const enqueueJob = (
 ) =>
   apiPost<EnqueueJobResult>(
     "/v1/jobs",
-    stage ? { topic_id: topicId, stage, force } : { topic_id: topicId, force },
+    stage
+      ? {
+          topic_id: topicId,
+          stage,
+          force,
+          ...(options?.modules ? { modules: options.modules } : {}),
+        }
+      : { topic_id: topicId, force },
   );
 export const cancelJob = (jobId: string) =>
   apiPost<Job>(`/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {});
@@ -504,36 +506,39 @@ export const getBatch = (batchId: string) =>
 export const cancelBatch = (batchId: string) =>
   apiPost<BatchPayload>(`/v1/jobs/batch/${encodeURIComponent(batchId)}/cancel`, {});
 
-// TODO(T25 green): these three are unimplemented placeholders -- the
-// per-module drafting routes they call (`POST/PUT .../draft/{skeleton,
-// modules/<id>}/response`, `POST .../draft/assemble`) do not exist on the
-// daemon yet (T24, other worktree). Throwing keeps every new
-// DraftProgressPanel / client.test.ts case red rather than silently
-// hitting the wrong path.
+// Per-module drafting (design §5): the unit-level twins of
+// postResponse/putResponse/postAdvance's assemble step. `unit` "skeleton"
+// hits .../draft/skeleton/response; "module" hits
+// .../draft/modules/{moduleId}/response.
+function draftUnitPath(topicId: string, unit: "skeleton" | "module", moduleId: string | null) {
+  const base = `/v1/runs/${encodeURIComponent(topicId)}/draft`;
+  return unit === "skeleton"
+    ? `${base}/skeleton/response`
+    : `${base}/modules/${encodeURIComponent(moduleId ?? "")}/response`;
+}
 export const postDraftUnitResponse = (
-  _topicId: string,
-  _unit: "skeleton" | "module",
-  _moduleId: string | null,
-  _text: string,
-  _force = false,
-): Promise<DraftUnitResponseResult> => {
-  throw new Error("postDraftUnitResponse: not implemented");
-};
+  topicId: string,
+  unit: "skeleton" | "module",
+  moduleId: string | null,
+  text: string,
+  force = false,
+) =>
+  apiPost<DraftUnitResponseResult>(draftUnitPath(topicId, unit, moduleId), { text, force });
 export const putDraftUnitResponse = (
-  _topicId: string,
-  _unit: "skeleton" | "module",
-  _moduleId: string | null,
-  _text: string,
-  _baseSha256: string,
-): Promise<DraftUnitResponseResult> => {
-  throw new Error("putDraftUnitResponse: not implemented");
-};
-export const postDraftAssemble = (
-  _topicId: string,
-  _force = false,
-): Promise<DraftAssembleResult> => {
-  throw new Error("postDraftAssemble: not implemented");
-};
+  topicId: string,
+  unit: "skeleton" | "module",
+  moduleId: string | null,
+  text: string,
+  baseSha256: string,
+) =>
+  apiPut<DraftUnitResponseResult>(draftUnitPath(topicId, unit, moduleId), {
+    text,
+    base_sha256: baseSha256,
+  });
+export const postDraftAssemble = (topicId: string, force = false) =>
+  apiPost<DraftAssembleResult>(`/v1/runs/${encodeURIComponent(topicId)}/draft/assemble`, {
+    force,
+  });
 export const downloadFinal = (topicId: string, guideV1 = false) =>
   download(
     `/v1/runs/${encodeURIComponent(topicId)}/final/download`,
@@ -550,8 +555,6 @@ export const getConfigProviders = () =>
 export const getConfigCatalog = () =>
   api<{ providers: CatalogProvider[]; presets: CatalogPreset[] }>("/v1/config/catalog");
 export const getConfigPlan = () => api<PlanPayload>("/v1/config/plan");
-// TODO(T25 green): forward `parallelism` in the PUT body (decision 10) once
-// SettingsPage's Parallelism field calls this with a value.
 export const putConfigPlan = (
   baseSha256: string,
   provider: string,
@@ -562,6 +565,7 @@ export const putConfigPlan = (
     base_sha256: baseSha256,
     provider,
     stages,
+    ...(parallelism !== undefined ? { parallelism } : {}),
   });
 export const getRunPlan = (topicId: string) =>
   api<PlanPayload>(`/v1/runs/${encodeURIComponent(topicId)}/plan`);

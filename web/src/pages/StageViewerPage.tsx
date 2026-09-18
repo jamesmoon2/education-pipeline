@@ -339,6 +339,19 @@ function StageViewerForRoute({
           <DiffView a={approvalDelta.a} b={approvalDelta.b} />
         </section>
       )}
+      {data.stage === "draft" &&
+        run?.draft_progress &&
+        run.draft_progress.modules.length > 0 && (
+          <nav aria-label="Module contents">
+            <ul>
+              {run.draft_progress.modules.map((module) => (
+                <li key={module.id}>
+                  <a href={`#module-${module.id}`}>{module.title}</a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        )}
       {showEditor ? (
         <ResponseEditor
           topicId={topicId}
