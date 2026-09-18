@@ -187,6 +187,38 @@ describe("continueRun mechanical steps", () => {
     expect(result.stop).toEqual({ kind: "started", stage: "qa", provider: "claude-code" });
   });
 
+  it("takes the assemble action as an advance step (deterministic, no model call)", async () => {
+    const api = makeApi({
+      getRunStatus: vi.fn().mockResolvedValue(makeStatus("assemble", "draft")),
+      postAdvance: vi
+        .fn()
+        .mockResolvedValue(makeAdvance(makeStatus("approve", "draft"))),
+    });
+    const result = await continueRun("t", api);
+    expect(api.postAdvance).toHaveBeenCalledWith("t");
+    expect(result.steps).toEqual([{ kind: "advance", stage: "draft" }]);
+    expect(result.stop).toEqual({ kind: "approve", stage: "draft" });
+  });
+
+  it("reports a batch enqueue's job count on the started stop", async () => {
+    const api = makeApi({
+      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
+      getRunPlan: vi.fn().mockResolvedValue(makePlan("claude-code")),
+      enqueueJob: vi.fn().mockResolvedValue({
+        id: "j1",
+        batch_id: "batch-1",
+        jobs: [{ id: "j1" }, { id: "j2" }, { id: "j3" }],
+      }),
+    });
+    const result = await continueRun("t", api);
+    expect(result.stop).toEqual({
+      kind: "started",
+      stage: "draft",
+      provider: "claude-code",
+      count: 3,
+    });
+  });
+
   it("validates and then stops where the findings need review", async () => {
     const api = makeApi({
       getRunStatus: vi

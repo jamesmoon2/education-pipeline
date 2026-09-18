@@ -165,6 +165,21 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("weak choice for qa");
   });
 
+  it("shows a Parallelism input bound to plan.parallelism and includes it on Save", async () => {
+    const plan = makePlan({ parallelism: 2 });
+    setup(plan);
+    const input = await screen.findByLabelText("Parallelism");
+    expect(input).toHaveValue(2);
+    vi.mocked(putConfigPlan).mockResolvedValue(makePlan({ parallelism: 3 }));
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "3");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const call = vi.mocked(putConfigPlan).mock.calls[0];
+    expect(call[3]).toBe(3);
+  });
+
   it("Save sends the complete plan (every non-local stage), not just the edit", async () => {
     // PUT /v1/config/plan is a full replace, so Save must transmit the whole
     // intended plan or the daemon resets omitted stages to defaults.

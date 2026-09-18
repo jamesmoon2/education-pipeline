@@ -1056,6 +1056,87 @@ describe("StageViewerPage", () => {
     ).toBeInTheDocument();
   });
 
+  // Per-module drafting (T25 red half; docs/superpowers/specs/
+  // 2026-09-18-per-module-drafting-design.md §8): the draft stage viewer
+  // gains a module anchor list above the content once draft_progress
+  // reports modules. The diff for a re-run module ("changes since last
+  // run", per response.previous.json) is explicitly deferred to a later
+  // (green) half -- only the anchor list is pinned here.
+  describe("draft module anchors", () => {
+    it("renders a module anchor list above the content for a guide draft with drafted modules", async () => {
+      vi.mocked(getStageContent).mockResolvedValue({
+        topic_id: "t",
+        stage: "draft",
+        prompt: "# skeleton + module prompts",
+        response: '{"id":"course"}',
+        approved: null,
+        response_sha256: "sha-response",
+        content_type: "application/vnd.education-pipeline.guide+json;version=1.0",
+      });
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...makeRunStatus({ action: "save_response", stage: "draft" }),
+        content_contract: { kind: "interactive_guide", schema_version: "1.1" },
+        draft_progress: {
+          skeleton: { state: "response_ingested", error: null, job_id: null },
+          modules: [
+            {
+              id: "loop-basics",
+              title: "How loops behave",
+              state: "response_ingested",
+              response_sha256: "sha-a",
+              error: null,
+              job_id: null,
+            },
+            {
+              id: "intervention-practice",
+              title: "Practice interventions",
+              state: "prompt_written",
+              response_sha256: null,
+              error: null,
+              job_id: null,
+            },
+          ],
+          assembled: null,
+          superseded: false,
+          parallelism: 2,
+          counts: { total: 2, saved: 1, stale: 0 },
+        },
+      });
+
+      renderAt("/topics/t/stages/draft");
+
+      const nav = await screen.findByRole("navigation", { name: "Module contents" });
+      const links = within(nav).getAllByRole("link");
+      expect(links.map((link) => link.textContent)).toEqual([
+        "How loops behave",
+        "Practice interventions",
+      ]);
+      expect(links[0]).toHaveAttribute("href", "#module-loop-basics");
+      expect(links[1]).toHaveAttribute("href", "#module-intervention-practice");
+    });
+
+    it("renders no module anchor list when draft_progress has no modules yet (or on a legacy run)", async () => {
+      vi.mocked(getStageContent).mockResolvedValue({
+        topic_id: "t",
+        stage: "draft",
+        prompt: "# the prompt",
+        response: null,
+        approved: null,
+        response_sha256: null,
+        content_type: "text/markdown",
+      });
+      vi.mocked(getRunStatus).mockResolvedValue(
+        makeRunStatus({ action: "save_response", stage: "draft" }),
+      );
+
+      renderAt("/topics/t/stages/draft");
+      await screen.findByRole("heading", { name: "the prompt" });
+      expect(
+        screen.queryByRole("navigation", { name: "Module contents" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   // Thread T07: the header should surface this stage's own entry from the
   // run's cost.stages map (education_pipeline/daemon/read_api.py, thread
   // T06) -- not the run total. RunStatus does not yet declare `cost`, so

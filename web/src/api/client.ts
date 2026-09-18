@@ -41,6 +41,10 @@ import type {
   PersonalizationPayload,
   AuditPreparationResult,
   WorkspacePayload,
+  BatchPayload,
+  EnqueueJobResult,
+  DraftUnitResponseResult,
+  DraftAssembleResult,
 } from "./types";
 import { isMetadataNumber, metadataNumber, metadataNumberValidationMessage } from "./types";
 
@@ -478,13 +482,63 @@ export const attachProfile = (topicId: string, profileId: string) =>
   apiPost<AttachProfileResult>(`/v1/topics/${encodeURIComponent(topicId)}/profile`, {
     profile_id: profileId,
   });
-export const enqueueJob = (topicId: string, stage?: string, force = false) =>
-  apiPost<Job>(
+export const enqueueJob = (
+  topicId: string,
+  stage?: string,
+  force = false,
+  options?: { modules?: string[] },
+) =>
+  apiPost<EnqueueJobResult>(
     "/v1/jobs",
-    stage ? { topic_id: topicId, stage, force } : { topic_id: topicId, force },
+    stage
+      ? {
+          topic_id: topicId,
+          stage,
+          force,
+          ...(options?.modules ? { modules: options.modules } : {}),
+        }
+      : { topic_id: topicId, force },
   );
 export const cancelJob = (jobId: string) =>
   apiPost<Job>(`/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+export const getBatch = (batchId: string) =>
+  api<BatchPayload>(`/v1/jobs/batch/${encodeURIComponent(batchId)}`);
+export const cancelBatch = (batchId: string) =>
+  apiPost<BatchPayload>(`/v1/jobs/batch/${encodeURIComponent(batchId)}/cancel`, {});
+
+// Per-module drafting (design §5): the unit-level twins of
+// postResponse/putResponse/postAdvance's assemble step. `unit` "skeleton"
+// hits .../draft/skeleton/response; "module" hits
+// .../draft/modules/{moduleId}/response.
+function draftUnitPath(topicId: string, unit: "skeleton" | "module", moduleId: string | null) {
+  const base = `/v1/runs/${encodeURIComponent(topicId)}/draft`;
+  return unit === "skeleton"
+    ? `${base}/skeleton/response`
+    : `${base}/modules/${encodeURIComponent(moduleId ?? "")}/response`;
+}
+export const postDraftUnitResponse = (
+  topicId: string,
+  unit: "skeleton" | "module",
+  moduleId: string | null,
+  text: string,
+  force = false,
+) =>
+  apiPost<DraftUnitResponseResult>(draftUnitPath(topicId, unit, moduleId), { text, force });
+export const putDraftUnitResponse = (
+  topicId: string,
+  unit: "skeleton" | "module",
+  moduleId: string | null,
+  text: string,
+  baseSha256: string,
+) =>
+  apiPut<DraftUnitResponseResult>(draftUnitPath(topicId, unit, moduleId), {
+    text,
+    base_sha256: baseSha256,
+  });
+export const postDraftAssemble = (topicId: string, force = false) =>
+  apiPost<DraftAssembleResult>(`/v1/runs/${encodeURIComponent(topicId)}/draft/assemble`, {
+    force,
+  });
 export const downloadFinal = (topicId: string, guideV1 = false) =>
   download(
     `/v1/runs/${encodeURIComponent(topicId)}/final/download`,
@@ -505,11 +559,13 @@ export const putConfigPlan = (
   baseSha256: string,
   provider: string,
   stages: Record<string, StageOverride>,
+  parallelism?: number,
 ) =>
   apiPut<PlanPayload>("/v1/config/plan", {
     base_sha256: baseSha256,
     provider,
     stages,
+    ...(parallelism !== undefined ? { parallelism } : {}),
   });
 export const getRunPlan = (topicId: string) =>
   api<PlanPayload>(`/v1/runs/${encodeURIComponent(topicId)}/plan`);

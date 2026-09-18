@@ -974,6 +974,29 @@ pre.log-tail { max-height: none; font-size: 0.8125rem; color: var(--ep-color-tex
   margin: var(--ep-space-3) 0;
 }
 
+.draft-progress-panel {
+  border-left: 3px solid var(--ep-color-accent);
+  padding: var(--ep-space-2) var(--ep-space-4);
+  margin: var(--ep-space-3) 0;
+}
+.draft-progress-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--ep-space-2);
+}
+.draft-progress-row {
+  padding: var(--ep-space-2) 0;
+  border-bottom: 1px solid var(--ep-color-border);
+}
+.draft-progress-title { font-weight: 600; }
+.draft-progress-state { color: var(--ep-color-text-muted); }
+.draft-progress-row-actions { margin-top: var(--ep-space-1); }
+.draft-progress-paste { margin-top: var(--ep-space-1); }
+.draft-progress-paste label { display: block; }
+.draft-progress-paste textarea { width: 100%; }
+
 /* ---------------------------------------------------- run-board workspace */
 .run-personalization-workspace {
   display: grid;

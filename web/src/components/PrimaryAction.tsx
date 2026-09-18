@@ -76,6 +76,13 @@ export default function PrimaryAction({
   // for such a stage is a re-approval that overwrites the prior copy.
   const reapproving = status.stages.some((s) => s.stage === stage && s.approved);
   const approveLabel = reapproving ? `Approve changes to ${stage}` : `Approve ${stage}`;
+  // A guide draft with module rows already fanned out (skeleton ingested,
+  // module prompts written) delegates the per-unit paste loop to
+  // DraftProgressPanel; the stage-level "paste one whole response" loop
+  // only applies before that fan-out, and to legacy (non-guide) runs, whose
+  // status carries no draft_progress at all.
+  const moduleDrafting =
+    stage === "draft" && (status.draft_progress?.modules.length ?? 0) > 0;
 
   if (activeJob) {
     return <ActiveJobStatus job={activeJob} />;
@@ -93,7 +100,15 @@ export default function PrimaryAction({
           Advance
         </button>
       )}
-      {next.action === "save_response" && stage && (
+      {next.action === "save_response" && stage && moduleDrafting && (
+        <button
+          disabled={busy}
+          onClick={() => run(() => enqueueJob(topicId), { successMessage: "Job enqueued." })}
+        >
+          Run modules with provider
+        </button>
+      )}
+      {next.action === "save_response" && stage && !moduleDrafting && (
         <>
           <button
             disabled={busy}
@@ -179,6 +194,16 @@ export default function PrimaryAction({
             review first
           </Link>
         </>
+      )}
+      {next.action === "assemble" && (
+        <button
+          disabled={busy}
+          onClick={() =>
+            run(() => postAdvance(topicId), { successMessage: "Draft assembled." })
+          }
+        >
+          Assemble draft
+        </button>
       )}
       {next.action === "validate" && stage && (
         <button
