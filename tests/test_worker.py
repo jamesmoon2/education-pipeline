@@ -384,10 +384,13 @@ def test_worker_bounds_concurrent_batch_jobs_to_parallelism_and_overlaps(tmp_pat
 
     assert tracker.peak <= 2
     assert all(store.find(job.id).status == "succeeded" for job in jobs)
-    # 4 jobs at parallelism 2 take 2 "rounds": faster than fully serial (4
-    # delays -- generous margin below 3) but not faster than fully parallel
-    # (1 delay -- generous margin above 2 rounds of 2).
-    assert elapsed < 3 * delay
+    # The overlap claim is the tracker's, not the clock's: at parallelism 2
+    # the second thread must have started a job while the first was still
+    # inside one (peak == 2). Wall time only bounds from below -- 4 jobs at
+    # 2 a time cannot finish inside one delay -- because per-job subprocess
+    # overhead on a slow CI runner (macOS measured 1.66 s here) makes any
+    # upper bound tighter than "fully serial" flaky.
+    assert tracker.peak == 2
     assert elapsed >= 1.6 * delay
 
 
