@@ -927,6 +927,24 @@ class RunStore:
             detail=f"Run {topic_id!r} is complete and finalized.",
         )
 
+    def _factcheck_grandfathered(self, by_stage: dict[str, StageStatus]) -> bool:
+        """True when an approved repair excuses a run's missing factcheck.
+
+        Grandfather pre-feature runs that already approved repair before the
+        factcheck stage existed: never demand a factcheck for a run whose
+        repair is already done *and still current*. Once that repair goes
+        stale it has to be rebuilt, and ``write_repair_prompt`` requires an
+        approved factcheck -- so stop skipping the stage rather than advertise
+        a rebuild the run cannot perform.
+        """
+
+        repair = by_stage["repair"]
+        return (
+            repair.approved
+            and not repair.stale
+            and not by_stage["factcheck"].approved
+        )
+
     def _next_action_guide_v1(
         self,
         topic_id: str,
@@ -935,7 +953,7 @@ class RunStore:
     ) -> NextAction:
         by_stage = {status.stage: status for status in stages}
 
-        for stage_name in ("spec", "outline", "draft"):
+        for stage_name in _unbound_stages("interactive_guide"):
             pending = self._pending_stage_action(topic_id, by_stage[stage_name])
             if pending is not None:
                 return pending
@@ -990,21 +1008,9 @@ class RunStore:
                 ),
             )
 
-        for stage_name in ("qa", "factcheck", "repair"):
+        for stage_name in _bound_stages("interactive_guide"):
             status = by_stage[stage_name]
-            if (
-                stage_name == "factcheck"
-                and by_stage["repair"].approved
-                and not by_stage["repair"].stale
-                and not by_stage["factcheck"].approved
-            ):
-                # Grandfather pre-feature runs that already approved repair
-                # before the factcheck stage existed: never demand a factcheck
-                # for a run whose repair is already done *and still current*.
-                # Once that repair goes stale it has to be rebuilt, and
-                # write_repair_prompt requires an approved factcheck -- so stop
-                # skipping the stage rather than advertise a rebuild the run
-                # cannot perform.
+            if stage_name == "factcheck" and self._factcheck_grandfathered(by_stage):
                 continue
             if status.approved and status.stale:
                 return self._stale_stage_rebuild_action(topic_id, stage_name)
@@ -4167,6 +4173,26 @@ class RunStore:
 _GUIDE_SOURCE_SHA_MEMO_LIMIT = 256
 _GUIDE_SOURCE_SHA_MEMO: dict[str, str] = {}
 _GUIDE_SOURCE_SHA_MEMO_LOCK = threading.Lock()
+
+
+def _bound_stages(mode: str) -> tuple[str, ...]:
+    """``mode``'s required stages whose prompt embeds an upstream approved stage.
+
+    The tail of the chain -- qa, factcheck, repair for interactive guides --
+    read off the stage graph rather than spelled out at the walk.
+    """
+
+    return tuple(
+        name for name in graph_required_stages(mode) if graph_sources_of(name)
+    )
+
+
+def _unbound_stages(mode: str) -> tuple[str, ...]:
+    """``mode``'s required stages with no upstream sources: the head of the chain."""
+
+    return tuple(
+        name for name in graph_required_stages(mode) if not graph_sources_of(name)
+    )
 
 
 def _recorded_source_shas(event: dict, stage: str) -> dict[str, str | None]:
