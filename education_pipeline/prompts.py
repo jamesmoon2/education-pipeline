@@ -12,6 +12,9 @@ from education_pipeline.guides.blueprints import Blueprint
 from education_pipeline.guides.model import (
     DEFAULT_GUIDE_SCHEMA_VERSION,
     SUPPORTED_GUIDE_SCHEMA_VERSIONS,
+    Guide,
+    Module,
+    Section,
 )
 from education_pipeline.guides.personalization import (
     active_personalization_facets,
@@ -1483,6 +1486,46 @@ _MODULE_REPAIR_QUALITY_LINES = (
     "the JSON.",
 )
 
+_SECTION_REPAIR_HEADER_LINES = (
+    "# Repair Stage Prompt (Section Scope)",
+    "",
+    "You are regenerating exactly one section of one module of a course draft for a local-first "
+    "education pipeline.",
+    "Apply the in-scope findings to the section below and return the revised section in full.",
+    "Change only what the findings require; preserve everything the review did not flag.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The in-scope findings, which define the required fixes.",
+    "4. The section to regenerate, which is the base to revise.",
+    "5. Topic requirements.",
+    "6. Learner profile context.",
+)
+
+_SECTION_REPAIR_QUALITY_LINES = (
+    "## Quality Bar",
+    "- Resolve every in-scope blocking deterministic finding and every in-scope blocker or major "
+    "model-QA finding that falls inside this section.",
+    "- Resolve every blocker or major fact-check finding that applies to this section.",
+    "- On a factual conflict between the reports, prefer the fact-check report; on pedagogy or "
+    "coverage, prefer the QA report; do not invent a third answer.",
+    "- Module-level and guide-level findings are out of scope for this call: they cannot be fixed "
+    "from inside one section, so leave them to a module-scoped or whole-guide repair.",
+    "- Do not fix out-of-scope findings; they are context so cross-references stay coherent.",
+    "- Preserve stable IDs and valid unflagged structure inside the section; change only what the "
+    "findings require.",
+    "- Keep `outcome_ids` references within the guide contract's outcomes.",
+    "- Any new element id must be globally unique across the whole course, not just this section "
+    "or this module.",
+    "- Use only the registered keys and the six registered block types; never invent new keys or "
+    "block types.",
+    "- Never include private learner-profile values in the section JSON.",
+    "- Use Markdown only inside the designated `markdown` fields.",
+    "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in "
+    "the JSON.",
+)
+
 _QA_FINDINGS_HEADING_RE = re.compile(r"(?m)^##\s+Findings\s*$")
 _QA_SECTION_HEADING_RE = re.compile(r"(?m)^##\s+")
 _QA_ITEM_RE = re.compile(r"(?m)^\s*\d+\.\s")
@@ -1510,6 +1553,139 @@ def _split_qa_finding_items(qa_markdown: str) -> list[str]:
         if item:
             items.append(item)
     return items
+
+
+@dataclass(frozen=True)
+class _ScopedRepairInputs:
+    """The resolved, shared inputs of a module- or section-scoped repair prompt."""
+
+    contract_text: str
+    guide_schema_version: str
+    guide: Guide
+    module: Module
+    module_index: int
+    module_text: str
+    section: Section | None
+    section_index: int | None
+    section_text: str | None
+    scoped_findings_text: str
+
+
+def _scoped_repair_inputs(
+    *,
+    module_id: str,
+    section_id: str | None,
+    draft_guide_json: str,
+    qa_findings_markdown: str,
+    factcheck_findings_markdown: str,
+    draft_findings_json: str,
+    guide_contract: bytes,
+) -> _ScopedRepairInputs:
+    """Resolve the scope and filter the deterministic findings to it.
+
+    Shared by the module- and section-scoped repair compilers, so both agree
+    on the required blocks, the contract version, the target lookup (an
+    unknown module or section is a :class:`ConfigError` naming the known ids)
+    and the JSON-pointer prefix the deterministic findings are filtered by:
+    ``/modules/<i>`` for a module scope, ``/modules/<i>/sections/<j>`` for a
+    section scope. Anything above the scope -- a sibling section, a
+    module-level finding under a section scope, another module -- is dropped,
+    because the reply cannot carry a fix for it.
+    """
+
+    from education_pipeline.guides.canonical import guide_to_dict
+    from education_pipeline.guides.parse import normalize_guide, parse_guide
+
+    scope_label = "section-scoped" if section_id is not None else "module-scoped"
+    _required_block(draft_guide_json, "draft guide JSON")
+    _required_block(qa_findings_markdown, "QA findings")
+    _required_block(factcheck_findings_markdown, "factcheck findings")
+    _required_block(draft_findings_json, "draft findings")
+    contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
+
+    parsed = parse_guide(draft_guide_json)
+    if not parsed.ok:
+        raise ConfigError(
+            f"draft guide JSON must be a valid guide document for a {scope_label} repair"
+        )
+    guide = normalize_guide(parsed)
+    module_index = next(
+        (
+            position
+            for position, module in enumerate(guide.modules)
+            if module.id == module_id
+        ),
+        None,
+    )
+    if module_index is None:
+        known = ", ".join(module.id for module in guide.modules)
+        raise ConfigError(
+            f"module {module_id!r} is not present in the approved draft; "
+            f"known modules: {known}"
+        )
+    module = guide.modules[module_index]
+    module_text = json.dumps(
+        guide_to_dict(module), ensure_ascii=False, indent=2, sort_keys=True
+    )
+
+    section = None
+    section_index = None
+    section_text = None
+    prefix = f"/modules/{module_index}"
+    if section_id is not None:
+        section_index = next(
+            (
+                position
+                for position, candidate in enumerate(module.sections)
+                if candidate.id == section_id
+            ),
+            None,
+        )
+        if section_index is None:
+            known = ", ".join(candidate.id for candidate in module.sections)
+            raise ConfigError(
+                f"section {section_id!r} is not present in module {module_id!r} of the "
+                f"approved draft; known sections: {known}"
+            )
+        section = module.sections[section_index]
+        section_text = json.dumps(
+            guide_to_dict(section), ensure_ascii=False, indent=2, sort_keys=True
+        )
+        prefix = f"{prefix}/sections/{section_index}"
+
+    try:
+        findings_payload = json.loads(draft_findings_json)
+    except json.JSONDecodeError as exc:
+        raise ConfigError("draft findings must be valid JSON") from exc
+    all_findings = (
+        findings_payload.get("findings", [])
+        if isinstance(findings_payload, dict)
+        else []
+    )
+    in_scope_findings = [
+        finding
+        for finding in all_findings
+        if isinstance(finding, dict)
+        and isinstance(finding.get("path"), str)
+        and (
+            finding["path"] == prefix or finding["path"].startswith(prefix + "/")
+        )
+    ]
+    scoped_findings_text = json.dumps(
+        {"findings": in_scope_findings}, ensure_ascii=False, indent=2
+    )
+    return _ScopedRepairInputs(
+        contract_text=contract_text,
+        guide_schema_version=guide_schema_version,
+        guide=guide,
+        module=module,
+        module_index=module_index,
+        module_text=module_text,
+        section=section,
+        section_index=section_index,
+        section_text=section_text,
+        scoped_findings_text=scoped_findings_text,
+    )
 
 
 def compile_guide_v1_module_repair_prompt(
@@ -1541,62 +1717,21 @@ def compile_guide_v1_module_repair_prompt(
     Findings`` section is always present.
     """
 
-    from education_pipeline.guides.canonical import guide_to_dict
-    from education_pipeline.guides.parse import normalize_guide, parse_guide
-
-    _required_block(draft_guide_json, "draft guide JSON")
-    _required_block(qa_findings_markdown, "QA findings")
-    _required_block(factcheck_findings_markdown, "factcheck findings")
-    _required_block(draft_findings_json, "draft findings")
-    contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
-
-    parsed = parse_guide(draft_guide_json)
-    if not parsed.ok:
-        raise ConfigError(
-            "draft guide JSON must be a valid guide document for a module-scoped repair"
-        )
-    guide = normalize_guide(parsed)
-    module_index = next(
-        (
-            position
-            for position, module in enumerate(guide.modules)
-            if module.id == module_id
-        ),
-        None,
+    scoped = _scoped_repair_inputs(
+        module_id=module_id,
+        section_id=None,
+        draft_guide_json=draft_guide_json,
+        qa_findings_markdown=qa_findings_markdown,
+        factcheck_findings_markdown=factcheck_findings_markdown,
+        draft_findings_json=draft_findings_json,
+        guide_contract=guide_contract,
     )
-    if module_index is None:
-        known = ", ".join(module.id for module in guide.modules)
-        raise ConfigError(
-            f"module {module_id!r} is not present in the approved draft; "
-            f"known modules: {known}"
-        )
-    module = guide.modules[module_index]
-    module_text = json.dumps(
-        guide_to_dict(module), ensure_ascii=False, indent=2, sort_keys=True
-    )
-
-    try:
-        findings_payload = json.loads(draft_findings_json)
-    except json.JSONDecodeError as exc:
-        raise ConfigError("draft findings must be valid JSON") from exc
-    all_findings = (
-        findings_payload.get("findings", [])
-        if isinstance(findings_payload, dict)
-        else []
-    )
-    prefix = f"/modules/{module_index}"
-    in_module_findings = [
-        finding
-        for finding in all_findings
-        if isinstance(finding, dict)
-        and isinstance(finding.get("path"), str)
-        and (
-            finding["path"] == prefix or finding["path"].startswith(prefix + "/")
-        )
-    ]
-    scoped_findings_text = json.dumps(
-        {"findings": in_module_findings}, ensure_ascii=False, indent=2
-    )
+    contract_text = scoped.contract_text
+    guide_schema_version = scoped.guide_schema_version
+    guide = scoped.guide
+    module = scoped.module
+    module_text = scoped.module_text
+    scoped_findings_text = scoped.scoped_findings_text
 
     qa_items = _split_qa_finding_items(qa_findings_markdown)
     needles = (module_id.casefold(), module.title.casefold())
@@ -1690,6 +1825,181 @@ def compile_guide_v1_module_repair_prompt(
                 "structure.",
                 "module",
                 _untrusted_block("module JSON", module_text),
+            ),
+            (
+                "## Rest Of The Course (Context Only)",
+                "The other modules' ids, titles, and outcome ids, so cross-references stay "
+                "coherent. Do not modify them.",
+                "course summary",
+                "\n".join(summary_lines),
+            ),
+        ),
+        output_and_quality_lines=output_lines,
+        topic=topic,
+        profile=_profile_without_authoritative_goals(profile, guide_schema_version),
+    )
+
+
+def compile_guide_v1_section_repair_prompt(
+    topic: Topic,
+    *,
+    module_id: str,
+    section_id: str,
+    draft_guide_json: str,
+    qa_findings_markdown: str,
+    factcheck_findings_markdown: str,
+    draft_findings_json: str,
+    guide_contract: bytes,
+    profile: LearnerProfile | None = None,
+    blueprint: Blueprint | None = None,
+) -> PromptArtifact:
+    """Compile the section-scoped variant of the guide-v1 repair prompt.
+
+    The narrowest scope the repair stage offers, and structurally the module
+    prompt one level down: the guide contract, the deterministic findings
+    filtered to the ``/modules/<i>/sections/<j>`` prefix, the whole enclosing
+    module embedded for context (so cross-section references stay coherent),
+    the single section's JSON as the base to revise, and a compact summary of
+    the rest of the course. Output contract: exactly one section object with
+    the same ``id``.
+
+    Module-level and guide-level findings are stated to be out of scope: a
+    reply that is one section cannot carry a fix for them, so they are listed
+    as context and left to a module-scoped or whole-guide repair. The
+    fact-check report is embedded in full for the same reason the module
+    prompt embeds it in full (v1 does not filter fact-check findings by
+    location); the model is told to apply only the findings that fall inside
+    this section. An unknown module or section is a :class:`ConfigError`.
+    """
+
+    scoped = _scoped_repair_inputs(
+        module_id=module_id,
+        section_id=section_id,
+        draft_guide_json=draft_guide_json,
+        qa_findings_markdown=qa_findings_markdown,
+        factcheck_findings_markdown=factcheck_findings_markdown,
+        draft_findings_json=draft_findings_json,
+        guide_contract=guide_contract,
+    )
+    guide_schema_version = scoped.guide_schema_version
+    module = scoped.module
+
+    qa_items = _split_qa_finding_items(qa_findings_markdown)
+    section = scoped.section
+    needles = (
+        section_id.casefold(),
+        section.title.casefold(),
+        module_id.casefold(),
+        module.title.casefold(),
+    )
+    in_scope_items = [
+        item for item in qa_items if any(needle in item.casefold() for needle in needles)
+    ]
+    out_of_scope_items = [item for item in qa_items if item not in in_scope_items]
+
+    sibling_lines = [
+        f"- {other.id}: {other.title}"
+        for other in module.sections
+        if other.id != section_id
+    ] or ["- (this section is the only section in the module)"]
+    summary_lines = [
+        f"- {other.id}: {other.title} (outcomes: {', '.join(other.outcome_ids)})"
+        for other in scoped.guide.modules
+        if other.id != module_id
+    ] or ["- (this module is the only module in the course)"]
+
+    personalization_lines = _private_personalization_lines(
+        profile, guide_schema_version
+    )
+    personalization_suffix = (
+        ("", *personalization_lines) if personalization_lines else ()
+    )
+    output_lines = (
+        "## Output Format",
+        "Return exactly one JSON object: the revised section, in the same section shape as the "
+        "guide schema's `sections` entries -- never the whole guide, the whole module, a diff, or "
+        f"a partial patch. Keep the same `id` (`{section_id}`). Do not return the whole guide. "
+        "Do not wrap the object in Markdown fences and do not add commentary before or after it.",
+        "",
+        "### Schema Reference",
+        *_versioned_lines(_GUIDE_SCHEMA_REFERENCE_LINES, guide_schema_version),
+        "",
+        *_guide_json_output_lines(_SECTION_REPAIR_QUALITY_LINES, guide_schema_version),
+        *personalization_suffix,
+    )
+    return _compile_stage_prompt(
+        stage="repair",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "repair_lines"),
+        header_lines=_SECTION_REPAIR_HEADER_LINES,
+        sections=(
+            (
+                "## Guide Contract",
+                "The following machine-readable contract was derived from the approved "
+                "specification and outline. Its constraints are binding; the regenerated section "
+                "must not drift outside them.",
+                "guide contract",
+                scoped.contract_text,
+            ),
+            (
+                "## Approved Model-QA Findings (This Section)",
+                "The in-scope model-QA fixes for this section. Resolve every blocker and major "
+                "finding.",
+                "qa findings",
+                _untrusted_block(
+                    "in-scope model-QA findings",
+                    "\n".join(in_scope_items) if in_scope_items else "(none)",
+                ),
+            ),
+            (
+                "## Out-Of-Scope Findings (Context Only)",
+                "Findings that could not be matched to this section. Do not fix them here; they "
+                "are context only. Module-level and guide-level findings are out of scope for "
+                "this call: one section cannot carry their fix, so they are left to a "
+                "module-scoped or whole-guide repair.",
+                "out-of-scope findings",
+                _untrusted_block(
+                    "out-of-scope model-QA findings",
+                    "\n".join(out_of_scope_items) if out_of_scope_items else "(none)",
+                ),
+            ),
+            (
+                "## Approved Fact-Check Findings",
+                "The full fact-check report. Apply the factual fixes that fall inside this "
+                "section and treat the rest as context. Resolve every in-scope blocker and major "
+                "finding.",
+                "factcheck findings",
+                _untrusted_block(
+                    "approved fact-check findings", factcheck_findings_markdown
+                ),
+            ),
+            (
+                "## Deterministic Draft Findings (This Section)",
+                "Machine-generated validation findings located inside this section. Resolve every "
+                "blocking finding. Module-level and guide-level findings are out of scope and are "
+                "not listed here.",
+                "draft findings",
+                _untrusted_block("deterministic draft findings", scoped.scoped_findings_text),
+            ),
+            (
+                "## Enclosing Module (Context Only)",
+                "The whole module this section belongs to, so cross-section references, ordering, "
+                "and the module's interaction budget stay coherent. Do not return it; return only "
+                "the section below.",
+                "module",
+                _untrusted_block("module JSON", scoped.module_text),
+            ),
+            (
+                "## Section To Regenerate",
+                "The base section JSON to revise. Preserve stable IDs and valid unflagged "
+                "structure.",
+                "section",
+                _untrusted_block("section JSON", scoped.section_text or ""),
+            ),
+            (
+                "## Sibling Sections (Context Only)",
+                "The other sections' ids and titles in this module. Do not modify them.",
+                "sibling sections",
+                "\n".join(sibling_lines),
             ),
             (
                 "## Rest Of The Course (Context Only)",

@@ -32,6 +32,20 @@ class StaleContentError(Exception):
     """The response file changed on disk since the client loaded it."""
 
 
+@dataclass(frozen=True)
+class RepairScope:
+    """The target of a pending scoped repair.
+
+    A module-scoped repair regenerates one whole module (``section_id`` is
+    ``None``); a section-scoped repair regenerates exactly one section of
+    that module. Frozen and comparable, so callers can pass it around and
+    compare it without caring how the manifest spells it.
+    """
+
+    module_id: str
+    section_id: str | None = None
+
+
 def _relative_to(path: Path, run: Path) -> str:
     return path.relative_to(run).as_posix()
 

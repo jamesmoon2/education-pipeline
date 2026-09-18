@@ -195,6 +195,176 @@ def test_splice_module_rejects_non_module_payloads() -> None:
         splice_module(_base_json(), "loop-basics", _base_json())
 
 
+def _section_json(section: dict) -> str:
+    return json.dumps(section, ensure_ascii=False)
+
+
+def test_splice_section_replaces_only_the_target_section() -> None:
+    from education_pipeline.guides.canonical import splice_section
+
+    data = _fixture_data()
+    revised = json.loads(json.dumps(data["modules"][0]["sections"][0]))
+    revised["title"] = "From events to loops, regenerated"
+    revised["blocks"][0]["markdown"] = "A fully regenerated opener."
+
+    merged_bytes = splice_section(
+        _base_json(), "loop-basics", "feedback-foundations", _section_json(revised)
+    )
+
+    # The canonical base with only that section swapped is exactly the result.
+    expected = _fixture_data()
+    expected["modules"][0]["sections"][0] = revised
+    expected_bytes = canonical_guide_bytes(
+        normalize_guide(parse_guide(json.dumps(expected, ensure_ascii=False)))
+    )
+    assert merged_bytes == expected_bytes
+
+    merged = json.loads(merged_bytes)
+    module = next(m for m in merged["modules"] if m["id"] == "loop-basics")
+    assert [s["id"] for s in module["sections"]] == [
+        s["id"] for s in data["modules"][0]["sections"]
+    ]
+    assert module["sections"][0]["title"] == "From events to loops, regenerated"
+
+
+def test_splice_section_rejects_section_id_rename() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    revised = _fixture_data()["modules"][0]["sections"][0]
+    revised["id"] = "feedback-foundations-renamed"
+
+    with pytest.raises(SpliceError, match="rename"):
+        splice_section(
+            _base_json(), "loop-basics", "feedback-foundations", _section_json(revised)
+        )
+
+
+def test_splice_section_rejects_unknown_module() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    revised = _fixture_data()["modules"][0]["sections"][0]
+
+    with pytest.raises(SpliceError, match="no-such-module"):
+        splice_section(
+            _base_json(), "no-such-module", "feedback-foundations", _section_json(revised)
+        )
+
+
+def test_splice_section_rejects_unknown_section() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    revised = _fixture_data()["modules"][0]["sections"][0]
+    revised["id"] = "no-such-section"
+
+    with pytest.raises(SpliceError, match="no-such-section"):
+        splice_section(
+            _base_json(), "loop-basics", "no-such-section", _section_json(revised)
+        )
+
+
+def test_splice_section_rejects_non_section_payloads() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    with pytest.raises(SpliceError, match="not valid JSON"):
+        splice_section(_base_json(), "loop-basics", "feedback-foundations", "not json {")
+
+    with pytest.raises(SpliceError, match="single JSON object"):
+        splice_section(
+            _base_json(), "loop-basics", "feedback-foundations", json.dumps([1, 2])
+        )
+
+    # A fragment carrying a `sections` key is module-shaped, not section-shaped.
+    fragment_with_sections = dict(_fixture_data()["modules"][0]["sections"][0])
+    fragment_with_sections["sections"] = []
+    with pytest.raises(SpliceError, match="single section object"):
+        splice_section(
+            _base_json(),
+            "loop-basics",
+            "feedback-foundations",
+            json.dumps(fragment_with_sections),
+        )
+
+    # A fragment carrying a `modules` key is guide-shaped, not section-shaped.
+    fragment_with_modules = dict(_fixture_data()["modules"][0]["sections"][0])
+    fragment_with_modules["modules"] = []
+    with pytest.raises(SpliceError, match="single section object"):
+        splice_section(
+            _base_json(),
+            "loop-basics",
+            "feedback-foundations",
+            json.dumps(fragment_with_modules),
+        )
+
+    # A whole guide is not a section.
+    with pytest.raises(SpliceError, match="rename|section"):
+        splice_section(_base_json(), "loop-basics", "feedback-foundations", _base_json())
+
+
+def test_splice_section_rejects_element_id_collision_with_another_section() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    data = _fixture_data()
+    revised = data["modules"][0]["sections"][0]
+    sibling_block_id = data["modules"][0]["sections"][1]["blocks"][0]["id"]
+    revised["blocks"][0]["id"] = sibling_block_id
+
+    with pytest.raises(SpliceError, match="duplicate"):
+        splice_section(
+            _base_json(), "loop-basics", "feedback-foundations", _section_json(revised)
+        )
+
+
+def test_splice_section_rejects_element_id_collision_with_another_module() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    data = _fixture_data()
+    revised = data["modules"][0]["sections"][0]
+    other_block_id = data["modules"][1]["sections"][0]["blocks"][0]["id"]
+    revised["blocks"][0]["id"] = other_block_id
+
+    with pytest.raises(SpliceError, match="duplicate"):
+        splice_section(
+            _base_json(), "loop-basics", "feedback-foundations", _section_json(revised)
+        )
+
+
+def test_splice_section_rejects_a_merged_guide_failing_strict_parse() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    data = _fixture_data()
+    # The "recognize-loop-types" section holds the module's only interactive
+    # blocks; replacing them with a plain rich_text block leaves the module
+    # with none, so the merged guide fails strict parse (module.no_interaction).
+    revised = data["modules"][0]["sections"][1]
+    revised["blocks"] = [
+        {
+            "id": "recognize-loop-types-note",
+            "type": "rich_text",
+            "outcome_ids": ["map-loop"],
+            "markdown": "A plain note with no interaction.",
+        }
+    ]
+
+    with pytest.raises(SpliceError, match="not valid"):
+        splice_section(
+            _base_json(), "loop-basics", "recognize-loop-types", _section_json(revised)
+        )
+
+
 def test_empty_personalization_annotations_are_omitted_for_both_versions() -> None:
     for version in ("1.0", "1.1"):
         data = json.loads(FIXTURE.read_text(encoding="utf-8"))

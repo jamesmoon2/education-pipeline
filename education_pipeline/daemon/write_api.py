@@ -33,7 +33,7 @@ from education_pipeline.atomic_io import atomic_write_bytes, read_bytes_retrying
 from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
-from education_pipeline.runs import RunStore, StaleContentError
+from education_pipeline.runs import RepairScope, RunStore, StaleContentError
 from education_pipeline.topics import TIME_BUDGET_MINUTES_RANGE, Topic, emit_topic_toml
 from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
 
@@ -107,9 +107,16 @@ def advance_run(
     *,
     blueprint: str | None = None,
     repair_module: str | None = None,
+    repair_section: str | None = None,
 ) -> dict:
     _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
+    if repair_section is not None and repair_module is None:
+        # The module is what locates the section; a section alone is not a
+        # scope, and guessing which module owns that id would be a silent fix.
+        raise ConfigError(
+            "repair_section requires repair_module: name the module the section belongs to"
+        )
     if blueprint is not None:
         # An explicit user selection (e.g. the New Run wizard's blueprint
         # step) is recorded before the advance step runs, so the spec prompt
@@ -117,10 +124,13 @@ def advance_run(
         runs.create_run(topic_id, blueprint=blueprint)
     if repair_module is not None:
         # A scoped repair prepares (or rebuilds) the repair prompt for one
-        # module instead of performing the generic next step.
+        # module -- or one section of it -- instead of performing the generic
+        # next step.
         prompt_exists = runs.stage_paths(topic_id, "repair").prompt_path.exists()
-        runs.write_module_repair_prompt(
-            topic_id, repair_module, overwrite=prompt_exists
+        runs.write_scoped_repair_prompt(
+            topic_id,
+            RepairScope(module_id=repair_module, section_id=repair_section),
+            overwrite=prompt_exists,
         )
         return {
             "performed": "write_prompt",
