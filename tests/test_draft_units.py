@@ -688,6 +688,39 @@ def test_assemble_draft_success_removes_stub_and_never_approves(tmp_path: Path) 
     assert (next_action.stage, next_action.action) == ("draft", "approve")
 
 
+def test_advance_raises_with_the_assembly_error_when_assembly_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``advance`` performs assembly, so an assembly that fails must be loud.
+
+    The arm is only reached when every module response is on disk, so a
+    failure here means the units drifted between the status read and the
+    assemble; swallowing it would leave ``advance`` reporting success with no
+    draft response written.
+    """
+
+    from education_pipeline.runs import AssembleResult
+
+    runs = _run_with_skeleton_ingested(tmp_path)
+    for module_id in MODULE_ORDER:
+        paths = runs.draft_unit_paths(TID, "module", module_id=module_id)
+        paths.response_path.write_text(_module_response(module_id), encoding="utf-8")
+    assert runs.run_status(TID).next_action.action == "assemble"
+
+    monkeypatch.setattr(
+        RunStore,
+        "assemble_draft",
+        lambda self, topic_id, **kwargs: AssembleResult(
+            ok=False, error="module 'loop-basics': boom", module_ids=("loop-basics",)
+        ),
+    )
+
+    with pytest.raises(ConfigError) as excinfo:
+        runs.advance(TID)
+
+    assert "module 'loop-basics': boom" in str(excinfo.value)
+
+
 # --------------------------------------------------------------------------
 # Progress: draft_progress
 # --------------------------------------------------------------------------

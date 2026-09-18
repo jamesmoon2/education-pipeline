@@ -671,8 +671,8 @@ class RunStore(
     def advance(self, topic_id: str) -> AdvanceResult:
         """Perform the run's next machine step, pausing at human steps.
 
-        Machine steps (writing the next stage prompt, validation, or finalizing)
-        are done automatically. Human steps (saving a response, approving it,
+        Machine steps (writing the next stage prompt, assembling a fanned-out
+        draft, validation, or finalizing) are done automatically. Human steps (saving a response, approving it,
         resolving findings) and a completed run are left untouched, so this can
         be called repeatedly to drive a run forward and resume it from wherever
         it stopped.
@@ -694,6 +694,13 @@ class RunStore(
                         overwrite = True
                 self._write_stage_prompt(safe_id, action.stage, overwrite=overwrite)
             performed = "write_prompt"
+        elif action.action == "assemble" and action.stage == "draft":
+            result = self.assemble_draft(safe_id)
+            if not result.ok:
+                raise ConfigError(
+                    f"cannot assemble the draft for {safe_id!r}: {result.error}"
+                )
+            performed = "assemble"
         elif action.action == "validate":
             phase = "draft" if action.stage == "draft" else "final"
             self.validate_run(safe_id, phase)

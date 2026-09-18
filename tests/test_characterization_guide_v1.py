@@ -1245,6 +1245,21 @@ def _build_draft_unit_assembly_failure(runs: RunStore, topic_id: str) -> None:
     paths.response_path.write_text(json.dumps(renamed, ensure_ascii=False), encoding="utf-8")
 
 
+def _build_draft_unit_all_modules_saved_unassembled(runs: RunStore, topic_id: str) -> None:
+    """Every module response dropped on disk by hand, nothing assembled yet.
+
+    The manual path: no ingest ever ran, so nothing auto-assembled. Assembly
+    is deterministic, so this is a *machine* step ``advance`` performs, the
+    same way it performs validation and finalization.
+    """
+
+    _build_draft_unit_one_of_two_modules_saved(runs, topic_id)
+    paths = runs.draft_unit_paths(topic_id, "module", module_id="intervention-practice")
+    paths.response_path.write_text(
+        _draft_unit_module_response("intervention-practice"), encoding="utf-8"
+    )
+
+
 def _build_draft_unit_assembled(runs: RunStore, topic_id: str) -> None:
     _build_draft_unit_one_of_two_modules_saved(runs, topic_id)
     paths = runs.draft_unit_paths(topic_id, "module", module_id="intervention-practice")
@@ -1333,6 +1348,12 @@ DRAFT_UNIT_CASES = [
         "intervention-practice",
     ),
     DraftUnitCase(
+        "all_module_responses_saved_wants_assemble",
+        _build_draft_unit_all_modules_saved_unassembled,
+        "draft",
+        "assemble",
+    ),
+    DraftUnitCase(
         "assembled_wants_approve",
         _build_draft_unit_assembled,
         "draft",
@@ -1390,6 +1411,21 @@ def test_advance_writes_module_prompts_once_the_skeleton_response_lands(
         assert runs.draft_unit_paths(
             TID, "module", module_id=module_id
         ).prompt_path.is_file()
+
+
+def test_advance_assembles_the_draft_once_every_module_response_is_saved(
+    tmp_path: Path,
+) -> None:
+    runs = _create_guide_run(tmp_path, TID)
+    _build_draft_unit_all_modules_saved_unassembled(runs, TID)
+
+    result = runs.advance(TID)
+
+    assert result.performed == "assemble"
+    assert runs.stage_paths(TID, "draft").response_path.is_file()
+    assert not runs.stage_paths(TID, "draft").approved_path.exists()
+    after = result.status.next_action
+    assert (after.stage, after.action) == ("draft", "approve")
 
 
 def _build_draft_unit_outline_changed_after_module_prompts(

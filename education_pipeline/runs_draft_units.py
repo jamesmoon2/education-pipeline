@@ -1030,13 +1030,15 @@ class DraftUnitsMixin:
                     f"failed: {error}"
                 ),
             )
+        # Assembly is deterministic -- no model call -- so it is a machine step
+        # ``advance`` performs, exactly like validation and finalization.
         return NextAction(
             topic_id=topic_id,
             stage="draft",
-            action="save_response",
+            action="assemble",
             detail=(
                 f"All {len(contract_units)} module responses are saved for "
-                f"{topic_id!r}; assemble the draft."
+                f"{topic_id!r}; assemble them into the draft response."
             ),
         )
 

@@ -62,7 +62,10 @@ stub) and one `modules/<module-id>/` unit per module, each holding a
 `response.json` (plus `response.previous.json` when a unit is re-run). When
 every module response is present, the engine deterministically assembles them
 into the ordinary `responses/draft.response.json` — so the draft stage still
-has one response file, one approval and one validation. Back these up with the
+has one response file, one approval and one validation. Assembly is
+deterministic (no model call), so `advance` performs it for you as a machine
+step, the same way it runs validation and finalization; the run's next action
+reads `assemble` until it has. Back these up with the
 rest of the run directory; a whole guide written straight to
 `responses/draft.response.json` keeps working and wins over the units.
 
