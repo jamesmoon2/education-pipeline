@@ -119,12 +119,22 @@ class StageModelPlan:
     timeout_seconds: float | None = None
 
 
+DEFAULT_PARALLELISM = 2
+MIN_PARALLELISM = 1
+MAX_PARALLELISM = 4
+
+
 @dataclass(frozen=True)
 class ModelPlan:
     """Stage-by-stage model plan loaded from ``model-plan.toml``."""
 
     provider: str
     stages: Mapping[str, StageModelPlan]
+    # How many module jobs of one draft batch the daemon may run at once. One
+    # workspace-wide setting (per-module-drafting design decision 10), not a
+    # per-stage or per-run one: it bounds the whole pool, and a run-level
+    # override would let one run starve another's fan-out.
+    parallelism: int = DEFAULT_PARALLELISM
 
     def stage(self, stage_name: str) -> StageModelPlan:
         try:
@@ -197,6 +207,7 @@ def parse_model_plan(
 
     provider_id = _required_string(data, "provider", "model plan")
     base_provider = catalog.require_provider(provider_id) if catalog is not None else None
+    parallelism = _parse_parallelism(data)
 
     raw_stages = data.get("stages", {})
     if not isinstance(raw_stages, Mapping):
@@ -266,7 +277,32 @@ def parse_model_plan(
             timeout_seconds=timeout_seconds,
         )
 
-    return ModelPlan(provider=provider_id, stages=stages)
+    return ModelPlan(provider=provider_id, stages=stages, parallelism=parallelism)
+
+
+def _parse_parallelism(data: Mapping[str, Any]) -> int:
+    """The top-level ``parallelism`` key: an int in 1..4, default 2.
+
+    ``bool`` is an ``int`` subclass in Python, so ``True`` would otherwise
+    sail through as 1; it is rejected explicitly. A float (even ``2.0``) is
+    refused rather than truncated -- the key bounds a thread pool, and a
+    plan that says something other than a whole number is a mistake worth
+    surfacing at load.
+    """
+
+    if "parallelism" not in data:
+        return DEFAULT_PARALLELISM
+    value = data["parallelism"]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(
+            f"model plan 'parallelism' must be an integer; got {value!r}"
+        )
+    if not MIN_PARALLELISM <= value <= MAX_PARALLELISM:
+        raise ConfigError(
+            f"model plan 'parallelism' must be between {MIN_PARALLELISM} and "
+            f"{MAX_PARALLELISM}; got {value}"
+        )
+    return value
 
 
 def emit_model_plan_toml(plan: ModelPlan) -> str:
@@ -277,7 +313,10 @@ def emit_model_plan_toml(plan: ModelPlan) -> str:
     def q(value: str) -> str:
         return json.dumps(value)
 
-    lines = [f"provider = {q(plan.provider)}", ""]
+    lines = [f"provider = {q(plan.provider)}"]
+    if plan.parallelism != DEFAULT_PARALLELISM:
+        lines.append(f"parallelism = {plan.parallelism}")
+    lines.append("")
     for stage_name in STAGE_ORDER:
         stage = plan.stages[stage_name]
         body: list[str] = []
@@ -313,7 +352,11 @@ def apply_overrides(
     overrides["stages"], and re-run parse_model_plan(..., catalog=catalog) so
     every existing validation rule applies to the merged result."""
 
-    raw: dict[str, Any] = {"provider": plan.provider, "stages": {}}
+    raw: dict[str, Any] = {
+        "provider": plan.provider,
+        "parallelism": plan.parallelism,
+        "stages": {},
+    }
     for stage_name in STAGE_ORDER:
         stage = plan.stages[stage_name]
         body: dict[str, Any] = {}
