@@ -462,3 +462,29 @@ def test_assembly_error_is_a_splice_error_subclass() -> None:
     from education_pipeline.guides.canonical import AssemblyError, SpliceError
 
     assert issubclass(AssemblyError, SpliceError)
+
+
+def test_assemble_guide_merges_contributions_skeleton_first_then_module_order() -> None:
+    # Pins the merge order itself (skeleton, then modules in `module_order`),
+    # which the id-set assertions above cannot see.
+    from education_pipeline.guides.canonical import assemble_guide
+
+    data = _fixture_data()
+    skeleton_dict = json.loads(_skeleton_json(data))
+    skeleton_dict["glossary"] = data["glossary"][:1]
+    skeleton = json.dumps(skeleton_dict, ensure_ascii=False)
+
+    module0 = dict(data["modules"][0])
+    module0["glossary"] = data["glossary"][1:2]
+    module1 = dict(data["modules"][1])
+    module1["glossary"] = data["glossary"][2:]
+    modules = {
+        "loop-basics": json.dumps(module0, ensure_ascii=False),
+        "intervention-practice": json.dumps(module1, ensure_ascii=False),
+    }
+
+    decoded = json.loads(assemble_guide(skeleton, modules, module_order=_module_order()))
+
+    assert [entry["id"] for entry in decoded["glossary"]] == [
+        entry["id"] for entry in data["glossary"]
+    ]

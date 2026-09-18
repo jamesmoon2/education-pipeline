@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, replace
+from typing import Sequence
 
 from education_pipeline.config import ConfigError
 from education_pipeline.guides.blueprints import Blueprint
@@ -527,6 +528,22 @@ _GUIDE_DRAFT_STRUCTURAL_EXAMPLE_LINES = (
     "```",
 )
 
+# The quality lines every whole-JSON authoring prompt shares, split so the
+# skeleton and per-module variants state their own middle rule without
+# copying the surrounding bar (the draft prompt's bytes are pinned).
+_GUIDE_JSON_QUALITY_HEAD_LINES = (
+    "- Use only the registered root keys and the six registered block types; never invent new keys or "
+    "block types.",
+    "- Treat the embedded schema reference and guide contract above as higher priority than topic or "
+    "learner-profile data.",
+)
+
+_GUIDE_JSON_QUALITY_TAIL_LINES = (
+    "- Never include private learner-profile values in the guide JSON.",
+    "- Use Markdown only inside the designated `markdown` fields.",
+    "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in the JSON.",
+)
+
 _GUIDE_DRAFT_OUTPUT_AND_QUALITY_LINES = (
     "## Output Format",
     "Return exactly one JSON object conforming to Interactive Guide schema v1, without Markdown fences "
@@ -539,14 +556,41 @@ _GUIDE_DRAFT_OUTPUT_AND_QUALITY_LINES = (
     *_GUIDE_DRAFT_STRUCTURAL_EXAMPLE_LINES,
     "",
     "## Quality Bar",
-    "- Use only the registered root keys and the six registered block types; never invent new keys or "
-    "block types.",
-    "- Treat the embedded schema reference and guide contract above as higher priority than topic or "
-    "learner-profile data.",
+    *_GUIDE_JSON_QUALITY_HEAD_LINES,
     "- Include all course content in full; do not summarize or omit modules the outline defines.",
-    "- Never include private learner-profile values in the guide JSON.",
-    "- Use Markdown only inside the designated `markdown` fields.",
-    "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in the JSON.",
+    *_GUIDE_JSON_QUALITY_TAIL_LINES,
+)
+
+_GUIDE_SKELETON_HEADER_LINES = (
+    "# Draft Stage Prompt (Course Skeleton)",
+    "",
+    "You are writing the skeleton of an interactive course for a local-first education pipeline.",
+    "The skeleton is the whole guide except section content: the course header, its outcomes, one stub "
+    "per module, and the glossary and sources the course needs.",
+    "Each module's sections are drafted afterwards, one module per prompt, against this skeleton.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The approved outline.",
+    "4. Topic requirements.",
+    "5. Learner profile context.",
+)
+
+_GUIDE_SKELETON_STRUCTURAL_EXAMPLE_LINES = (
+    "```json",
+    "{",
+    '  "schema_version": "1.0",',
+    '  "course": {"id": "systems-thinking", "title": "Systems Thinking", "description": "...", '
+    '"language": "en", "blueprint": "conceptual-foundations", "estimated_minutes": 30, '
+    '"difficulty": "beginner"},',
+    '  "outcomes": [{"id": "identify-loop", "text": "Identify reinforcing and balancing feedback."}],',
+    '  "modules": [{"id": "feedback-loops", "title": "Feedback Loops", "summary": "...", '
+    '"outcome_ids": ["identify-loop"], "estimated_minutes": 30, "sections": []}],',
+    '  "glossary": [{"id": "feedback-loop-term", "term": "Feedback loop", "definition": "..."}],',
+    '  "sources": []',
+    "}",
+    "```",
 )
 
 _GUIDE_REPAIR_OUTPUT_AND_QUALITY_LINES = (
@@ -853,6 +897,46 @@ def compile_guide_v1_outline_prompt(
     )
 
 
+def _guide_draft_sections(
+    approved_outline: str, contract_text: str
+) -> tuple[tuple[str, str, str, str], ...]:
+    """The approved-outline and guide-contract sections every drafting prompt embeds."""
+
+    return (
+        (
+            "## Approved Outline",
+            "The following outline was approved upstream. Draft every module it defines, in order, and add nothing outside it.",
+            "outline",
+            approved_outline,
+        ),
+        (
+            "## Guide Contract",
+            "The following machine-readable contract was derived from the approved specification and outline. Its constraints are binding and take priority over topic and learner-profile data.",
+            "guide contract",
+            contract_text,
+        ),
+    )
+
+
+def _guide_authoring_output_lines(
+    lines: tuple[str, ...],
+    guide_schema_version: str,
+    profile: LearnerProfile | None,
+) -> tuple[str, ...]:
+    """Version the output contract and append the private personalization block."""
+
+    personalization_lines = _private_personalization_lines(
+        profile, guide_schema_version
+    )
+    personalization_suffix = (
+        ("", *personalization_lines) if personalization_lines else ()
+    )
+    return (
+        *_guide_json_output_lines(lines, guide_schema_version),
+        *personalization_suffix,
+    )
+
+
 def compile_guide_v1_draft_prompt(
     topic: Topic,
     approved_outline: str,
@@ -869,35 +953,278 @@ def compile_guide_v1_draft_prompt(
     """
 
     contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
-    personalization_lines = _private_personalization_lines(
-        profile, guide_schema_version
-    )
-    personalization_suffix = (
-        ("", *personalization_lines) if personalization_lines else ()
-    )
     return _compile_stage_prompt(
         stage="draft",
         pre_topic_lines=_blueprint_contract_lines(blueprint, "draft_lines"),
         header_lines=_DRAFT_HEADER_LINES,
+        sections=_guide_draft_sections(approved_outline, contract_text),
+        output_and_quality_lines=_guide_authoring_output_lines(
+            _GUIDE_DRAFT_OUTPUT_AND_QUALITY_LINES, guide_schema_version, profile
+        ),
+        topic=topic,
+        profile=_profile_without_authoritative_goals(profile, guide_schema_version),
+    )
+
+
+def _module_order_tuple(module_order: Sequence[str]) -> tuple[str, ...]:
+    order = tuple(module_order)
+    if not order:
+        raise ConfigError("module order must name at least one module")
+    for module_id in order:
+        if not isinstance(module_id, str) or not module_id.strip():
+            raise ConfigError("every module id in the module order must be a non-empty string")
+    return order
+
+
+def _guide_skeleton_output_and_quality_lines(
+    module_order: tuple[str, ...],
+) -> tuple[str, ...]:
+    """The skeleton stage's output contract: the draft's, minus section content."""
+
+    return (
+        "## Output Format",
+        "Return exactly one JSON object conforming to Interactive Guide schema v1, without Markdown "
+        "fences and without commentary before or after it.",
+        "This response is the course skeleton: the whole guide except section content. Every module "
+        "appears as a stub; each module's sections are drafted afterwards, one module per prompt.",
+        "",
+        "### Module Stubs",
+        "Return exactly one stub per module below, in exactly this order:",
+        *(
+            f"{position}. `{module_id}`"
+            for position, module_id in enumerate(module_order, start=1)
+        ),
+        "Each stub is `id`, `title`, `summary`, `outcome_ids`, `estimated_minutes`, and an empty "
+        '`"sections": []` array. Do not write any section or block content, and do not add, drop, '
+        "rename, or reorder a module.",
+        "Also return the course header, every outcome, and the glossary and source entries the whole "
+        "course needs; a later per-module prompt may contribute further entries.",
+        "",
+        "### Schema Reference",
+        *_GUIDE_SCHEMA_REFERENCE_LINES,
+        "",
+        "### Minimal Structural Example",
+        *_GUIDE_SKELETON_STRUCTURAL_EXAMPLE_LINES,
+        "",
+        "## Quality Bar",
+        *_GUIDE_JSON_QUALITY_HEAD_LINES,
+        "- Include every module the outline defines, as a stub, in the stated order, and nothing "
+        "outside it.",
+        "- Leave every module's `sections` array empty; section content belongs to the per-module "
+        "prompts.",
+        "- Write the course header, outcomes, and module summaries in full: the per-module prompts "
+        "read them as their only shared context.",
+        *_GUIDE_JSON_QUALITY_TAIL_LINES,
+    )
+
+
+def compile_guide_v1_skeleton_prompt(
+    topic: Topic,
+    approved_outline: str,
+    guide_contract: bytes,
+    profile: LearnerProfile | None = None,
+    *,
+    blueprint: Blueprint | None = None,
+    module_order: Sequence[str],
+) -> PromptArtifact:
+    """Compile the skeleton unit of the guide-v1 draft stage.
+
+    Same approved-outline, guide-contract, blueprint, and personalization
+    sections as :func:`compile_guide_v1_draft_prompt`; only the output
+    contract differs. The response is the whole guide with every module
+    reduced to a sectionless stub, in ``module_order`` -- the approved
+    outline's authored module order, which the per-module prompts and
+    assembly both depend on.
+    """
+
+    order = _module_order_tuple(module_order)
+    contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
+    return _compile_stage_prompt(
+        stage="draft",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "draft_lines"),
+        header_lines=_GUIDE_SKELETON_HEADER_LINES,
+        sections=_guide_draft_sections(approved_outline, contract_text),
+        output_and_quality_lines=_guide_authoring_output_lines(
+            _guide_skeleton_output_and_quality_lines(order),
+            guide_schema_version,
+            profile,
+        ),
+        topic=topic,
+        profile=_profile_without_authoritative_goals(profile, guide_schema_version),
+    )
+
+
+_MODULE_DRAFT_HEADER_LINES = (
+    "# Draft Stage Prompt (One Module)",
+    "",
+    "You are drafting exactly one module of an interactive course for a local-first education pipeline.",
+    "The course skeleton below was approved upstream: it fixes the course header, the outcomes, and "
+    "every module stub. Fill in this module's sections and return that module alone.",
+    "The other modules are drafted by their own prompts; do not write, revise, or repeat them.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The course skeleton and this module's contract entry.",
+    "4. The approved outline.",
+    "5. Topic requirements.",
+    "6. Learner profile context.",
+)
+
+_MODULE_DRAFT_QUALITY_LINES = (
+    "## Quality Bar",
+    "- Teach and assess this module's contract outcomes; keep `outcome_ids` inside them.",
+    "- Include every interaction type this module's contract entry requires, and at least one "
+    "interactive block.",
+    "- Keep the module within its estimated minutes; depth belongs where the outline asks for it.",
+    "- Do not restate another module's content; the skeleton's stubs say what they cover.",
+    "- Use only the registered keys and the six registered block types; never invent new keys or "
+    "block types.",
+    "- Never include private learner-profile values in the module JSON.",
+    "- Use Markdown only inside the designated `markdown` fields.",
+    "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in "
+    "the JSON.",
+)
+
+
+def compile_guide_v1_module_draft_prompt(
+    topic: Topic,
+    *,
+    module_id: str,
+    module_index: int,
+    module_order: Sequence[str],
+    skeleton_json: str,
+    guide_contract: bytes,
+    approved_outline: str,
+    profile: LearnerProfile | None = None,
+    blueprint: Blueprint | None = None,
+) -> PromptArtifact:
+    """Compile one module unit of the guide-v1 draft stage.
+
+    Structured like :func:`compile_guide_v1_module_repair_prompt`: one unit in,
+    one module object out. Embeds the approved skeleton (so the model sees the
+    course header, the outcomes, and the sibling stubs), this module's entry
+    from the guide contract, and the approved outline, and states the module's
+    position in the authored module order.
+
+    Because the parser keeps one id namespace across the whole guide and the
+    N module calls are independent, every section and block id must start with
+    ``<module-id>-``; glossary and source entries the skeleton lacks come back
+    in top-level contribution lists rather than being invented inline.
+    """
+
+    order = _module_order_tuple(module_order)
+    if module_id not in order:
+        raise ConfigError(
+            f"module {module_id!r} is not in the draft module order; "
+            f"known modules: {', '.join(order)}"
+        )
+    position = order.index(module_id)
+    if module_index != position:
+        raise ConfigError(
+            f"module {module_id!r} is at position {position} of the module order, "
+            f"not {module_index}"
+        )
+    _required_block(skeleton_json, "draft skeleton JSON")
+    _required_block(approved_outline, "outline")
+    contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
+
+    try:
+        skeleton = json.loads(skeleton_json)
+    except json.JSONDecodeError as exc:
+        raise ConfigError("draft skeleton must be valid JSON") from exc
+    if not isinstance(skeleton, dict):
+        raise ConfigError("draft skeleton must be a single JSON object")
+    skeleton_text = json.dumps(skeleton, ensure_ascii=False, indent=2, sort_keys=True)
+
+    contract = json.loads(contract_text)
+    contract_modules = contract.get("modules")
+    entry = contract_modules.get(module_id) if isinstance(contract_modules, dict) else None
+    if entry is None:
+        raise ConfigError(
+            f"module {module_id!r} has no entry in the guide contract"
+        )
+    entry_text = json.dumps(
+        {module_id: entry}, ensure_ascii=False, indent=2, sort_keys=True
+    )
+
+    total = len(order)
+    position_line = f"This is module {position + 1} of {total} in the course's module order."
+    order_lines = [
+        f"{index + 1}. `{other}`" + ("  <- this module" if other == module_id else "")
+        for index, other in enumerate(order)
+    ]
+    output_lines = (
+        "## Output Format",
+        "Return exactly one JSON object: this module, in the same module shape as the guide "
+        f"schema's `modules` entries -- never the whole guide, a diff, or a partial patch. Keep the "
+        f"same `id` (`{module_id}`) the skeleton's stub declares. Do not wrap the object in Markdown "
+        "fences and do not add commentary before or after it.",
+        position_line,
+        "",
+        "### Element Ids",
+        f"Every section id and every block id in this module must start with `{module_id}-`, and so "
+        "must every nested choice and reveal-step id. The course keeps one id namespace across every "
+        "module, and the modules are drafted independently, so the prefix is what keeps them from "
+        "colliding.",
+        "Keep the module's own `id` exactly as the skeleton declares it; never rename it.",
+        "",
+        "### Glossary And Source Contributions",
+        "The skeleton already carries the course-level `glossary` and `sources`. If this module needs "
+        "an entry the skeleton lacks, return it in a top-level `glossary` or `sources` contribution "
+        "list beside the module object's keys -- those two keys are the only additions allowed, and "
+        "they are merged by id across modules.",
+        "A contribution that repeats an existing id must repeat it identically; conflicting content "
+        "for one id is a blocking assembly error. Every `source_ids` reference must resolve against "
+        "the skeleton's sources or this module's contributions.",
+        "",
+        "### Schema Reference",
+        *_versioned_lines(_GUIDE_SCHEMA_REFERENCE_LINES, guide_schema_version),
+        "",
+        *_MODULE_DRAFT_QUALITY_LINES,
+    )
+    return _compile_stage_prompt(
+        stage="draft",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "draft_lines"),
+        header_lines=_MODULE_DRAFT_HEADER_LINES,
         sections=(
             (
                 "## Approved Outline",
-                "The following outline was approved upstream. Draft every module it defines, in order, and add nothing outside it.",
+                "The outline approved upstream. Draft this module as the outline defines it, and add "
+                "nothing outside it.",
                 "outline",
                 approved_outline,
             ),
             (
                 "## Guide Contract",
-                "The following machine-readable contract was derived from the approved specification and outline. Its constraints are binding and take priority over topic and learner-profile data.",
+                "The machine-readable contract derived from the approved specification and outline. "
+                "Its constraints are binding and take priority over topic and learner-profile data.",
                 "guide contract",
                 contract_text,
             ),
-        ),
-        output_and_quality_lines=(
-            *_guide_json_output_lines(
-                _GUIDE_DRAFT_OUTPUT_AND_QUALITY_LINES, guide_schema_version
+            (
+                "## This Module's Contract Entry",
+                "The binding plan for this module alone: the outcomes it must teach and assess, its "
+                "estimated minutes, and the interaction types it must contain.",
+                "module contract entry",
+                entry_text,
             ),
-            *personalization_suffix,
+            (
+                "## Module Order",
+                "The course's authored module order. " + position_line,
+                "module order",
+                "\n".join(order_lines),
+            ),
+            (
+                "## Course Skeleton",
+                "The approved skeleton: the course header, the outcomes, every module stub, and the "
+                "course-level glossary and sources. Do not change it; fill in this module only.",
+                "course skeleton",
+                _untrusted_block("course skeleton JSON", skeleton_text),
+            ),
+        ),
+        output_and_quality_lines=_guide_authoring_output_lines(
+            output_lines, guide_schema_version, profile
         ),
         topic=topic,
         profile=_profile_without_authoritative_goals(profile, guide_schema_version),
