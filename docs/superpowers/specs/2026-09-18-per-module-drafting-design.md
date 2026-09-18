@@ -72,7 +72,7 @@ Nothing auto-approves. Runs that never opt in behave exactly as today.
   `approved/<stage>.json`. Manifest events (`_append_event_locked`,
   `runs.py:2050`) carry `{stage, action, <label>, <label>_sha256, …extra,
   recorded_at}`.
-- `NextAction(topic_id, stage, action, detail)` (`run_core.py:87`); `advance`
+- `NextAction(topic_id, stage, action, detail)` (`run_core.py:88`); `advance`
   (`runs.py:641`) performs only machine steps (`write_prompt`, `validate`,
   `finalize`) and never approves.
 - The draft row in `stage_graph.STAGES` (`stage_graph.py:68`) has
@@ -112,8 +112,17 @@ Nothing auto-approves. Runs that never opt in behave exactly as today.
   `blueprint` this way. A later `create_run` without the key on an existing
   manifest leaves it unchanged; a conflicting value raises, as
   `content_contract` does (`runs.py:465-500`). `LegacyMarkdownMode` gets a
-  `supports_modular_draft = False` capability flag so `run_modes` stays the
-  single dispatch site. The default stays `whole` in this phase. Flipping the default is an owner
+  `supports_modular_draft = False` capability flag. The strategy is resolved
+  once into a `WholeDraft` / `ModularDraft` object (`draft_strategies.py`,
+  selected by `RunStore._draft_strategy(topic)`), with the methods
+  `draft_next_action`, `write_prompts(parts=None)`, `part_states(snapshot)`,
+  `assemble(force)` and `stage_flags`; `advance`, `_write_stage_prompt`,
+  `_next_action_guide_v1` and `stage_status` call the strategy instead of
+  branching on the manifest, so each axis (content mode, draft strategy)
+  keeps exactly one dispatch site. `write_draft_prompt` on a modular run
+  raises `ConfigError` naming the part prompts, since `stage_graph` still
+  lists it as the draft `prompt_writer` and the characterization helpers call
+  it directly. The default stays `whole` in this phase. Flipping the default is an owner
   decision recorded in the audit ledger, because it multiplies the manual
   copy/paste loop by N+1 and the right default depends on who the users are.
 
@@ -180,7 +189,15 @@ approved/draft.json                      # unchanged
   a hand edit (`edit_response`, or an external write) and raises
   `StaleContentError` unless `force`, which records `response_replaced` as
   ingest does today. Part shas are not part of that check; they decide
-  whether assembly is *needed* (D4), not whether it is *safe*.
+  whether assembly is *needed* (D4), not whether it is *safe*. The assembled
+  file therefore has three states: `absent`, `matches_record` and `edited`
+  (digest differs from the last `draft_assembled` record). `edited` is a
+  deliberate hand edit and the walk proceeds to `validate` / `approve`; it
+  never yields `assemble` again, so `advance` cannot be steered into an
+  action that always raises. The whole-draft response routes
+  (`POST`/`PUT /v1/runs/{id}/stages/draft/response`) refuse modular runs
+  with `draft_is_modular`; `edit_response` on the assembled file stays
+  allowed.
 - The final-validation cache (`runs_reports.py`) is keyed on the digest of
   the approved guide bytes, never on the response file, so assembly cannot
   serve a stale report.
@@ -219,7 +236,18 @@ approved/draft.json                      # unchanged
   modular run binds nothing from part events (draft has no sources).
 - Part status is computed from the manifest snapshot that `read_scope`
   already takes for `run_status_payload` (`read_api.py:389-447`) plus the
-  part files' hashes, never by re-reading the manifest per part.
+  part files' hashes, never by re-reading the manifest per part: one reverse
+  pass over `events` builds `{part: latest prompt_written /
+  response_ingested}` so a poll tick stays O(events), not O(parts × events).
+- `StageStatus` for a modular draft (`stage_status`, `runs.py:599`, today
+  keyed on `prompts/draft.prompt.md` and `responses/draft.response.json`
+  existence): `prompt_written` is true when every required part prompt is
+  current, `response_ingested` when the assembled file is present (any state
+  but `absent`); `approved` and `stale` are unchanged. The modular branch
+  replaces `draft` **inside** the `_unbound_stages` loop of
+  `_next_action_guide_v1` (`runs.py:725-730`), not after it, so
+  `_pending_stage_action` never advertises a whole-draft `write_prompt` on a
+  modular run.
 - The **assembled response is stale** when any part's current response sha
   differs from the `draft_assembled` record, or a contract module has no
   part. `next_action` then reads `assemble` (after the missing or stale parts
@@ -231,11 +259,12 @@ approved/draft.json                      # unchanged
 
 ### D5. Next action and `advance` mid-fan-out
 
-`NextAction` gains one optional field, `part: str | None = None`
-(`"frame"`, `"modules"`, or `None` for every existing case). On a modular
+`NextAction` gains one optional field, `wave: str | None = None`
+(`"frame"`, `"modules"`, or `None` for every existing case). It is named
+`wave` because `part` everywhere else means one `{kind, module_id}` part. On a modular
 run whose draft is not yet approved, `_next_action_guide_v1` yields, in order:
 
-| State | `stage` | `action` | `part` | `detail` |
+| State | `stage` | `action` | `wave` | `detail` |
 | --- | --- | --- | --- | --- |
 | no frame prompt, or frame stale | draft | `write_prompt` | frame | "draft frame: write prompt" |
 | frame prompt current, no response | draft | `save_response` | frame | "draft frame: save the model response to …" |
@@ -256,7 +285,13 @@ same rule applies to `POST /v1/jobs/batch` `parts`.
 `NextAction` is constructed by keyword everywhere and compared field-wise in
 the characterization tests, so the defaulted field is backward compatible;
 the three sites that spell its fields out (`run_status_payload`,
-`web/src/api/types.ts`, CLI `status`) add `part`.
+`web/src/api/types.ts`, CLI `status`) add `wave`. On the web side
+`NextAction.action` and `AdvanceResult.performed` are closed unions
+(`types.ts`), so `assemble` is added to both; `continueRun.ts` gains an
+`assemble` case, routes a modular draft's `save_response` to the batch
+route instead of `POST /v1/jobs`, and raises `MAX_CONTINUE_STEPS` to cover
+N+1 parts. `PrimaryAction`'s single-active-job early return becomes
+batch-aware.
 
 ### D6. Provider execution: batches and a bounded worker pool
 
@@ -281,6 +316,26 @@ the three sites that spell its fields out (`run_status_payload`,
   same topic and stage, and a batch is refused while a non-batch job for the
   same topic is active. Jobs for different topics may run concurrently up to
   the pool size (an intended consequence, bounded by the same setting).
+- Admission key becomes `(topic, stage, part)` (`Worker.enqueue` refuses a
+  duplicate per key, `jobs.py:738`); a batch is admitted all-or-nothing
+  inside one `Worker._lock` critical section, so a partially admitted batch
+  cannot exist. `Worker.stop` enqueues one sentinel per thread and joins
+  every thread. Every pool thread uses the one shared `DaemonContext.runs`
+  store (as `_runner_for` already does, `daemon/__init__.py:140`) because
+  `_manifest_write_lock` is per instance and the workspace file lock is
+  reentrant per process, so it gives no thread exclusion.
+- `[jobs] parallelism` is round-tripped as one unit by `parse_model_plan`,
+  `emit_model_plan_toml`, `plan_payload`, `PUT /v1/config/plan` and the
+  settings page (today the settings save rewrites the file from
+  `{provider, stages}` only, `write_api.py:783`, and would drop it). The pool
+  size is read at `worker.start()`; a change takes effect on daemon restart
+  and the settings page says so.
+- Part salvage files live beside the part
+  (`responses/draft/modules/<id>.failed.<ts>.txt`,
+  `responses/draft/frame.failed.<ts>.txt`); the resolver
+  (`_require_failed_output`, `write_api.py:330`) gains a part-aware variant
+  keyed to the part directory, and they are listed on
+  `draft_parts[].failed_outputs`, not `stages[].failed_outputs`.
 - Pool internals: `Worker` keeps `_running: dict[str, Job]` instead of a
   single current job so `cancel` can signal any running job's event;
   `batch_id` and `part` are persisted in `job.json` so `reconcile` restores a
@@ -288,12 +343,13 @@ the three sites that spell its fields out (`run_status_payload`,
   members are marked `interrupted` exactly as today). Concurrent part
   ingests for one topic serialise on the run's manifest write lock, which
   already exists.
-- `JobStore.active_for_part(topic, part)` complements `active_for(topic,
-  stage)`: the part-response routes (D7) refuse with `job_conflict` while
-  that part's job is queued or running; the whole-stage mutators
-  (`advance`, `approve`, `validate`, `edit_response`, waivers) keep refusing
-  through `_require_no_active_job` because any batch member is active for
-  `draft`.
+- `_require_no_active_job` is topic-wide (`jobs.any_active_for`,
+  `write_api.py:68`) and stays so for every whole-run mutator (`advance`,
+  `approve`, `validate`, `edit_response`, salvage, finalize, waivers): while
+  a batch runs, the run waits. The one exception is the part-response routes
+  (D7), which use `JobStore.active_for_part(topic, part)` and refuse with
+  `job_conflict` only while **that** part's job is queued or running, so a
+  manual paste for `m3` is allowed while `m4` runs.
 - Failure isolation: one part job failing (exit code, timeout, parse error,
   salvage) leaves its siblings running; the batch has no state of its own
   beyond its jobs, and `next_action` reports the failed part as missing so
@@ -311,7 +367,10 @@ draft step lists parts with copy-prompt and paste-response controls per part
 (`POST /v1/runs/{id}/stages/draft/parts/frame/response` and
 `.../parts/modules/<id>/response`, `PUT` for edits with `base_sha256` as
 today). Assembly, validation and approval are then the same as for provider
-runs.
+runs. A `module_id` taken from a URL or body is validated against the id
+pattern **and** the current contract's module set before any path join
+(topic ids get `_artifact_id`; module ids have no equivalent today);
+anything else is a 404.
 
 ### D8. Section-scoped repair
 
@@ -336,12 +395,24 @@ runs.
   prefix; `repair_scope` returns `{module_id, section_id}`. `advance` accepts
   `repair_section` alongside `repair_module`; CLI `advance --repair-module M
   --repair-section S`.
+- **Scoped base.** `_spliced_scoped_repair` (`runs.py:1124`) and
+  `_require_repair_ready` (`runs.py:1673`) use the approved draft as the
+  base today, so a second scoped repair after an approved repair would
+  silently discard the first (a latent defect of module repair that section
+  scope makes likely). From this phase the scoped base is the current
+  approved repair when one exists, else the approved draft; the prompt embeds
+  the base's module or section and the findings of the report over that
+  base (final report when the base is the approved repair, draft report
+  otherwise); the manifest binds `source_repair_file_sha256` or
+  `source_draft_file_sha256` accordingly and the approve-time drift check
+  compares against the same file. Whole-guide repair is unchanged.
 - Scope is whatever the **latest** repair `prompt_written` event carries:
   `(module, section)`, `(module, None)` or none; a whole-guide
   `write_repair_prompt(overwrite=True)` appends an event without either key
   and so resets the scope to whole, as today. `_spliced_scoped_repair`
-  dispatches on that triple and applies the same `source_draft_file_sha256`
-  check (`runs.py:1130`) to both scopes.
+  dispatches on that triple, reads `repair_module` and `repair_section`
+  from that one event (never merged across events), and `approve_stage`
+  records both on `response_approved`.
 - The cockpit `ModuleRepairControl` becomes a scope picker (module, then
   optional section) with the finding counts preselecting the narrowest scope
   that holds an open finding.
@@ -360,16 +431,16 @@ runs.
 | Surface | Change |
 | --- | --- |
 | `POST /v1/runs/{id}/advance` (first call) | body `draft_strategy?: "whole" \| "modular"`, recorded like `blueprint` |
-| `GET /v1/runs/{id}` | `draft_strategy`; on modular runs `draft_parts: {frame: {state, stale, job?}, modules: [{id, title?, state, stale, job?}], assembled: {present, stale}}`; `next_action.part` |
+| `GET /v1/runs/{id}` | `draft_strategy`; on modular runs `draft_parts: {frame: {state, stale, job?, failed_outputs}, modules: [{id, title?, state, stale, job?, failed_outputs}], assembled: {state: absent \| matches_record \| edited, stale}}`; `next_action.wave` |
 | `POST /v1/runs/{id}/advance` | body `parts?: [module ids]`; performs `assemble`; body `repair_section?` with `repair_module` |
-| `POST /v1/jobs` | refuses modular draft with `draft_is_modular` |
+| `POST /v1/jobs`, `POST/PUT /v1/runs/{id}/stages/draft/response` | refuse modular drafts with `draft_is_modular` |
 | `POST /v1/jobs/batch` | `{topic_id, stage, parts?, force?}` → `{batch_id, jobs}` |
 | `POST /v1/jobs/batch/{batch_id}/cancel` | cancels the batch |
 | `GET /v1/jobs`, `GET /v1/jobs/{id}` | job records carry `batch_id`, `part` |
 | `POST/PUT /v1/runs/{id}/stages/draft/parts/frame/response`, `.../parts/modules/{module_id}/response` | manual part responses; refuse while that part's job is active |
 | `GET /v1/runs/{id}/repair/modules` | per-module `sections`, `repair_scope.section_id` |
 | CLI | `create --draft-strategy`, `status` part listing, `advance --parts`, `advance --repair-section`, `run` on modular drafts, `cancel --batch` |
-| `model-plan.toml` | `[jobs] parallelism` |
+| `model-plan.toml`, `PUT /v1/config/plan`, settings page | `[jobs] parallelism`, round-tripped; effective on daemon restart |
 
 Part states: `missing` (no prompt), `prompted` (prompt current, no response),
 `responded` (response current), `stale` (prompt or response bound to
