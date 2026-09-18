@@ -1115,6 +1115,68 @@ describe("StageViewerPage", () => {
       expect(links[1]).toHaveAttribute("href", "#module-intervention-practice");
     });
 
+    // Review finding 4 (PR #39 automated review): the anchors above target
+    // #module-<id>, but JsonTreeView emitted no ids anywhere, so in the
+    // default tree mode the links had nothing to scroll to.
+    it("gives the tree-mode module node an id the nav anchor can resolve to", async () => {
+      vi.mocked(getStageContent).mockResolvedValue({
+        topic_id: "t",
+        stage: "draft",
+        prompt: "# skeleton + module prompts",
+        response: JSON.stringify({
+          modules: [
+            { id: "loop-basics", title: "How loops behave" },
+            { id: "intervention-practice", title: "Practice interventions" },
+          ],
+        }),
+        approved: null,
+        response_sha256: "sha-response",
+        content_type: "application/vnd.education-pipeline.guide+json;version=1.0",
+      });
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...makeRunStatus({ action: "save_response", stage: "draft" }),
+        content_contract: { kind: "interactive_guide", schema_version: "1.1" },
+        draft_progress: {
+          skeleton: { state: "response_ingested", error: null, job_id: null },
+          modules: [
+            {
+              id: "loop-basics",
+              title: "How loops behave",
+              state: "response_ingested",
+              response_sha256: "sha-a",
+              error: null,
+              job_id: null,
+            },
+            {
+              id: "intervention-practice",
+              title: "Practice interventions",
+              state: "response_ingested",
+              response_sha256: "sha-b",
+              error: null,
+              job_id: null,
+            },
+          ],
+          assembled: null,
+          superseded: false,
+          parallelism: 2,
+          counts: { total: 2, saved: 2, stale: 0 },
+        },
+      });
+
+      renderAt("/topics/t/stages/draft");
+
+      const nav = await screen.findByRole("navigation", { name: "Module contents" });
+      const [firstLink] = within(nav).getAllByRole("link");
+      const targetId = (firstLink.getAttribute("href") ?? "").slice(1);
+      expect(targetId).toBe("module-loop-basics");
+
+      // The tree only renders for the "response" tab's JSON content -- the
+      // nav itself renders regardless of the active tab.
+      await userEvent.click(await screen.findByRole("tab", { name: /^response/ }));
+      expect(await screen.findByText("modules")).toBeInTheDocument();
+      expect(document.getElementById(targetId)).not.toBeNull();
+    });
+
     it("renders no module anchor list when draft_progress has no modules yet (or on a legacy run)", async () => {
       vi.mocked(getStageContent).mockResolvedValue({
         topic_id: "t",
