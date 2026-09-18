@@ -300,10 +300,10 @@ def provider_for_stage(plan: ModelPlan, stage: str) -> str:
     with another.
     """
 
-    row = plan.stages.get(stage)
-    if row is not None and row.provider:
-        return row.provider
-    return plan.provider
+    # `plan.stage` raises ConfigError on an unknown stage, exactly as the
+    # daemon's enqueue path does; the loop maps that to `plan_unreadable`.
+    row = plan.stage(stage)
+    return row.provider or plan.provider
 
 
 # ---------------------------------------------------------------------------
