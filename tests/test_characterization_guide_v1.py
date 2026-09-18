@@ -703,6 +703,43 @@ def test_grandfathered_stale_rebuild_action_is_actually_performable(tmp_path: Pa
     runs.write_factcheck_prompt(TID)
 
 
+def test_grandfathering_stops_once_the_factcheck_is_approved(tmp_path: Path) -> None:
+    """The skip needs the factcheck to be *unapproved*, not merely the repair
+    to be current: a run whose repair is grandfathered (its approval event
+    records no source hashes, so it never goes stale) still gets routed to its
+    own approved-but-stale factcheck rather than past it.
+    """
+
+    runs = _create_guide_run(tmp_path, TID)
+    _drive_guide_through_factcheck(runs, TID)
+    _plant_repair_approval_event(runs, TID, source_labels=())
+    _reapprove_qa_with_new_bytes(runs, TID)
+    by_stage = _stage_map(runs, TID)
+    assert (by_stage["factcheck"].approved, by_stage["factcheck"].stale) == (True, True)
+    assert (by_stage["repair"].approved, by_stage["repair"].stale) == (True, False)
+    next_action = runs.run_status(TID).next_action
+    assert (next_action.stage, next_action.action) == ("factcheck", "write_prompt")
+
+
+def test_grandfathering_skips_the_factcheck_only_never_qa_or_repair(
+    tmp_path: Path,
+) -> None:
+    """The skip is scoped to the factcheck stage alone. In a run that meets
+    every grandfathering condition (repair approved and current, no approved
+    factcheck), a qa that has gone stale is still routed to -- the walk skips
+    the factcheck, not the rest of the chain.
+    """
+
+    runs = _create_guide_run(tmp_path, TID)
+    _build_planted_repair_no_sources_then_draft_change(runs, TID)
+    by_stage = _stage_map(runs, TID)
+    assert (by_stage["qa"].approved, by_stage["qa"].stale) == (True, True)
+    assert by_stage["factcheck"].approved is False
+    assert (by_stage["repair"].approved, by_stage["repair"].stale) == (True, False)
+    next_action = runs.run_status(TID).next_action
+    assert (next_action.stage, next_action.action) == ("qa", "write_prompt")
+
+
 # --------------------------------------------------------------------------
 # Part 3: stale flags across the branch states, table-driven.
 # --------------------------------------------------------------------------
