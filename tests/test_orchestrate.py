@@ -677,7 +677,11 @@ def test_store_steps_validate_delegates_to_validate_and_gate(tmp_path, monkeypat
         calls.append((topic_id, phase))
         return object()
 
-    monkeypatch.setattr(runs, "validate_and_gate", fake_validate_and_gate)
+    # RunStore is a frozen dataclass (runs.py:265), so an instance attribute
+    # is installed the way RunStore installs its own (runs.py:272-275) rather
+    # than with monkeypatch.setattr, which raises FrozenInstanceError. The
+    # store is built fresh per test, so nothing leaks.
+    object.__setattr__(runs, "validate_and_gate", fake_validate_and_gate)
     store_steps = StoreSteps(
         runs,
         plan_for=constant(RuntimeError("unused")),
@@ -745,7 +749,9 @@ def test_store_steps_mutation_guard_wraps_validate(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     test_cli._seed_topic_to_draft(ws)
     runs = RunStore(ws)
-    monkeypatch.setattr(runs, "validate_and_gate", lambda topic_id, phase: object())
+    # See test_store_steps_validate_delegates_to_validate_and_gate: RunStore
+    # is frozen, so monkeypatch.setattr on the instance raises.
+    object.__setattr__(runs, "validate_and_gate", lambda topic_id, phase: object())
 
     guard = RecordingGuard()
     store_steps = StoreSteps(
