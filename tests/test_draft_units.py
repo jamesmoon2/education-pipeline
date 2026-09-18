@@ -657,8 +657,11 @@ def test_assemble_draft_force_overwrites_and_records_response_replaced(tmp_path:
     hand_edited = tr.GUIDE_FIXTURE.replace(
         "Learn to recognize feedback", "Hand-edited course description"
     )
-    stage_paths.response_path.write_text(hand_edited, encoding="utf-8")
-    hand_edited_sha = hashlib.sha256(hand_edited.encode("utf-8")).hexdigest()
+    # write_bytes, not write_text: on Windows write_text would translate the
+    # newlines to CRLF and the engine hashes the bytes actually on disk.
+    hand_edited_bytes = hand_edited.encode("utf-8")
+    stage_paths.response_path.write_bytes(hand_edited_bytes)
+    hand_edited_sha = hashlib.sha256(hand_edited_bytes).hexdigest()
 
     result = runs.assemble_draft(TID, force=True)
 
