@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+import sys
 import threading
 from pathlib import Path
 
@@ -92,6 +93,27 @@ class StaticConfigSource:
         self.held_text = toml_text
 
 
+def _pool_size(config: "WorkspaceConfigSource") -> int:
+    """How many worker threads to start, read once from the model plan.
+
+    Read at start and never again: a change to ``[jobs] parallelism`` takes
+    effect when the daemon restarts (spec D6). A plan file that will not load
+    must not stop the daemon from serving -- every stage would fail with the
+    same error anyway, and a daemon that refuses to start cannot show it -- so
+    fall back to a single thread and say so on stderr.
+    """
+
+    try:
+        return config.load()[1].jobs.parallelism
+    except Exception as exc:
+        print(
+            f"warning: could not read [jobs] parallelism from the model plan "
+            f"({exc}); running one job at a time",
+            file=sys.stderr,
+        )
+        return 1
+
+
 def serve(
     root: str | Path,
     *,
@@ -140,7 +162,7 @@ def serve(
             return JobRunner(store, runs, catalog, plan, timeout=job_timeout,
                               force=bool(job.metadata.get("force")))
 
-        worker = Worker(store, _runner_for)
+        worker = Worker(store, _runner_for, parallelism=_pool_size(config))
         worker.reconcile()
         worker.start()
 

@@ -120,11 +120,34 @@ class StageModelPlan:
 
 
 @dataclass(frozen=True)
+class JobsPlan:
+    """Daemon-wide job-execution settings (spec D6).
+
+    ``parallelism`` is how many provider jobs the daemon's worker pool may
+    run at once. It is workspace-wide, never per run: a modular draft's
+    module jobs are the reason it exists, and the bound is what keeps a
+    fan-out from spawning one provider process per module. Read once at
+    ``worker.start()``, so a change takes effect when the daemon restarts.
+    """
+
+    parallelism: int = 2
+
+
+#: What a plan without a ``[jobs]`` table means.
+DEFAULT_JOBS_PLAN = JobsPlan()
+
+#: The bounds ``[jobs] parallelism`` is validated against.
+MIN_JOB_PARALLELISM = 1
+MAX_JOB_PARALLELISM = 4
+
+
+@dataclass(frozen=True)
 class ModelPlan:
     """Stage-by-stage model plan loaded from ``model-plan.toml``."""
 
     provider: str
     stages: Mapping[str, StageModelPlan]
+    jobs: JobsPlan = DEFAULT_JOBS_PLAN
 
     def stage(self, stage_name: str) -> StageModelPlan:
         try:
@@ -198,6 +221,8 @@ def parse_model_plan(
     provider_id = _required_string(data, "provider", "model plan")
     base_provider = catalog.require_provider(provider_id) if catalog is not None else None
 
+    jobs = _parse_jobs_plan(data, strict_keys=strict_keys)
+
     raw_stages = data.get("stages", {})
     if not isinstance(raw_stages, Mapping):
         raise ConfigError("model plan [stages] must be a table")
@@ -266,7 +291,46 @@ def parse_model_plan(
             timeout_seconds=timeout_seconds,
         )
 
-    return ModelPlan(provider=provider_id, stages=stages)
+    return ModelPlan(provider=provider_id, stages=stages, jobs=jobs)
+
+
+_JOBS_KEYS = frozenset({"parallelism"})
+
+
+def _parse_jobs_plan(data: Mapping[str, Any], *, strict_keys: bool = False) -> JobsPlan:
+    """The plan's ``[jobs]`` table, or the default when it is absent.
+
+    Same owner decision as the stage tables: strict at write (the daemon's
+    ``PUT /v1/config/plan``), lenient on disk, so a hand-edited plan with a
+    stray key still loads.
+    """
+
+    raw = data.get("jobs", {})
+    if not isinstance(raw, Mapping):
+        raise ConfigError("model plan [jobs] must be a table")
+    if strict_keys:
+        unknown = sorted(set(raw) - _JOBS_KEYS)
+        if unknown:
+            keys = ", ".join(repr(key) for key in unknown)
+            allowed = ", ".join(sorted(_JOBS_KEYS))
+            raise ConfigError(
+                f"unknown [jobs] key(s) {keys}; allowed: {allowed}"
+            )
+    if "parallelism" not in raw:
+        return DEFAULT_JOBS_PLAN
+    value = raw["parallelism"]
+    # bool is an int subclass; `parallelism = true` is a typo, not a 1.
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ConfigError(
+            f"[jobs] parallelism must be an integer between {MIN_JOB_PARALLELISM} "
+            f"and {MAX_JOB_PARALLELISM}; got {value!r}"
+        )
+    if not MIN_JOB_PARALLELISM <= value <= MAX_JOB_PARALLELISM:
+        raise ConfigError(
+            f"[jobs] parallelism must be between {MIN_JOB_PARALLELISM} and "
+            f"{MAX_JOB_PARALLELISM}; got {value!r}"
+        )
+    return JobsPlan(parallelism=value)
 
 
 def emit_model_plan_toml(plan: ModelPlan) -> str:
@@ -278,6 +342,12 @@ def emit_model_plan_toml(plan: ModelPlan) -> str:
         return json.dumps(value)
 
     lines = [f"provider = {q(plan.provider)}", ""]
+    # Only when it differs from the default, so plans that never set it (every
+    # file written before [jobs] existed) round-trip byte-identically.
+    if plan.jobs != DEFAULT_JOBS_PLAN:
+        lines.append("[jobs]")
+        lines.append(f"parallelism = {plan.jobs.parallelism}")
+        lines.append("")
     for stage_name in STAGE_ORDER:
         stage = plan.stages[stage_name]
         body: list[str] = []
@@ -313,7 +383,19 @@ def apply_overrides(
     overrides["stages"], and re-run parse_model_plan(..., catalog=catalog) so
     every existing validation rule applies to the merged result."""
 
-    raw: dict[str, Any] = {"provider": plan.provider, "stages": {}}
+    if "jobs" in overrides:
+        raise ConfigError(
+            "plan override key 'jobs' is not allowed: job parallelism is "
+            "daemon-wide, set it in the global model plan"
+        )
+
+    raw: dict[str, Any] = {
+        "provider": plan.provider,
+        "stages": {},
+        # Parallelism is never overridden per run, but it must survive the
+        # rebuild-and-reparse below rather than silently resetting to default.
+        "jobs": {"parallelism": plan.jobs.parallelism},
+    }
     for stage_name in STAGE_ORDER:
         stage = plan.stages[stage_name]
         body: dict[str, Any] = {}

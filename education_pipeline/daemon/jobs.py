@@ -24,6 +24,7 @@ from typing import Callable
 from education_pipeline import cost as cost_module
 from education_pipeline.atomic_io import atomic_write_bytes, atomic_write_text
 from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
+from education_pipeline.draft_parts import DraftPart
 from education_pipeline.providers import get_runner
 from education_pipeline.runs import RunStore, StaleContentError
 from education_pipeline.workspace_lock import workspace_lock
@@ -40,6 +41,19 @@ def new_job_id(now: datetime | None = None) -> str:
 
     stamp = (now or _utcnow()).strftime("%Y%m%dT%H%M%SZ")
     return f"{stamp}-{secrets.token_hex(2)}"
+
+
+def new_batch_id(now: datetime | None = None) -> str:
+    """An id for one enqueued batch of part jobs.
+
+    Same shape as a job id with a ``b-`` prefix so the two are never confused
+    in a log line. A batch is a field on its member records, never a
+    directory, but it still has to be a single path segment: it reaches the
+    daemon's cancel route in a URL.
+    """
+
+    stamp = (now or _utcnow()).strftime("%Y%m%dT%H%M%SZ")
+    return f"b-{stamp}-{secrets.token_hex(2)}"
 
 
 @dataclass
@@ -67,7 +81,20 @@ class Job:
     # fields existed load with both None (see ``from_dict``).
     cost_usd: float | None = None
     cost_source: str | None = None
+    # Batch membership and, for a modular draft, which part of the draft this
+    # job executes (``DraftPart.to_manifest()``: ``{"kind": "frame"}`` or
+    # ``{"kind": "module", "module_id": ...}``). Both are None for every
+    # whole-stage job, including every record written before they existed.
+    batch_id: str | None = None
+    part: dict | None = None
     metadata: dict = field(default_factory=dict)
+
+    @property
+    def part_key(self) -> str | None:
+        """This job's draft part as a flat key, or None for a whole stage."""
+
+        part = DraftPart.from_manifest(self.part)
+        return None if part is None else part.key
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -157,6 +184,9 @@ class JobStore:
         provider: str,
         model: str | None,
         effort: str | None,
+        *,
+        batch_id: str | None = None,
+        part: dict | None = None,
     ) -> Job:
         with self.lock():
             job = Job(
@@ -167,6 +197,8 @@ class JobStore:
                 model=model,
                 effort=effort,
                 created_at=_utcnow().isoformat(),
+                batch_id=batch_id,
+                part=part,
             )
             self.job_dir(topic_id, job.id).mkdir(parents=True, exist_ok=True)
         return job
@@ -260,6 +292,29 @@ class JobStore:
             if job.stage == stage and job.status not in TERMINAL_STATUSES:
                 return job
         return None
+
+    def active_for_part(self, topic_id: str, part: DraftPart) -> Job | None:
+        """The first queued/running job for exactly this draft part, if any.
+
+        Narrower than :meth:`active_for` on purpose: a manual paste for one
+        module must not be refused because a *sibling* module's job is
+        running (spec D6/D7).
+        """
+
+        key = part.key
+        for job in self.list(topic_id):
+            if job.status in TERMINAL_STATUSES:
+                continue
+            if job.part_key == key:
+                return job
+        return None
+
+    def batch(self, topic_id: str, batch_id: str) -> list[Job]:
+        """Every job of one batch, newest first; empty for an unknown id."""
+
+        if not batch_id:
+            return []
+        return [job for job in self.list(topic_id) if job.batch_id == batch_id]
 
     def any_active_for(self, topic_id: str) -> Job | None:
         """The first queued/running job for the topic across all stages, if any."""
@@ -376,6 +431,10 @@ class JobRunner:
         # Bound outside the try so the failure arm can still see raw provider
         # output captured before a parse/ingest error threw it away.
         stdout: str | None = None
+        # Which part of a modular draft this job executes, or None for a whole
+        # stage. Read once, outside the try, so the salvage arm below knows
+        # where the raw output belongs even when the failure came early.
+        part = DraftPart.from_manifest(job.part)
         try:
             # Re-stamp the job with the *effective* stage plan carried by this
             # runner (the daemon re-resolves global plan + run overrides when
@@ -394,13 +453,22 @@ class JobRunner:
                 return self._fail(job, f"provider {job.provider!r} is not available on PATH")
 
             model = self._resolve_model(job)
-            prompt_path = self.runs.stage_paths(job.topic_id, job.stage).prompt_path
-            if job.stage == "audit":
-                prompt_path = self.runs.require_provider_ready_prompt(
-                    job.topic_id, job.stage
-                )
-            elif not prompt_path.exists():
-                return self._fail(job, f"prompt not written for stage {job.stage!r}")
+            if part is not None:
+                # A part job runs the part's own prompt and never the whole
+                # stage's: a modular draft has no draft.prompt.md at all.
+                prompt_path = self.runs.draft_part_paths(job.topic_id, part).prompt_path
+                if not prompt_path.exists():
+                    return self._fail(
+                        job, f"prompt not written for draft part {part.key!r}"
+                    )
+            else:
+                prompt_path = self.runs.stage_paths(job.topic_id, job.stage).prompt_path
+                if job.stage == "audit":
+                    prompt_path = self.runs.require_provider_ready_prompt(
+                        job.topic_id, job.stage
+                    )
+                elif not prompt_path.exists():
+                    return self._fail(job, f"prompt not written for stage {job.stage!r}")
             invocation = runner.build_invocation(model, stage_plan, prompt_path)
             stdout, stdout_truncated, exit_code, timed_out, canceled = self._spawn(
                 job, invocation, prompt_path, cancel
@@ -420,21 +488,31 @@ class JobRunner:
             parsed = runner.parse_response(stdout)
             job.metadata.update(parsed.metadata)
             self._record_cost(job, parsed, prompt_path, model)
-            response_path = self.runs.ingest_response(
-                job.topic_id, job.stage, parsed.text, force=self.force
-            )
+            if part is not None:
+                response_path = self.runs.ingest_part_response(
+                    job.topic_id, part, parsed.text, force=self.force
+                )
+            else:
+                response_path = self.runs.ingest_response(
+                    job.topic_id, job.stage, parsed.text, force=self.force
+                )
             job.response_path = str(response_path)
             try:
-                self.runs.append_manifest_event(
-                    job.topic_id,
-                    {
-                        "stage": job.stage,
-                        "action": "job",
-                        "job_id": job.id,
-                        "provider": job.provider,
-                        "model": job.model,
-                    },
-                )
+                event = {
+                    "stage": job.stage,
+                    "action": "job",
+                    "job_id": job.id,
+                    "provider": job.provider,
+                    "model": job.model,
+                }
+                if part is not None:
+                    # Only on a part job: a whole stage's event keeps its shape.
+                    event["part"] = part.to_manifest()
+                self.runs.append_manifest_event(job.topic_id, event)
+                # Provenance is per stage, so on a modular draft each part
+                # job overwrites it: the draft's recorded provider/model is
+                # the last part's. Accepted for now -- every part of one batch
+                # runs the same effective stage plan.
                 self.runs.record_stage_provenance(
                     job.topic_id,
                     job.stage,
@@ -453,7 +531,7 @@ class JobRunner:
             # parse_response or ingest_response refused the output: the model
             # already did the work, so the raw bytes are written beside the
             # stage's response before the job goes terminal.
-            salvaged = self._salvage_stdout(job, stdout)
+            salvaged = self._salvage_stdout(job, stdout, part=part)
             error = str(exc)
             if salvaged is not None:
                 job.metadata["salvaged_output"] = salvaged.name
@@ -662,25 +740,39 @@ class JobRunner:
             canceled,
         )
 
-    def _salvage_stdout(self, job: Job, stdout: str | None) -> Path | None:
-        """Write raw provider output beside the stage response, or None.
+    def _salvage_stdout(
+        self, job: Job, stdout: str | None, *, part: DraftPart | None = None
+    ) -> Path | None:
+        """Write raw provider output beside the response it was meant to be.
 
         ``stdout`` is None when the job failed before the provider ran (an
         unknown model, say), and there is then nothing to salvage. Otherwise
         the bytes land verbatim -- including empty output, which is itself the
         evidence of what went wrong -- under a timestamped name a human and
         ``write_api.salvage_stage_output`` can both find.
+
+        A part job salvages beside *its part*
+        (``responses/draft/modules/<id>.failed.<ts>.txt``), never beside the
+        whole stage, so one module's bad output is attributable to it.
         """
 
         if stdout is None:
             return None
         try:
-            responses = self.runs.stage_paths(job.topic_id, job.stage).response_path.parent
+            if part is not None:
+                paths = self.runs.draft_part_paths(job.topic_id, part)
+                responses = paths.response_path.parent
+                stem = paths.response_path.name[: -len(".response.json")]
+            else:
+                responses = self.runs.stage_paths(
+                    job.topic_id, job.stage
+                ).response_path.parent
+                stem = job.stage
             stamp = _utcnow().strftime("%Y%m%dT%H%M%SZ")
-            path = responses / f"{job.stage}.failed.{stamp}.txt"
+            path = responses / f"{stem}.failed.{stamp}.txt"
             suffix = 1
             while path.exists():  # two failures within one second
-                path = responses / f"{job.stage}.failed.{stamp}-{suffix}.txt"
+                path = responses / f"{stem}.failed.{stamp}-{suffix}.txt"
                 suffix += 1
             atomic_write_bytes(path, stdout.encode("utf-8"))
             return path
@@ -700,21 +792,53 @@ class JobRunner:
         return job
 
 
-class Worker:
-    """A single-worker job queue with FIFO ordering and crash recovery."""
+MAX_WORKER_PARALLELISM = 4
 
-    def __init__(self, store: JobStore, runner_factory: Callable[[Job], JobRunner]) -> None:
+
+class Worker:
+    """A bounded pool of worker threads over one FIFO queue, with recovery.
+
+    ``parallelism`` threads drain the same queue, so jobs admitted for
+    different topics -- or for different parts of one modular draft -- run
+    concurrently up to that bound (spec D6). Admission, not the queue, is what
+    keeps two jobs off the same work: see :meth:`enqueue`.
+    """
+
+    def __init__(
+        self,
+        store: JobStore,
+        runner_factory: Callable[[Job], JobRunner],
+        *,
+        parallelism: int = 1,
+    ) -> None:
+        if (
+            not isinstance(parallelism, int)
+            or isinstance(parallelism, bool)
+            or not 1 <= parallelism <= MAX_WORKER_PARALLELISM
+        ):
+            raise ConfigError(
+                f"worker parallelism must be an integer between 1 and "
+                f"{MAX_WORKER_PARALLELISM}; got {parallelism!r}"
+            )
         self.store = store
         self.runner_factory = runner_factory
+        self.parallelism = parallelism
         self._queue: "queue.Queue[str | None]" = queue.Queue()
         self._cancels: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
+        self._threads: list[threading.Thread] = []
+        # job_id -> the job each pool thread is currently executing, so
+        # ``cancel`` can reach any of them (there is no single current job).
+        self._running: dict[str, Job] = {}
         self._stopping = False
 
     def start(self) -> None:
-        self._thread = threading.Thread(target=self._loop, name="ep-worker", daemon=True)
-        self._thread.start()
+        self._threads = [
+            threading.Thread(target=self._loop, name=f"ep-worker-{index}", daemon=True)
+            for index in range(1, self.parallelism + 1)
+        ]
+        for thread in self._threads:
+            thread.start()
 
     def stop(self, finish_inflight: bool = True) -> None:
         self._stopping = True
@@ -722,9 +846,50 @@ class Worker:
             with self._lock:
                 for event in self._cancels.values():
                     event.set()
-        self._queue.put(None)  # sentinel to wake the loop
-        if self._thread is not None:
-            self._thread.join(timeout=30)
+        # One sentinel per thread: each thread consumes exactly one queue item
+        # at a time, so every thread is guaranteed to receive one and exit.
+        for _ in self._threads or [None]:
+            self._queue.put(None)
+        for thread in self._threads:
+            thread.join(timeout=30)
+        self._threads = []
+
+    def _refusal(self, job: Job) -> str | None:
+        """Why this job may not be admitted right now, or None.
+
+        The admission key is ``(topic_id, stage, part_key)``: two jobs for
+        different modules of one draft are independent work and both run,
+        while a second job for the same part is a duplicate. On top of that,
+        a whole-stage job and a part job for the same stage are mutually
+        exclusive -- they write the same artifacts, so letting the two enqueue
+        paths interleave would race.
+
+        Callers hold ``self._lock``.
+        """
+
+        key = job.part_key
+        for existing in self.store.list(job.topic_id):
+            if existing.id == job.id or existing.status in TERMINAL_STATUSES:
+                continue
+            if existing.stage != job.stage:
+                continue
+            existing_key = existing.part_key
+            if existing_key == key:
+                where = job.stage if key is None else f"{job.stage} part {key}"
+                return (
+                    f"a {existing.status} job already exists for "
+                    f"{job.topic_id}/{where}"
+                )
+            if existing_key is None or key is None:
+                whole, other = (
+                    (existing, job) if existing_key is None else (job, existing)
+                )
+                return (
+                    f"a {existing.status} job already exists for "
+                    f"{job.topic_id}/{whole.stage}: a whole-stage job and the "
+                    f"part job {other.part_key!r} cannot run together"
+                )
+        return None
 
     def enqueue(self, job: Job) -> None:
         # Check + durable-save + queue insertion must be one atomic operation:
@@ -735,14 +900,50 @@ class Worker:
         # rejected job here is never saved, so `active_for` (which scans
         # job.json files) never sees it and no orphan is left behind.
         with self._lock:
-            existing = self.store.active_for(job.topic_id, job.stage)
-            if existing is not None and existing.id != job.id:
-                raise ConfigError(
-                    f"a {existing.status} job already exists for {job.topic_id}/{job.stage}"
-                )
-            self.store.save(job)
-            self._cancels[job.id] = threading.Event()
-            self._queue.put(job.id)
+            refusal = self._refusal(job)
+            if refusal is not None:
+                raise ConfigError(refusal)
+            self._admit(job)
+
+    def _admit(self, job: Job) -> None:
+        """Persist and queue one already-checked job. Caller holds the lock."""
+
+        self.store.save(job)
+        self._cancels[job.id] = threading.Event()
+        self._queue.put(job.id)
+
+    def enqueue_batch(self, jobs) -> None:
+        """Admit a batch of part jobs all-or-nothing, under one lock.
+
+        Every member is checked -- against the store and against its siblings
+        -- before any of them is saved, so a partially admitted batch cannot
+        exist: a refusal leaves no ``job.json`` behind for any member.
+        """
+
+        jobs = list(jobs)
+        if not jobs:
+            return
+        batch_ids = {job.batch_id for job in jobs}
+        if len(batch_ids) != 1 or None in batch_ids:
+            raise ConfigError("every job in a batch must share one batch_id")
+        topic_ids = {job.topic_id for job in jobs}
+        if len(topic_ids) != 1:
+            raise ConfigError("every job in a batch must share one topic_id")
+        with self._lock:
+            seen: dict[tuple[str, str | None], Job] = {}
+            for job in jobs:
+                key = (job.stage, job.part_key)
+                if key in seen:
+                    raise ConfigError(
+                        f"batch contains two jobs for {job.topic_id}/{job.stage} "
+                        f"part {job.part_key!r}"
+                    )
+                seen[key] = job
+                refusal = self._refusal(job)
+                if refusal is not None:
+                    raise ConfigError(refusal)
+            for job in jobs:
+                self._admit(job)
 
     def cancel(self, job_id: str) -> Job | None:
         job = self.store.find(job_id)
@@ -760,6 +961,20 @@ class Worker:
         if event is not None:
             event.set()
         return self.store.find(job_id)
+
+    def cancel_batch(self, topic_id: str, batch_id: str) -> list[Job]:
+        """Cancel every queued or running member of one batch.
+
+        Members that already finished are left exactly as they are; the
+        returned records are the batch's state after the call.
+        """
+
+        canceled: list[Job] = []
+        for member in self.store.batch(topic_id, batch_id):
+            updated = self.cancel(member.id)
+            if updated is not None:
+                canceled.append(updated)
+        return canceled
 
     def reconcile(self) -> None:
         for job in self.store.all_jobs():
@@ -783,6 +998,24 @@ class Worker:
                 self._cancels.setdefault(job.id, threading.Event())
             self._queue.put(job.id)
 
+    def _blocked_by_running(self, job: Job) -> bool:
+        """True when this job must wait for a running job of the same topic.
+
+        The pool's concurrency is for *independent* work: the parts of one
+        batch, and other topics. Two jobs of one run that are not siblings in
+        one batch keep the single-thread behaviour and run one after another.
+
+        Callers hold ``self._lock``.
+        """
+
+        for other in self._running.values():
+            if other.topic_id != job.topic_id:
+                continue
+            if job.batch_id is not None and other.batch_id == job.batch_id:
+                continue
+            return True
+        return False
+
     def _loop(self) -> None:
         while True:
             job_id = self._queue.get()
@@ -797,6 +1030,20 @@ class Worker:
                 job.status = "canceled"
                 job.ended_at = _utcnow().isoformat()
                 self.store.save(job)
+                continue
+            with self._lock:
+                deferred = self._blocked_by_running(job)
+                if not deferred:
+                    self._running[job_id] = job
+            if deferred:
+                # Another job for this topic is running and is not a sibling in
+                # this job's batch. Batch members are the one kind of work a
+                # run has more than one of at a time (spec D6): everything else
+                # for one run stays serialized exactly as it was when the pool
+                # was a single thread -- two stages of one run must not execute
+                # at once. Put it back and let another job through meanwhile.
+                self._queue.put(job_id)
+                time.sleep(0.05)
                 continue
             try:
                 # runner_factory is inside the try so a factory that raises
@@ -816,6 +1063,9 @@ class Worker:
                     fresh.ended_at = _utcnow().isoformat()
                     fresh.pid = None
                     self.store.save(fresh)
+            finally:
+                with self._lock:
+                    self._running.pop(job_id, None)
 
 
 def _process_identity(pid: int) -> str | None:

@@ -906,6 +906,12 @@ def plan_payload(catalog: ModelCatalog, plan: ModelPlan, plan_sha256: str) -> di
         "provider": plan.provider,
         "plan_sha256": plan_sha256,
         "stages": stages,
+        # Daemon-wide, not per stage: the pool size is read at worker start,
+        # so an edit only lands on the next daemon start.
+        "jobs": {
+            "parallelism": plan.jobs.parallelism,
+            "effective_on": "restart",
+        },
     }
 
 

@@ -779,9 +779,21 @@ def update_global_plan(config, body: dict) -> dict:
         raise ConflictError(
             "stale_content", "the model plan changed on disk; reload settings"
         )
-    catalog, _ = config.load()
+    catalog, current = config.load()
+    # The settings page saves {provider, stages}; parallelism is daemon-wide
+    # and edited separately, so an absent 'jobs' keeps the file's current
+    # value rather than silently resetting it to the default.
+    jobs = body.get("jobs")
+    if jobs is None:
+        jobs = {"parallelism": current.jobs.parallelism}
+    elif not isinstance(jobs, dict):
+        raise ConfigError("body field 'jobs' must be a table")
     plan = parse_model_plan(
-        {"provider": body.get("provider"), "stages": body.get("stages", {})},
+        {
+            "provider": body.get("provider"),
+            "stages": body.get("stages", {}),
+            "jobs": jobs,
+        },
         catalog=catalog,
         # Strict at write, lenient on disk (owner's decision): reject an
         # unknown/misspelled stage key here rather than silently discarding

@@ -350,6 +350,12 @@ batch-aware.
   (D7), which use `JobStore.active_for_part(topic, part)` and refuse with
   `job_conflict` only while **that** part's job is queued or running, so a
   manual paste for `m3` is allowed while `m4` runs.
+- Pool scheduling rule: a thread that picks up a job whose topic already
+  has a **running** job that is not a sibling in the same batch defers it
+  (re-queued after a short wait), so one run never executes two unrelated
+  jobs at once; batch siblings and jobs for different topics run
+  concurrently up to the pool size. With `parallelism = 1` the rule is
+  unreachable and whole-stage behaviour is exactly today's.
 - Failure isolation: one part job failing (exit code, timeout, parse error,
   salvage) leaves its siblings running; the batch has no state of its own
   beyond its jobs, and `next_action` reports the failed part as missing so
