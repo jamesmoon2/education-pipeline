@@ -1370,6 +1370,35 @@ def test_repair_modules_payload_lists_sections_and_module_level_findings(
     assert {section["open_findings"] for section in intervention["sections"]} == {0}
 
 
+def test_finding_scope_separates_module_level_from_section_findings() -> None:
+    """Pin the module-level / per-section split of the repair payload's counts.
+
+    The payload tests above assert the per-section counts and only the *type*
+    of ``module_level_findings``, so an attribution that never counts a
+    module-level finding -- or that folds one into section 0 -- would slip
+    through. This pins the mapping itself, including the index bounds.
+    """
+
+    scope = read_api.finding_scope
+
+    # Above every section: a module-level rule, and an annotation on the module.
+    assert scope("/modules/0", 2) == (0, None)
+    assert scope("/modules/1/serves_goals", 2) == (1, None)
+    assert scope("/modules/1/estimated_minutes", 2) == (1, None)
+
+    # Inside a section: the section index is carried through exactly.
+    assert scope("/modules/0/sections/0", 2) == (0, 0)
+    assert scope("/modules/0/sections/1/blocks/0", 2) == (0, 1)
+    assert scope("/modules/1/sections/2/blocks/3/steps/4", 2) == (1, 2)
+
+    # Outside the modules array, or naming a module the guide does not have.
+    assert scope("/course/title", 2) is None
+    assert scope("/outcomes/0", 2) is None
+    assert scope("/modules", 2) is None
+    assert scope("/modules/7/sections/0", 2) is None
+    assert scope("", 2) is None
+
+
 def test_repair_stage_content_carries_the_scope(server_with_context):
     port, context = server_with_context
     _drive_guide_through_qa_http(context)

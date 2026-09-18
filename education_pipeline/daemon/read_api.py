@@ -542,13 +542,38 @@ def personalization_payload(runs: RunStore, topic_id: str) -> dict:
     }
 
 
+_FINDING_SCOPE_RE = re.compile(r"^/modules/(\d+)(?:/sections/(\d+))?(?:/|$)")
+
+
+def finding_scope(path: str, module_count: int) -> tuple[int, int | None] | None:
+    """Locate a finding's JSON pointer as ``(module index, section index)``.
+
+    A section index of ``None`` means the finding sits above every section of
+    its module -- a module-level rule such as ``module.no_interaction``, or an
+    annotation on the module itself -- which a section-scoped repair cannot
+    carry the fix for. ``None`` for the whole result means the path is outside
+    the modules array (a course- or outcome-level finding) or names a module
+    the guide does not have. Pure text mapping: no I/O.
+    """
+
+    match = _FINDING_SCOPE_RE.match(path)
+    if match is None:
+        return None
+    index = int(match.group(1))
+    if index >= module_count:
+        return None
+    section = match.group(2)
+    return index, (int(section) if section is not None else None)
+
+
 def repair_modules_payload(runs: RunStore, topic_id: str) -> dict:
     """List the approved draft's modules with open finding counts and scope.
 
-    Candidates for module-scoped regeneration: every module of the approved
-    draft, with the number of current-report findings located inside it
-    (draft and final phases, current reports only), plus the pending scoped
-    repair's target when one is set.
+    Candidates for scoped regeneration: every module of the approved draft,
+    with the number of current-report findings located inside it (draft and
+    final phases, current reports only), how many of those sit above every
+    section (``module_level_findings``), and the same count per section, plus
+    the pending scoped repair's target when one is set.
     """
 
     from education_pipeline.guides import normalize_guide, parse_guide
@@ -568,6 +593,15 @@ def repair_modules_payload(runs: RunStore, topic_id: str) -> dict:
         )
     guide = normalize_guide(parsed)
     counts = {module.id: 0 for module in guide.modules}
+    # Findings inside a module that are not inside any of its sections (a
+    # module-level rule such as ``module.no_interaction``): a section-scoped
+    # repair cannot carry their fix, so the cockpit shows them separately.
+    module_level = {module.id: 0 for module in guide.modules}
+    section_counts = {
+        (module.id, section.id): 0
+        for module in guide.modules
+        for section in module.sections
+    }
     for phase in ("draft", "final"):
         if runs.report_state(topic_id, phase) != "current":
             continue
@@ -584,19 +618,41 @@ def repair_modules_payload(runs: RunStore, topic_id: str) -> dict:
             continue
         for finding in findings:
             path = finding.get("path", "") if isinstance(finding, dict) else ""
-            match = re.match(r"^/modules/(\d+)(?:/|$)", path)
-            if match:
-                index = int(match.group(1))
-                if index < len(guide.modules):
-                    counts[guide.modules[index].id] += 1
+            located = finding_scope(path, len(guide.modules))
+            if located is None:
+                continue
+            index, section_index = located
+            module = guide.modules[index]
+            counts[module.id] += 1
+            if section_index is None:
+                module_level[module.id] += 1
+            elif section_index < len(module.sections):
+                section_counts[(module.id, module.sections[section_index].id)] += 1
     scope = runs.repair_scope(topic_id)
     return {
         "topic_id": topic_id,
         "modules": [
-            {"id": module.id, "title": module.title, "open_findings": counts[module.id]}
+            {
+                "id": module.id,
+                "title": module.title,
+                "open_findings": counts[module.id],
+                "module_level_findings": module_level[module.id],
+                "sections": [
+                    {
+                        "id": section.id,
+                        "title": section.title,
+                        "open_findings": section_counts[(module.id, section.id)],
+                    }
+                    for section in module.sections
+                ],
+            }
             for module in guide.modules
         ],
-        "repair_scope": {"module_id": scope} if scope is not None else None,
+        "repair_scope": (
+            {"module_id": scope.module_id, "section_id": scope.section_id}
+            if scope is not None
+            else None
+        ),
     }
 
 
@@ -627,7 +683,7 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
     ):
         scope = runs.repair_scope(topic_id)
         payload["repair_scope"] = (
-            {"module_id": scope} if scope is not None else None
+            {"module_id": scope.module_id} if scope is not None else None
         )
     return payload
 

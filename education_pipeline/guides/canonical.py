@@ -1,4 +1,4 @@
-"""Canonical guide serialization, content hashing, and the module splice."""
+"""Canonical guide serialization, content hashing, and the scoped splices."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ _EMPTY_OMITTED_FIELDS = {"serves_goals", "goal_exclusions"}
 
 
 class SpliceError(ValueError):
-    """A module-scoped repair response cannot be merged into the base guide."""
+    """A scoped repair response cannot be merged into the base guide."""
 
 
 def guide_to_dict(value: Any) -> Any:
@@ -64,7 +64,96 @@ def splice_module(
     Pure function: no file I/O, no run-lifecycle coupling.
     """
 
+    base = _base_for_splice(base_guide_json)
+    fragment, fragment_id = _scoped_fragment(module_json, "module", ("modules",))
+
+    modules = base.get("modules", [])
+    index = _index_of_id(modules, module_id, "module", "the base guide")
+    _require_same_id(fragment_id, module_id, "module")
+
+    merged = dict(base)
+    merged["modules"] = [*modules[:index], fragment, *modules[index + 1 :]]
+    return _merged_or_refused(merged)
+
+
+def _scoped_fragment(
+    fragment_json: str, kind: str, forbidden_keys: tuple[str, ...]
+) -> tuple[dict, str]:
+    """Parse and shape-check one scoped-repair fragment.
+
+    Shared by :func:`splice_module` and :func:`splice_section`: the reply must
+    be exactly one JSON object carrying a string ``id`` and none of the keys
+    that would make it a wider document (a module carries ``modules``; a
+    section carries ``sections`` or ``modules``). Every violation is a
+    blocking :class:`SpliceError`, never a silent fix.
+    """
+
+    try:
+        fragment = json.loads(fragment_json)
+    except json.JSONDecodeError as exc:
+        raise SpliceError(f"{kind} response is not valid JSON: {exc}") from exc
+    if not isinstance(fragment, dict):
+        raise SpliceError(f"{kind} response must be a single JSON object")
+    fragment_id = fragment.get("id")
+    if not isinstance(fragment_id, str) or any(
+        key in fragment for key in forbidden_keys
+    ):
+        raise SpliceError(
+            f"{kind} response must be a single {kind} object with a string `id`"
+        )
+    return fragment, fragment_id
+
+
+def _index_of_id(items: list, wanted: str, kind: str, where: str) -> int:
+    """Locate the entry with ``id == wanted``, or refuse and name the known ids."""
+
+    index = next(
+        (
+            position
+            for position, item in enumerate(items)
+            if isinstance(item, dict) and item.get("id") == wanted
+        ),
+        None,
+    )
+    if index is None:
+        known = ", ".join(
+            item.get("id", "?") for item in items if isinstance(item, dict)
+        )
+        raise SpliceError(
+            f"{kind} {wanted!r} is not present in {where}; known {kind}s: {known}"
+        )
+    return index
+
+
+def _require_same_id(fragment_id: str, wanted: str, kind: str) -> None:
+    """Refuse a renamed fragment; a scoped repair never moves an id."""
+
+    if fragment_id != wanted:
+        raise SpliceError(
+            f"{kind} id must stay {wanted!r}; the response renamed it to "
+            f"{fragment_id!r}, and renames are blocking"
+        )
+
+
+def _merged_or_refused(merged: dict) -> bytes:
+    """Strictly re-parse a spliced guide and return its canonical bytes."""
+
     from .parse import normalize_guide, parse_guide
+
+    parsed_merged = parse_guide(json.dumps(merged, ensure_ascii=False))
+    if not parsed_merged.ok:
+        details = "; ".join(
+            f"{item.code} at {item.path}: {item.message}"
+            for item in parsed_merged.diagnostics
+        )
+        raise SpliceError(f"the spliced guide is not valid: {details}")
+    return canonical_guide_bytes(normalize_guide(parsed_merged))
+
+
+def _base_for_splice(base_guide_json: str | bytes) -> dict:
+    """Parse the base guide strictly and return it as a plain dict."""
+
+    from .parse import parse_guide
 
     parsed_base = parse_guide(base_guide_json)
     if not parsed_base.ok:
@@ -77,50 +166,56 @@ def splice_module(
         if isinstance(base_guide_json, bytes)
         else base_guide_json
     )
-    base = json.loads(base_text)
+    return json.loads(base_text)
 
-    try:
-        fragment = json.loads(module_json)
-    except json.JSONDecodeError as exc:
-        raise SpliceError(f"module response is not valid JSON: {exc}") from exc
-    if not isinstance(fragment, dict):
-        raise SpliceError("module response must be a single JSON object")
-    fragment_id = fragment.get("id")
-    if not isinstance(fragment_id, str) or "modules" in fragment:
-        raise SpliceError(
-            "module response must be a single module object with a string `id`"
-        )
+
+def splice_section(
+    base_guide_json: str | bytes,
+    module_id: str,
+    section_id: str,
+    section_json: str,
+) -> bytes:
+    """Deterministically replace one section of a guide with a regenerated one.
+
+    Mirrors :func:`splice_module` one level down. ``section_json`` must be
+    exactly one section object whose ``id`` equals ``section_id`` -- a rename
+    is a blocking :class:`SpliceError`, never a silent fix -- carrying no
+    ``sections`` or ``modules`` key, so a whole-module or whole-guide reply is
+    refused rather than merged. The section is replaced in place (module and
+    section order preserved) and the merged guide is re-parsed strictly, so
+    element-id collisions with any sibling section or any other module, and
+    references to outcomes outside the contract, are refused with the parser's
+    exact diagnostics. Returns the canonical bytes of the merged whole guide;
+    every section and module outside the target is byte-identical (canonical
+    serialization) to the base.
+
+    Pure function: no file I/O, no run-lifecycle coupling.
+    """
+
+    base = _base_for_splice(base_guide_json)
+    fragment, fragment_id = _scoped_fragment(
+        section_json, "section", ("sections", "modules")
+    )
 
     modules = base.get("modules", [])
-    index = next(
-        (
-            position
-            for position, module in enumerate(modules)
-            if isinstance(module, dict) and module.get("id") == module_id
-        ),
-        None,
+    module_index = _index_of_id(modules, module_id, "module", "the base guide")
+    module = modules[module_index]
+    sections = module.get("sections", [])
+    section_index = _index_of_id(
+        sections, section_id, "section", f"module {module_id!r}"
     )
-    if index is None:
-        known = ", ".join(
-            module.get("id", "?") for module in modules if isinstance(module, dict)
-        )
-        raise SpliceError(
-            f"module {module_id!r} is not present in the base guide; "
-            f"known modules: {known}"
-        )
-    if fragment_id != module_id:
-        raise SpliceError(
-            f"module id must stay {module_id!r}; the response renamed it to "
-            f"{fragment_id!r}, and renames are blocking"
-        )
+    _require_same_id(fragment_id, section_id, "section")
 
+    merged_module = dict(module)
+    merged_module["sections"] = [
+        *sections[:section_index],
+        fragment,
+        *sections[section_index + 1 :],
+    ]
     merged = dict(base)
-    merged["modules"] = [*modules[:index], fragment, *modules[index + 1 :]]
-    parsed_merged = parse_guide(json.dumps(merged, ensure_ascii=False))
-    if not parsed_merged.ok:
-        details = "; ".join(
-            f"{item.code} at {item.path}: {item.message}"
-            for item in parsed_merged.diagnostics
-        )
-        raise SpliceError(f"the spliced guide is not valid: {details}")
-    return canonical_guide_bytes(normalize_guide(parsed_merged))
+    merged["modules"] = [
+        *modules[:module_index],
+        merged_module,
+        *modules[module_index + 1 :],
+    ]
+    return _merged_or_refused(merged)
