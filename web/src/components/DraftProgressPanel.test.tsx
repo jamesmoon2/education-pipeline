@@ -343,10 +343,18 @@ describe("DraftProgressPanel assemble", () => {
       assembled: null,
       counts: { total: 2, saved: 2, stale: 0 },
     });
+    vi.mocked(postDraftAssemble).mockResolvedValue({
+      ok: true,
+      response_sha256: "sha-assembled",
+      error: null,
+      module_ids: ["loop-basics", "intervention-practice"],
+      status: {} as never,
+    });
     const onChanged = renderPanel(progress);
     await userEvent.click(screen.getByRole("button", { name: "Assemble draft" }));
     expect(postDraftAssemble).toHaveBeenCalledWith("t");
     expect(onChanged).toHaveBeenCalled();
+    expect(await screen.findByText("Draft assembled.")).toHaveClass("success");
   });
 
   it("hides Assemble draft once assembly already succeeded", () => {
@@ -371,6 +379,39 @@ describe("DraftProgressPanel assemble", () => {
   it("hides Assemble draft while any module is not yet response_ingested", () => {
     renderPanel();
     expect(screen.queryByRole("button", { name: "Assemble draft" })).not.toBeInTheDocument();
+  });
+
+  // Review finding 3 (PR #39 automated review): POST /draft/assemble
+  // returns 200 with {ok:false, error} on failure -- nothing throws -- but
+  // the action unconditionally reported "Draft assembled."
+  it("reports the assemble error instead of success when the response is ok:false", async () => {
+    const progress = makeProgress({
+      modules: [
+        {
+          id: "loop-basics",
+          title: "How loops behave",
+          state: "response_ingested",
+          response_sha256: "sha-a",
+          error: null,
+          job_id: null,
+        },
+      ],
+      assembled: null,
+      counts: { total: 1, saved: 1, stale: 0 },
+    });
+    vi.mocked(postDraftAssemble).mockResolvedValue({
+      ok: false,
+      response_sha256: null,
+      error: "assembly failed: dangling source id",
+      module_ids: [],
+      status: {} as never,
+    });
+    renderPanel(progress);
+    await userEvent.click(screen.getByRole("button", { name: "Assemble draft" }));
+    expect(
+      await screen.findByText("assembly failed: dangling source id"),
+    ).toHaveClass("error");
+    expect(screen.queryByText("Draft assembled.")).not.toBeInTheDocument();
   });
 });
 

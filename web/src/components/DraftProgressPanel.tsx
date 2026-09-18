@@ -268,7 +268,9 @@ export default function DraftProgressPanel({
             disabled={assemble.busy}
             onClick={() =>
               assemble.run(() => postDraftAssemble(topicId), {
-                successMessage: "Draft assembled.",
+                successMessage: (result) =>
+                  result.ok ? "Draft assembled." : (result.error ?? "Assemble failed."),
+                errorTone: (result) => !result.ok,
               })
             }
           >
