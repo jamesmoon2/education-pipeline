@@ -4,6 +4,7 @@ import json
 import shutil
 import sys
 import threading
+import time
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -3903,6 +3904,18 @@ def test_enqueue_stage_draft_module_batch_excludes_saved_modules_unless_forced(
     batch = context.store.batch(first.batch_id)
     assert {j.module_id for j in batch} == {"intervention-practice"}
 
+    # This fixture's worker is live, so the batch above is really executing.
+    # The active-job guard (pinned by
+    # ``test_enqueue_stage_draft_refuses_second_batch_while_one_is_active``)
+    # refuses any second draft enqueue while it is, force or not -- so let it
+    # finish before asking the same question with force.
+    deadline = time.monotonic() + 30
+    while (
+        context.store.any_active_for(tdu.TID) is not None
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.02)
+
     forced_first = context.enqueue_stage(tdu.TID, "draft", True, modules=None)
     forced_batch = context.store.batch(forced_first.batch_id)
     assert {j.module_id for j in forced_batch} == set(tdu.MODULE_ORDER)
@@ -4108,8 +4121,20 @@ def test_post_jobs_batch_cancel_route(tmp_path, server_with_context):
     status, body = _req(port, "POST", f"/v1/jobs/batch/{batch_id}/cancel")
     assert status == 200
 
-    status, body = _req(port, "GET", f"/v1/jobs/batch/{batch_id}")
-    assert status == 200
+    # Cancelling a *running* job signals it; the runner then terminates the
+    # provider and writes the terminal record a moment later -- exactly as for
+    # the single-job cancel route, whose tests poll the same way.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        status, body = _req(port, "GET", f"/v1/jobs/batch/{batch_id}")
+        assert status == 200
+        if all(
+            j["status"] in {"canceled", "succeeded", "failed", "interrupted"}
+            for j in body["jobs"]
+        ):
+            break
+        time.sleep(0.02)
+
     assert all(j["status"] in {"canceled", "succeeded", "failed"} for j in body["jobs"])
     assert any(j["status"] == "canceled" for j in body["jobs"])
 

@@ -1563,6 +1563,39 @@ def test_write_api_assemble_draft_force_overwrites_superseded_response(tmp_path)
     assert result["ok"] is True
 
 
+def test_write_api_assemble_draft_refuses_with_active_job(tmp_path):
+    """Assembly reads every unit response, so it must not race the very jobs
+    that are still writing them: same ``_require_no_active_job`` guard as the
+    ingest/edit twins."""
+
+    runs = tdu._run_with_one_module_saved(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    runs.draft_unit_paths(
+        tdu.TID, "module", module_id="intervention-practice"
+    ).response_path.write_text(
+        tdu._module_response("intervention-practice"), encoding="utf-8"
+    )
+    from education_pipeline.daemon.jobs import Job, new_job_id
+
+    jobs.save(
+        Job(
+            id=new_job_id(),
+            topic_id=tdu.TID,
+            stage="draft",
+            provider="fake",
+            model="m",
+            effort=None,
+            status="running",
+            unit="module",
+            module_id="intervention-practice",
+            batch_id="live-batch",
+        )
+    )
+    with pytest.raises(write_api.ConflictError) as excinfo:
+        write_api.assemble_draft(runs, jobs, tdu.TID)
+    assert excinfo.value.code == "job_conflict"
+
+
 def test_write_api_assemble_draft_refuses_when_archived(tmp_path):
     runs = tdu._run_with_one_module_saved(tmp_path)
     jobs = _fanout_jobs(tmp_path)
