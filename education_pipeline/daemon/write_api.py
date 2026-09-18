@@ -107,7 +107,10 @@ def advance_run(
     *,
     blueprint: str | None = None,
     repair_module: str | None = None,
+    repair_section: str | None = None,
 ) -> dict:
+    if repair_section is not None and repair_module is None:
+        raise ConfigError("repair_section requires repair_module")
     _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
     if blueprint is not None:
@@ -117,13 +120,20 @@ def advance_run(
         runs.create_run(topic_id, blueprint=blueprint)
     if repair_module is not None:
         # A scoped repair prepares (or rebuilds) the repair prompt for one
-        # module instead of performing the generic next step.
+        # module -- or one section of it -- instead of performing the generic
+        # next step.
         prompt_exists = runs.stage_paths(topic_id, "repair").prompt_path.exists()
-        runs.write_module_repair_prompt(
-            topic_id, repair_module, overwrite=prompt_exists
-        )
+        if repair_section is None:
+            runs.write_module_repair_prompt(
+                topic_id, repair_module, overwrite=prompt_exists
+            )
+        else:
+            runs.write_section_repair_prompt(
+                topic_id, repair_module, repair_section, overwrite=prompt_exists
+            )
         return {
             "performed": "write_prompt",
+            "scope": {"module_id": repair_module, "section_id": repair_section},
             "status": read_api.run_status_payload(runs, topic_id, jobs=jobs),
         }
     result = runs.advance(topic_id)

@@ -221,6 +221,15 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="MODULE_ID",
         help="write a module-scoped repair prompt instead (repair stage only)",
     )
+    p.add_argument(
+        "--repair-section",
+        default=None,
+        metavar="SECTION_ID",
+        help=(
+            "narrow --repair-module to one section of that module "
+            "(requires --repair-module)"
+        ),
+    )
     p.set_defaults(func=_cmd_advance)
 
     p = sub.add_parser("audit", help="prepare or rebuild the optional personalization audit")
@@ -459,28 +468,45 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 def _cmd_advance(args: argparse.Namespace) -> int:
     runs = RunStore(_root(args))
+    if args.repair_section is not None and args.repair_module is None:
+        print(
+            "error: --repair-section requires --repair-module",
+            file=sys.stderr,
+        )
+        return 2
     if args.repair_module is not None:
         # A scoped repair request outside the repair stage or naming an
-        # unknown module is a usage error (exit 2), distinct from ordinary
-        # run failures. Reported after the lock is dropped so nothing slow
-        # happens inside the critical section.
+        # unknown module or section is a usage error (exit 2), distinct from
+        # ordinary run failures. Reported after the lock is dropped so nothing
+        # slow happens inside the critical section.
         usage_error: ConfigError | None = None
         with _guarded_mutation(runs, args.topic_id):
             try:
                 prompt_exists = runs.stage_paths(
                     args.topic_id, "repair"
                 ).prompt_path.exists()
-                prompt = runs.write_module_repair_prompt(
-                    args.topic_id, args.repair_module, overwrite=prompt_exists
-                )
+                if args.repair_section is None:
+                    prompt = runs.write_module_repair_prompt(
+                        args.topic_id, args.repair_module, overwrite=prompt_exists
+                    )
+                else:
+                    prompt = runs.write_section_repair_prompt(
+                        args.topic_id,
+                        args.repair_module,
+                        args.repair_section,
+                        overwrite=prompt_exists,
+                    )
             except ConfigError as exc:
                 usage_error = exc
         if usage_error is not None:
             print(f"error: {usage_error}", file=sys.stderr)
             return 2
-        print(
-            f"Performed: write_prompt (repair scoped to module {args.repair_module})"
+        scope = (
+            f"module {args.repair_module}"
+            if args.repair_section is None
+            else f"section {args.repair_section} of module {args.repair_module}"
         )
+        print(f"Performed: write_prompt (repair scoped to {scope})")
         print(f"  prompt: {prompt.prompt_path}")
         _print_next(runs.run_status(args.topic_id).next_action)
         return 0

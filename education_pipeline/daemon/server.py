@@ -659,12 +659,14 @@ def _make_handler(context: DaemonContext):
             m = re.match(r"^/v1/runs/([^/?]+)/advance$", self.path)
             if m:
                 body = self._read_body()
-                unknown = sorted(set(body) - {"blueprint", "repair_module"})
+                unknown = sorted(
+                    set(body) - {"blueprint", "repair_module", "repair_section"}
+                )
                 if unknown:
                     raise ConfigError(
                         "unknown advance field(s): " + ", ".join(unknown)
                     )
-                for field in ("blueprint", "repair_module"):
+                for field in ("blueprint", "repair_module", "repair_section"):
                     value = body.get(field)
                     if value is not None and (
                         not isinstance(value, str) or not value.strip()
@@ -680,6 +682,7 @@ def _make_handler(context: DaemonContext):
                         m.group(1),
                         blueprint=body.get("blueprint"),
                         repair_module=body.get("repair_module"),
+                        repair_section=body.get("repair_section"),
                     ),
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/audit$", self.path)

@@ -17,6 +17,7 @@ from education_pipeline import (
     NextAction,
     PromptFile,
     ProfileStore,
+    RepairScope,
     RunStatus,
     RunStore,
     StaleContentError,
@@ -727,7 +728,7 @@ def test_write_module_repair_prompt_scopes_and_records_the_module(tmp_path: Path
 
     assert prompt.stage == "repair"
     assert "## Module To Regenerate" in prompt.artifact.text
-    assert runs.repair_scope("systems-thinking") == "loop-basics"
+    assert runs.repair_scope("systems-thinking") == RepairScope("loop-basics", None)
     event = next(
         event
         for event in reversed(runs.read_manifest("systems-thinking")["events"])

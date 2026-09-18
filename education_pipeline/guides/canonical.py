@@ -1,4 +1,4 @@
-"""Canonical guide serialization, content hashing, and the module splice."""
+"""Canonical guide serialization, content hashing, and the scoped splices."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ _EMPTY_OMITTED_FIELDS = {"serves_goals", "goal_exclusions"}
 
 
 class SpliceError(ValueError):
-    """A module-scoped repair response cannot be merged into the base guide."""
+    """A scoped repair response cannot be merged into the base guide."""
 
 
 def guide_to_dict(value: Any) -> Any:
@@ -275,4 +275,131 @@ def splice_module(
 
     merged = dict(base)
     merged["modules"] = [*modules[:index], fragment, *modules[index + 1 :]]
+    return _reparse_strictly(merged, subject="spliced guide")
+
+
+def _section_fragment(section_json: str | bytes, section_id: str) -> dict:
+    """Load one section response fragment and check it is that single section.
+
+    A payload that is not a lone section object -- a whole guide, a module
+    (it carries ``sections``), or a section stripped of its ``blocks`` -- or
+    one that renames the section, is a blocking :class:`SpliceError` rather
+    than a silent fix.
+    """
+
+    try:
+        text = (
+            section_json.decode("utf-8")
+            if isinstance(section_json, bytes)
+            else section_json
+        )
+        fragment = json.loads(text)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SpliceError(f"section response is not valid JSON: {exc}") from exc
+    if not isinstance(fragment, dict):
+        raise SpliceError("section response must be a single JSON object")
+    fragment_id = fragment.get("id")
+    if (
+        not isinstance(fragment_id, str)
+        or not isinstance(fragment.get("title"), str)
+        or not isinstance(fragment.get("blocks"), list)
+        or "sections" in fragment
+        or "modules" in fragment
+    ):
+        raise SpliceError(
+            "section response must be a single section object with a string `id`, "
+            "a string `title`, and a `blocks` list, and without `sections` or "
+            "`modules` keys"
+        )
+    if fragment_id != section_id:
+        raise SpliceError(
+            f"section id must stay {section_id!r}; the response renamed it to "
+            f"{fragment_id!r}, and renames are blocking"
+        )
+    return fragment
+
+
+def splice_section(
+    base_guide_json: str | bytes,
+    module_id: str,
+    section_id: str,
+    section_json: str,
+) -> bytes:
+    """Deterministically replace one section of a guide with a regenerated one.
+
+    The section-scoped mirror of :func:`splice_module`: ``section_json`` must
+    be exactly one section object whose ``id`` equals ``section_id``, living
+    in module ``module_id``. The section is replaced in place (section and
+    module order preserved, the enclosing module's own fields untouched) and
+    the merged guide is re-parsed strictly, so element-id collisions with the
+    rest of the course and references to outcomes outside the contract are
+    refused with the parser's exact diagnostics. Returns the canonical bytes
+    of the merged whole guide; every byte outside the target section is
+    identical (canonical serialization) to the base.
+
+    Pure function: no file I/O, no run-lifecycle coupling.
+    """
+
+    from .parse import parse_guide
+
+    parsed_base = parse_guide(base_guide_json)
+    if not parsed_base.ok:
+        raise SpliceError(
+            "the base guide is not a valid guide document; "
+            "correct the approved base before a scoped repair"
+        )
+    base_text = (
+        base_guide_json.decode("utf-8")
+        if isinstance(base_guide_json, bytes)
+        else base_guide_json
+    )
+    base = json.loads(base_text)
+
+    fragment = _section_fragment(section_json, section_id)
+
+    modules = base.get("modules", [])
+    index = next(
+        (
+            position
+            for position, module in enumerate(modules)
+            if isinstance(module, dict) and module.get("id") == module_id
+        ),
+        None,
+    )
+    if index is None:
+        known = ", ".join(
+            module.get("id", "?") for module in modules if isinstance(module, dict)
+        )
+        raise SpliceError(
+            f"module {module_id!r} is not present in the base guide; "
+            f"known modules: {known}"
+        )
+
+    module = modules[index]
+    sections = module.get("sections", [])
+    position = next(
+        (
+            slot
+            for slot, section in enumerate(sections)
+            if isinstance(section, dict) and section.get("id") == section_id
+        ),
+        None,
+    )
+    if position is None:
+        known = ", ".join(
+            section.get("id", "?") for section in sections if isinstance(section, dict)
+        )
+        raise SpliceError(
+            f"section {section_id!r} is not present in module {module_id!r}; "
+            f"known sections: {known}"
+        )
+
+    merged_module = dict(module)
+    merged_module["sections"] = [
+        *sections[:position],
+        fragment,
+        *sections[position + 1 :],
+    ]
+    merged = dict(base)
+    merged["modules"] = [*modules[:index], merged_module, *modules[index + 1 :]]
     return _reparse_strictly(merged, subject="spliced guide")

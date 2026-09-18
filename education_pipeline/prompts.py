@@ -1702,6 +1702,283 @@ def compile_guide_v1_module_repair_prompt(
     )
 
 
+_SECTION_REPAIR_HEADER_LINES = (
+    "# Repair Stage Prompt (Section Scope)",
+    "",
+    "You are regenerating exactly one section of one module of a course draft for a local-first "
+    "education pipeline.",
+    "Apply the in-scope findings to the section below and return the revised section in full.",
+    "Change only what the findings require; preserve everything the review did not flag.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The in-scope findings, which define the required fixes.",
+    "4. The section to regenerate, which is the base to revise.",
+    "5. Topic requirements.",
+    "6. Learner profile context.",
+)
+
+_SECTION_REPAIR_QUALITY_LINES = (
+    "## Quality Bar",
+    "- Resolve every in-scope blocking deterministic finding and every in-scope blocker or major "
+    "model-QA finding.",
+    "- Resolve every blocker or major fact-check finding that applies to this section.",
+    "- On a factual conflict between the reports, prefer the fact-check report; on pedagogy or "
+    "coverage, prefer the QA report; do not invent a third answer.",
+    "- Do not fix out-of-scope findings; they are context so cross-references stay coherent.",
+    "- Preserve stable IDs and valid unflagged structure inside the section; change only what the "
+    "findings require.",
+    "- Keep `outcome_ids` references within the guide contract's outcomes.",
+    "- If this section holds the enclosing module's only interactive block (a `knowledge_check`, "
+    "`worked_reveal`, `scenario`, or `reflection`), keep an interactive block here: a module "
+    "without one fails validation.",
+    "- Any new element id must be globally unique across the whole course, not just this section.",
+    "- Use only the registered keys and the six registered block types; never invent new keys or "
+    "block types.",
+    "- Never include private learner-profile values in the section JSON.",
+    "- Use Markdown only inside the designated `markdown` fields.",
+    "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in "
+    "the JSON.",
+)
+
+
+def compile_guide_v1_section_repair_prompt(
+    topic: Topic,
+    *,
+    module_id: str,
+    section_id: str,
+    base_guide_json: str,
+    qa_findings_markdown: str,
+    factcheck_findings_markdown: str,
+    draft_findings_json: str,
+    guide_contract: bytes,
+    profile: LearnerProfile | None = None,
+    blueprint: Blueprint | None = None,
+) -> PromptArtifact:
+    """Compile the section-scoped variant of the guide-v1 repair prompt.
+
+    The narrow mirror of :func:`compile_guide_v1_module_repair_prompt`: it
+    embeds the guide contract, only the findings whose location falls inside
+    the target section (deterministic findings filtered by the
+    ``/modules/<index>/sections/<index>`` path prefix; model-QA items filtered
+    by section or enclosing-module id/title mention, with the unmatchable rest
+    listed as out-of-scope context), the single section's JSON as the base to
+    revise, the enclosing module's frame (id, title, summary, outcome ids and
+    sibling section ids and titles) so cross-references stay coherent, and a
+    compact summary of the rest of the course. Output contract: exactly one
+    section object with the same ``id``.
+
+    ``base_guide_json`` is the guide the scoped repair patches -- the approved
+    draft on the first round, the approved repair afterwards -- and the
+    findings come from the report over that same base. The fact-check report
+    is embedded in full for the same reason the module prompt embeds it in
+    full: v1 does not invent a second splitter contract.
+    """
+
+    from education_pipeline.guides.canonical import guide_to_dict
+    from education_pipeline.guides.parse import normalize_guide, parse_guide
+
+    _required_block(base_guide_json, "base guide JSON")
+    _required_block(qa_findings_markdown, "QA findings")
+    _required_block(factcheck_findings_markdown, "factcheck findings")
+    _required_block(draft_findings_json, "draft findings")
+    contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
+
+    parsed = parse_guide(base_guide_json)
+    if not parsed.ok:
+        raise ConfigError(
+            "base guide JSON must be a valid guide document for a section-scoped repair"
+        )
+    guide = normalize_guide(parsed)
+    module_index = next(
+        (
+            position
+            for position, module in enumerate(guide.modules)
+            if module.id == module_id
+        ),
+        None,
+    )
+    if module_index is None:
+        known = ", ".join(module.id for module in guide.modules)
+        raise ConfigError(
+            f"module {module_id!r} is not present in the scoped repair base; "
+            f"known modules: {known}"
+        )
+    module = guide.modules[module_index]
+    section_index = next(
+        (
+            position
+            for position, section in enumerate(module.sections)
+            if section.id == section_id
+        ),
+        None,
+    )
+    if section_index is None:
+        known = ", ".join(section.id for section in module.sections)
+        raise ConfigError(
+            f"section {section_id!r} is not present in module {module_id!r}; "
+            f"known sections: {known}"
+        )
+    section = module.sections[section_index]
+    section_text = json.dumps(
+        guide_to_dict(section), ensure_ascii=False, indent=2, sort_keys=True
+    )
+    module_frame_text = json.dumps(
+        {
+            "id": module.id,
+            "title": module.title,
+            "summary": module.summary,
+            "outcome_ids": list(module.outcome_ids),
+            "sections": [
+                {"id": sibling.id, "title": sibling.title}
+                for sibling in module.sections
+            ],
+        },
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+
+    try:
+        findings_payload = json.loads(draft_findings_json)
+    except json.JSONDecodeError as exc:
+        raise ConfigError("draft findings must be valid JSON") from exc
+    all_findings = (
+        findings_payload.get("findings", [])
+        if isinstance(findings_payload, dict)
+        else []
+    )
+    prefix = f"/modules/{module_index}/sections/{section_index}"
+    in_section_findings = [
+        finding
+        for finding in all_findings
+        if isinstance(finding, dict)
+        and isinstance(finding.get("path"), str)
+        and (
+            finding["path"] == prefix or finding["path"].startswith(prefix + "/")
+        )
+    ]
+    scoped_findings_text = json.dumps(
+        {"findings": in_section_findings}, ensure_ascii=False, indent=2
+    )
+
+    qa_items = _split_qa_finding_items(qa_findings_markdown)
+    needles = (
+        section_id.casefold(),
+        section.title.casefold(),
+        module_id.casefold(),
+        module.title.casefold(),
+    )
+    in_scope_items = [
+        item for item in qa_items if any(needle in item.casefold() for needle in needles)
+    ]
+    out_of_scope_items = [item for item in qa_items if item not in in_scope_items]
+
+    summary_lines = [
+        f"- {other.id}: {other.title} (outcomes: {', '.join(other.outcome_ids)})"
+        for other in guide.modules
+        if other.id != module_id
+    ] or ["- (the enclosing module is the only module in the course)"]
+
+    personalization_lines = _private_personalization_lines(
+        profile, guide_schema_version
+    )
+    personalization_suffix = (
+        ("", *personalization_lines) if personalization_lines else ()
+    )
+    output_lines = (
+        "## Output Format",
+        "Return exactly one JSON object: the revised section, in the same section shape as the "
+        "guide schema's `sections` entries -- never the enclosing module, the whole guide, a diff, "
+        f"or a partial patch. Keep the same `id` (`{section_id}`). Do not return the whole guide. "
+        "Never include a `sections` or `modules` key. Do not wrap the object in Markdown fences "
+        "and do not add commentary before or after it.",
+        "",
+        "### Schema Reference",
+        *_versioned_lines(_GUIDE_SCHEMA_REFERENCE_LINES, guide_schema_version),
+        "",
+        *_guide_json_output_lines(_SECTION_REPAIR_QUALITY_LINES, guide_schema_version),
+        *personalization_suffix,
+    )
+    return _compile_stage_prompt(
+        stage="repair",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "repair_lines"),
+        header_lines=_SECTION_REPAIR_HEADER_LINES,
+        sections=(
+            (
+                "## Guide Contract",
+                "The following machine-readable contract was derived from the approved "
+                "specification and outline. Its constraints are binding; the regenerated section "
+                "must not drift outside them.",
+                "guide contract",
+                contract_text,
+            ),
+            (
+                "## Approved Model-QA Findings (This Section)",
+                "The in-scope model-QA fixes for this section and its enclosing module. Resolve "
+                "every blocker and major finding that falls inside this section.",
+                "qa findings",
+                _untrusted_block(
+                    "in-scope model-QA findings",
+                    "\n".join(in_scope_items) if in_scope_items else "(none)",
+                ),
+            ),
+            (
+                "## Out-Of-Scope Findings (Context Only)",
+                "Findings that could not be matched to this section or its module. Do not fix "
+                "them here; they are context only.",
+                "out-of-scope findings",
+                _untrusted_block(
+                    "out-of-scope model-QA findings",
+                    "\n".join(out_of_scope_items) if out_of_scope_items else "(none)",
+                ),
+            ),
+            (
+                "## Approved Fact-Check Findings",
+                "The full fact-check report. Apply the factual fixes that fall inside this "
+                "section and treat the rest as context. Resolve every in-scope blocker and major "
+                "finding.",
+                "factcheck findings",
+                _untrusted_block(
+                    "approved fact-check findings", factcheck_findings_markdown
+                ),
+            ),
+            (
+                "## Deterministic Draft Findings (This Section)",
+                "Machine-generated validation findings located inside this section. Resolve every "
+                "blocking finding.",
+                "draft findings",
+                _untrusted_block("deterministic draft findings", scoped_findings_text),
+            ),
+            (
+                "## Enclosing Module (Context Only)",
+                "The module this section belongs to: its id, title, summary, outcome ids, and the "
+                "ids and titles of its sections in order. Do not return the module and do not "
+                "renumber or rename its sections.",
+                "module frame",
+                _untrusted_block("module frame JSON", module_frame_text),
+            ),
+            (
+                "## Section To Regenerate",
+                "The base section JSON to revise. Preserve stable IDs and valid unflagged "
+                "structure.",
+                "section",
+                _untrusted_block("section JSON", section_text),
+            ),
+            (
+                "## Rest Of The Course (Context Only)",
+                "The other modules' ids, titles, and outcome ids, so cross-references stay "
+                "coherent. Do not modify them.",
+                "course summary",
+                "\n".join(summary_lines),
+            ),
+        ),
+        output_and_quality_lines=output_lines,
+        topic=topic,
+        profile=_profile_without_authoritative_goals(profile, guide_schema_version),
+    )
+
 def compile_personalization_audit_prompt(
     *,
     topic_id: str,
