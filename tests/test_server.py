@@ -1214,14 +1214,14 @@ def test_advance_rejects_unknown_blueprint(server):
     assert "unregistered blueprint" in body["error"]["message"]
 
 
-def _drive_guide_through_qa_http(context, topic_id="scoped-topic"):
+def _drive_guide_through_qa_http(context, topic_id="scoped-topic", *, draft_body=None):
     topic_toml = test_runs.TOPIC_TOML.replace(
         'id = "systems-thinking"', f'id = "{topic_id}"'
     )
     TopicStore(context.root).save_topic_toml(topic_id, topic_toml)
     runs = context.runs
     runs.create_run(topic_id)
-    test_runs._drive_guide_through_factcheck(runs, topic_id)
+    test_runs._drive_guide_through_factcheck(runs, topic_id, draft_body=draft_body)
     return runs
 
 
@@ -1238,7 +1238,44 @@ def test_advance_with_repair_module_writes_scoped_prompt(server_with_context):
 
     assert status == 200
     assert body["performed"] == "write_prompt"
-    assert runs.repair_scope("scoped-topic") == "loop-basics"
+    assert runs.repair_scope("scoped-topic") == test_runs.RepairScope(
+        module_id="loop-basics"
+    )
+
+
+def test_advance_with_repair_module_and_section_writes_scoped_prompt(
+    server_with_context,
+):
+    port, context = server_with_context
+    runs = _drive_guide_through_qa_http(context)
+
+    status, body = _req(
+        port,
+        "POST",
+        "/v1/runs/scoped-topic/advance",
+        body={"repair_module": "loop-basics", "repair_section": "feedback-foundations"},
+    )
+
+    assert status == 200
+    assert body["performed"] == "write_prompt"
+    assert runs.repair_scope("scoped-topic") == test_runs.RepairScope(
+        module_id="loop-basics", section_id="feedback-foundations"
+    )
+
+
+def test_advance_with_repair_section_without_repair_module_is_400(server_with_context):
+    port, context = server_with_context
+    _drive_guide_through_qa_http(context)
+
+    status, body = _req(
+        port,
+        "POST",
+        "/v1/runs/scoped-topic/advance",
+        body={"repair_section": "feedback-foundations"},
+    )
+
+    assert status == 400
+    assert "repair_module" in body["error"]["message"]
 
 
 def test_advance_with_unknown_repair_module_is_400(server_with_context):
@@ -1269,6 +1306,7 @@ def test_repair_modules_payload_lists_candidates_with_finding_counts(
     assert set(modules) == {"loop-basics", "intervention-practice"}
     assert modules["loop-basics"]["title"]
     assert isinstance(modules["loop-basics"]["open_findings"], int)
+    assert isinstance(modules["loop-basics"]["module_level_findings"], int)
     assert body["repair_scope"] is None
 
     _req(
@@ -1279,7 +1317,57 @@ def test_repair_modules_payload_lists_candidates_with_finding_counts(
     )
     status, body = _req(port, "GET", "/v1/runs/scoped-topic/repair/modules")
     assert status == 200
-    assert body["repair_scope"] == {"module_id": "loop-basics"}
+    assert body["repair_scope"] == {"module_id": "loop-basics", "section_id": None}
+
+
+def test_repair_modules_payload_reports_section_scope(server_with_context):
+    port, context = server_with_context
+    _drive_guide_through_qa_http(context)
+
+    _req(
+        port,
+        "POST",
+        "/v1/runs/scoped-topic/advance",
+        body={"repair_module": "loop-basics", "repair_section": "feedback-foundations"},
+    )
+    status, body = _req(port, "GET", "/v1/runs/scoped-topic/repair/modules")
+
+    assert status == 200
+    assert body["repair_scope"] == {
+        "module_id": "loop-basics",
+        "section_id": "feedback-foundations",
+    }
+
+
+def test_repair_modules_payload_lists_sections_and_module_level_findings(
+    server_with_context,
+):
+    port, context = server_with_context
+
+    data = json.loads(test_runs.GUIDE_FIXTURE)
+    # A placeholder-language finding, scoped only to the "recognize-loop-types"
+    # section of the "loop-basics" module -- proves the section list attributes
+    # findings to the right section and excludes the sibling section.
+    data["modules"][0]["sections"][1]["blocks"][0]["explanation"] += (
+        " TODO: revisit this explanation."
+    )
+    draft_body = json.dumps(data, ensure_ascii=False)
+    _drive_guide_through_qa_http(context, draft_body=draft_body)
+
+    status, body = _req(port, "GET", "/v1/runs/scoped-topic/repair/modules")
+
+    assert status == 200
+    modules = {entry["id"]: entry for entry in body["modules"]}
+    loop_basics = modules["loop-basics"]
+    sections = {section["id"]: section for section in loop_basics["sections"]}
+    assert set(sections) == {"feedback-foundations", "recognize-loop-types"}
+    assert sections["feedback-foundations"]["title"]
+    assert sections["feedback-foundations"]["open_findings"] == 0
+    assert sections["recognize-loop-types"]["open_findings"] >= 1
+    assert isinstance(loop_basics["module_level_findings"], int)
+
+    intervention = modules["intervention-practice"]
+    assert {section["open_findings"] for section in intervention["sections"]} == {0}
 
 
 def test_repair_stage_content_carries_the_scope(server_with_context):

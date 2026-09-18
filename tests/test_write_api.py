@@ -234,6 +234,40 @@ def test_advance_is_a_noop_at_human_steps(tmp_path):
     assert again["status"]["next_action"]["action"] == "save_response"
 
 
+def test_advance_run_with_repair_module_and_section_writes_scoped_prompt(tmp_path):
+    from education_pipeline.runs import RepairScope
+
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(tmp_path, topic_id)
+    test_runs._drive_guide_through_factcheck(runs, topic_id)
+    jobs = JobStore(tmp_path)
+
+    result = write_api.advance_run(
+        runs,
+        jobs,
+        topic_id,
+        repair_module="loop-basics",
+        repair_section="feedback-foundations",
+    )
+
+    assert result["performed"] == "write_prompt"
+    assert runs.repair_scope(topic_id) == RepairScope(
+        module_id="loop-basics", section_id="feedback-foundations"
+    )
+
+
+def test_advance_run_with_repair_section_without_module_is_config_error(tmp_path):
+    topic_id = "systems-thinking"
+    runs = test_runs._create_guide_run(tmp_path, topic_id)
+    test_runs._drive_guide_through_factcheck(runs, topic_id)
+    jobs = JobStore(tmp_path)
+
+    with pytest.raises(ConfigError, match="repair_module"):
+        write_api.advance_run(
+            runs, jobs, topic_id, repair_section="feedback-foundations"
+        )
+
+
 def test_prepare_audit_returns_manual_and_provider_next_steps_and_rebuilds(tmp_path):
     runs = test_runs._create_profiled_guide_run(tmp_path)
     topic_id = "systems-thinking"
