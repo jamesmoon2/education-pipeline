@@ -442,3 +442,89 @@ def test_queue_run_on_empty_queue(tmp_path: Path, capsys) -> None:
     code = test_cli._run(tmp_path, "queue", "run")
     assert code == 0
     assert capsys.readouterr().out.strip() == "queue: empty"
+
+
+def test_queue_run_marks_the_entry_running_on_disk_before_driving_it(
+    tmp_path: Path, live_daemon, capsys
+) -> None:
+    """The ``running`` mark is written *before* the course is driven.
+
+    That write is the whole recovery story for an interrupted ``queue run``
+    (decision 7): a course killed mid-flight has to be distinguishable on
+    disk from one that was never started. Observed from inside the provider
+    job, which only runs while the course is being driven.
+    """
+
+    from education_pipeline.course_queue import load_queue
+
+    seen: list[str] = []
+
+    class _SnapshotRunner(_ScriptedRunner):
+        def build_invocation(self, model, plan, prompt_path):
+            seen.append(load_queue(tmp_path).entries[0].status)
+            return super().build_invocation(model, plan, prompt_path)
+
+    register_runner(_SnapshotRunner())
+    _write_fake_plan(tmp_path)
+    _seed_topic(tmp_path, "topic-a")
+    test_cli._run(tmp_path, "queue", "add", "topic-a")
+    capsys.readouterr()
+
+    ensure_daemon(tmp_path, autostart=True)
+    code = test_cli._run(tmp_path, "queue", "run")
+
+    assert code == 0
+    assert seen == ["running"]
+    assert load_queue(tmp_path).entries[0].status == "stopped"
+
+    test_cli._run(tmp_path, "daemon", "stop")
+
+
+# ---------------------------------------------------------------------------
+# 10. The blocking job runner on a draft fan-out
+# ---------------------------------------------------------------------------
+
+
+class _BatchClient:
+    """A ``DaemonClient`` stand-in whose enqueue answers with one batch."""
+
+    def __init__(self, statuses: list[str]) -> None:
+        self.jobs = [
+            {"id": f"j{index}", "module_id": f"m{index}", "status": status}
+            for index, status in enumerate(statuses, start=1)
+        ]
+
+    def enqueue(self, topic_id, **kwargs):
+        return {"id": "j1", "stage": "draft", "batch_id": "b1", "jobs": self.jobs}
+
+    def get_batch(self, batch_id):
+        assert batch_id == "b1"
+        return {"jobs": self.jobs}
+
+
+def test_blocking_runner_reports_a_whole_batch_success() -> None:
+    from education_pipeline import cli
+
+    outcome = cli._blocking_job_runner(_BatchClient(["succeeded", "succeeded"]))(
+        "topic-a", "draft"
+    )
+
+    assert outcome.waited is True
+    assert outcome.ok is True
+    assert outcome.count == 2
+    assert outcome.message is None
+
+
+def test_blocking_runner_fails_a_batch_with_one_failed_module() -> None:
+    """One dead module is a failed draft: the assembled guide would be short a
+    module, so the loop must stop rather than carry on to validation."""
+
+    from education_pipeline import cli
+
+    outcome = cli._blocking_job_runner(_BatchClient(["succeeded", "failed"]))(
+        "topic-a", "draft"
+    )
+
+    assert outcome.ok is False
+    assert outcome.count == 2
+    assert "m2" in (outcome.message or "")

@@ -22,11 +22,30 @@ from typing import Iterator, Sequence
 
 from education_pipeline.client import DaemonClient, DaemonError, daemon_status, ensure_daemon
 from education_pipeline import cost as cost_module
-from education_pipeline.config import ConfigError
-from education_pipeline.daemon import lifecycle
+from education_pipeline.config import ConfigError, ModelPlan, apply_overrides_lenient
+from education_pipeline.course_queue import (
+    add_entry,
+    load_queue,
+    mark_running,
+    mark_stopped,
+    pending_entries,
+    remove_entry,
+    save_queue,
+)
+from education_pipeline.daemon import WorkspaceConfigSource, lifecycle
 from education_pipeline.daemon.jobs import JobStore, TERMINAL_STATUSES
 from education_pipeline.errors import ERROR_CATALOG
 from education_pipeline.export import EXPORT_FORMATS
+from education_pipeline.orchestrate import (
+    JobOutcome,
+    Outcome,
+    Stop,
+    StoreSteps,
+    describe_step,
+    describe_stop,
+    run_until_judgment,
+    stop_payload,
+)
 from education_pipeline.profiles import load_learner_profile
 from education_pipeline.runs import ContentContract, RepairScope, RunStore
 from education_pipeline.topics import load_topic
@@ -282,6 +301,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("topic_id")
     p.add_argument("--stage", default=None, help="override the stage to run")
     p.add_argument("--wait", action="store_true", help="block until the job is terminal")
+    p.add_argument(
+        "--until",
+        default=None,
+        choices=["approval"],
+        help=(
+            "keep taking mechanical steps (prompt, provider job, assemble, "
+            "validate) until the run needs judgment; implies --wait and "
+            "cannot be combined with --stage/--modules"
+        ),
+    )
     p.add_argument("--force", action="store_true", help="override the no-clobber refusal")
     p.add_argument(
         "--modules",
@@ -294,6 +323,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--no-autostart", dest="autostart", action="store_false")
     p.set_defaults(func=_cmd_run, autostart=True)
+
+    queue = sub.add_parser(
+        "queue", help="queue courses and drive them to their next judgment point"
+    ).add_subparsers(dest="queue_command", required=True)
+    p = queue.add_parser("add", help="add (or re-queue) a course")
+    p.add_argument("topic_id")
+    p.set_defaults(func=_cmd_queue_add)
+    queue.add_parser("list", help="list queued courses and where they stopped").set_defaults(
+        func=_cmd_queue_list
+    )
+    p = queue.add_parser("remove", help="drop a course from the queue")
+    p.add_argument("topic_id")
+    p.set_defaults(func=_cmd_queue_remove)
+    p = queue.add_parser(
+        "run", help="drive every pending course to its next judgment point, in order"
+    )
+    p.add_argument("--no-autostart", dest="autostart", action="store_false")
+    p.set_defaults(func=_cmd_queue_run, autostart=True)
 
     p = sub.add_parser("jobs", help="list jobs (optionally for one topic)")
     p.add_argument("topic_id", nargs="?", default=None)
@@ -850,6 +897,17 @@ def _parse_modules(value: str | None) -> list[str] | None:
 
 def _cmd_run(args: argparse.Namespace) -> int:
     root = _root(args)
+    if getattr(args, "until", None) is not None:
+        if args.stage is not None or args.modules is not None:
+            # --until drives whatever step the run is on; naming a stage or a
+            # module subset asks for a different, single job instead. That is
+            # a usage error (exit 2), not a run failure.
+            print(
+                "error: --until cannot be combined with --stage/--modules",
+                file=sys.stderr,
+            )
+            return 2
+        return _cmd_run_until(args, root)
     modules = _parse_modules(args.modules)
     if modules is not None and not modules:
         # ``--modules ""`` (or a list of blanks) names nothing; sending it on
@@ -879,15 +937,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
             print(f"  {entry['module_id']}: {entry['id']}")
         if not args.wait:
             return 0
-        return _wait_for_batch(client, args, batch_id)
+        return _report_batch(args, batch_id, _wait_for_batch(client, batch_id))
     print(f"enqueued job {job['id']} ({job['stage']})")
     if not args.wait:
         return 0
-    while True:
-        job = client.get_job(job["id"])
-        if job["status"] in TERMINAL_STATUSES:
-            break
-        time.sleep(0.25)
+    job = _wait_for_job(client, job["id"])
     log_path = job.get("response_path") or "(see logs)"
     print(f"job {job['id']} {job['status']}")
     if job["status"] == "succeeded":
@@ -899,19 +953,46 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 1
 
 
-def _wait_for_batch(client, args: argparse.Namespace, batch_id: str) -> int:
-    """Block until every module job of one fan-out is terminal, then report.
+def _wait_for_job(client, job_id: str) -> dict:
+    """Block until one job is terminal; hand back its final record.
+
+    The one place the CLI polls a single job, shared by ``run --wait`` and by
+    the blocking job runner ``run --until`` drives the engine loop with.
+    """
+
+    while True:
+        job = client.get_job(job_id)
+        if job["status"] in TERMINAL_STATUSES:
+            return job
+        time.sleep(0.25)
+
+
+def _wait_for_batch(client, batch_id: str) -> list[dict]:
+    """Block until every module job of one fan-out is terminal.
+
+    Waiting and reporting are separate so ``run --until`` can wait on a draft
+    fan-out without printing ``run --wait``'s per-module report.
+    """
+
+    while True:
+        jobs = client.get_batch(batch_id).get("jobs", [])
+        if all(job["status"] in TERMINAL_STATUSES for job in jobs):
+            return jobs
+        time.sleep(0.25)
+
+
+def _failed_jobs(jobs: list[dict]) -> list[dict]:
+    return [job for job in jobs if job["status"] != "succeeded"]
+
+
+def _report_batch(args: argparse.Namespace, batch_id: str, jobs: list[dict]) -> int:
+    """Report a finished fan-out.
 
     One line per module, so a partial failure names exactly which modules to
     re-run (``run <topic> --modules <id> --force``) rather than costing the
     whole draft again.
     """
 
-    while True:
-        jobs = client.get_batch(batch_id).get("jobs", [])
-        if all(job["status"] in TERMINAL_STATUSES for job in jobs):
-            break
-        time.sleep(0.25)
     failed = []
     for job in jobs:
         print(f"  {job['module_id']}: {job['status']}")
@@ -928,6 +1009,195 @@ def _wait_for_batch(client, args: argparse.Namespace, batch_id: str) -> int:
             file=sys.stderr,
         )
     return 1
+
+
+# ---------------------------------------------------------------------------
+# run --until approval, and the course queue that repeats it
+# ---------------------------------------------------------------------------
+
+
+def _blocking_job_runner(client):
+    """The CLI's ``run_job``: enqueue through the daemon, then block.
+
+    Decision 1: the CLI's runner waits for a terminal status so the loop can
+    take the next in-process step; the daemon's runner only enqueues. The
+    stage is not sent -- the daemon derives it from the same next action the
+    loop just read, so the two can never disagree about what to run.
+    """
+
+    def run_job(topic_id: str, stage: str) -> JobOutcome:
+        record = client.enqueue(topic_id)
+        batch_id = record.get("batch_id")
+        if batch_id:
+            jobs = _wait_for_batch(client, batch_id)
+            failed = _failed_jobs(jobs)
+            message = None
+            if failed:
+                modules = ", ".join(str(job.get("module_id")) for job in failed)
+                message = f"{len(failed)} of {len(jobs)} module jobs failed: {modules}"
+            return JobOutcome(
+                waited=True, ok=not failed, message=message, count=len(jobs)
+            )
+        job = _wait_for_job(client, record["id"])
+        ok = job["status"] == "succeeded"
+        message = None if ok else (job.get("error") or f"job {job['id']} {job['status']}")
+        return JobOutcome(waited=True, ok=ok, message=message)
+
+    return run_job
+
+
+def _plan_loader(root: Path, runs: RunStore):
+    """The run's *effective* plan, loaded exactly as the daemon loads it.
+
+    Same source (``WorkspaceConfigSource``) and same override application
+    (``apply_overrides_lenient``) as ``run_plan_payload`` and the daemon's
+    enqueue, so the provider the loop names is the provider the job runs
+    under. A plan that cannot be read raises, and the loop reports that as
+    ``plan_unreadable`` rather than as a failure.
+    """
+
+    def plan_for(topic_id: str) -> ModelPlan:
+        catalog, plan = WorkspaceConfigSource(root).load()
+        overrides = runs.read_plan_overrides(topic_id)
+        effective, _errors = apply_overrides_lenient(plan, overrides, catalog)
+        return effective
+
+    return plan_for
+
+
+def _run_to_judgment(root: Path, topic_id: str, *, autostart: bool) -> Outcome:
+    """Drive one course to its next judgment point and report where it stands.
+
+    Decision 6: ``advance`` and ``validate`` run in this process under
+    ``_guarded_mutation`` -- the same guard the ``advance`` and ``validate``
+    commands take -- and only job execution goes through the daemon.
+    """
+
+    client = ensure_daemon(root, autostart=autostart)
+    runs = RunStore(root)
+    steps = StoreSteps(
+        runs,
+        plan_for=_plan_loader(root, runs),
+        run_job=_blocking_job_runner(client),
+        mutation_guard=lambda topic: _guarded_mutation(runs, topic),
+    )
+    return run_until_judgment(topic_id, steps)
+
+
+def _print_steps(outcome: Outcome) -> None:
+    """One indented line per mechanical step the loop took.
+
+    ``describe_step`` deliberately says nothing about a job (the cockpit
+    reports those through the stop phrase); the CLI waits for every job, so
+    here a job is a step like any other and gets its own line.
+    """
+
+    for step in outcome.steps:
+        if step.kind == "job":
+            if step.count:
+                print(
+                    f"  - ran {step.count} module jobs for {step.stage} "
+                    f"with {step.provider}"
+                )
+            else:
+                print(f"  - ran {step.stage} with {step.provider}")
+            continue
+        phrase = describe_step(step)
+        if phrase:
+            print(f"  - {phrase}")
+
+
+def _stopped_badly(outcome: Outcome) -> bool:
+    """Did the loop stop somewhere that deserves a nonzero exit?
+
+    Every judgment point (``approve``, ``resolve_findings``, ``finalize``,
+    ``done``, ``manual``, ``plan_unreadable``, ``started``) is a success: the
+    loop did its work and handed back. Only a failed step and an exhausted
+    step budget are failures.
+    """
+
+    return outcome.stop.kind in ("failed", "unfinished")
+
+
+def _cmd_run_until(args: argparse.Namespace, root: Path) -> int:
+    outcome = _run_to_judgment(root, args.topic_id, autostart=args.autostart)
+    _print_steps(outcome)
+    print(f"run: {describe_stop(outcome.stop)}")
+    return 1 if _stopped_badly(outcome) else 0
+
+
+def _now() -> str:
+    """The timestamp the queue file records, to the second, in UTC."""
+
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _cmd_queue_add(args: argparse.Namespace) -> int:
+    root = _root(args)
+    runs = RunStore(root)
+    if not runs.manifest_path(args.topic_id).is_file():
+        # The queue drives runs, so a topic with no run is a mistake worth
+        # catching at `queue add` rather than at `queue run`, hours later.
+        raise ConfigError(
+            f"no run started for topic {args.topic_id!r}; "
+            f"create it first: education-pipeline create {args.topic_id}"
+        )
+    queue = load_queue(root)
+    known = any(entry.topic_id == args.topic_id for entry in queue.entries)
+    save_queue(root, add_entry(queue, args.topic_id, now=_now()))
+    print(f"queue: {'re-queued' if known else 'added'} {args.topic_id}")
+    return 0
+
+
+def _cmd_queue_list(args: argparse.Namespace) -> int:
+    queue = load_queue(_root(args))
+    if not queue.entries:
+        print("queue: empty")
+        return 0
+    width = max(len(entry.topic_id) for entry in queue.entries)
+    for entry in queue.entries:
+        phrase = describe_stop(Stop(**entry.stop)) if entry.stop else "-"
+        print(f"{entry.topic_id:<{width}}  {entry.status:<7}  {phrase}")
+    return 0
+
+
+def _cmd_queue_remove(args: argparse.Namespace) -> int:
+    root = _root(args)
+    save_queue(root, remove_entry(load_queue(root), args.topic_id))
+    print(f"queue: removed {args.topic_id}")
+    return 0
+
+
+def _cmd_queue_run(args: argparse.Namespace) -> int:
+    """Drive every pending course to its next judgment point, in file order.
+
+    The file is rewritten after every transition -- ``running`` before a
+    course is driven, ``stopped`` with its stop payload after -- so an
+    interrupted ``queue run`` leaves the course it was on marked ``running``
+    on disk, and the next ``queue run`` picks that course up again
+    (decision 7). The pending list is taken once, up front, so the rewrites
+    cannot change what this pass works through.
+    """
+
+    root = _root(args)
+    queue = load_queue(root)
+    pending = [entry.topic_id for entry in pending_entries(queue)]
+    if not pending:
+        print("queue: empty" if not queue.entries else "queue: nothing pending")
+        return 0
+    failures = 0
+    for topic_id in pending:
+        queue = mark_running(queue, topic_id, now=_now())
+        save_queue(root, queue)
+        outcome = _run_to_judgment(root, topic_id, autostart=args.autostart)
+        queue = mark_stopped(queue, topic_id, stop_payload(outcome.stop), now=_now())
+        save_queue(root, queue)
+        print(f"queue: {topic_id}: {describe_stop(outcome.stop)}")
+        if _stopped_badly(outcome):
+            failures += 1
+    return 1 if failures else 0
 
 
 def _cmd_jobs(args: argparse.Namespace) -> int:
