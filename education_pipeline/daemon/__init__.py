@@ -11,6 +11,7 @@ from pathlib import Path
 from education_pipeline import __version__
 from education_pipeline.atomic_io import atomic_write_text
 from education_pipeline.config import (
+    DEFAULT_PARALLELISM,
     ConfigError,
     ModelCatalog,
     ModelPlan,
@@ -92,6 +93,24 @@ class StaticConfigSource:
         self.held_text = toml_text
 
 
+def worker_parallelism(root: str | Path) -> int:
+    """How many worker threads this workspace's plan asks for.
+
+    Reads the same catalog/plan pair the daemon serves from (falling back to
+    the packaged examples when the workspace has none), so the pool size is
+    one workspace setting rather than a second place to configure. A plan
+    that will not load at all falls back to the default instead of refusing
+    to start: the load failure surfaces on the first job, where the stage's
+    own plan is resolved and the error can name the stage.
+    """
+
+    try:
+        _catalog, plan = WorkspaceConfigSource(root).load()
+    except ConfigError:
+        return DEFAULT_PARALLELISM
+    return plan.parallelism
+
+
 def serve(
     root: str | Path,
     *,
@@ -140,7 +159,9 @@ def serve(
             return JobRunner(store, runs, catalog, plan, timeout=job_timeout,
                               force=bool(job.metadata.get("force")))
 
-        worker = Worker(store, _runner_for)
+        # Read once at startup: the pool is sized for the daemon's lifetime,
+        # so an edit to the plan's ``parallelism`` takes effect on restart.
+        worker = Worker(store, _runner_for, parallelism=worker_parallelism(root))
         worker.reconcile()
         worker.start()
 

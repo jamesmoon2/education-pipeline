@@ -1,10 +1,12 @@
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from education_pipeline import ContentContract, RunStore, parse_model_catalog, parse_model_plan
+from education_pipeline.config import ConfigError
 from education_pipeline.daemon.jobs import JobRunner, JobStore
 from education_pipeline.providers import (
     Invocation,
@@ -405,3 +407,181 @@ def test_execute_cancel_marks_canceled_without_response(tmp_path, monkeypatch):
     done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, cancel)
     assert done.status == "canceled"
     assert not runs.has_ingested_response("t", "draft")
+
+
+# --- T23: JobRunner dispatch for unit jobs (draft skeleton/module) ---------
+#
+# `RunStore.draft_unit_paths`/`ingest_draft_unit` are thread T22's engine-side
+# work and don't exist on this worktree's RunStore yet (see the T23 prompt
+# and docs/superpowers/specs/2026-09-18-per-module-drafting-design.md §5).
+# These tests stub the two methods onto the real `RunStore` class -- same
+# `monkeypatch.setattr(RunStore, ...)` pattern the audit-preflight tests
+# above already use for `require_provider_ready_prompt`/`ingest_response` --
+# so JobRunner.execute is exercised against exactly the two-method contract
+# the brief specifies, with everything else (append_manifest_event,
+# record_stage_provenance, ...) staying real.
+
+
+def _unit_paths(run_dir: Path, unit: str, module_id: str | None) -> SimpleNamespace:
+    base = run_dir / "draft" / "skeleton" if unit == "skeleton" else run_dir / "draft" / "modules" / module_id
+    return SimpleNamespace(
+        unit=unit,
+        module_id=module_id,
+        prompt_path=base / "prompt.md",
+        response_path=base / "response.json",
+        stub_path=base / "SAVE_RESPONSE_HERE.json",
+        previous_path=base / "response.previous.json",
+    )
+
+
+def _install_unit_stub(monkeypatch, run_dir: Path, ingest_calls: list, *, ingest_error=None):
+    def draft_unit_paths(self, topic_id, unit, *, module_id=None):
+        return _unit_paths(run_dir, unit, module_id)
+
+    def ingest_draft_unit(self, topic_id, unit, text, *, module_id=None, force=False):
+        ingest_calls.append((topic_id, unit, text, module_id, force))
+        if ingest_error is not None:
+            raise ingest_error
+        paths = _unit_paths(run_dir, unit, module_id)
+        paths.response_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.response_path.write_text(text, encoding="utf-8")
+        return paths
+
+    monkeypatch.setattr(RunStore, "draft_unit_paths", draft_unit_paths, raising=False)
+    monkeypatch.setattr(RunStore, "ingest_draft_unit", ingest_draft_unit, raising=False)
+
+
+def _unit_job_setup(tmp_path, monkeypatch, *, unit, module_id, ingest_error=None):
+    register_runner(FakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    run_dir = runs.run_dir("t")
+    ingest_calls: list = []
+    _install_unit_stub(monkeypatch, run_dir, ingest_calls, ingest_error=ingest_error)
+
+    prompt_path = _unit_paths(run_dir, unit, module_id).prompt_path
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text("UNIT PROMPT", encoding="utf-8")
+
+    catalog = parse_model_catalog({"providers": [{"id": "fake", "models": [{"id": "m"}]}]})
+    plan = parse_model_plan({"provider": "fake", "stages": {"draft": {"model": "m"}}}, catalog)
+    store = JobStore(tmp_path)
+    job = store.create("t", "draft", "fake", "m", None)
+    job.unit = unit
+    job.module_id = module_id
+    return runs, catalog, plan, store, job, ingest_calls
+
+
+def test_execute_module_unit_reads_and_ingests_through_draft_unit_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_STDOUT", "MODULE BODY\n")
+    runs, catalog, plan, store, job, ingest_calls = _unit_job_setup(
+        tmp_path, monkeypatch, unit="module", module_id="loop-basics"
+    )
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, threading.Event())
+
+    assert done.status == "succeeded"
+    assert ingest_calls == [("t", "module", "MODULE BODY\n", "loop-basics", False)]
+    expected_response = runs.run_dir("t") / "draft" / "modules" / "loop-basics" / "response.json"
+    assert done.response_path == str(expected_response)
+    assert expected_response.read_text(encoding="utf-8") == "MODULE BODY\n"
+    # The ordinary stage-level draft response must never be touched by a
+    # module-unit job.
+    assert not runs.stage_paths("t", "draft").response_path.exists()
+    provenance = runs.read_manifest("t")["stage_provenance"]
+    assert provenance[-1]["stage"] == "draft"
+    assert provenance[-1]["job_id"] == job.id
+
+
+def test_execute_skeleton_unit_reads_and_ingests_through_draft_unit_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_STDOUT", "SKELETON BODY\n")
+    runs, catalog, plan, store, job, ingest_calls = _unit_job_setup(
+        tmp_path, monkeypatch, unit="skeleton", module_id=None
+    )
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, threading.Event())
+
+    assert done.status == "succeeded"
+    assert ingest_calls == [("t", "skeleton", "SKELETON BODY\n", None, False)]
+    expected_response = runs.run_dir("t") / "draft" / "skeleton" / "response.json"
+    assert done.response_path == str(expected_response)
+    assert not runs.stage_paths("t", "draft").response_path.exists()
+
+
+def test_execute_module_unit_salvage_filename_uses_module_id_on_ingest_failure(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FAKE_STDOUT", "BAD BODY\n")
+    runs, catalog, plan, store, job, ingest_calls = _unit_job_setup(
+        tmp_path,
+        monkeypatch,
+        unit="module",
+        module_id="loop-basics",
+        ingest_error=ConfigError("boom"),
+    )
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, threading.Event())
+
+    assert done.status == "failed"
+    responses_dir = runs.stage_paths("t", "draft").response_path.parent
+    salvaged = list(responses_dir.glob("draft.loop-basics.failed.*.txt"))
+    assert len(salvaged) == 1
+    assert salvaged[0].read_text(encoding="utf-8") == "BAD BODY\n"
+    # never the bare stage-name salvage name used for non-unit jobs
+    assert not list(responses_dir.glob("draft.failed.*.txt"))
+
+
+def test_execute_skeleton_unit_salvage_filename_uses_skeleton_on_ingest_failure(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FAKE_STDOUT", "BAD SKELETON\n")
+    runs, catalog, plan, store, job, ingest_calls = _unit_job_setup(
+        tmp_path,
+        monkeypatch,
+        unit="skeleton",
+        module_id=None,
+        ingest_error=ConfigError("boom"),
+    )
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, threading.Event())
+
+    assert done.status == "failed"
+    responses_dir = runs.stage_paths("t", "draft").response_path.parent
+    salvaged = list(responses_dir.glob("draft.skeleton.failed.*.txt"))
+    assert len(salvaged) == 1
+    assert salvaged[0].read_text(encoding="utf-8") == "BAD SKELETON\n"
+
+
+def test_execute_module_unit_consults_its_own_prompt_not_the_ordinary_stage_one(
+    tmp_path, monkeypatch
+):
+    # The *ordinary* stage-level draft prompt is present, but the module's
+    # own unit prompt (what execute() must actually consult for a unit job)
+    # is absent. A runner that still fell back to stage_paths would spawn
+    # the provider against the ordinary prompt and succeed -- which is
+    # exactly the (wrong, pre-item-4) behaviour this pins against.
+    monkeypatch.setenv("FAKE_STDOUT", "MODULE BODY\n")
+    register_runner(FakeRunner())
+    runs = RunStore(tmp_path)
+    runs.create_run("t", content_contract=ContentContract.legacy_markdown())
+    run_dir = runs.run_dir("t")
+    ingest_calls: list = []
+    _install_unit_stub(monkeypatch, run_dir, ingest_calls)
+    # The ordinary stage prompt exists...
+    ordinary_prompt = runs.stage_paths("t", "draft").prompt_path
+    ordinary_prompt.parent.mkdir(parents=True, exist_ok=True)
+    ordinary_prompt.write_text("ORDINARY STAGE PROMPT", encoding="utf-8")
+    # ...but the module's own prompt (draft_unit_paths) does not.
+
+    catalog = parse_model_catalog({"providers": [{"id": "fake", "models": [{"id": "m"}]}]})
+    plan = parse_model_plan({"provider": "fake", "stages": {"draft": {"model": "m"}}}, catalog)
+    store = JobStore(tmp_path)
+    job = store.create("t", "draft", "fake", "m", None)
+    job.unit = "module"
+    job.module_id = "loop-basics"
+
+    done = JobRunner(store, runs, catalog, plan, timeout=30).execute(job, threading.Event())
+
+    assert done.status == "failed"
+    assert ingest_calls == []
+    assert not runs.stage_paths("t", "draft").response_path.exists()
