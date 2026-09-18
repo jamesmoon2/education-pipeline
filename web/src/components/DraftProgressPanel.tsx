@@ -7,6 +7,7 @@ import {
 } from "../api/client";
 import type { DraftModuleProgress, DraftProgress, Job } from "../api/types";
 import { useAction } from "../hooks/useAction";
+import { ACTIVE_JOB_STATUSES } from "./JobsPanel";
 
 // A job's status once it is no longer queued/running -- the states a batch
 // job settles into. Used to count "done" for the batch progress line.
@@ -142,9 +143,11 @@ function ModuleRow({
  * Per-module draft progress (design 2026-09-18 §8): a skeleton row, one row
  * per module with a batch run/per-module rerun/paste loop, and the
  * deterministic "Assemble draft" step. `activeJobs` is this topic's draft
- * jobs (skeleton + module units); a job carrying a `batch_id` marks a
- * module batch as in flight, which hides the run/rerun controls in favor of
- * batch progress and a cancel button.
+ * jobs (skeleton + module units, history included); a *queued or running*
+ * job carrying a `batch_id` marks a module batch as in flight, which hides
+ * the run/rerun controls in favor of batch progress and a cancel button --
+ * a batch whose jobs have all settled into a terminal status no longer
+ * counts, even though its (now-history) jobs are still present in the list.
  */
 export default function DraftProgressPanel({
   topicId,
@@ -160,7 +163,9 @@ export default function DraftProgressPanel({
   const batchControls = useAction(onChanged);
   const assemble = useAction(onChanged);
 
-  const batchJob = activeJobs.find((job) => job.batch_id);
+  const batchJob = activeJobs.find(
+    (job) => job.batch_id && ACTIVE_JOB_STATUSES.has(job.status),
+  );
   const batchId = batchJob?.batch_id ?? null;
   const batchJobs = batchId ? activeJobs.filter((job) => job.batch_id === batchId) : [];
   const batchTotal = batchJobs.length;

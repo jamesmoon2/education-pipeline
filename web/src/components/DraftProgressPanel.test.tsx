@@ -332,4 +332,31 @@ describe("DraftProgressPanel active batch", () => {
     expect(cancelBatch).toHaveBeenCalledWith("batch-1");
     expect(onChanged).toHaveBeenCalled();
   });
+
+  // Review finding 1 (PR #39 automated review): activeJobs carries every
+  // draft-stage job, history included. Once every job of a batch has
+  // settled into a terminal status, that batch is done -- it must stop
+  // reading as "active" (which today hides run/rerun forever and offers a
+  // cancel button for a batch that no longer exists).
+  it("treats a batch whose jobs are all terminal as not active, not as still running", () => {
+    const jobs = [
+      makeJob({ id: "j1", module_id: "loop-basics", status: "succeeded", batch_id: "batch-1" }),
+      makeJob({
+        id: "j2",
+        module_id: "intervention-practice",
+        status: "failed",
+        batch_id: "batch-1",
+      }),
+    ];
+    renderPanel(makeProgress(), jobs);
+
+    expect(screen.queryByText(/running\/done/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel batch" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Run modules with provider" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Rerun How loops behave" }),
+    ).toBeInTheDocument();
+  });
 });
