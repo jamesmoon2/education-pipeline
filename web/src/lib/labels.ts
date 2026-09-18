@@ -24,6 +24,7 @@ const NEXT_ACTION_LABELS: Record<NextAction["action"], string> = {
   resolve_findings: "Resolve findings",
   finalize: "Finalize",
   done: "Export ready",
+  assemble: "Assemble draft",
 };
 
 export function nextActionLabel(action: NextAction["action"]): string {

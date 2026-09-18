@@ -34,7 +34,15 @@ export type ContinueStep =
 
 /** Where the chain stopped, and why. */
 export type ContinueStop =
-  | { kind: "started"; stage: string; provider: string }
+  | {
+      kind: "started";
+      stage: string;
+      provider: string;
+      // Set when the enqueue response was a module batch (§5: the daemon
+      // hands back the first job's dict plus `batch_id`/`jobs`); equals
+      // `jobs.length`. Absent for a single-job enqueue.
+      count?: number;
+    }
   | { kind: "manual"; stage: string }
   | { kind: "plan_unreadable"; stage: string }
   | { kind: "approve"; stage: string | null }
