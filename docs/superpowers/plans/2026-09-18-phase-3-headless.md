@@ -1,0 +1,49 @@
+# Phase 3 — Headless run-to-judgment
+
+**Goal:** Let a run move through every mechanical step (write prompt, run the provider, assemble, validate) without a person at the keyboard, and stop at the first step that needs judgment. Today that chain exists only in the cockpit (`web/src/lib/continueRun.ts`), is capped at six steps, and returns as soon as a provider job starts. After this phase the loop lives in the engine, the CLI can drive one course or a queue of courses through it while blocking on each job, and the daemon exposes it so the cockpit's chain becomes a thin client. The product rule is unchanged: nothing here approves, finalizes or exports.
+
+**Source:** the 2026-09-17 opportunity map (reviewed at `d85be72`), "Build plan · Phase 3". Threads are numbered as there. Line anchors are as of `7941fca` (post Phase 2).
+
+**Method:** strict TDD; one subagent writes the failing tests and a different one makes them pass; the manager reviews diffs, never transcripts. Every thread ends on the full pytest suite green, plus `npm run build` and `npm run test` when `web/` changed; Playwright only where a thread says so (T32: `approve-continue.spec.ts`). A thread that grows past ~800 changed lines or 12 files is split.
+
+**Baseline at open:** pytest 2032 passed / 1 skipped (54 s, Python 3.11). `runs.py` 2282 lines, `cli.py` 1066, `daemon/jobs.py` 1169, `daemon/server.py` 1282, `daemon/write_api.py` 1061, `web/src/lib/continueRun.ts` 281. vitest 602, `npm run build` clean, Playwright 74 (counted).
+
+**Audit ledger:** [`../specs/2026-09-18-phase-3-headless-post-milestone-audit.md`](../specs/2026-09-18-phase-3-headless-post-milestone-audit.md)
+
+## Threads
+
+| ID | Thread | Exit criteria | Status |
+| --- | --- | --- | --- |
+| T30 | Orchestrator in the engine | `education_pipeline/orchestrate.py`: `run_until_judgment(topic_id, steps, *, max_steps)` over a `Steps` protocol (`status`, `advance`, `validate`, `provider_for`, `run_job`); `Stop`/`Step`/`Outcome`/`JobOutcome` frozen dataclasses; stop kinds identical to `ContinueStop` (`started`, `manual`, `plan_unreadable`, `approve`, `resolve_findings`, `finalize`, `done`, `unfinished`, `failed`); `StoreSteps` engine adapter over `RunStore` with an injected plan loader and job runner; `provider_for_stage(plan, stage)` as the one provider-resolution rule; `describe_stop`/`describe_step` phrases; fake-`Steps` tests for every stop reason, the step cap, the blocking-job continuation, and the "job succeeded but nothing was saved" stall; no change to `RunStore.advance`. | - [ ] |
+| T31 | CLI: `run --until approval` and `queue` | `run <topic> --until approval` drives `run_until_judgment` with a blocking job runner (enqueue via `DaemonClient`, poll job or batch to a terminal status) and prints one line per step plus the stop phrase; usage exit 2 with `--stage`/`--modules`; `queue add/list/remove/run` over `<workspace>/queue/courses.json`, sequential, each entry's stop recorded as it lands, an interrupted (`running`) entry re-run on the next `queue run`; live-daemon CLI test with the fake runner reaching the draft approval gate; docs in `install-and-first-course.md` and `providers.md`. | - [ ] |
+| T32 | Daemon endpoint and cockpit handoff | `POST /v1/runs/{id}/continue` backed by `StoreSteps` with a non-blocking job runner (enqueue, report `started` with the batch count); `enqueue_stage` resolves the provider through `provider_for_stage`; archived and active-job guards as on `POST /v1/jobs`; payload `{topic_id, steps, stop, status}`; route row in the daemon design doc; `continueRun.ts` becomes one client call keeping `ContinueStop`, `continueFeedback` and `continueFailed`; vitest green; `approve-continue.spec.ts` green. | - [ ] |
+
+## Order and parallelism between threads
+
+T30 first; T31 and T32 both consume it and touch disjoint files (`cli.py` + docs vs `daemon/` + `web/`), so they run in parallel worktrees and merge in that order.
+
+## Decisions settled at open
+
+1. **One loop, two job runners.** The engine loop is the same for the CLI and the daemon; the injected `run_job` decides whether it blocks. A runner that does not wait makes the loop stop with `started` (today's cockpit behaviour). A runner that waits and reports success makes the loop re-read status and carry on; one that reports failure, cancel or interruption stops with `failed` naming the job. This keeps HTTP requests short and lets the CLI run a course to its next gate overnight.
+2. **Stop kinds are the cockpit's, unchanged.** `ContinueStop` already enumerates every judgment point (`approve`, `resolve_findings`, `finalize`, `done`), every hand-back (`manual`, `plan_unreadable`), and the two failure shapes (`failed`, `unfinished`). The engine adopts those names so the T32 client is a type-preserving rename, and `finalize` stays a stop: the loop never finalizes or exports.
+3. **Stall guard.** A waited job that succeeds must change the next action. If the next action is still `save_response` for the same stage immediately after a successful waited job for that stage, the loop stops with `failed` ("the job finished but no response was saved") rather than re-enqueueing until the cap.
+4. **Step cap 12.** Twice the longest real chain under per-module drafting (skeleton prompt → skeleton job → module prompts → module batch → assemble → validate → approve), by the same rationale `MAX_CONTINUE_STEPS = 6` documents for the cockpit.
+5. **Provider resolution has one home.** `provider_for_stage(plan, stage)` in `orchestrate.py` is `stage_plan.provider or plan.provider`; T32 rewires `_enqueue_stage_locked` (`server.py:215`) to call it, closing the INVARIANT the cockpit currently maintains by hand (`continueRun.ts:163-172`). Both callers load the run's effective plan the way `run_plan_payload` does (`read_api.py:1155`: `apply_overrides_lenient`); a plan that cannot be read stops with `plan_unreadable`.
+6. **CLI mutations stay in-process.** `run --until` performs `advance`/`validate` through `RunStore` under `_guarded_mutation`, exactly as the `advance` and `validate` commands do, and only job execution goes through the daemon. The loop waits for every job to reach a terminal status before the next in-process step, so the Phase 0 cross-process guard is never contested.
+7. **Queue file, not queue stage.** `<workspace>/queue/courses.json` (the directory is already gitignored) holds `{"version": 1, "entries": [{topic_id, added_at, updated_at, status, stop}]}` with `status` in `queued | running | stopped`. `queue run` processes `queued` and `running` entries in file order, rewriting the file after each; it exits 1 if any entry stopped with `failed`, else 0. Nothing in the engine or manifest knows about the queue.
+8. **The endpoint does not hold a lock across the loop.** Each step takes the guard it takes today (`advance`/`validate` the manifest lock, enqueue the workspace lock). The route refuses up front on an archived course or an active job for the topic (same catalog codes as `POST /v1/jobs`) and otherwise reports whatever the loop reports; a mid-loop guard refusal surfaces as `failed` with the step name, as it does from the cockpit today.
+
+## Anchors at open
+
+- Reference loop: `web/src/lib/continueRun.ts:107-206` (`continueRun`), `:27` (`MAX_CONTINUE_STEPS`), `:36-53` (`ContinueStop`), `:163-175` (provider rule), `:208-281` (phrases). Tests: `web/src/lib/continueRun.test.ts`.
+- Engine: `runs.py:671` (`RunStore.advance`, one machine step for `write_prompt`/`assemble`/`validate`/`finalize`), `run_core.py:102` (`NextAction`), `:112` (`RunStatus`), `:122` (`AdvanceResult`); next-action values `write_prompt`, `assemble`, `save_response`, `approve`, `validate`, `resolve_findings`, `finalize`, `done` (`runs.py:787-937`, `runs_draft_units.py:1153`); `runs_reports.py:1083` (`validate_run(topic, phase)`), `validate_and_gate` as used by `cli.py:614`.
+- Plan: `config.py:154` (`load_model_plan`), `:345` (`apply_overrides`), `:397` (`apply_overrides_lenient`); `read_api.py:1155` (`run_plan_payload`), `runs.read_plan_overrides`.
+- Daemon: `server.py:139-160` (`enqueue_stage`), `:162-240` (`_enqueue_stage_locked`; guards at 169, 195, 210; provider at 215), `:829-836` (`POST /v1/jobs`), `:903-931` (`POST /v1/runs/{id}/advance`), `:951-958` (validate route); `write_api.py:190` (`validate_run(runs, jobs, topic, phase)`); `jobs.py:39` (`TERMINAL_STATUSES`), `:816` (`Worker`).
+- Client: `client.py:17` (`DaemonError`), `:61` (`enqueue`), `:86` (`get_job`), `:96` (`get_batch`).
+- CLI: `cli.py:150-358` (parser), `:281-296` (`run` subparser), `:851-899` (`_cmd_run`), `:902-930` (`_wait_for_batch`), `:506` (`_cmd_advance`), `:602` (`_cmd_validate`), `:123` (`_print_coded_error`), `_guarded_mutation`; `errors.py:15-25` (catalog entry shape).
+- Tests: `tests/fake_provider.py`; `tests/test_cli.py:447` (`test_run_wait_executes_and_lands_response`: `FakeRunner` + in-thread `serve`), `_seed_topic_to_draft`; `tests/test_server.py`, `tests/test_worker.py`.
+- Docs: `docs/superpowers/specs/2026-07-09-provider-run-daemon-design.md:134-153` (route table), `docs/install-and-first-course.md:104,121,129` (`run --wait`), `docs/providers.md`.
+
+## Closeout log
+
+(One line per thread as it lands: what changed, test counts, accepted limitations.)
