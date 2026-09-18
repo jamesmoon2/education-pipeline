@@ -15,6 +15,7 @@ pins that. Run from the repository root:
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -27,6 +28,37 @@ from education_pipeline import ProfileStore, RunStore, TopicStore  # noqa: E402
 EXAMPLE_DIR = REPO_ROOT / "examples" / "feedback-loops"
 TOPIC_ID = "feedback-loops"
 PROFILE_ID = "example-learner"
+
+
+def _drive_draft_stage(runs: RunStore, topic_id: str, responses: Path) -> None:
+    """Drive the draft stage through the per-module unit path.
+
+    Design: ``docs/superpowers/specs/2026-09-18-per-module-drafting-design.md``
+    decisions 1-9. ``write_draft_prompt`` also writes the skeleton prompt;
+    ingesting the skeleton response writes the module prompts; ingesting the
+    last outstanding module response assembles the stage response
+    automatically -- ``assemble_draft`` is only called explicitly as a
+    belt-and-suspenders check in case it did not.
+    """
+
+    runs.write_draft_prompt(topic_id)
+
+    skeleton_text = (responses / "draft.skeleton.json").read_text(encoding="utf-8")
+    runs.ingest_draft_unit(topic_id, "skeleton", skeleton_text)
+
+    module_order = [module["id"] for module in json.loads(skeleton_text)["modules"]]
+    modules_dir = responses / "draft.modules"
+    for module_id in module_order:
+        module_text = (modules_dir / f"{module_id}.json").read_text(encoding="utf-8")
+        runs.ingest_draft_unit(topic_id, "module", module_text, module_id=module_id)
+
+    progress = runs.draft_progress(topic_id)
+    if progress.assembled is None or not progress.assembled.ok:
+        result = runs.assemble_draft(topic_id)
+        if not result.ok:
+            raise RuntimeError(
+                f"failed to assemble the draft for {topic_id!r}: {result.error}"
+            )
 
 
 def build_export(example_dir: Path, workspace: Path) -> tuple[bytes, bytes]:
@@ -52,7 +84,6 @@ def build_export(example_dir: Path, workspace: Path) -> tuple[bytes, bytes]:
     stage_bodies = {
         "spec": (responses / "spec.md").read_text(encoding="utf-8"),
         "outline": (responses / "outline.md").read_text(encoding="utf-8"),
-        "draft": (responses / "draft.guide.json").read_text(encoding="utf-8"),
         "qa": (responses / "qa.md").read_text(encoding="utf-8"),
         "factcheck": (responses / "factcheck.md").read_text(encoding="utf-8"),
         "repair": (responses / "repair.guide.json").read_text(encoding="utf-8"),
@@ -60,18 +91,24 @@ def build_export(example_dir: Path, workspace: Path) -> tuple[bytes, bytes]:
     prompt_writers = {
         "spec": runs.write_topic_spec_prompt,
         "outline": runs.write_outline_prompt,
-        "draft": runs.write_draft_prompt,
         "qa": runs.write_qa_prompt,
         "factcheck": runs.write_factcheck_prompt,
         "repair": runs.write_repair_prompt,
     }
 
-    for stage in ("spec", "outline", "draft", "qa", "factcheck", "repair"):
+    for stage in ("spec", "outline"):
         result = prompt_writers[stage](TOPIC_ID)
         result.response_path.write_text(stage_bodies[stage], encoding="utf-8")
         runs.approve_stage(TOPIC_ID, stage)
-        if stage == "draft":
-            runs.validate_run(TOPIC_ID, "draft")
+
+    _drive_draft_stage(runs, TOPIC_ID, responses)
+    runs.approve_stage(TOPIC_ID, "draft")
+    runs.validate_run(TOPIC_ID, "draft")
+
+    for stage in ("qa", "factcheck", "repair"):
+        result = prompt_writers[stage](TOPIC_ID)
+        result.response_path.write_text(stage_bodies[stage], encoding="utf-8")
+        runs.approve_stage(TOPIC_ID, stage)
 
     runs.validate_run(TOPIC_ID, "final")
     runs.finalize_run(TOPIC_ID)

@@ -1,0 +1,105 @@
+{
+  "schema_version": "1.1",
+  "course": {
+    "id": "feedback-loops",
+    "title": "Thinking in Feedback Loops",
+    "subtitle": "A practical introduction through projects and gardens",
+    "description": "Learn to recognize feedback, map its structure, and choose thoughtful interventions.",
+    "language": "en",
+    "blueprint": "conceptual-foundations",
+    "estimated_minutes": 15,
+    "difficulty": "introductory",
+    "learner_summary": "Designed for a project manager who values concrete gardening examples and scenario practice.",
+    "goal_exclusions": [
+      {
+        "goal_id": "goal-003",
+        "reason": "Quantitative stock-and-flow modeling is deferred to a follow-on course."
+      }
+    ]
+  },
+  "outcomes": [
+    {
+      "id": "identify-loop",
+      "text": "Identify reinforcing and balancing feedback in a familiar system.",
+      "serves_goals": [
+        "goal-001"
+      ]
+    },
+    {
+      "id": "map-loop",
+      "text": "Map a feedback loop by tracing a changing quantity back to itself.",
+      "serves_goals": [
+        "goal-002"
+      ]
+    },
+    {
+      "id": "choose-intervention",
+      "text": "Choose an intervention that accounts for feedback structure and delays."
+    }
+  ],
+  "modules": [
+    {
+      "id": "loop-basics",
+      "title": "How loops behave",
+      "summary": "Recognize the structures that amplify change or move a system toward a goal.",
+      "outcome_ids": [
+        "identify-loop",
+        "map-loop"
+      ],
+      "serves_goals": [
+        "goal-001",
+        "goal-002"
+      ],
+      "estimated_minutes": 7,
+      "sections": []
+    },
+    {
+      "id": "intervention-practice",
+      "title": "Intervene with the whole loop in view",
+      "summary": "Use a loop map to avoid treating symptoms and to anticipate delayed effects.",
+      "outcome_ids": [
+        "map-loop",
+        "choose-intervention"
+      ],
+      "serves_goals": [
+        "goal-002"
+      ],
+      "estimated_minutes": 8,
+      "sections": []
+    }
+  ],
+  "glossary": [
+    {
+      "id": "feedback-loop-term",
+      "term": "Feedback loop",
+      "definition": "A chain of cause and effect that eventually influences its starting quantity."
+    },
+    {
+      "id": "reinforcing-loop-term",
+      "term": "Reinforcing loop",
+      "definition": "A loop that amplifies change in the same direction."
+    },
+    {
+      "id": "balancing-loop-term",
+      "term": "Balancing loop",
+      "definition": "A loop that counteracts a gap or moves a system toward a goal."
+    },
+    {
+      "id": "delay-term",
+      "term": "Delay",
+      "definition": "The elapsed time between a cause and an observable effect in a feedback structure."
+    }
+  ],
+  "sources": [
+    {
+      "id": "meadows-2008",
+      "title": "Thinking in Systems: A Primer",
+      "authors": [
+        "Donella H. Meadows"
+      ],
+      "url": "https://www.chelseagreen.com/product/thinking-in-systems/",
+      "published": "2008",
+      "note": "General background on feedback structures, delays, and intervention in systems."
+    }
+  ]
+}
