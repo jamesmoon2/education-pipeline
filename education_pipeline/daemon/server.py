@@ -78,6 +78,10 @@ def _optional_modules(body: dict) -> list[str] | None:
     value = body["modules"]
     if not isinstance(value, list):
         raise ConfigError("body field 'modules' must be a list of module ids")
+    if not value:
+        # An empty list selects nothing; it is a malformed request, not a
+        # synonym for "every outstanding module" (that is absent or null).
+        raise ConfigError("modules must name at least one module")
     for item in value:
         if not isinstance(item, str) or not item.strip():
             raise ConfigError(
@@ -194,6 +198,11 @@ class DaemonContext:
             raise ConfigError(
                 f"nothing to run: next action is {action.action!r} — {action.detail}"
             )
+        if modules is not None and not modules:
+            # Defence for direct callers of the context API: the route's own
+            # parser already refuses this, and the fan-out below indexes the
+            # jobs it created.
+            raise ConfigError("modules must name at least one module")
         if modules is not None and target_stage != "draft":
             raise ConfigError(
                 f"--modules applies to the draft stage only; got {target_stage!r}"

@@ -851,6 +851,11 @@ def _parse_modules(value: str | None) -> list[str] | None:
 def _cmd_run(args: argparse.Namespace) -> int:
     root = _root(args)
     modules = _parse_modules(args.modules)
+    if modules is not None and not modules:
+        # ``--modules ""`` (or a list of blanks) names nothing; sending it on
+        # would be a request the daemon must refuse anyway.
+        print("error: --modules must name at least one module", file=sys.stderr)
+        return 2
     if modules is not None and args.stage not in (None, "draft"):
         # Only the draft stage fans out per module, so naming modules for any
         # other stage is a usage error (exit 2), not a run failure.

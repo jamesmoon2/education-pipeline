@@ -4370,3 +4370,29 @@ def test_enqueue_stage_recompiles_stale_module_prompts_before_queueing_them(
     # ingest; the untouched module keeps the request's own force flag.
     assert jobs["loop-basics"].metadata["force"] is True
     assert jobs["intervention-practice"].metadata["force"] is False
+
+
+def test_enqueue_stage_empty_modules_list_is_a_config_error(tmp_path, server_with_context):
+    """Finding 7: ``modules: []`` selected nothing and then indexed ``jobs[0]``."""
+
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+
+    with pytest.raises(ConfigError, match="at least one module"):
+        context.enqueue_stage(tdu.TID, "draft", False, modules=[])
+
+
+def test_post_jobs_empty_modules_list_is_400(tmp_path, server_with_context):
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+
+    status, body = _req(
+        port,
+        "POST",
+        "/v1/jobs",
+        body={"topic_id": tdu.TID, "stage": "draft", "modules": []},
+    )
+
+    assert status == 400
+    assert body["error"]["code"] == "invalid_request"
+    assert "at least one module" in body["error"]["message"]
