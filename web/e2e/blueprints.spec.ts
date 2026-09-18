@@ -41,6 +41,12 @@ function revisedModuleFragment(): string {
   return JSON.stringify(module);
 }
 
+function revisedSectionFragment(): string {
+  const section = JSON.parse(JSON.stringify(FIXTURE.modules[0].sections[0]));
+  section.title = "From events to loops, regenerated";
+  return JSON.stringify(section);
+}
+
 async function importTopic(page: Page, toml: string, id: string) {
   await page.goto(`${baseURL}/`);
   await page.getByRole("button", { name: "Import topic…" }).click();
@@ -205,6 +211,98 @@ test("one weak module regenerates in place without touching its siblings", async
   await page.goto(`${baseURL}/topics/bp-splice`);
   await page.getByRole("button", { name: "Run final validation" }).click();
   await expect(page.getByRole("button", { name: "Finalize", exact: true })).toBeVisible();
+});
+
+test("one weak section regenerates in place without touching its siblings", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  page.on("dialog", (dialog) => dialog.accept());
+
+  await importTopic(
+    page,
+    'schema_version = 1\nid = "bp-section-splice"\ntitle = "Section Splice Topic"\n',
+    "bp-section-splice",
+  );
+  await pasteAndApprove(page, "spec", SPEC);
+  await pasteAndApprove(page, "outline", OUTLINE);
+  await pasteAndApprove(page, "draft", DRAFT);
+  await page.getByRole("button", { name: "Run draft validation" }).click();
+  await pasteAndApprove(
+    page,
+    "qa",
+    "# QA\n\n## Findings\n1. minor - loop-basics: tighten the opening section.",
+  );
+  await pasteAndApprove(
+    page,
+    "factcheck",
+    "# Fact-Check Report\n\n## Verdict\npass — no material factual errors.\n\n## Findings\n(none)\n",
+  );
+
+  // Prepare a section-scoped repair for one section from the repair stage
+  // view: choose the module, then narrow to one of its sections.
+  await stageStep(page, "repair").getByRole("link", { name: "repair" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Regenerate one module" }),
+  ).toBeVisible();
+  await page.locator(".module-repair").getByLabel("Module").selectOption("loop-basics");
+  await page
+    .locator(".module-repair")
+    .getByLabel("Section")
+    .selectOption("feedback-foundations");
+  await page.getByRole("button", { name: "Regenerate this section" }).click();
+  await expect(
+    page.getByText(/Scoped repair prompt prepared for loop-basics \/ feedback-foundations/),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      /The pending repair is scoped to section feedback-foundations of module loop-basics/,
+    ),
+  ).toBeVisible();
+
+  // The scoped response is one section object; approval splices it.
+  await page.getByRole("button", { name: "Paste response…" }).click();
+  await page.getByLabel("Response for repair").fill(revisedSectionFragment());
+  await page.getByRole("button", { name: "Save response" }).click();
+  await page.getByRole("button", { name: "Approve repair" }).click();
+  await expect(page.getByRole("tab", { name: /approved/ })).toBeVisible();
+
+  // The approved repair is the merged whole guide: the target section
+  // changed, the sibling section and the other module are untouched.
+  const approvedPath = join(ws, "runs", "bp-section-splice", "approved", "repair.json");
+  await expect
+    .poll(() => {
+      try {
+        const merged = JSON.parse(readFileSync(approvedPath, "utf-8"));
+        return merged.modules[0].sections[0].title;
+      } catch {
+        return null;
+      }
+    })
+    .toBe("From events to loops, regenerated");
+
+  const merged = JSON.parse(readFileSync(approvedPath, "utf-8"));
+  expect(merged.modules).toHaveLength(FIXTURE.modules.length);
+  // The merged guide is canonical JSON, which materializes default empty
+  // outcome_ids/source_ids arrays the hand-written fixture omits; content is
+  // otherwise untouched.
+  const expectedSiblingSection = JSON.parse(
+    JSON.stringify(FIXTURE.modules[0].sections[1]),
+  );
+  for (const block of expectedSiblingSection.blocks) {
+    block.outcome_ids = block.outcome_ids ?? [];
+    block.source_ids = block.source_ids ?? [];
+  }
+  expect(merged.modules[0].sections[1]).toEqual(expectedSiblingSection);
+
+  const expectedOtherModule = JSON.parse(JSON.stringify(FIXTURE.modules[1]));
+  for (const section of expectedOtherModule.sections) {
+    for (const block of section.blocks) {
+      block.outcome_ids = block.outcome_ids ?? [];
+      block.source_ids = block.source_ids ?? [];
+    }
+  }
+  expect(merged.modules[1]).toEqual(expectedOtherModule);
 });
 
 test("a blown time budget warns at the responsible stage", async ({ page }) => {

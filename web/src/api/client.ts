@@ -354,11 +354,14 @@ export const getRepairModules = (topicId: string) =>
   );
 export const postAdvance = (
   topicId: string,
-  options?: { blueprint?: string; repairModule?: string },
+  // repairSection requires repairModule (a section is scoped within a
+  // module); the daemon rejects repair_section without repair_module.
+  options?: { blueprint?: string; repairModule?: string; repairSection?: string },
 ) =>
   apiPost<AdvanceResult>(`/v1/runs/${encodeURIComponent(topicId)}/advance`, {
     ...(options?.blueprint ? { blueprint: options.blueprint } : {}),
     ...(options?.repairModule ? { repair_module: options.repairModule } : {}),
+    ...(options?.repairSection ? { repair_section: options.repairSection } : {}),
   });
 export const prepareAudit = (topicId: string, rebuild = false) =>
   apiPost<AuditPreparationResult>(

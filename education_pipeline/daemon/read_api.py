@@ -683,7 +683,9 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
     ):
         scope = runs.repair_scope(topic_id)
         payload["repair_scope"] = (
-            {"module_id": scope.module_id} if scope is not None else None
+            {"module_id": scope.module_id, "section_id": scope.section_id}
+            if scope is not None
+            else None
         )
     return payload
 

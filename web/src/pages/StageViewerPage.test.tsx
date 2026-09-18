@@ -981,19 +981,78 @@ describe("StageViewerPage", () => {
     });
     vi.mocked(getRepairModules).mockResolvedValue({
       topic_id: "t",
-      modules: [{ id: "loop-basics", title: "How loops behave", open_findings: 1 }],
-      repair_scope: { module_id: "loop-basics" },
+      modules: [
+        {
+          id: "loop-basics",
+          title: "How loops behave",
+          open_findings: 1,
+          module_level_findings: 0,
+          sections: [],
+        },
+      ],
+      repair_scope: { module_id: "loop-basics", section_id: null },
     });
     renderAt("/topics/t/stages/repair");
 
-    expect(
-      await screen.findByText(/The pending repair is scoped to module/),
-    ).toBeInTheDocument();
+    const scopeNotice = await screen.findByText(/The pending repair is scoped to module/);
+    expect(scopeNotice).toBeInTheDocument();
+    expect(scopeNotice.textContent).not.toMatch(/scoped to section/);
     expect(
       await screen.findByRole("heading", { name: "Regenerate one module" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("option", { name: /How loops behave \(1 open finding\)/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("labels a scoped repair by section when the pending repair targets one", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      topic_id: "t",
+      finalized: false,
+      content_contract: { kind: "interactive_guide", schema_version: "1.0" },
+      stage_provenance: [],
+      validations: {
+        draft: { state: "current", blocking: 0, errors: 0, warnings: 0 },
+        final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+      },
+      stages: [],
+      next_action: { topic_id: "t", stage: "repair", action: "save_response", detail: "" },
+    });
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "repair",
+      prompt: "scoped prompt",
+      response: null,
+      approved: null,
+      response_sha256: null,
+      content_type: "application/vnd.education-pipeline.guide+json;version=1.0",
+      repair_scope: { module_id: "loop-basics", section_id: "feedback-foundations" },
+    });
+    vi.mocked(getRepairModules).mockResolvedValue({
+      topic_id: "t",
+      modules: [
+        {
+          id: "loop-basics",
+          title: "How loops behave",
+          open_findings: 1,
+          module_level_findings: 0,
+          sections: [
+            {
+              id: "feedback-foundations",
+              title: "Feedback foundations",
+              open_findings: 1,
+            },
+          ],
+        },
+      ],
+      repair_scope: { module_id: "loop-basics", section_id: "feedback-foundations" },
+    });
+    renderAt("/topics/t/stages/repair");
+
+    expect(
+      await screen.findByText(
+        /The pending repair is scoped to section\s*feedback-foundations\s*of module\s*loop-basics/,
+      ),
     ).toBeInTheDocument();
   });
 

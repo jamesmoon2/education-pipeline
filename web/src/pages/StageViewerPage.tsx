@@ -286,10 +286,9 @@ function StageViewerForRoute({
       </div>
       {data.stage === "repair" && data.repair_scope?.module_id && (
         <p className="warning" role="status">
-          The pending repair is scoped to module{" "}
-          <code>{data.repair_scope.module_id}</code>: the response must be that
-          single module's JSON, and approval splices it into the approved
-          draft.
+          {data.repair_scope.section_id
+            ? `The pending repair is scoped to section ${data.repair_scope.section_id} of module ${data.repair_scope.module_id}: the response must be that single section's JSON, and approval splices it into the approved draft.`
+            : `The pending repair is scoped to module ${data.repair_scope.module_id}: the response must be that single module's JSON, and approval splices it into the approved draft.`}
         </p>
       )}
       {data.stage === "repair" &&
