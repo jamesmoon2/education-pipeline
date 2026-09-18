@@ -99,6 +99,10 @@ class _RunMode:
     #: Whether ``export_run`` accepts formats other than ``html``.
     supports_markdown_export: bool = False
 
+    #: Whether a run in this mode may draft per module (frame + N modules)
+    #: instead of drafting the whole guide in one response.
+    supports_modular_draft: bool = False
+
     @property
     def graph_mode(self) -> str:
         """The ``stage_graph`` mode string for this mode.
@@ -361,6 +365,7 @@ class InteractiveGuideMode(_RunMode):
     name = "interactive_guide"
 
     binds_sources = True
+    supports_modular_draft = True
     prompt_overwrite_on_advance = True
     scoped_repair_on_approve = True
     supports_validation = True

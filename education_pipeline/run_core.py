@@ -86,12 +86,20 @@ class StageStatus:
 
 @dataclass(frozen=True)
 class NextAction:
-    """The next step needed to move a run forward, for resuming work."""
+    """The next step needed to move a run forward, for resuming work.
+
+    ``wave`` is set only on a modular draft's steps (``"frame"`` or
+    ``"modules"``); every other action leaves it ``None``. It is last and
+    defaulted so the dozens of keyword constructions elsewhere -- and the
+    field-wise comparisons in the characterization tests -- keep working
+    unchanged.
+    """
 
     topic_id: str
     stage: str | None
     action: str
     detail: str
+    wave: str | None = None
 
 
 @dataclass(frozen=True)
