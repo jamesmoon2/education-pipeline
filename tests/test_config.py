@@ -807,3 +807,120 @@ def test_parse_model_catalog_rejects_provider_entries_that_are_not_tables(
 ) -> None:
     with pytest.raises(ConfigError, match="must be a table"):
         parse_model_catalog({"providers": [value]})
+
+
+# ---------------------------------------------------------------------------
+# [jobs] parallelism (thread T23, spec decision D6). The worker pool size is
+# part of the model plan and must round-trip through parse/emit and survive
+# per-run overrides untouched. None of this exists yet: `JobsPlan`,
+# `DEFAULT_JOBS_PLAN` and `ModelPlan.jobs` are reached through the helpers
+# below so this file still collects.
+# ---------------------------------------------------------------------------
+
+
+def _jobs_plan_type():
+    from education_pipeline.config import JobsPlan
+
+    return JobsPlan
+
+
+def _default_jobs_plan():
+    from education_pipeline.config import DEFAULT_JOBS_PLAN
+
+    return DEFAULT_JOBS_PLAN
+
+
+def test_default_jobs_plan_is_two_parallel_jobs() -> None:
+    default = _default_jobs_plan()
+    assert isinstance(default, _jobs_plan_type())
+    assert default.parallelism == 2
+
+
+def test_model_plan_without_a_jobs_table_uses_the_default() -> None:
+    plan = parse_model_plan({"provider": "manual"})
+    assert plan.jobs == _default_jobs_plan()
+    assert plan.jobs.parallelism == 2
+
+
+def test_parse_model_plan_reads_jobs_parallelism() -> None:
+    plan = parse_model_plan({"provider": "manual", "jobs": {"parallelism": 4}})
+    assert plan.jobs.parallelism == 4
+    assert plan.jobs == _jobs_plan_type()(parallelism=4)
+
+
+@pytest.mark.parametrize("value", [0, -1, 5, 99])
+def test_parse_model_plan_rejects_parallelism_outside_one_to_four(value) -> None:
+    with pytest.raises(ConfigError):
+        parse_model_plan({"provider": "manual", "jobs": {"parallelism": value}})
+
+
+@pytest.mark.parametrize("value", [True, False, 2.0, "2", None, [2], {"n": 2}])
+def test_parse_model_plan_rejects_non_integer_parallelism(value) -> None:
+    with pytest.raises(ConfigError):
+        parse_model_plan({"provider": "manual", "jobs": {"parallelism": value}})
+
+
+def test_parse_model_plan_rejects_a_jobs_key_that_is_not_a_table() -> None:
+    with pytest.raises(ConfigError):
+        parse_model_plan({"provider": "manual", "jobs": 2})
+
+
+def test_parse_model_plan_strict_keys_rejects_an_unknown_jobs_key() -> None:
+    with pytest.raises(ConfigError):
+        parse_model_plan(
+            {"provider": "manual", "jobs": {"parallelism": 2, "workers": 3}},
+            strict_keys=True,
+        )
+
+
+def test_parse_model_plan_lenient_ignores_an_unknown_jobs_key() -> None:
+    # Same owner decision as stage tables: strict at write, lenient on disk.
+    plan = parse_model_plan({"provider": "manual", "jobs": {"parallelism": 3, "workers": 9}})
+    assert plan.jobs.parallelism == 3
+
+
+def test_emit_model_plan_toml_omits_the_jobs_table_at_the_default() -> None:
+    plan = parse_model_plan({"provider": "manual"})
+    text = emit_model_plan_toml(plan)
+    # Existing files must round-trip byte-identically: no [jobs] at the default.
+    assert "[jobs]" not in text
+    assert parse_model_plan(tomllib.loads(text)).jobs == plan.jobs
+
+
+def test_emit_model_plan_toml_round_trips_a_non_default_parallelism() -> None:
+    plan = parse_model_plan({"provider": "manual", "jobs": {"parallelism": 4}})
+    text = emit_model_plan_toml(plan)
+    assert "[jobs]" in text
+    reparsed = parse_model_plan(tomllib.loads(text))
+    assert reparsed == plan
+    assert reparsed.jobs.parallelism == 4
+
+
+def test_emit_writes_the_jobs_table_after_provider_and_before_the_stages() -> None:
+    plan = parse_model_plan(
+        {"provider": "manual", "jobs": {"parallelism": 3}, "stages": {"draft": {"effort": "high"}}}
+    )
+    text = emit_model_plan_toml(plan)
+    assert text.splitlines()[0].startswith("provider = ")
+    assert text.index("[jobs]") < text.index("[stages.draft]")
+    assert "parallelism = 3" in text
+
+
+def test_load_model_plan_reads_jobs_parallelism_from_disk(tmp_path: Path) -> None:
+    path = tmp_path / "model-plan.toml"
+    path.write_text('provider = "manual"\n\n[jobs]\nparallelism = 3\n', encoding="utf-8")
+    assert load_model_plan(path).jobs.parallelism == 3
+
+
+def test_apply_overrides_preserves_the_plans_jobs_parallelism() -> None:
+    plan = parse_model_plan({"provider": "manual", "jobs": {"parallelism": 4}})
+    merged = apply_overrides(plan, {"stages": {"draft": {"effort": "high"}}})
+    assert merged.jobs == plan.jobs
+    assert merged.stage("draft").effort == "high"
+
+
+def test_apply_overrides_rejects_a_jobs_override() -> None:
+    # Parallelism is daemon-wide, never per run: a run override must not set it.
+    plan = parse_model_plan({"provider": "manual", "jobs": {"parallelism": 2}})
+    with pytest.raises(ConfigError):
+        apply_overrides(plan, {"jobs": {"parallelism": 4}})
