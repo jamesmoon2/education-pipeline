@@ -90,6 +90,10 @@ export default function SettingsPage() {
   // real observation instead of a price table. Workspace-wide, and read off
   // the library payload rather than a new endpoint.
   const [observed, setObserved] = useState<Record<string, ObservedStageCost>>({});
+  // Decision 10: bounds concurrently running module jobs of one draft
+  // batch. Workspace-wide only (no per-stage editor); defaults to 2 to
+  // match the daemon's own default for a payload predating the field.
+  const [parallelism, setParallelism] = useState<number>(2);
   const save = useAction();
 
   const load = async () => {
@@ -115,6 +119,7 @@ export default function SettingsPage() {
       );
       setPlan(planResp);
       setOverrides(seedOverrides(planResp.stages));
+      setParallelism(planResp.parallelism ?? 2);
       setStale(false);
     } catch (err) {
       setLoadError(err instanceof Error ? err : new Error(String(err)));
@@ -201,9 +206,10 @@ export default function SettingsPage() {
     save.run(async () => {
       if (!plan) return;
       try {
-        const updated = await putConfigPlan(plan.plan_sha256, plan.provider, overrides);
+        const updated = await putConfigPlan(plan.plan_sha256, plan.provider, overrides, parallelism);
         setPlan(updated);
         setOverrides(seedOverrides(updated.stages));
+        setParallelism(updated.parallelism ?? parallelism);
         setStale(false);
       } catch (err) {
         if (
@@ -321,6 +327,19 @@ export default function SettingsPage() {
             </p>
           </div>
         )}
+        <p className="field-help">
+          <label>
+            Parallelism
+            <input
+              type="number"
+              min={1}
+              max={4}
+              value={parallelism}
+              onChange={(e) => setParallelism(Number(e.target.value))}
+            />
+          </label>{" "}
+          Concurrently running module jobs of one draft batch (1–4).
+        </p>
         <div className="toolbar" role="toolbar" aria-label="Plan actions">
           <button type="button" disabled={save.busy} onClick={doSave}>
             Save

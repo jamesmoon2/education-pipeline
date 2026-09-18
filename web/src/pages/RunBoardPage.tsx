@@ -6,6 +6,7 @@ import AuditControls from "../components/AuditControls";
 import CanonicalGuidePreview, {
   type CanonicalGuidePreviewHandle,
 } from "../components/CanonicalGuidePreview";
+import DraftProgressPanel from "../components/DraftProgressPanel";
 import ErrorNotice from "../components/ErrorNotice";
 import InfoTip from "../components/InfoTip";
 import JobsPanel, { ACTIVE_JOB_STATUSES } from "../components/JobsPanel";
@@ -233,6 +234,14 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
         complete={status.cost?.complete}
       />
       <PrimaryAction status={status} activeJob={activeJob} onChanged={refresh} />
+      {status.draft_progress && (
+        <DraftProgressPanel
+          topicId={status.topic_id}
+          progress={status.draft_progress}
+          activeJobs={(jobsData?.jobs ?? []).filter((job) => job.stage === "draft")}
+          onChanged={refresh}
+        />
+      )}
       <PipelineStepper
         status={status}
         activeJob={activeJob}

@@ -4,6 +4,7 @@ import {
   api,
   apiPost,
   download,
+  postAdvance,
   postPreview,
   postGuidePreview,
   postValidate,
@@ -27,6 +28,12 @@ import {
   postAuditResponse,
   approveAudit,
   enqueueAuditJob,
+  enqueueJob,
+  getBatch,
+  cancelBatch,
+  postDraftUnitResponse,
+  putDraftUnitResponse,
+  postDraftAssemble,
 } from "./client";
 import { metadataNumber } from "./types";
 import type { LearnerProfile } from "./types";
@@ -148,6 +155,53 @@ describe("apiPost", () => {
     expect(err).toBeInstanceOf(ApiRequestError);
     expect(err.status).toBe(409);
     expect(err.code).toBe("already_exists");
+  });
+});
+
+describe("postAdvance", () => {
+  afterEach(() => {
+    resetSessionForTests();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("sends repair_module and repair_section together when both are given", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/t/advance": {
+        status: 200,
+        body: { performed: null, status: {} },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postAdvance("t", { repairModule: "loop-basics", repairSection: "practice" });
+
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/runs/t/advance");
+    const init = call![1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({
+      repair_module: "loop-basics",
+      repair_section: "practice",
+    });
+  });
+
+  it("omits repair_section from the body when only repair_module is given", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/t/advance": {
+        status: 200,
+        body: { performed: null, status: {} },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postAdvance("t", { repairModule: "loop-basics" });
+
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/runs/t/advance");
+    const init = call![1] as RequestInit;
+    const body = JSON.parse(init.body as string);
+    expect(body).toEqual({ repair_module: "loop-basics" });
+    expect(body).not.toHaveProperty("repair_section");
   });
 });
 
@@ -834,5 +888,204 @@ describe("daemon_unreachable synthesis", () => {
     }));
     const error = await api("/v1/topics").catch((value) => value) as ApiRequestError;
     expect(error.code).toBe("not_found");
+  });
+});
+
+// Per-module drafting (T25 red half); daemon routes are T24's, on another
+// worktree/branch, and don't exist against this client's own tests --
+// these exercise the request shape this client is contracted to send/
+// parse per docs/superpowers/specs/2026-09-18-per-module-drafting-design.md
+// §5 and the T24 test_server.py / test_write_api.py payload shapes.
+describe("per-module drafting client (T25)", () => {
+  afterEach(() => {
+    resetSessionForTests();
+    vi.unstubAllGlobals();
+  });
+
+  it("enqueueJob sends modules only when given", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/jobs": { status: 200, body: { id: "j1" } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await enqueueJob("t", "draft", false, { modules: ["loop-basics"] });
+
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/jobs");
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({
+      topic_id: "t",
+      stage: "draft",
+      force: false,
+      modules: ["loop-basics"],
+    });
+  });
+
+  it("enqueueJob omits modules from the body when not given", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/jobs": { status: 200, body: { id: "j1" } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await enqueueJob("t", "draft");
+
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/jobs");
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    expect(body).not.toHaveProperty("modules");
+  });
+
+  it("getBatch fetches GET /v1/jobs/batch/{id}", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/jobs/batch/batch-1": {
+        status: 200,
+        body: { batch_id: "batch-1", jobs: [{ id: "j1" }, { id: "j2" }] },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getBatch("batch-1");
+
+    expect(result.batch_id).toBe("batch-1");
+    expect(result.jobs).toHaveLength(2);
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/jobs/batch/batch-1");
+    expect(call).toBeDefined();
+  });
+
+  it("cancelBatch posts to POST /v1/jobs/batch/{id}/cancel", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/jobs/batch/batch-1/cancel": {
+        status: 200,
+        body: { batch_id: "batch-1", jobs: [] },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await cancelBatch("batch-1");
+
+    const call = fetchMock.mock.calls.find(
+      ([u]) => String(u) === "/v1/jobs/batch/batch-1/cancel",
+    );
+    expect((call![1] as RequestInit).method).toBe("POST");
+  });
+
+  it("postDraftUnitResponse hits the skeleton route with {text, force}", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/t/draft/skeleton/response": {
+        status: 200,
+        body: {
+          unit: "skeleton",
+          module_id: null,
+          response_path: "draft/skeleton/response.json",
+          response_sha256: "sha-a",
+          status: {},
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await postDraftUnitResponse("t", "skeleton", null, "{}");
+
+    expect(result.unit).toBe("skeleton");
+    const call = fetchMock.mock.calls.find(
+      ([u]) => String(u) === "/v1/runs/t/draft/skeleton/response",
+    );
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({
+      text: "{}",
+      force: false,
+    });
+  });
+
+  it("postDraftUnitResponse hits the per-module route", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/t/draft/modules/loop-basics/response": {
+        status: 200,
+        body: {
+          unit: "module",
+          module_id: "loop-basics",
+          response_path: "draft/modules/loop-basics/response.json",
+          response_sha256: "sha-b",
+          status: {},
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await postDraftUnitResponse("t", "module", "loop-basics", "{}", true);
+
+    expect(result.module_id).toBe("loop-basics");
+    const call = fetchMock.mock.calls.find(
+      ([u]) => String(u) === "/v1/runs/t/draft/modules/loop-basics/response",
+    );
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({
+      text: "{}",
+      force: true,
+    });
+  });
+
+  it("putDraftUnitResponse PUTs the module route with base_sha256", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/t/draft/modules/loop-basics/response": {
+        status: 200,
+        body: {
+          unit: "module",
+          module_id: "loop-basics",
+          response_path: "draft/modules/loop-basics/response.json",
+          response_sha256: "sha-c",
+          status: {},
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await putDraftUnitResponse("t", "module", "loop-basics", "{}", "sha-old");
+
+    const call = fetchMock.mock.calls.find(
+      ([u]) => String(u) === "/v1/runs/t/draft/modules/loop-basics/response",
+    );
+    expect((call![1] as RequestInit).method).toBe("PUT");
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({
+      text: "{}",
+      base_sha256: "sha-old",
+    });
+  });
+
+  it("postDraftAssemble posts {force} to /v1/runs/{id}/draft/assemble", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/t/draft/assemble": {
+        status: 200,
+        body: { ok: true, response_sha256: "sha-d", error: null, module_ids: ["a"], status: {} },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await postDraftAssemble("t", true);
+
+    expect(result.ok).toBe(true);
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/runs/t/draft/assemble");
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ force: true });
+  });
+
+  it("putConfigPlan sends parallelism when given", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/config/plan": {
+        status: 200,
+        body: { provider: "claude", plan_sha256: "hash-2", stages: [], parallelism: 3 },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await putConfigPlan("hash-1", "claude", {}, 3);
+
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/config/plan");
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({
+      parallelism: 3,
+    });
   });
 });

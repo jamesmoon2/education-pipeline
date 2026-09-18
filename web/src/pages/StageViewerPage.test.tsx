@@ -981,20 +981,222 @@ describe("StageViewerPage", () => {
     });
     vi.mocked(getRepairModules).mockResolvedValue({
       topic_id: "t",
-      modules: [{ id: "loop-basics", title: "How loops behave", open_findings: 1 }],
-      repair_scope: { module_id: "loop-basics" },
+      modules: [
+        {
+          id: "loop-basics",
+          title: "How loops behave",
+          open_findings: 1,
+          module_level_findings: 0,
+          sections: [],
+        },
+      ],
+      repair_scope: { module_id: "loop-basics", section_id: null },
     });
     renderAt("/topics/t/stages/repair");
 
-    expect(
-      await screen.findByText(/The pending repair is scoped to module/),
-    ).toBeInTheDocument();
+    const scopeNotice = await screen.findByText(/The pending repair is scoped to module/);
+    expect(scopeNotice).toBeInTheDocument();
+    expect(scopeNotice.textContent).not.toMatch(/scoped to section/);
     expect(
       await screen.findByRole("heading", { name: "Regenerate one module" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("option", { name: /How loops behave \(1 open finding\)/ }),
     ).toBeInTheDocument();
+  });
+
+  it("labels a scoped repair by section when the pending repair targets one", async () => {
+    vi.mocked(getRunStatus).mockResolvedValue({
+      topic_id: "t",
+      finalized: false,
+      content_contract: { kind: "interactive_guide", schema_version: "1.0" },
+      stage_provenance: [],
+      validations: {
+        draft: { state: "current", blocking: 0, errors: 0, warnings: 0 },
+        final: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
+      },
+      stages: [],
+      next_action: { topic_id: "t", stage: "repair", action: "save_response", detail: "" },
+    });
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "repair",
+      prompt: "scoped prompt",
+      response: null,
+      approved: null,
+      response_sha256: null,
+      content_type: "application/vnd.education-pipeline.guide+json;version=1.0",
+      repair_scope: { module_id: "loop-basics", section_id: "feedback-foundations" },
+    });
+    vi.mocked(getRepairModules).mockResolvedValue({
+      topic_id: "t",
+      modules: [
+        {
+          id: "loop-basics",
+          title: "How loops behave",
+          open_findings: 1,
+          module_level_findings: 0,
+          sections: [
+            {
+              id: "feedback-foundations",
+              title: "Feedback foundations",
+              open_findings: 1,
+            },
+          ],
+        },
+      ],
+      repair_scope: { module_id: "loop-basics", section_id: "feedback-foundations" },
+    });
+    renderAt("/topics/t/stages/repair");
+
+    expect(
+      await screen.findByText(
+        /The pending repair is scoped to section\s*feedback-foundations\s*of module\s*loop-basics/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  // Per-module drafting (T25 red half; docs/superpowers/specs/
+  // 2026-09-18-per-module-drafting-design.md §8): the draft stage viewer
+  // gains a module anchor list above the content once draft_progress
+  // reports modules. The diff for a re-run module ("changes since last
+  // run", per response.previous.json) is explicitly deferred to a later
+  // (green) half -- only the anchor list is pinned here.
+  describe("draft module anchors", () => {
+    it("renders a module anchor list above the content for a guide draft with drafted modules", async () => {
+      vi.mocked(getStageContent).mockResolvedValue({
+        topic_id: "t",
+        stage: "draft",
+        prompt: "# skeleton + module prompts",
+        response: '{"id":"course"}',
+        approved: null,
+        response_sha256: "sha-response",
+        content_type: "application/vnd.education-pipeline.guide+json;version=1.0",
+      });
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...makeRunStatus({ action: "save_response", stage: "draft" }),
+        content_contract: { kind: "interactive_guide", schema_version: "1.1" },
+        draft_progress: {
+          skeleton: { state: "response_ingested", error: null, job_id: null },
+          modules: [
+            {
+              id: "loop-basics",
+              title: "How loops behave",
+              state: "response_ingested",
+              response_sha256: "sha-a",
+              error: null,
+              job_id: null,
+            },
+            {
+              id: "intervention-practice",
+              title: "Practice interventions",
+              state: "prompt_written",
+              response_sha256: null,
+              error: null,
+              job_id: null,
+            },
+          ],
+          assembled: null,
+          superseded: false,
+          parallelism: 2,
+          counts: { total: 2, saved: 1, stale: 0 },
+        },
+      });
+
+      renderAt("/topics/t/stages/draft");
+
+      const nav = await screen.findByRole("navigation", { name: "Module contents" });
+      const links = within(nav).getAllByRole("link");
+      expect(links.map((link) => link.textContent)).toEqual([
+        "How loops behave",
+        "Practice interventions",
+      ]);
+      expect(links[0]).toHaveAttribute("href", "#module-loop-basics");
+      expect(links[1]).toHaveAttribute("href", "#module-intervention-practice");
+    });
+
+    // Review finding 4 (PR #39 automated review): the anchors above target
+    // #module-<id>, but JsonTreeView emitted no ids anywhere, so in the
+    // default tree mode the links had nothing to scroll to.
+    it("gives the tree-mode module node an id the nav anchor can resolve to", async () => {
+      vi.mocked(getStageContent).mockResolvedValue({
+        topic_id: "t",
+        stage: "draft",
+        prompt: "# skeleton + module prompts",
+        response: JSON.stringify({
+          modules: [
+            { id: "loop-basics", title: "How loops behave" },
+            { id: "intervention-practice", title: "Practice interventions" },
+          ],
+        }),
+        approved: null,
+        response_sha256: "sha-response",
+        content_type: "application/vnd.education-pipeline.guide+json;version=1.0",
+      });
+      vi.mocked(getRunStatus).mockResolvedValue({
+        ...makeRunStatus({ action: "save_response", stage: "draft" }),
+        content_contract: { kind: "interactive_guide", schema_version: "1.1" },
+        draft_progress: {
+          skeleton: { state: "response_ingested", error: null, job_id: null },
+          modules: [
+            {
+              id: "loop-basics",
+              title: "How loops behave",
+              state: "response_ingested",
+              response_sha256: "sha-a",
+              error: null,
+              job_id: null,
+            },
+            {
+              id: "intervention-practice",
+              title: "Practice interventions",
+              state: "response_ingested",
+              response_sha256: "sha-b",
+              error: null,
+              job_id: null,
+            },
+          ],
+          assembled: null,
+          superseded: false,
+          parallelism: 2,
+          counts: { total: 2, saved: 2, stale: 0 },
+        },
+      });
+
+      renderAt("/topics/t/stages/draft");
+
+      const nav = await screen.findByRole("navigation", { name: "Module contents" });
+      const [firstLink] = within(nav).getAllByRole("link");
+      const targetId = (firstLink.getAttribute("href") ?? "").slice(1);
+      expect(targetId).toBe("module-loop-basics");
+
+      // The tree only renders for the "response" tab's JSON content -- the
+      // nav itself renders regardless of the active tab.
+      await userEvent.click(await screen.findByRole("tab", { name: /^response/ }));
+      expect(await screen.findByText("modules")).toBeInTheDocument();
+      expect(document.getElementById(targetId)).not.toBeNull();
+    });
+
+    it("renders no module anchor list when draft_progress has no modules yet (or on a legacy run)", async () => {
+      vi.mocked(getStageContent).mockResolvedValue({
+        topic_id: "t",
+        stage: "draft",
+        prompt: "# the prompt",
+        response: null,
+        approved: null,
+        response_sha256: null,
+        content_type: "text/markdown",
+      });
+      vi.mocked(getRunStatus).mockResolvedValue(
+        makeRunStatus({ action: "save_response", stage: "draft" }),
+      );
+
+      renderAt("/topics/t/stages/draft");
+      await screen.findByRole("heading", { name: "the prompt" });
+      expect(
+        screen.queryByRole("navigation", { name: "Module contents" }),
+      ).not.toBeInTheDocument();
+    });
   });
 
   // Thread T07: the header should surface this stage's own entry from the

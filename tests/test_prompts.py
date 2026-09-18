@@ -813,6 +813,148 @@ def test_module_repair_prompt_composes_blueprint_lines() -> None:
         assert line in text
 
 
+_SECTION_REPAIR_DRAFT_FINDINGS = json.dumps(
+    {
+        "report_schema_version": 3,
+        "findings": [
+            {
+                "id": "worked_reveal.too_few_steps:target-section",
+                "rule_id": "worked_reveal.too_few_steps",
+                "severity": "error",
+                "blocking": True,
+                "waivable": True,
+                "path": "/modules/0/sections/1/blocks/0",
+                "message": "Worked reveal has fewer than two steps.",
+                "remediation": "Provide at least two reveal steps.",
+                "stage": "draft",
+            },
+            {
+                "id": "content.placeholder:sibling-section",
+                "rule_id": "content.placeholder",
+                "severity": "error",
+                "blocking": True,
+                "waivable": True,
+                "path": "/modules/0/sections/0/blocks/0",
+                "message": "Content contains placeholder language in the sibling section.",
+                "remediation": "Replace placeholder text.",
+                "stage": "draft",
+            },
+            {
+                "id": "module.no_interaction:module-level",
+                "rule_id": "module.no_interaction",
+                "severity": "error",
+                "blocking": True,
+                "waivable": True,
+                "path": "/modules/0",
+                "message": "Module must contain at least one interactive block.",
+                "remediation": "Add an interaction to the module.",
+                "stage": "draft",
+            },
+            {
+                "id": "content.placeholder:other-module",
+                "rule_id": "content.placeholder",
+                "severity": "error",
+                "blocking": True,
+                "waivable": True,
+                "path": "/modules/1/sections/0/blocks/0",
+                "message": "Content contains placeholder language in another module.",
+                "remediation": "Replace placeholder text.",
+                "stage": "draft",
+            },
+        ],
+    }
+)
+
+
+def _compile_section_repair(
+    module_id: str = "loop-basics",
+    section_id: str = "recognize-loop-types",
+    **kwargs,
+):
+    from education_pipeline.guides import canonical_guide_bytes, normalize_guide, parse_guide
+    from education_pipeline.prompts import compile_guide_v1_section_repair_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking", brief="A brief.")
+    draft = canonical_guide_bytes(
+        normalize_guide(parse_guide(_MODULE_REPAIR_FIXTURE.read_text(encoding="utf-8")))
+    ).decode("utf-8")
+    return compile_guide_v1_section_repair_prompt(
+        topic,
+        module_id=module_id,
+        section_id=section_id,
+        draft_guide_json=draft,
+        qa_findings_markdown=_MODULE_REPAIR_QA,
+        factcheck_findings_markdown=APPROVED_FACTCHECK,
+        draft_findings_json=_SECTION_REPAIR_DRAFT_FINDINGS,
+        guide_contract=build_guide_contract(
+            dict(
+                GUIDE_SPEC_CONTRACT,
+                outcomes=[
+                    {"id": "identify-loop", "text": "Identify feedback."},
+                    {"id": "map-loop", "text": "Map a loop."},
+                    {"id": "choose-intervention", "text": "Choose an intervention."},
+                ],
+            ),
+            GUIDE_OUTLINE_CONTRACT,
+        ),
+        **kwargs,
+    )
+
+
+def test_section_repair_prompt_scopes_findings_and_requests_one_section() -> None:
+    artifact = _compile_section_repair()
+    text = artifact.text
+
+    assert artifact.stage == "repair"
+
+    # The whole module is embedded for context.
+    assert '"id": "loop-basics"' in text
+    assert "How loops behave" in text
+
+    # The target section is explicitly named as what to regenerate.
+    assert "## Section To Regenerate" in text
+    assert '"id": "recognize-loop-types"' in text
+
+    # Deterministic findings are scoped to the target section only: the
+    # sibling section, the module-level finding, and the other module's
+    # finding are all excluded.
+    assert "worked_reveal.too_few_steps:target-section" in text
+    assert "content.placeholder:sibling-section" not in text
+    assert "module.no_interaction:module-level" not in text
+    assert "content.placeholder:other-module" not in text
+
+    # Module-level and guide-level findings are explicitly out of scope.
+    lowered = text.lower()
+    assert "out of scope" in lowered
+    assert "module-level" in lowered and "guide-level" in lowered
+
+    # Output contract: exactly one section object with the same id.
+    assert "exactly one JSON object" in text
+    assert "same `id` (`recognize-loop-types`)" in text
+    assert "Do not return the whole guide" in text
+    assert "whole module" in lowered
+
+
+def test_section_repair_prompt_rejects_unknown_module() -> None:
+    with pytest.raises(ConfigError, match="no-such-module"):
+        _compile_section_repair("no-such-module", "recognize-loop-types")
+
+
+def test_section_repair_prompt_rejects_unknown_section() -> None:
+    with pytest.raises(ConfigError, match="no-such-section"):
+        _compile_section_repair("loop-basics", "no-such-section")
+
+
+def test_section_repair_prompt_composes_blueprint_lines() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+
+    blueprint = get_blueprint("procedural-skill")
+    text = _compile_section_repair(blueprint=blueprint).text
+    assert "## Blueprint Contract" in text
+    for line in blueprint.repair_lines:
+        assert line in text
+
+
 def _compile_personalized_1_1_prompts(tmp_path: Path, profile_toml: str) -> dict[str, str]:
     profile = ProfileStore(tmp_path).save_profile_toml(
         "adversarial-goal-profile", profile_toml
@@ -1330,3 +1472,193 @@ def test_compile_personalization_audit_prompt_rejects_missing_inputs(
             personalization_trace_json=trace_json,
             profile=None,
         )
+
+
+# --- compile_guide_v1_skeleton_prompt / compile_guide_v1_module_draft_prompt ---
+#
+# T21: the draft stage's model work splits into one skeleton call and one
+# call per outline module (design doc §2 "Prompts"). The skeleton prompt
+# asks for the whole guide with every module reduced to a sectionless stub,
+# in the outline's authored module order; the module prompt embeds that
+# skeleton and asks for exactly one full module object back.
+
+_MODULE_DRAFT_FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.guide.json"
+
+_MODULE_DRAFT_OUTLINE_CONTRACT = {
+    "contract_version": 1,
+    "modules": {
+        "loop-basics": {
+            "outcome_ids": ["identify-loop", "map-loop"],
+            "estimated_minutes": 14,
+            "interaction_types": ["knowledge_check", "worked_reveal"],
+        },
+        "intervention-practice": {
+            "outcome_ids": ["map-loop", "choose-intervention"],
+            "estimated_minutes": 16,
+            "interaction_types": ["knowledge_check", "scenario", "reflection"],
+        },
+    },
+}
+
+_MODULE_DRAFT_SPEC_CONTRACT = dict(
+    GUIDE_SPEC_CONTRACT,
+    outcomes=[
+        {"id": "identify-loop", "text": "Identify feedback."},
+        {"id": "map-loop", "text": "Map a loop."},
+        {"id": "choose-intervention", "text": "Choose an intervention."},
+    ],
+)
+
+_MODULE_DRAFT_MODULE_ORDER = ("loop-basics", "intervention-practice")
+
+
+def _module_draft_skeleton_json() -> str:
+    data = json.loads(_MODULE_DRAFT_FIXTURE.read_text(encoding="utf-8"))
+    skeleton = json.loads(json.dumps(data))
+    skeleton["modules"] = [
+        {**{key: value for key, value in module.items() if key != "sections"}, "sections": []}
+        for module in data["modules"]
+    ]
+    return json.dumps(skeleton, ensure_ascii=False)
+
+
+def _module_draft_contract() -> bytes:
+    return build_guide_contract(_MODULE_DRAFT_SPEC_CONTRACT, _MODULE_DRAFT_OUTLINE_CONTRACT)
+
+
+def _compile_skeleton_prompt(module_order=("feedback-loops",), **kwargs):
+    from education_pipeline.prompts import compile_guide_v1_skeleton_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking", brief="A brief.")
+    contract = build_guide_contract(GUIDE_SPEC_CONTRACT, GUIDE_OUTLINE_CONTRACT)
+    return compile_guide_v1_skeleton_prompt(
+        topic, APPROVED_OUTLINE, contract, module_order=module_order, **kwargs
+    )
+
+
+def _compile_module_draft_prompt(
+    module_id: str = "intervention-practice",
+    module_index: int = 1,
+    module_order=_MODULE_DRAFT_MODULE_ORDER,
+    **kwargs,
+):
+    from education_pipeline.prompts import compile_guide_v1_module_draft_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking", brief="A brief.")
+    return compile_guide_v1_module_draft_prompt(
+        topic,
+        module_id=module_id,
+        module_index=module_index,
+        module_order=module_order,
+        skeleton_json=_module_draft_skeleton_json(),
+        guide_contract=_module_draft_contract(),
+        approved_outline=APPROVED_OUTLINE,
+        **kwargs,
+    )
+
+
+def test_skeleton_prompt_embeds_outline_contract_and_asks_for_sectionless_stubs() -> None:
+    artifact = _compile_skeleton_prompt()
+    text = artifact.text
+
+    assert artifact.stage == "draft"
+    assert "## Approved Outline" in text
+    assert "1. Feedback loops" in text
+    assert "## Guide Contract" in text
+    assert '"blueprint": "conceptual-foundations"' in text
+    assert "feedback-loops" in text
+    assert "sections" in text and "[]" in text
+    assert "stub" in text.lower()
+    assert "exactly one JSON object" in text
+    assert "Schema Reference" in text
+
+
+def test_skeleton_prompt_states_module_order_in_the_given_sequence() -> None:
+    forward = _compile_skeleton_prompt(module_order=("alpha-module", "beta-module")).text
+    backward = _compile_skeleton_prompt(module_order=("beta-module", "alpha-module")).text
+
+    assert forward.index("alpha-module") < forward.index("beta-module")
+    assert backward.index("beta-module") < backward.index("alpha-module")
+
+
+def test_skeleton_prompt_is_stable_without_profile_or_blueprint() -> None:
+    first = _compile_skeleton_prompt().text
+    second = _compile_skeleton_prompt().text
+
+    assert first == second
+
+
+def test_module_draft_prompt_embeds_skeleton_contract_entry_and_outline() -> None:
+    artifact = _compile_module_draft_prompt()
+    text = artifact.text
+
+    assert artifact.stage == "draft"
+    # The skeleton, including a sibling stub, is embedded for context.
+    assert '"id": "loop-basics"' in text
+    assert '"sections": []' in text
+    assert "## Approved Outline" in text
+    assert "1. Feedback loops" in text
+    assert '"blueprint": "conceptual-foundations"' in text
+    # This module's own contract entry (outcomes, minutes, interaction types).
+    assert '"estimated_minutes": 16' in text
+    assert "choose-intervention" in text
+
+
+def test_module_draft_prompt_states_position_in_module_order() -> None:
+    artifact = _compile_module_draft_prompt(
+        module_id="intervention-practice",
+        module_index=1,
+        module_order=("loop-basics", "intervention-practice", "wrap-up"),
+    )
+
+    assert "module 2 of 3" in artifact.text.lower()
+
+
+def test_module_draft_prompt_demands_one_module_with_prefixed_ids() -> None:
+    text = _compile_module_draft_prompt().text
+
+    assert "exactly one" in text.lower()
+    assert "module object" in text.lower() or "module" in text.lower()
+    assert "same `id`" in text or "same id" in text.lower()
+    assert "intervention-practice" in text
+    # Every section/block id must start with `<module-id>-`.
+    assert "must start with" in text.lower()
+    assert "intervention-practice-" in text
+    # New glossary/source entries go in top-level contribution lists.
+    assert "glossary" in text.lower()
+    assert "sources" in text.lower()
+    assert "contribution" in text.lower()
+
+
+def test_module_draft_prompt_is_stable_without_profile_or_blueprint() -> None:
+    first = _compile_module_draft_prompt().text
+    second = _compile_module_draft_prompt().text
+
+    assert first == second
+
+
+def test_module_draft_prompt_rejects_a_module_id_outside_module_order() -> None:
+    with pytest.raises(ConfigError, match="no-such-module"):
+        _compile_module_draft_prompt(
+            module_id="no-such-module",
+            module_index=0,
+            module_order=_MODULE_DRAFT_MODULE_ORDER,
+        )
+
+
+def test_skeleton_and_module_draft_prompts_return_prompt_artifacts_with_the_same_shape() -> None:
+    from dataclasses import fields
+
+    from education_pipeline.prompts import PromptArtifact
+
+    draft_artifact = compile_guide_v1_draft_prompt(
+        Topic(id="systems-thinking", title="Systems Thinking"),
+        APPROVED_OUTLINE,
+        build_guide_contract(GUIDE_SPEC_CONTRACT, GUIDE_OUTLINE_CONTRACT),
+    )
+    skeleton_artifact = _compile_skeleton_prompt()
+    module_artifact = _compile_module_draft_prompt()
+
+    assert type(skeleton_artifact) is type(module_artifact) is type(draft_artifact) is PromptArtifact
+    assert {f.name for f in fields(skeleton_artifact)} == {f.name for f in fields(draft_artifact)}
+    assert {f.name for f in fields(module_artifact)} == {f.name for f in fields(draft_artifact)}

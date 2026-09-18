@@ -1128,3 +1128,385 @@ def test_prompt_writers_refuse_a_stale_upstream_stage(
     with pytest.raises(ConfigError) as excinfo:
         case.call(runs, TID)
     assert str(excinfo.value) == case.message
+
+
+# --------------------------------------------------------------------------
+# Part 5 (T22): draft-unit next_action / advance table.
+#
+# Per-module drafting design
+# (docs/superpowers/specs/2026-09-18-per-module-drafting-design.md), decision
+# 8 ("next_action keeps its shape...") and decision 7b (outline re-approval
+# before draft approval rebuilds the draft inputs). The unit arms these cases
+# exercise -- write_module_draft_prompts, ingest_draft_unit, assemble_draft,
+# draft_progress -- do not exist on RunStore yet, so every builder below is
+# RED: it calls a not-yet-existing method and fails with AttributeError until
+# T23 implements it. That is deliberate; see the module docstring's note on
+# how red tests are written in this repo.
+#
+# These cases need two contract modules (for "k of N" progress and per-module
+# assembly failure), so -- like tests/test_draft_units.py -- they drive
+# spec/outline approval through a contract whose module map lists exactly the
+# committed guide fixture's two module ids (loop-basics,
+# intervention-practice), in the fixture's authored order, rather than this
+# file's existing one-module VALID_OUTLINE_CONTRACT.
+# --------------------------------------------------------------------------
+
+_DRAFT_UNIT_DATA = json.loads(GUIDE_FIXTURE)
+_DRAFT_UNIT_MODULE_ORDER = tuple(module["id"] for module in _DRAFT_UNIT_DATA["modules"])
+assert _DRAFT_UNIT_MODULE_ORDER == ("loop-basics", "intervention-practice")
+
+_DRAFT_UNIT_SPEC_CONTRACT = dict(
+    VALID_SPEC_CONTRACT,
+    outcomes=[dict(outcome) for outcome in _DRAFT_UNIT_DATA["outcomes"]],
+)
+
+_DRAFT_UNIT_OUTLINE_CONTRACT = {
+    "contract_version": 1,
+    "modules": {
+        "loop-basics": {
+            "outcome_ids": ["identify-loop", "map-loop"],
+            "estimated_minutes": 14,
+            "interaction_types": ["knowledge_check", "worked_reveal"],
+        },
+        "intervention-practice": {
+            "outcome_ids": ["map-loop", "choose-intervention"],
+            "estimated_minutes": 16,
+            "interaction_types": ["knowledge_check", "scenario", "reflection"],
+        },
+    },
+}
+
+
+def _draft_unit_skeleton_response() -> str:
+    skeleton = json.loads(json.dumps(_DRAFT_UNIT_DATA))
+    skeleton["modules"] = [
+        {
+            **{key: value for key, value in module.items() if key != "sections"},
+            "sections": [],
+        }
+        for module in _DRAFT_UNIT_DATA["modules"]
+    ]
+    return json.dumps(skeleton, ensure_ascii=False)
+
+
+def _draft_unit_module_response(module_id: str) -> str:
+    module = next(m for m in _DRAFT_UNIT_DATA["modules"] if m["id"] == module_id)
+    return json.dumps(module, ensure_ascii=False)
+
+
+def _drive_draft_unit_outline_to_approved(runs: RunStore, topic_id: str) -> None:
+    spec = runs.write_topic_spec_prompt(topic_id)
+    spec.response_path.write_text(
+        _guide_spec_response(_DRAFT_UNIT_SPEC_CONTRACT), encoding="utf-8"
+    )
+    runs.approve_stage(topic_id, "spec")
+    outline = runs.write_outline_prompt(topic_id)
+    outline.response_path.write_text(
+        _guide_outline_response(_DRAFT_UNIT_OUTLINE_CONTRACT), encoding="utf-8"
+    )
+    runs.approve_stage(topic_id, "outline")
+
+
+def _build_draft_unit_outline_only(runs: RunStore, topic_id: str) -> None:
+    _drive_draft_unit_outline_to_approved(runs, topic_id)
+
+
+def _build_draft_unit_skeleton_prompt_only(runs: RunStore, topic_id: str) -> None:
+    _build_draft_unit_outline_only(runs, topic_id)
+    runs.write_draft_prompt(topic_id)
+
+
+def _build_draft_unit_skeleton_response_dropped(runs: RunStore, topic_id: str) -> None:
+    """A manual user drops a skeleton response straight onto its stub path.
+
+    Bypasses ``ingest_draft_unit`` on purpose: decision 9 only auto-writes
+    module prompts on an *ingest*, not for a file dropped directly on disk,
+    so this is the state that exercises next_action's own
+    "module prompts missing" arm and advance()'s own write.
+    """
+
+    _build_draft_unit_skeleton_prompt_only(runs, topic_id)
+    paths = runs.draft_unit_paths(topic_id, "skeleton")
+    paths.response_path.write_text(_draft_unit_skeleton_response(), encoding="utf-8")
+
+
+def _build_draft_unit_one_of_two_modules_saved(runs: RunStore, topic_id: str) -> None:
+    _build_draft_unit_skeleton_response_dropped(runs, topic_id)
+    runs.write_module_draft_prompts(topic_id)
+    paths = runs.draft_unit_paths(topic_id, "module", module_id="loop-basics")
+    paths.response_path.write_text(_draft_unit_module_response("loop-basics"), encoding="utf-8")
+
+
+def _build_draft_unit_assembly_failure(runs: RunStore, topic_id: str) -> None:
+    _build_draft_unit_one_of_two_modules_saved(runs, topic_id)
+    renamed = json.loads(_draft_unit_module_response("intervention-practice"))
+    renamed["id"] = "intervention-practice-renamed"
+    paths = runs.draft_unit_paths(topic_id, "module", module_id="intervention-practice")
+    paths.response_path.write_text(json.dumps(renamed, ensure_ascii=False), encoding="utf-8")
+
+
+def _build_draft_unit_all_modules_saved_unassembled(runs: RunStore, topic_id: str) -> None:
+    """Every module response dropped on disk by hand, nothing assembled yet.
+
+    The manual path: no ingest ever ran, so nothing auto-assembled. Assembly
+    is deterministic, so this is a *machine* step ``advance`` performs, the
+    same way it performs validation and finalization.
+    """
+
+    _build_draft_unit_one_of_two_modules_saved(runs, topic_id)
+    paths = runs.draft_unit_paths(topic_id, "module", module_id="intervention-practice")
+    paths.response_path.write_text(
+        _draft_unit_module_response("intervention-practice"), encoding="utf-8"
+    )
+
+
+def _build_draft_unit_assembled(runs: RunStore, topic_id: str) -> None:
+    _build_draft_unit_one_of_two_modules_saved(runs, topic_id)
+    paths = runs.draft_unit_paths(topic_id, "module", module_id="intervention-practice")
+    paths.response_path.write_text(
+        _draft_unit_module_response("intervention-practice"), encoding="utf-8"
+    )
+    runs.assemble_draft(topic_id)
+
+
+def _build_draft_unit_whole_guide_dropped_without_skeleton(
+    runs: RunStore, topic_id: str
+) -> None:
+    """Pins decision 6: the response file wins, with no unit machinery touched
+    at all -- exactly what test_linear_progression_next_action_and_stage_status
+    already does at lines ~326-330, reproduced here as its own case so a
+    regression in the new unit arms shows up in this table too."""
+
+    _drive_guide_spec_to_approved(runs, topic_id)
+    _drive_guide_outline_to_approved(runs, topic_id)
+    draft = runs.write_draft_prompt(topic_id)
+    draft.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+
+
+def _build_draft_unit_outline_changed_before_draft_approved(
+    runs: RunStore, topic_id: str
+) -> None:
+    _build_draft_unit_skeleton_prompt_only(runs, topic_id)
+    outline = runs.write_outline_prompt(topic_id, overwrite=True)
+    changed_contract = {
+        "contract_version": 1,
+        "modules": {
+            "loop-basics": _DRAFT_UNIT_OUTLINE_CONTRACT["modules"]["loop-basics"],
+            "wrap-up": {
+                "outcome_ids": ["choose-intervention"],
+                "estimated_minutes": 10,
+                "interaction_types": ["reflection"],
+            },
+        },
+    }
+    outline.response_path.write_text(_guide_outline_response(changed_contract), encoding="utf-8")
+    runs.approve_stage(topic_id, "outline", overwrite=True)
+
+
+@dataclass(frozen=True)
+class DraftUnitCase:
+    name: str
+    build: Callable[[RunStore, str], None]
+    stage: str | None
+    action: str
+    detail_contains: str | None = None
+
+
+DRAFT_UNIT_CASES = [
+    DraftUnitCase(
+        "no_skeleton_prompt_wants_write_prompt",
+        _build_draft_unit_outline_only,
+        "draft",
+        "write_prompt",
+    ),
+    DraftUnitCase(
+        "skeleton_prompt_no_response_wants_save_response",
+        _build_draft_unit_skeleton_prompt_only,
+        "draft",
+        "save_response",
+        "skeleton",
+    ),
+    DraftUnitCase(
+        "skeleton_response_missing_module_prompts_wants_write_prompt",
+        _build_draft_unit_skeleton_response_dropped,
+        "draft",
+        "write_prompt",
+        "module",
+    ),
+    DraftUnitCase(
+        "one_of_two_module_responses_wants_save_response",
+        _build_draft_unit_one_of_two_modules_saved,
+        "draft",
+        "save_response",
+        "1 of 2",
+    ),
+    DraftUnitCase(
+        "assembly_failure_wants_save_response_naming_the_module",
+        _build_draft_unit_assembly_failure,
+        "draft",
+        "save_response",
+        "intervention-practice",
+    ),
+    DraftUnitCase(
+        "all_module_responses_saved_wants_assemble",
+        _build_draft_unit_all_modules_saved_unassembled,
+        "draft",
+        "assemble",
+    ),
+    DraftUnitCase(
+        "assembled_wants_approve",
+        _build_draft_unit_assembled,
+        "draft",
+        "approve",
+    ),
+    DraftUnitCase(
+        "whole_guide_dropped_without_skeleton_wants_approve",
+        _build_draft_unit_whole_guide_dropped_without_skeleton,
+        "draft",
+        "approve",
+    ),
+    DraftUnitCase(
+        "outline_changed_before_draft_approved_wants_write_prompt",
+        _build_draft_unit_outline_changed_before_draft_approved,
+        "draft",
+        "write_prompt",
+        "outline",
+    ),
+]
+
+
+@pytest.mark.parametrize("case", DRAFT_UNIT_CASES, ids=lambda c: c.name)
+def test_draft_unit_next_action_cases(tmp_path: Path, case: DraftUnitCase) -> None:
+    runs = _create_guide_run(tmp_path, TID)
+    case.build(runs, TID)
+
+    next_action = runs.run_status(TID).next_action
+
+    assert (next_action.stage, next_action.action) == (case.stage, case.action)
+    if case.detail_contains is not None:
+        assert case.detail_contains in next_action.detail
+
+
+def test_advance_writes_both_stage_and_skeleton_prompts_together(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path, TID)
+    _build_draft_unit_outline_only(runs, TID)
+
+    result = runs.advance(TID)
+
+    assert result.performed == "write_prompt"
+    assert runs.stage_paths(TID, "draft").prompt_path.is_file()
+    assert runs.draft_unit_paths(TID, "skeleton").prompt_path.is_file()
+
+
+def test_advance_writes_module_prompts_once_the_skeleton_response_lands(
+    tmp_path: Path,
+) -> None:
+    runs = _create_guide_run(tmp_path, TID)
+    _build_draft_unit_skeleton_response_dropped(runs, TID)
+
+    result = runs.advance(TID)
+
+    assert result.performed == "write_prompt"
+    for module_id in _DRAFT_UNIT_MODULE_ORDER:
+        assert runs.draft_unit_paths(
+            TID, "module", module_id=module_id
+        ).prompt_path.is_file()
+
+
+def test_advance_assembles_the_draft_once_every_module_response_is_saved(
+    tmp_path: Path,
+) -> None:
+    runs = _create_guide_run(tmp_path, TID)
+    _build_draft_unit_all_modules_saved_unassembled(runs, TID)
+
+    result = runs.advance(TID)
+
+    assert result.performed == "assemble"
+    assert runs.stage_paths(TID, "draft").response_path.is_file()
+    assert not runs.stage_paths(TID, "draft").approved_path.exists()
+    after = result.status.next_action
+    assert (after.stage, after.action) == ("draft", "approve")
+
+
+def _build_draft_unit_outline_changed_after_module_prompts(
+    runs: RunStore, topic_id: str
+) -> None:
+    _build_draft_unit_skeleton_response_dropped(runs, topic_id)
+    runs.write_module_draft_prompts(topic_id)
+    paths = runs.draft_unit_paths(topic_id, "module", module_id="loop-basics")
+    paths.response_path.write_text(_draft_unit_module_response("loop-basics"), encoding="utf-8")
+
+
+def test_advance_on_outline_change_rewrites_contract_and_orphans_every_unit(
+    tmp_path: Path,
+) -> None:
+    runs = _create_guide_run(tmp_path, TID)
+    _build_draft_unit_outline_changed_after_module_prompts(runs, TID)
+
+    outline = runs.write_outline_prompt(TID, overwrite=True)
+    changed_contract = {
+        "contract_version": 1,
+        "modules": {
+            "loop-basics": _DRAFT_UNIT_OUTLINE_CONTRACT["modules"]["loop-basics"],
+            "wrap-up": {
+                "outcome_ids": ["choose-intervention"],
+                "estimated_minutes": 10,
+                "interaction_types": ["reflection"],
+            },
+        },
+    }
+    outline.response_path.write_text(_guide_outline_response(changed_contract), encoding="utf-8")
+    runs.approve_stage(TID, "outline", overwrite=True)
+
+    result = runs.advance(TID)
+
+    assert result.performed == "write_prompt"
+    contract = json.loads(
+        (runs.run_dir(TID) / "inputs" / "guide-contract.json").read_text(encoding="utf-8")
+    )
+    assert set(contract["modules"]) == {"loop-basics", "wrap-up"}
+    skeleton_prompt_text = runs.draft_unit_paths(TID, "skeleton").prompt_path.read_text(
+        encoding="utf-8"
+    )
+    assert "wrap-up" in skeleton_prompt_text
+
+    # Decision 7b moves the existing unit responses aside, so the rebuilt
+    # skeleton is what the run waits on and nothing written against the old
+    # contract can be assembled against the new one. (This pin previously
+    # asserted the unit responses stayed put and the dropped module showed as
+    # ``orphaned`` in ``draft_progress``; that was the defect PR #39's review
+    # found, not the intended behaviour.)
+    progress = runs.draft_progress(TID)
+    assert progress.skeleton.state == "prompt_written"
+    assert progress.modules == ()
+    loop_basics_paths = runs.draft_unit_paths(TID, "module", module_id="loop-basics")
+    assert not loop_basics_paths.response_path.exists()
+
+    # Never delete model output: every response is still on disk, aside.
+    orphaned = sorted((runs.run_dir(TID) / "draft" / "orphaned").glob("*/**/response.json"))
+    assert [path.parent.name for path in orphaned] == [
+        "loop-basics",
+        "skeleton",
+    ]
+
+
+def test_outline_reapproval_does_not_disturb_an_already_approved_draft(
+    tmp_path: Path,
+) -> None:
+    runs = _create_guide_run(tmp_path, TID)
+    _drive_guide_to_draft_approved(runs, TID)
+    before = runs.run_status(TID).next_action
+    assert (before.stage, before.action) == ("draft", "validate")
+
+    outline = runs.write_outline_prompt(TID, overwrite=True)
+    changed_contract = {
+        "contract_version": 1,
+        "modules": {
+            "feedback-loops-renamed": VALID_OUTLINE_CONTRACT["modules"]["feedback-loops"],
+        },
+    }
+    outline.response_path.write_text(_guide_outline_response(changed_contract), encoding="utf-8")
+    runs.approve_stage(TID, "outline", overwrite=True)
+
+    after = runs.run_status(TID).next_action
+    assert (after.stage, after.action) == ("draft", "validate")

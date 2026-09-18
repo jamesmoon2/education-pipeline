@@ -25,7 +25,7 @@ from education_pipeline.config import (
     apply_overrides_lenient,
 )
 from education_pipeline.daemon import read_api, reveal, write_api
-from education_pipeline.daemon.jobs import Job, JobStore, Worker
+from education_pipeline.daemon.jobs import Job, JobStore, Worker, new_job_id
 from education_pipeline.daemon.static import (
     cockpit_build_report,
     inject_cockpit_build_warning,
@@ -64,6 +64,57 @@ MAX_REQUEST_BODY_BYTES = 1024 * 1024  # 1 MiB; job POST bodies are tiny
 DEFAULT_SOCKET_TIMEOUT_SECONDS = 30.0
 
 
+def _optional_modules(body: dict) -> list[str] | None:
+    """The ``modules`` field of a job request: a list of module ids, or None.
+
+    Absent and ``null`` both mean "every outstanding module"; anything that is
+    not a list of non-empty strings is a malformed request (400), not a state
+    conflict. The ids themselves are checked against the run's outline
+    contract by ``DaemonContext.enqueue_stage``.
+    """
+
+    if "modules" not in body or body["modules"] is None:
+        return None
+    value = body["modules"]
+    if not isinstance(value, list):
+        raise ConfigError("body field 'modules' must be a list of module ids")
+    if not value:
+        # An empty list selects nothing; it is a malformed request, not a
+        # synonym for "every outstanding module" (that is absent or null).
+        raise ConfigError("modules must name at least one module")
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigError(
+                "body field 'modules' must contain non-empty module id strings"
+            )
+    return list(value)
+
+
+def _batch_payload(store: JobStore, batch_id: str) -> dict:
+    """Every job of one fan-out, in the order the fan-out created them.
+
+    ``JobStore.batch`` sorts by job id, which is stamped to the second and
+    tie-broken at random, so a same-second fan-out needs its recorded
+    ``batch_index`` to come back in module order.
+    """
+
+    jobs = sorted(
+        store.batch(batch_id),
+        key=lambda job: (job.metadata.get("batch_index", 0), job.id),
+    )
+    return {"batch_id": batch_id, "jobs": [job.to_dict() for job in jobs]}
+
+
+#: The per-unit draft routes (design 2026-09-18, section 5). Both verbs of
+#: each pair share one pattern so POST (ingest) and PUT (edit) can never drift
+#: apart in what they address.
+_DRAFT_SKELETON_RESPONSE_RE = re.compile(r"^/v1/runs/([^/?]+)/draft/skeleton/response$")
+_DRAFT_MODULE_RESPONSE_RE = re.compile(
+    r"^/v1/runs/([^/?]+)/draft/modules/([^/?]+)/response$"
+)
+_DRAFT_ASSEMBLE_RE = re.compile(r"^/v1/runs/([^/?]+)/draft/assemble$")
+
+
 def _require_str(body: dict, key: str) -> str:
     value = body.get(key)
     if not isinstance(value, str):
@@ -85,7 +136,14 @@ class DaemonContext:
     on_shutdown: Callable[[], None]
     web_dist: Path | None = None
 
-    def enqueue_stage(self, topic_id: str, stage: str | None, force: bool) -> Job:
+    def enqueue_stage(
+        self,
+        topic_id: str,
+        stage: str | None = None,
+        force: bool = False,
+        *,
+        modules: list[str] | None = None,
+    ) -> Job:
         """Admit one stage execution, atomically with its own guards.
 
         The archive/active-job checks and the record write they guard run
@@ -99,9 +157,15 @@ class DaemonContext:
         """
 
         with workspace_lock(self.root, timeout_seconds=self.store.lock_timeout_seconds):
-            return self._enqueue_stage_locked(topic_id, stage, force)
+            return self._enqueue_stage_locked(topic_id, stage, force, modules)
 
-    def _enqueue_stage_locked(self, topic_id: str, stage: str | None, force: bool) -> Job:
+    def _enqueue_stage_locked(
+        self,
+        topic_id: str,
+        stage: str | None,
+        force: bool,
+        modules: list[str] | None = None,
+    ) -> Job:
         if self.runs.is_archived(topic_id):
             raise write_api.ConflictError(
                 "archived_course",
@@ -134,22 +198,181 @@ class DaemonContext:
             raise ConfigError(
                 f"nothing to run: next action is {action.action!r} — {action.detail}"
             )
+        if modules is not None and not modules:
+            # Defence for direct callers of the context API: the route's own
+            # parser already refuses this, and the fan-out below indexes the
+            # jobs it created.
+            raise ConfigError("modules must name at least one module")
+        if modules is not None and target_stage != "draft":
+            raise ConfigError(
+                f"--modules applies to the draft stage only; got {target_stage!r}"
+            )
         if self.store.active_for(topic_id, target_stage) is not None:
             raise ConfigError(
                 f"a job is already active for {topic_id}/{target_stage}"
             )
         stage_plan = plan.stage(target_stage)
         provider = stage_plan.provider or plan.provider
-        job = self.store.create(topic_id, target_stage, provider, stage_plan.model, stage_plan.effort)
-        job.metadata["force"] = force
-        job.metadata["plan_source"] = (
+        plan_source = (
             "override" if target_stage in overrides.get("stages", {}) else "default"
         )
+        if target_stage == "draft" and self._draft_units_apply(topic_id):
+            return self._enqueue_draft_units_locked(
+                topic_id,
+                stage_plan,
+                provider,
+                plan_source,
+                force=force,
+                modules=modules,
+            )
+        if modules is not None:
+            raise ConfigError(
+                f"{topic_id!r} does not draft per module; run the whole draft "
+                "stage instead"
+            )
+        job = self.store.create(topic_id, target_stage, provider, stage_plan.model, stage_plan.effort)
+        job.metadata["force"] = force
+        job.metadata["plan_source"] = plan_source
         # Do not pre-save here: Worker.enqueue performs the duplicate-active
         # check, durable save, and queue insertion as one atomic operation
         # under its lock, so a rejected job never gets a job.json written.
         self.worker.enqueue(job)
         return job
+
+    def _draft_units_apply(self, topic_id: str) -> bool:
+        """Whether this run's draft stage fans out into skeleton/module units.
+
+        Keyed on the skeleton prompt existing rather than on the content
+        contract alone: a guide run whose draft prompt was written by an older
+        build (or by hand, as several fixtures do) has no unit layout on disk,
+        and must keep enqueuing one ordinary whole-stage job.
+        """
+
+        try:
+            return self.runs.draft_unit_paths(
+                topic_id, "skeleton"
+            ).prompt_path.is_file()
+        except ConfigError:
+            return False  # legacy Markdown run: no draft units, ever.
+
+    def _enqueue_draft_units_locked(
+        self,
+        topic_id: str,
+        stage_plan,
+        provider: str,
+        plan_source: str,
+        *,
+        force: bool,
+        modules: list[str] | None,
+    ) -> Job:
+        """Fan the draft stage out into unit jobs; return the primary one.
+
+        One skeleton job while the skeleton has no response, else one job per
+        outstanding module (or exactly the requested subset), every one of them
+        created and queued under a single ``batch_id`` inside the caller's
+        workspace-lock critical section, in contract module order. The first
+        job is returned: it carries the ``batch_id`` the whole fan-out shares,
+        which is all a caller needs to follow the rest.
+        """
+
+        progress = self.runs.draft_progress(topic_id)
+        if progress.skeleton.state != "response_ingested":
+            if modules:
+                raise ConfigError(
+                    f"the module draft prompts for {topic_id!r} are not written "
+                    "yet; save a draft skeleton response and advance the run first"
+                )
+            job = self.store.create(
+                topic_id,
+                "draft",
+                provider,
+                stage_plan.model,
+                stage_plan.effort,
+                unit="skeleton",
+            )
+            job.metadata["force"] = force
+            job.metadata["plan_source"] = plan_source
+            self.worker.enqueue(job)
+            return job
+
+        units = {
+            unit.module_id: unit
+            for unit in progress.modules
+            if unit.state != "orphaned" and unit.module_id is not None
+        }
+        order = [module_id for module_id in units]
+        if modules is None:
+            selected = [
+                module_id
+                for module_id in order
+                if force or units[module_id].state in ("prompt_written", "stale")
+            ]
+            if not selected:
+                raise ConfigError(
+                    f"nothing to draft for {topic_id!r}: every module already has "
+                    "a current response; pass force to re-run them"
+                )
+        else:
+            requested = set(modules)
+            unknown = sorted(requested - set(order))
+            if unknown:
+                known = ", ".join(order) or "(none)"
+                raise ConfigError(
+                    f"unknown module id(s) for {topic_id!r}: {', '.join(unknown)}; "
+                    f"known modules: {known}"
+                )
+            for module_id in sorted(requested):
+                state = units[module_id].state
+                if state == "not_run":
+                    raise ConfigError(
+                        f"the draft prompt for module {module_id!r} is not written "
+                        "yet; advance the run first"
+                    )
+                if state == "response_ingested" and not force:
+                    raise ConfigError(
+                        f"module {module_id!r} already has a current draft "
+                        "response; pass force to re-run it"
+                    )
+            selected = [module_id for module_id in order if module_id in requested]
+
+        # A stale module's prompt.md was compiled from inputs (its guide
+        # contract entry, its skeleton stub) that have since changed: running
+        # it as-is drafts against the obsolete prompt, and the response it
+        # already has would refuse the job's unforced ingest. Recompile those
+        # prompts inside this same locked section, and let their jobs replace
+        # the responses they supersede.
+        stale = [
+            module_id for module_id in selected if units[module_id].state == "stale"
+        ]
+        if stale:
+            self.runs.write_module_draft_prompts(
+                topic_id, module_ids=stale, overwrite=True
+            )
+
+        # A batch id is minted exactly like a job id: a sortable stamp plus
+        # random bytes, unique per fan-out and safe in a URL path segment.
+        batch_id = new_job_id()
+        jobs: list[Job] = []
+        for index, module_id in enumerate(selected):
+            job = self.store.create(
+                topic_id,
+                "draft",
+                provider,
+                stage_plan.model,
+                stage_plan.effort,
+                unit="module",
+                module_id=module_id,
+                batch_id=batch_id,
+            )
+            job.metadata["force"] = force or module_id in stale
+            job.metadata["plan_source"] = plan_source
+            # Job ids are stamped to the second and tie-broken at random, so
+            # they do not order a same-second fan-out. The index does, and it
+            # is what every batch view sorts on.
+            job.metadata["batch_index"] = index
+            self.worker.enqueue(job)
+            jobs.append(job)
+        return jobs[0]
 
 
 class _LoopbackHTTPServer(ThreadingHTTPServer):
@@ -491,6 +714,12 @@ def _make_handler(context: DaemonContext):
                         context.runs, m.group(1), jobs=context.store
                     ),
                 )
+            m = re.match(r"^/v1/jobs/batch/([^/?]+)$", self.path)
+            if m:
+                payload = _batch_payload(context.store, m.group(1))
+                if not payload["jobs"]:
+                    return self._error(404, "not_found", "no such batch")
+                return self._send(200, payload)
             m = re.match(r"^/v1/jobs/([^/]+)/log(?:\?offset=(\d+))?$", self.path)
             if m:
                 job = context.store.find(m.group(1))
@@ -600,9 +829,24 @@ def _make_handler(context: DaemonContext):
             if self.path == "/v1/jobs":
                 body = self._read_body()
                 job = context.enqueue_stage(
-                    body.get("topic_id", ""), body.get("stage"), bool(body.get("force"))
+                    body.get("topic_id", ""),
+                    body.get("stage"),
+                    bool(body.get("force")),
+                    modules=_optional_modules(body),
                 )
-                return self._send(200, job.to_dict())
+                payload = job.to_dict()
+                if job.batch_id is not None:
+                    # A batch enqueue answers with its primary job (so every
+                    # existing single-job client keeps working) plus the whole
+                    # fan-out, in module order.
+                    payload.update(_batch_payload(context.store, job.batch_id))
+                return self._send(200, payload)
+            m = re.match(r"^/v1/jobs/batch/([^/]+)/cancel$", self.path)
+            if m:
+                canceled = context.worker.cancel_batch(m.group(1))
+                if not canceled:
+                    return self._error(404, "not_found", "no such batch")
+                return self._send(200, _batch_payload(context.store, m.group(1)))
             m = re.match(r"^/v1/jobs/([^/]+)/cancel$", self.path)
             if m:
                 job = context.worker.cancel(m.group(1))
@@ -659,12 +903,14 @@ def _make_handler(context: DaemonContext):
             m = re.match(r"^/v1/runs/([^/?]+)/advance$", self.path)
             if m:
                 body = self._read_body()
-                unknown = sorted(set(body) - {"blueprint", "repair_module"})
+                unknown = sorted(
+                    set(body) - {"blueprint", "repair_module", "repair_section"}
+                )
                 if unknown:
                     raise ConfigError(
                         "unknown advance field(s): " + ", ".join(unknown)
                     )
-                for field in ("blueprint", "repair_module"):
+                for field in ("blueprint", "repair_module", "repair_section"):
                     value = body.get(field)
                     if value is not None and (
                         not isinstance(value, str) or not value.strip()
@@ -680,6 +926,7 @@ def _make_handler(context: DaemonContext):
                         m.group(1),
                         blueprint=body.get("blueprint"),
                         repair_module=body.get("repair_module"),
+                        repair_section=body.get("repair_section"),
                     ),
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/audit$", self.path)
@@ -722,6 +969,47 @@ def _make_handler(context: DaemonContext):
                         _require_str(body, "finding_id"),
                         _require_str(body, "guide_sha256"),
                         _require_str(body, "reason"),
+                    ),
+                )
+            m = _DRAFT_SKELETON_RESPONSE_RE.match(self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.ingest_draft_unit(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        "skeleton",
+                        _require_str(body, "text"),
+                        force=bool(body.get("force")),
+                    ),
+                )
+            m = _DRAFT_MODULE_RESPONSE_RE.match(self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.ingest_draft_unit(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        "module",
+                        _require_str(body, "text"),
+                        module_id=unquote(m.group(2)),
+                        force=bool(body.get("force")),
+                    ),
+                )
+            m = _DRAFT_ASSEMBLE_RE.match(self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.assemble_draft(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        force=bool(body.get("force")),
                     ),
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/response$", self.path)
@@ -901,6 +1189,35 @@ def _make_handler(context: DaemonContext):
                     200,
                     write_api.update_run_plan(
                         context.runs, context.config, m.group(1), self._read_body()
+                    ),
+                )
+            m = _DRAFT_SKELETON_RESPONSE_RE.match(self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.edit_draft_unit(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        "skeleton",
+                        _require_str(body, "text"),
+                        base_sha256=_require_str(body, "base_sha256"),
+                    ),
+                )
+            m = _DRAFT_MODULE_RESPONSE_RE.match(self.path)
+            if m:
+                body = self._read_body()
+                return self._send(
+                    200,
+                    write_api.edit_draft_unit(
+                        context.runs,
+                        context.store,
+                        m.group(1),
+                        "module",
+                        _require_str(body, "text"),
+                        module_id=unquote(m.group(2)),
+                        base_sha256=_require_str(body, "base_sha256"),
                     ),
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/stages/([^/?]+)/response$", self.path)

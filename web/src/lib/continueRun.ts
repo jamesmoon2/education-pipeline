@@ -34,7 +34,15 @@ export type ContinueStep =
 
 /** Where the chain stopped, and why. */
 export type ContinueStop =
-  | { kind: "started"; stage: string; provider: string }
+  | {
+      kind: "started";
+      stage: string;
+      provider: string;
+      // Set when the enqueue response was a module batch (§5: the daemon
+      // hands back the first job's dict plus `batch_id`/`jobs`); equals
+      // `jobs.length`. Absent for a single-job enqueue.
+      count?: number;
+    }
   | { kind: "manual"; stage: string }
   | { kind: "plan_unreadable"; stage: string }
   | { kind: "approve"; stage: string | null }
@@ -58,8 +66,11 @@ export interface ContinueApi {
   getRunStatus: (topicId: string) => Promise<RunStatus>;
   postAdvance: (topicId: string) => Promise<AdvanceResult>;
   postValidate: (topicId: string, phase: "draft" | "final") => Promise<unknown>;
-  /** The queued job payload is not used; the board's job poll picks it up. */
-  enqueueJob: (topicId: string) => Promise<unknown>;
+  /** The queued job payload is mostly unused -- the board's job poll picks
+   *  up the run -- except a batch enqueue's `jobs` array, whose length
+   *  becomes the "started" stop's `count` (§5/§8: a module-batch enqueue
+   *  answers job-shaped at the top level plus `batch_id`/`jobs`). */
+  enqueueJob: (topicId: string) => Promise<{ jobs?: readonly unknown[] } | unknown>;
   /** This run's effective plan (GET /v1/runs/{id}/plan) — the workspace plan
    *  with this run's stage overrides already applied. The workspace-wide
    *  plan (GET /v1/config/plan) is the wrong source: it misses overrides. */
@@ -112,9 +123,12 @@ export async function continueRun(
       const next: NextAction = status.next_action;
       const stage: string | null = next.stage;
       switch (next.action) {
-        case "write_prompt": {
+        case "write_prompt":
+        case "assemble": {
           // Only ever from a freshly read write_prompt: advance performs
           // whatever step the run is on, and that includes finalize.
+          // "assemble" (per-module drafting) is likewise a deterministic
+          // step `advance` performs with no model call -- same treatment.
           const advanced = await step(
             `writing the ${stage ?? "next"} prompt`,
             () => api.postAdvance(topicId),
@@ -159,9 +173,17 @@ export async function continueRun(
           const provider =
             plan.stages.find((entry) => entry.stage === stage)?.provider ?? plan.provider;
           if (provider === MANUAL_PROVIDER) return stopAt({ kind: "manual", stage });
-          await step(`starting ${stage} with ${provider}`, () => api.enqueueJob(topicId));
+          const enqueued = await step(
+            `starting ${stage} with ${provider}`,
+            () => api.enqueueJob(topicId),
+          );
           steps.push({ kind: "enqueue", stage, provider });
-          return stopAt({ kind: "started", stage, provider });
+          const jobs = (enqueued as { jobs?: readonly unknown[] } | null)?.jobs;
+          return stopAt(
+            jobs
+              ? { kind: "started", stage, provider, count: jobs.length }
+              : { kind: "started", stage, provider },
+          );
         }
         case "approve":
           return stopAt({ kind: "approve", stage });
@@ -212,7 +234,11 @@ function stopStage(stop: ContinueStop): string | null {
 function describeStop(stop: ContinueStop): string {
   switch (stop.kind) {
     case "started":
-      return `started ${stop.stage} with ${stop.provider}`;
+      // A module-batch enqueue (§5/§8) carries a job count; name it so the
+      // feedback doesn't read as if only one provider call started.
+      return stop.count
+        ? `${stop.count} module jobs started for ${stop.stage} with ${stop.provider}`
+        : `started ${stop.stage} with ${stop.provider}`;
     case "manual":
       return `the ${stop.stage} prompt is ready for you to run`;
     case "plan_unreadable":

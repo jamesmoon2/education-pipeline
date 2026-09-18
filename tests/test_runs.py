@@ -35,7 +35,12 @@ from education_pipeline.guides import (
     parse_guide,
     project_guide_markdown,
 )
-from education_pipeline.runs import OPTIONAL_STAGES, REQUIRED_STAGES, SUPPORTED_STAGES
+from education_pipeline.runs import (
+    OPTIONAL_STAGES,
+    REQUIRED_STAGES,
+    RepairScope,
+    SUPPORTED_STAGES,
+)
 
 
 def _create_legacy_run(tmp_path: Path, topic_id: str = "systems-thinking") -> RunStore:
@@ -178,7 +183,14 @@ def _guide_outline_response(contract: dict | None = None) -> str:
 
 
 def _create_guide_run(tmp_path: Path, topic_id: str = "systems-thinking") -> RunStore:
-    TopicStore(tmp_path).save_topic_toml(topic_id, TOPIC_TOML)
+    # The topic file's own id must equal the artifact id it is saved under, so
+    # a caller asking for a second guide run in one workspace (a different
+    # topic id) gets a TOPIC_TOML re-stamped with that id rather than a
+    # mismatch refusal.
+    TopicStore(tmp_path).save_topic_toml(
+        topic_id,
+        TOPIC_TOML.replace('id = "systems-thinking"', f'id = "{topic_id}"', 1),
+    )
     runs = RunStore(tmp_path)
     runs.create_run(topic_id, content_contract=ContentContract.interactive_guide_v1())
     return runs
@@ -719,6 +731,38 @@ def _revised_module_json(module_index: int = 0, **changes) -> str:
     return json.dumps(module, ensure_ascii=False)
 
 
+def _revised_section_json(module_index: int = 0, section_index: int = 0, **changes) -> str:
+    """One revised section from the guide fixture, as a JSON fragment."""
+
+    data = json.loads(GUIDE_FIXTURE)
+    section = data["modules"][module_index]["sections"][section_index]
+    section.update(changes)
+    return json.dumps(section, ensure_ascii=False)
+
+
+def test_repair_scope_is_a_frozen_dataclass_with_optional_section() -> None:
+    from dataclasses import FrozenInstanceError
+
+    scope = RepairScope(module_id="loop-basics")
+    assert scope.module_id == "loop-basics"
+    assert scope.section_id is None
+    assert scope == RepairScope(module_id="loop-basics", section_id=None)
+
+    scoped = RepairScope(module_id="loop-basics", section_id="feedback-foundations")
+    assert scoped.module_id == "loop-basics"
+    assert scoped.section_id == "feedback-foundations"
+    assert scoped != scope
+
+    with pytest.raises(FrozenInstanceError):
+        scope.module_id = "other-module"  # type: ignore[misc]
+
+
+def test_repair_scope_is_re_exported_from_run_core() -> None:
+    from education_pipeline.run_core import RepairScope as CoreRepairScope
+
+    assert CoreRepairScope is RepairScope
+
+
 def test_write_module_repair_prompt_scopes_and_records_the_module(tmp_path: Path) -> None:
     runs = _create_guide_run(tmp_path)
     _drive_guide_through_factcheck(runs, "systems-thinking")
@@ -727,7 +771,7 @@ def test_write_module_repair_prompt_scopes_and_records_the_module(tmp_path: Path
 
     assert prompt.stage == "repair"
     assert "## Module To Regenerate" in prompt.artifact.text
-    assert runs.repair_scope("systems-thinking") == "loop-basics"
+    assert runs.repair_scope("systems-thinking") == RepairScope(module_id="loop-basics")
     event = next(
         event
         for event in reversed(runs.read_manifest("systems-thinking")["events"])
@@ -826,6 +870,183 @@ def test_whole_guide_repair_approval_is_unchanged_after_a_scoped_retry(tmp_path:
     approved_path = runs.approve_stage("systems-thinking", "repair")
 
     assert approved_path.read_text(encoding="utf-8") == GUIDE_FIXTURE
+
+
+def test_write_scoped_repair_prompt_without_section_matches_module_repair(
+    tmp_path: Path,
+) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_factcheck(runs, "systems-thinking")
+
+    prompt = runs.write_scoped_repair_prompt(
+        "systems-thinking", RepairScope(module_id="loop-basics")
+    )
+
+    assert prompt.stage == "repair"
+    assert "## Module To Regenerate" in prompt.artifact.text
+    assert "## Section To Regenerate" not in prompt.artifact.text
+    assert runs.repair_scope("systems-thinking") == RepairScope(module_id="loop-basics")
+    event = next(
+        event
+        for event in reversed(runs.read_manifest("systems-thinking")["events"])
+        if event.get("stage") == "repair" and event.get("action") == "prompt_written"
+    )
+    assert event["repair_module"] == "loop-basics"
+    assert "repair_section" not in event
+    assert isinstance(event.get("source_draft_file_sha256"), str)
+
+
+def test_write_scoped_repair_prompt_with_section_records_both_scope_keys(
+    tmp_path: Path,
+) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_factcheck(runs, "systems-thinking")
+
+    prompt = runs.write_scoped_repair_prompt(
+        "systems-thinking",
+        RepairScope(module_id="loop-basics", section_id="feedback-foundations"),
+    )
+
+    assert prompt.stage == "repair"
+    assert "## Section To Regenerate" in prompt.artifact.text
+    assert runs.repair_scope("systems-thinking") == RepairScope(
+        module_id="loop-basics", section_id="feedback-foundations"
+    )
+    event = next(
+        event
+        for event in reversed(runs.read_manifest("systems-thinking")["events"])
+        if event.get("stage") == "repair" and event.get("action") == "prompt_written"
+    )
+    assert event["repair_module"] == "loop-basics"
+    assert event["repair_section"] == "feedback-foundations"
+
+
+def test_write_scoped_repair_prompt_rejects_unknown_section(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_factcheck(runs, "systems-thinking")
+
+    with pytest.raises(ConfigError, match="no-such-section"):
+        runs.write_scoped_repair_prompt(
+            "systems-thinking",
+            RepairScope(module_id="loop-basics", section_id="no-such-section"),
+        )
+
+
+def test_section_scoped_repair_approval_splices_only_the_target_section(
+    tmp_path: Path,
+) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_factcheck(runs, "systems-thinking")
+    prompt = runs.write_scoped_repair_prompt(
+        "systems-thinking",
+        RepairScope(module_id="loop-basics", section_id="feedback-foundations"),
+    )
+    prompt.response_path.write_text(
+        _revised_section_json(0, 0, title="From events to loops, regenerated"),
+        encoding="utf-8",
+    )
+
+    approved_path = runs.approve_stage("systems-thinking", "repair")
+
+    merged = json.loads(approved_path.read_text(encoding="utf-8"))
+    module = next(m for m in merged["modules"] if m["id"] == "loop-basics")
+    assert module["sections"][0]["title"] == "From events to loops, regenerated"
+
+    base = json.loads(
+        canonical_guide_bytes(normalize_guide(parse_guide(GUIDE_FIXTURE)))
+    )
+    base_module = next(m for m in base["modules"] if m["id"] == "loop-basics")
+    # The sibling section within the same module is untouched.
+    assert json.dumps(module["sections"][1], sort_keys=True) == json.dumps(
+        base_module["sections"][1], sort_keys=True
+    )
+    # The other module is entirely untouched.
+    other_module = next(m for m in merged["modules"] if m["id"] != "loop-basics")
+    base_other_module = next(m for m in base["modules"] if m["id"] != "loop-basics")
+    assert json.dumps(other_module, sort_keys=True) == json.dumps(
+        base_other_module, sort_keys=True
+    )
+
+    # The approval event records both the module and the section scope.
+    approval = next(
+        event
+        for event in reversed(runs.read_manifest("systems-thinking")["events"])
+        if event.get("stage") == "repair" and event.get("action") == "response_approved"
+    )
+    assert approval["repair_module"] == "loop-basics"
+    assert approval["repair_section"] == "feedback-foundations"
+
+    # The merged whole guide flows through the ordinary final gates.
+    runs.validate_run("systems-thinking", "final")
+    assert runs.report_state("systems-thinking", "final") == "current"
+
+
+def test_section_scoped_repair_approval_rejects_a_whole_module_response(
+    tmp_path: Path,
+) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_factcheck(runs, "systems-thinking")
+    prompt = runs.write_scoped_repair_prompt(
+        "systems-thinking",
+        RepairScope(module_id="loop-basics", section_id="feedback-foundations"),
+    )
+    # A whole module (with a `sections` key) is not an acceptable section reply.
+    prompt.response_path.write_text(_revised_module_json(0), encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        runs.approve_stage("systems-thinking", "repair")
+    assert not runs.stage_paths("systems-thinking", "repair").approved_path.exists()
+
+
+def test_section_scoped_repair_approval_rejects_a_whole_guide_response(
+    tmp_path: Path,
+) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_factcheck(runs, "systems-thinking")
+    prompt = runs.write_scoped_repair_prompt(
+        "systems-thinking",
+        RepairScope(module_id="loop-basics", section_id="feedback-foundations"),
+    )
+    prompt.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        runs.approve_stage("systems-thinking", "repair")
+    assert not runs.stage_paths("systems-thinking", "repair").approved_path.exists()
+
+
+def test_section_scoped_repair_approval_refuses_section_id_rename(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_factcheck(runs, "systems-thinking")
+    prompt = runs.write_scoped_repair_prompt(
+        "systems-thinking",
+        RepairScope(module_id="loop-basics", section_id="feedback-foundations"),
+    )
+    prompt.response_path.write_text(
+        _revised_section_json(0, 0, id="feedback-foundations-renamed"), encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigError, match="rename"):
+        runs.approve_stage("systems-thinking", "repair")
+    assert not runs.stage_paths("systems-thinking", "repair").approved_path.exists()
+
+
+def test_section_scoped_repair_approval_refuses_a_drifted_draft(tmp_path: Path) -> None:
+    runs = _create_guide_run(tmp_path)
+    _drive_guide_through_factcheck(runs, "systems-thinking")
+    prompt = runs.write_scoped_repair_prompt(
+        "systems-thinking",
+        RepairScope(module_id="loop-basics", section_id="feedback-foundations"),
+    )
+    prompt.response_path.write_text(_revised_section_json(0, 0), encoding="utf-8")
+
+    # The approved draft changes underneath the pending scoped repair.
+    draft_path = runs.stage_paths("systems-thinking", "draft").approved_path
+    data = json.loads(draft_path.read_text(encoding="utf-8"))
+    data["course"]["description"] = "Edited after the scoped prompt was written."
+    draft_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(StaleContentError, match="scoped repair"):
+        runs.approve_stage("systems-thinking", "repair")
 
 
 def test_run_store_creates_run_directories(tmp_path: Path) -> None:

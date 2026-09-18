@@ -265,8 +265,14 @@ def test_polling_twenty_current_topics_is_fast_on_the_second_pass(tmp_path):
 
     # Shared CI runners are noisy and their filesystems/pathlib are slower
     # (Windows especially), so the budget is relaxed there rather than tuned
-    # down for everyone locally.
-    budget = 0.2 if os.environ.get("CI") else 0.05
+    # down for everyone locally. The local budget was raised from 50ms to 70ms
+    # when the payload gained ``draft_progress`` (per-module drafting, T24):
+    # that costs a further ~0.2 ms per guide topic in stats and path building,
+    # which is ~8% on top of a poll tick and is measured, not pathological.
+    # The precise guard against the regression this file exists for is the
+    # call-count assertions above (zero re-validations per poll), not this
+    # wall-clock smoke check.
+    budget = 0.2 if os.environ.get("CI") else 0.07
 
     assert fastest < budget, (
         f"fastest of {len(passes)} warm passes over {len(topic_ids)} current "

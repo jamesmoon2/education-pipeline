@@ -15,7 +15,12 @@ export interface NextAction {
     | "validate"
     | "resolve_findings"
     | "finalize"
-    | "done";
+    | "done"
+    // Per-module drafting (T24/T25): the deterministic step that merges
+    // every saved module response (plus the skeleton) into
+    // responses/draft.response.json once nothing else is outstanding.
+    // `advance` performs it; nothing here requires a model call.
+    | "assemble";
   detail: string;
 }
 
@@ -59,6 +64,16 @@ export interface StageStatus {
   // Salvaged provider output that never became a response (thread T04).
   // Optional: fixtures and payloads predating the field simply omit it.
   failed_outputs?: string[];
+  // The same, for a draft unit (skeleton or one module): those salvage files
+  // are named `draft.<unit>.failed.<ts>.txt` and are promoted into the unit's
+  // own response. Optional for the same reason as `failed_outputs`.
+  failed_unit_outputs?: FailedUnitOutput[];
+}
+
+export interface FailedUnitOutput {
+  file: string;
+  unit: "skeleton" | "module";
+  module_id: string | null;
 }
 
 /** One stage's cost roll-up over its job records
@@ -146,8 +161,60 @@ export interface RunBlueprint {
 
 export interface RepairModulesPayload {
   topic_id: string;
-  modules: { id: string; title: string; open_findings: number }[];
-  repair_scope: { module_id: string } | null;
+  modules: {
+    id: string;
+    title: string;
+    open_findings: number;
+    // Findings that sit above every section of the module (e.g.
+    // `module.no_interaction`, guide-wide rules): a section-scoped repair
+    // cannot carry their fix, so the picker forces whole-module scope
+    // whenever this is nonzero.
+    module_level_findings: number;
+    sections: { id: string; title: string; open_findings: number }[];
+  }[];
+  repair_scope: { module_id: string; section_id: string | null } | null;
+}
+
+/** Per-module drafting design, §5: one draft unit's persisted state. */
+export type DraftUnitState =
+  | "not_run"
+  | "prompt_written"
+  | "response_ingested"
+  | "stale"
+  | "orphaned"
+  | "superseded";
+
+export interface DraftSkeletonProgress {
+  state: DraftUnitState;
+  error: string | null;
+  job_id: string | null;
+}
+
+export interface DraftModuleProgress {
+  id: string;
+  title: string;
+  state: DraftUnitState;
+  response_sha256: string | null;
+  error: string | null;
+  job_id: string | null;
+}
+
+export interface DraftAssembledProgress {
+  ok: boolean;
+  response_sha256: string | null;
+  error: string | null;
+}
+
+/** `GET /v1/runs/{id}` `draft_progress` block (guide runs only; a legacy
+ *  run's payload omits the key entirely, matching `RunStatus.draft_progress`
+ *  being optional rather than nullable). */
+export interface DraftProgress {
+  skeleton: DraftSkeletonProgress;
+  modules: DraftModuleProgress[];
+  assembled: DraftAssembledProgress | null;
+  superseded: boolean;
+  parallelism: number;
+  counts: { total: number; saved: number; stale: number };
 }
 
 export interface RunStatus {
@@ -164,6 +231,9 @@ export interface RunStatus {
   // Present only when the daemon has a job store to sum over; a run whose
   // stages all ran by hand carries an all-null block rather than nothing.
   cost?: RunCost;
+  // Present only for guide-v1 runs (the daemon omits the key for legacy
+  // Markdown runs and for payload fixtures predating per-module drafting).
+  draft_progress?: DraftProgress;
 }
 
 export interface WorkspacePayload {
@@ -229,8 +299,10 @@ export interface StageContent {
     | "text/markdown"
     | "application/json"
     | "application/vnd.education-pipeline.guide+json;version=1.0";
-  // Present only on the repair stage of interactive-guide runs.
-  repair_scope?: { module_id: string } | null;
+  // Present only on the repair stage of interactive-guide runs. `section_id`
+  // is present (non-null) only for a section-scoped repair; a whole-module
+  // scope carries no `section_id` key, matching the daemon's payload.
+  repair_scope?: { module_id: string; section_id?: string | null } | null;
 }
 
 export interface Job {
@@ -246,7 +318,24 @@ export interface Job {
   ended_at: string | null;
   exit_code: number | null;
   error: string | null;
+  // Per-module drafting (§5): set only for draft-stage jobs. Optional so
+  // records/fixtures predating the field (and every non-draft job) load as
+  // before -- a pre-Phase-2 job record loads with these as null.
+  unit?: "skeleton" | "module" | null;
+  module_id?: string | null;
+  batch_id?: string | null;
 }
+
+/** `GET /v1/jobs/batch/{id}` and `POST /v1/jobs/batch/{id}/cancel`. */
+export interface BatchPayload {
+  batch_id: string;
+  jobs: Job[];
+}
+
+/** `POST /v1/jobs` for a draft module batch: job-shaped at the top level
+ *  (the same keys a single job dict carries) plus `batch_id` and `jobs` in
+ *  module order (§5). A skeleton-only enqueue has no `batch_id`/`jobs`. */
+export type EnqueueJobResult = Job & Partial<BatchPayload>;
 
 export interface LogChunk {
   data: string;
@@ -264,6 +353,26 @@ export interface ResponseResult {
   topic_id: string;
   stage: string;
   response_path: string;
+  status: RunStatus;
+}
+
+/** `POST`/`PUT /v1/runs/{id}/draft/skeleton/response` and
+ *  `.../draft/modules/{module_id}/response` -- the unit-level twin of
+ *  `ResponseResult`. */
+export interface DraftUnitResponseResult {
+  unit: "skeleton" | "module";
+  module_id: string | null;
+  response_path: string;
+  response_sha256: string;
+  status: RunStatus;
+}
+
+/** `POST /v1/runs/{id}/draft/assemble`. */
+export interface DraftAssembleResult {
+  ok: boolean;
+  response_sha256: string | null;
+  error: string | null;
+  module_ids: string[];
   status: RunStatus;
 }
 
@@ -617,6 +726,10 @@ export interface PlanPayload {
   provider: string;
   plan_sha256: string;
   stages: PlanStage[];
+  // Decision 10: bounds concurrently *running* module jobs of one draft
+  // batch, 1..4, default 2. Optional so payload/fixtures predating
+  // per-module drafting stay valid; the daemon always sends it.
+  parallelism?: number;
 }
 
 export interface StageOverride {

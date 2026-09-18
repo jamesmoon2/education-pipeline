@@ -2,7 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { NextAction, RunStatus } from "../api/types";
+import type { DraftProgress, NextAction, RunStatus } from "../api/types";
 import PrimaryAction from "./PrimaryAction";
 
 vi.mock("../api/client", async () => {
@@ -64,11 +64,12 @@ function makeStatus(
   action: NextAction["action"],
   stage: string | null,
   stages: RunStatus["stages"] = [],
+  draftProgress?: DraftProgress,
 ): RunStatus {
   return {
     topic_id: "t",
     finalized: action === "done",
-    content_contract: { kind: "legacy_markdown" },
+    content_contract: draftProgress ? { kind: "interactive_guide" } : { kind: "legacy_markdown" },
     stage_provenance: [],
     validations: {
       draft: { state: "missing", blocking: 0, errors: 0, warnings: 0 },
@@ -76,6 +77,28 @@ function makeStatus(
     },
     stages,
     next_action: { topic_id: "t", stage, action, detail: `detail for ${action}` },
+    ...(draftProgress ? { draft_progress: draftProgress } : {}),
+  };
+}
+
+function makeDraftProgress(overrides: Partial<DraftProgress> = {}): DraftProgress {
+  return {
+    skeleton: { state: "response_ingested", error: null, job_id: null },
+    modules: [
+      {
+        id: "loop-basics",
+        title: "How loops behave",
+        state: "prompt_written",
+        response_sha256: null,
+        error: null,
+        job_id: null,
+      },
+    ],
+    assembled: null,
+    superseded: false,
+    parallelism: 2,
+    counts: { total: 1, saved: 0, stale: 0 },
+    ...overrides,
   };
 }
 
@@ -136,6 +159,44 @@ describe("PrimaryAction", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save response" }));
     expect(postResponse).toHaveBeenCalledWith("t", "draft", "draft body");
     expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("save_response on a guide draft with drafted modules labels the button 'Run modules with provider' and delegates paste to the panel", async () => {
+    renderAction(makeStatus("save_response", "draft", [], makeDraftProgress()));
+    expect(
+      screen.getByRole("button", { name: "Run modules with provider" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run with provider" })).not.toBeInTheDocument();
+    // The unit-level paste loop lives in DraftProgressPanel now; the
+    // stage-level "paste a whole response" loop must not also appear.
+    expect(screen.queryByRole("button", { name: "Paste response…" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Response for draft")).not.toBeInTheDocument();
+  });
+
+  it("save_response before the skeleton has module rows still uses the plain manual loop", async () => {
+    vi.mocked(enqueueJob).mockResolvedValue({} as never);
+    renderAction(
+      makeStatus(
+        "save_response",
+        "draft",
+        [],
+        makeDraftProgress({
+          skeleton: { state: "prompt_written", error: null, job_id: null },
+          modules: [],
+          counts: { total: 0, saved: 0, stale: 0 },
+        }),
+      ),
+    );
+    expect(screen.getByRole("button", { name: "Run with provider" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Paste response…" }));
+    expect(screen.getByLabelText("Response for draft")).toBeInTheDocument();
+  });
+
+  it("save_response for a legacy run (no draft_progress) keeps the plain manual loop", async () => {
+    renderAction(makeStatus("save_response", "draft"));
+    expect(screen.getByRole("button", { name: "Run with provider" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Paste response…" }));
+    expect(screen.getByLabelText("Response for draft")).toBeInTheDocument();
   });
 
   it("save_response groups the manual loop and copies the stage prompt", async () => {
@@ -364,6 +425,16 @@ describe("PrimaryAction", () => {
     renderAction(makeStatus("finalize", null));
     await userEvent.click(screen.getByRole("button", { name: "Finalize" }));
     expect(postFinalize).toHaveBeenCalledWith("t");
+  });
+
+  it("assemble renders Assemble draft and posts advance", async () => {
+    vi.mocked(postAdvance).mockResolvedValue({
+      performed: "write_prompt",
+      status: makeStatus("approve", "draft"),
+    });
+    renderAction(makeStatus("assemble", "draft"));
+    await userEvent.click(screen.getByRole("button", { name: "Assemble draft" }));
+    expect(postAdvance).toHaveBeenCalledWith("t");
   });
 
   it("runs the phase-specific validation machine action", async () => {

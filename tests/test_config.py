@@ -608,6 +608,81 @@ def test_apply_overrides_lenient_rejects_non_table_stages():
         apply_overrides_lenient(plan, {"stages": "nope"}, catalog=catalog)
 
 
+# --- T23: ModelPlan.parallelism (decision 10) ------------------------------
+
+
+def test_model_plan_parses_top_level_parallelism():
+    plan = parse_model_plan({"provider": "manual", "parallelism": 3})
+    assert plan.parallelism == 3
+
+
+def test_model_plan_without_parallelism_key_defaults_to_two():
+    plan = parse_model_plan({"provider": "manual"})
+    assert plan.parallelism == 2
+
+
+@pytest.mark.parametrize("bad", [0, 5, -1, 100])
+def test_parse_model_plan_rejects_parallelism_outside_one_to_four(bad):
+    with pytest.raises(ConfigError):
+        parse_model_plan({"provider": "manual", "parallelism": bad})
+
+
+@pytest.mark.parametrize("bad", [2.5, "2", True, [2]])
+def test_parse_model_plan_rejects_non_integer_parallelism(bad):
+    with pytest.raises(ConfigError):
+        parse_model_plan({"provider": "manual", "parallelism": bad})
+
+
+@pytest.mark.parametrize("value", [1, 2, 3, 4])
+def test_parse_model_plan_accepts_every_value_in_range(value):
+    plan = parse_model_plan({"provider": "manual", "parallelism": value})
+    assert plan.parallelism == value
+
+
+def test_emit_model_plan_toml_round_trips_parallelism():
+    plan = parse_model_plan({"provider": "manual", "parallelism": 4})
+    text = emit_model_plan_toml(plan)
+    reparsed = parse_model_plan(tomllib.loads(text))
+    assert reparsed == plan
+    assert reparsed.parallelism == 4
+
+
+def test_emit_model_plan_toml_omits_default_parallelism_and_round_trips():
+    plan = parse_model_plan({"provider": "manual"})
+    text = emit_model_plan_toml(plan)
+    reparsed = parse_model_plan(tomllib.loads(text))
+    assert reparsed.parallelism == 2
+
+
+def test_apply_overrides_preserves_plan_parallelism():
+    plan, catalog = _plan_and_catalog()
+    plan = parse_model_plan(
+        {"provider": plan.provider, "parallelism": 3, "stages": {"qa": {"model": "sonnet"}}},
+        catalog=catalog,
+    )
+
+    merged = apply_overrides(
+        plan, {"stages": {"qa": {"model": "opus"}}}, catalog=catalog
+    )
+
+    assert merged.parallelism == 3
+
+
+def test_apply_overrides_lenient_preserves_plan_parallelism():
+    plan, catalog = _plan_and_catalog()
+    plan = parse_model_plan(
+        {"provider": plan.provider, "parallelism": 4, "stages": {"qa": {"model": "sonnet"}}},
+        catalog=catalog,
+    )
+
+    effective, errors = apply_overrides_lenient(
+        plan, {"stages": {"qa": {"model": "opus"}}}, catalog=catalog
+    )
+
+    assert errors == {}
+    assert effective.parallelism == 4
+
+
 def _catalog_data_with_preset(preset: dict) -> dict:
     return {
         "providers": [

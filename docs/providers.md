@@ -104,11 +104,32 @@ hard-code current names.
 education-pipeline -C ./ws run <topic> --wait   # execute exactly the next stage
 education-pipeline -C ./ws jobs <topic>          # job list
 education-pipeline -C ./ws logs <job-id> -f      # follow output
+education-pipeline -C ./ws cancel <job-id>       # cancel one job
 ```
 
 `run` never auto-approves: it executes the next stage's prompt, saves the
 response, and stops for your review. The first `run` auto-starts the
 loopback-only daemon (opt out with `--no-autostart`).
+
+### Drafting a course module by module
+
+An interactive-guide run drafts in units: one course *skeleton*, then one job
+per module. `run <topic>` enqueues whichever is next — the skeleton on its
+own, or every outstanding module as one **batch**:
+
+```bash
+education-pipeline -C ./ws run <topic> --wait                 # skeleton, then the batch
+education-pipeline -C ./ws run <topic> --modules m1,m2        # just those modules
+education-pipeline -C ./ws run <topic> --modules m1 --force   # re-draft one module
+education-pipeline -C ./ws cancel --batch <batch-id>          # stop a whole fan-out
+education-pipeline -C ./ws status <topic>                     # "draft: 3 of 8 modules"
+```
+
+`--modules` applies to the draft stage only, and re-running a module that
+already has a response needs `--force`. `--wait` on a batch prints one line
+per module, so a partial failure names exactly which modules to re-run rather
+than costing the whole draft again. At most `parallelism` module jobs run at
+once (`parallelism` in `config/model-plan.toml`, 1–4, default 2).
 
 ## Privacy notes
 

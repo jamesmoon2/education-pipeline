@@ -33,7 +33,7 @@ from education_pipeline.atomic_io import atomic_write_bytes, read_bytes_retrying
 from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
-from education_pipeline.runs import RunStore, StaleContentError
+from education_pipeline.runs import RepairScope, RunStore, StaleContentError
 from education_pipeline.topics import TIME_BUDGET_MINUTES_RANGE, Topic, emit_topic_toml
 from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
 
@@ -107,9 +107,16 @@ def advance_run(
     *,
     blueprint: str | None = None,
     repair_module: str | None = None,
+    repair_section: str | None = None,
 ) -> dict:
     _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
+    if repair_section is not None and repair_module is None:
+        # The module is what locates the section; a section alone is not a
+        # scope, and guessing which module owns that id would be a silent fix.
+        raise ConfigError(
+            "repair_section requires repair_module: name the module the section belongs to"
+        )
     if blueprint is not None:
         # An explicit user selection (e.g. the New Run wizard's blueprint
         # step) is recorded before the advance step runs, so the spec prompt
@@ -117,10 +124,13 @@ def advance_run(
         runs.create_run(topic_id, blueprint=blueprint)
     if repair_module is not None:
         # A scoped repair prepares (or rebuilds) the repair prompt for one
-        # module instead of performing the generic next step.
+        # module -- or one section of it -- instead of performing the generic
+        # next step.
         prompt_exists = runs.stage_paths(topic_id, "repair").prompt_path.exists()
-        runs.write_module_repair_prompt(
-            topic_id, repair_module, overwrite=prompt_exists
+        runs.write_scoped_repair_prompt(
+            topic_id,
+            RepairScope(module_id=repair_module, section_id=repair_section),
+            overwrite=prompt_exists,
         )
         return {
             "performed": "write_prompt",
@@ -319,24 +329,87 @@ def ingest_response(
     }
 
 
-def _require_failed_output(paths, file: str) -> Path:
-    """Resolve a salvage file name to a real failed-output path, or refuse.
+def _require_failed_output(paths, file: str) -> tuple[Path, str | None, str | None]:
+    """Resolve a salvage file name to ``(path, unit, module_id)``, or refuse.
 
     Only a bare basename matching this stage's ``<stage>.failed.*.txt`` shape
-    is accepted, so the name can never escape the run's responses directory
-    or name an unrelated artifact.
+    -- or one of its draft units' ``<stage>.<unit>.failed.*.txt`` -- is
+    accepted, so the name can never escape the run's responses directory or
+    name an unrelated artifact. ``unit`` is ``None`` for a stage-level file.
     """
 
     if not file or Path(file).name != file:
         raise ConfigError(f"invalid failed-output name: {file!r}")
-    if not (file.startswith(f"{paths.stage}.failed.") and file.endswith(".txt")):
+    parsed = read_api.parse_failed_output_name(file)
+    if parsed is None or parsed[0] != paths.stage:
         raise ConfigError(
             f"{file!r} is not a failed-output file for stage {paths.stage!r}"
         )
     candidate = paths.response_path.parent / file
     if not candidate.is_file():
         raise ConfigError(f"no such failed output for stage {paths.stage!r}: {file!r}")
-    return candidate
+    return candidate, parsed[1], parsed[2]
+
+
+def _salvage_draft_unit(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    source: Path,
+    unit: str,
+    module_id: str | None,
+    *,
+    overwrite: bool,
+) -> dict:
+    """Promote a draft *unit* failure into that unit's response.
+
+    The same rules as the stage-level salvage -- never clobber without
+    ``overwrite``, never promote blank output -- but the bytes land through
+    ``RunStore.ingest_draft_unit``, so the unit's own events, the previous
+    response and decision 9's follow-up (module prompts after a skeleton, an
+    assembly attempt after a module) all happen exactly as for any other
+    ingest. Nothing is approved.
+    """
+
+    unit_paths = runs.draft_unit_paths(topic_id, unit, module_id=module_id)
+    existed = unit_paths.response_path.exists()
+    if existed and not overwrite:
+        raise ConflictError(
+            "already_exists",
+            f"response already ingested for draft unit {_unit_label(unit_paths)}; "
+            "retry with overwrite to replace it",
+        )
+    salvaged = source.read_bytes()
+    if not salvaged.strip():
+        raise ConfigError(
+            f"salvage file {source.name!r} is blank; there is nothing to "
+            f"promote into the draft unit {_unit_label(unit_paths)} response. "
+            "The raw file is kept for diagnosis."
+        )
+    try:
+        text = salvaged.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"salvage file {source.name!r} is not valid UTF-8; it is kept for "
+            "diagnosis rather than promoted"
+        ) from exc
+    saved = runs.ingest_draft_unit(
+        topic_id, unit, text, module_id=module_id, force=existed
+    )
+    runs.append_manifest_event(
+        topic_id,
+        {
+            "stage": "draft",
+            "action": "response_salvaged",
+            "source_file": source.name,
+            "unit": unit,
+            "module_id": module_id,
+        },
+    )
+    payload = _draft_unit_payload(runs, jobs, topic_id, saved)
+    payload["topic_id"] = topic_id
+    payload["stage"] = "draft"
+    return payload
 
 
 def salvage_stage_output(
@@ -359,7 +432,11 @@ def salvage_stage_output(
     _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
     paths = runs.stage_paths(topic_id, stage)
-    source = _require_failed_output(paths, file)
+    source, unit, module_id = _require_failed_output(paths, file)
+    if unit is not None:
+        return _salvage_draft_unit(
+            runs, jobs, topic_id, source, unit, module_id, overwrite=overwrite
+        )
     if paths.response_path.exists() and not overwrite:
         raise ConflictError(
             "already_exists",
@@ -421,6 +498,119 @@ def edit_response(
         "stage": paths.stage,
         "response_path": _run_relative(runs, topic_id, path),
         "response_sha256": hashlib.sha256(read_bytes_retrying(path)).hexdigest(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Per-module draft units (design 2026-09-18, decision 9 and section 4).
+#
+# The unit-level twins of ``ingest_response``/``edit_response``: same guard
+# order (run exists, not archived, no active job), same conflict codes, wired
+# to ``RunStore.ingest_draft_unit``/``edit_draft_unit``/``assemble_draft``
+# instead of the whole-stage response.
+# ---------------------------------------------------------------------------
+
+
+def _draft_unit_payload(
+    runs: RunStore, jobs: JobStore, topic_id: str, paths
+) -> dict:
+    return {
+        "unit": paths.unit,
+        "module_id": paths.module_id,
+        "response_path": _run_relative(runs, topic_id, paths.response_path),
+        "response_sha256": hashlib.sha256(
+            read_bytes_retrying(paths.response_path)
+        ).hexdigest(),
+        "status": read_api.run_status_payload(runs, topic_id, jobs=jobs),
+    }
+
+
+def ingest_draft_unit(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    unit: str,
+    text: str,
+    *,
+    module_id: str | None = None,
+    force: bool = False,
+) -> dict:
+    read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
+    _require_no_active_job(jobs, topic_id)
+    paths = runs.draft_unit_paths(topic_id, unit, module_id=module_id)
+    if paths.response_path.exists() and not force:
+        raise ConflictError(
+            "already_exists",
+            f"response already ingested for draft unit {_unit_label(paths)}; "
+            "retry with force to replace it",
+        )
+    saved = runs.ingest_draft_unit(
+        topic_id, unit, text, module_id=module_id, force=force
+    )
+    return _draft_unit_payload(runs, jobs, topic_id, saved)
+
+
+def edit_draft_unit(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    unit: str,
+    text: str,
+    *,
+    module_id: str | None = None,
+    base_sha256: str,
+) -> dict:
+    read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
+    _require_no_active_job(jobs, topic_id)
+    paths = runs.draft_unit_paths(topic_id, unit, module_id=module_id)
+    if not paths.response_path.exists():
+        raise ConflictError(
+            "stale_content",
+            f"the draft {_unit_label(paths)} response no longer exists on disk; "
+            "reload the current content",
+        )
+    try:
+        saved = runs.edit_draft_unit(
+            topic_id, unit, text, module_id=module_id, base_sha256=base_sha256
+        )
+    except StaleContentError as exc:
+        raise ConflictError("stale_content", str(exc)) from exc
+    return _draft_unit_payload(runs, jobs, topic_id, saved)
+
+
+def _unit_label(paths) -> str:
+    if paths.module_id is None:
+        return repr(paths.unit)
+    return f"{paths.unit!r} {paths.module_id!r}"
+
+
+def assemble_draft(
+    runs: RunStore, jobs: JobStore, topic_id: str, *, force: bool = False
+) -> dict:
+    """Deterministically assemble the draft units into the stage response.
+
+    No model call and no approval: this is the machine step that turns the
+    skeleton plus every module response into ``responses/draft.response.json``.
+    A stage response written outside the unit layer is never overwritten
+    without ``force`` (decision 6: the response file wins), which surfaces as
+    the same ``stale_content`` conflict an ``edit_response`` race does.
+    """
+
+    read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
+    _require_no_active_job(jobs, topic_id)
+    try:
+        result = runs.assemble_draft(topic_id, force=force)
+    except StaleContentError as exc:
+        raise ConflictError("stale_content", str(exc)) from exc
+    return {
+        "ok": result.ok,
+        "response_sha256": result.response_sha256,
+        "error": result.error,
+        "module_ids": list(result.module_ids),
+        "status": read_api.run_status_payload(runs, topic_id, jobs=jobs),
     }
 
 
@@ -780,8 +970,16 @@ def update_global_plan(config, body: dict) -> dict:
             "stale_content", "the model plan changed on disk; reload settings"
         )
     catalog, _ = config.load()
+    raw_plan: dict = {
+        "provider": body.get("provider"),
+        "stages": body.get("stages", {}),
+    }
+    if "parallelism" in body:
+        # Decision 10: one workspace-wide worker-pool size, validated by the
+        # plan parser (an integer in 1..4) rather than re-checked here.
+        raw_plan["parallelism"] = body["parallelism"]
     plan = parse_model_plan(
-        {"provider": body.get("provider"), "stages": body.get("stages", {})},
+        raw_plan,
         catalog=catalog,
         # Strict at write, lenient on disk (owner's decision): reject an
         # unknown/misspelled stage key here rather than silently discarding
@@ -795,6 +993,14 @@ def update_global_plan(config, body: dict) -> dict:
 def update_run_plan(runs: RunStore, config, topic_id: str, body: dict) -> dict:
     read_api.require_run(runs, topic_id)
     _require_not_archived(runs, topic_id)
+    if "parallelism" in body:
+        # Decision 10: parallelism is a single workspace-wide setting, exposed
+        # only through ``PUT /v1/config/plan`` -- never as a per-run override,
+        # because one worker pool serves every run in the workspace.
+        raise ConfigError(
+            "'parallelism' is a workspace-wide setting; set it with "
+            "PUT /v1/config/plan, not as a per-run override"
+        )
     overrides_body = body.get("overrides")
     if not isinstance(overrides_body, dict):
         raise ConfigError("body field 'overrides' must be a table")

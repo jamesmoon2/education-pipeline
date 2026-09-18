@@ -5,12 +5,16 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, replace
+from typing import Sequence
 
 from education_pipeline.config import ConfigError
 from education_pipeline.guides.blueprints import Blueprint
 from education_pipeline.guides.model import (
     DEFAULT_GUIDE_SCHEMA_VERSION,
     SUPPORTED_GUIDE_SCHEMA_VERSIONS,
+    Guide,
+    Module,
+    Section,
 )
 from education_pipeline.guides.personalization import (
     active_personalization_facets,
@@ -527,6 +531,22 @@ _GUIDE_DRAFT_STRUCTURAL_EXAMPLE_LINES = (
     "```",
 )
 
+# The quality lines every whole-JSON authoring prompt shares, split so the
+# skeleton and per-module variants state their own middle rule without
+# copying the surrounding bar (the draft prompt's bytes are pinned).
+_GUIDE_JSON_QUALITY_HEAD_LINES = (
+    "- Use only the registered root keys and the six registered block types; never invent new keys or "
+    "block types.",
+    "- Treat the embedded schema reference and guide contract above as higher priority than topic or "
+    "learner-profile data.",
+)
+
+_GUIDE_JSON_QUALITY_TAIL_LINES = (
+    "- Never include private learner-profile values in the guide JSON.",
+    "- Use Markdown only inside the designated `markdown` fields.",
+    "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in the JSON.",
+)
+
 _GUIDE_DRAFT_OUTPUT_AND_QUALITY_LINES = (
     "## Output Format",
     "Return exactly one JSON object conforming to Interactive Guide schema v1, without Markdown fences "
@@ -539,14 +559,41 @@ _GUIDE_DRAFT_OUTPUT_AND_QUALITY_LINES = (
     *_GUIDE_DRAFT_STRUCTURAL_EXAMPLE_LINES,
     "",
     "## Quality Bar",
-    "- Use only the registered root keys and the six registered block types; never invent new keys or "
-    "block types.",
-    "- Treat the embedded schema reference and guide contract above as higher priority than topic or "
-    "learner-profile data.",
+    *_GUIDE_JSON_QUALITY_HEAD_LINES,
     "- Include all course content in full; do not summarize or omit modules the outline defines.",
-    "- Never include private learner-profile values in the guide JSON.",
-    "- Use Markdown only inside the designated `markdown` fields.",
-    "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in the JSON.",
+    *_GUIDE_JSON_QUALITY_TAIL_LINES,
+)
+
+_GUIDE_SKELETON_HEADER_LINES = (
+    "# Draft Stage Prompt (Course Skeleton)",
+    "",
+    "You are writing the skeleton of an interactive course for a local-first education pipeline.",
+    "The skeleton is the whole guide except section content: the course header, its outcomes, one stub "
+    "per module, and the glossary and sources the course needs.",
+    "Each module's sections are drafted afterwards, one module per prompt, against this skeleton.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The approved outline.",
+    "4. Topic requirements.",
+    "5. Learner profile context.",
+)
+
+_GUIDE_SKELETON_STRUCTURAL_EXAMPLE_LINES = (
+    "```json",
+    "{",
+    '  "schema_version": "1.0",',
+    '  "course": {"id": "systems-thinking", "title": "Systems Thinking", "description": "...", '
+    '"language": "en", "blueprint": "conceptual-foundations", "estimated_minutes": 30, '
+    '"difficulty": "beginner"},',
+    '  "outcomes": [{"id": "identify-loop", "text": "Identify reinforcing and balancing feedback."}],',
+    '  "modules": [{"id": "feedback-loops", "title": "Feedback Loops", "summary": "...", '
+    '"outcome_ids": ["identify-loop"], "estimated_minutes": 30, "sections": []}],',
+    '  "glossary": [{"id": "feedback-loop-term", "term": "Feedback loop", "definition": "..."}],',
+    '  "sources": []',
+    "}",
+    "```",
 )
 
 _GUIDE_REPAIR_OUTPUT_AND_QUALITY_LINES = (
@@ -853,6 +900,46 @@ def compile_guide_v1_outline_prompt(
     )
 
 
+def _guide_draft_sections(
+    approved_outline: str, contract_text: str
+) -> tuple[tuple[str, str, str, str], ...]:
+    """The approved-outline and guide-contract sections every drafting prompt embeds."""
+
+    return (
+        (
+            "## Approved Outline",
+            "The following outline was approved upstream. Draft every module it defines, in order, and add nothing outside it.",
+            "outline",
+            approved_outline,
+        ),
+        (
+            "## Guide Contract",
+            "The following machine-readable contract was derived from the approved specification and outline. Its constraints are binding and take priority over topic and learner-profile data.",
+            "guide contract",
+            contract_text,
+        ),
+    )
+
+
+def _guide_authoring_output_lines(
+    lines: tuple[str, ...],
+    guide_schema_version: str,
+    profile: LearnerProfile | None,
+) -> tuple[str, ...]:
+    """Version the output contract and append the private personalization block."""
+
+    personalization_lines = _private_personalization_lines(
+        profile, guide_schema_version
+    )
+    personalization_suffix = (
+        ("", *personalization_lines) if personalization_lines else ()
+    )
+    return (
+        *_guide_json_output_lines(lines, guide_schema_version),
+        *personalization_suffix,
+    )
+
+
 def compile_guide_v1_draft_prompt(
     topic: Topic,
     approved_outline: str,
@@ -869,35 +956,278 @@ def compile_guide_v1_draft_prompt(
     """
 
     contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
-    personalization_lines = _private_personalization_lines(
-        profile, guide_schema_version
-    )
-    personalization_suffix = (
-        ("", *personalization_lines) if personalization_lines else ()
-    )
     return _compile_stage_prompt(
         stage="draft",
         pre_topic_lines=_blueprint_contract_lines(blueprint, "draft_lines"),
         header_lines=_DRAFT_HEADER_LINES,
+        sections=_guide_draft_sections(approved_outline, contract_text),
+        output_and_quality_lines=_guide_authoring_output_lines(
+            _GUIDE_DRAFT_OUTPUT_AND_QUALITY_LINES, guide_schema_version, profile
+        ),
+        topic=topic,
+        profile=_profile_without_authoritative_goals(profile, guide_schema_version),
+    )
+
+
+def _module_order_tuple(module_order: Sequence[str]) -> tuple[str, ...]:
+    order = tuple(module_order)
+    if not order:
+        raise ConfigError("module order must name at least one module")
+    for module_id in order:
+        if not isinstance(module_id, str) or not module_id.strip():
+            raise ConfigError("every module id in the module order must be a non-empty string")
+    return order
+
+
+def _guide_skeleton_output_and_quality_lines(
+    module_order: tuple[str, ...],
+) -> tuple[str, ...]:
+    """The skeleton stage's output contract: the draft's, minus section content."""
+
+    return (
+        "## Output Format",
+        "Return exactly one JSON object conforming to Interactive Guide schema v1, without Markdown "
+        "fences and without commentary before or after it.",
+        "This response is the course skeleton: the whole guide except section content. Every module "
+        "appears as a stub; each module's sections are drafted afterwards, one module per prompt.",
+        "",
+        "### Module Stubs",
+        "Return exactly one stub per module below, in exactly this order:",
+        *(
+            f"{position}. `{module_id}`"
+            for position, module_id in enumerate(module_order, start=1)
+        ),
+        "Each stub is `id`, `title`, `summary`, `outcome_ids`, `estimated_minutes`, and an empty "
+        '`"sections": []` array. Do not write any section or block content, and do not add, drop, '
+        "rename, or reorder a module.",
+        "Also return the course header, every outcome, and the glossary and source entries the whole "
+        "course needs; a later per-module prompt may contribute further entries.",
+        "",
+        "### Schema Reference",
+        *_GUIDE_SCHEMA_REFERENCE_LINES,
+        "",
+        "### Minimal Structural Example",
+        *_GUIDE_SKELETON_STRUCTURAL_EXAMPLE_LINES,
+        "",
+        "## Quality Bar",
+        *_GUIDE_JSON_QUALITY_HEAD_LINES,
+        "- Include every module the outline defines, as a stub, in the stated order, and nothing "
+        "outside it.",
+        "- Leave every module's `sections` array empty; section content belongs to the per-module "
+        "prompts.",
+        "- Write the course header, outcomes, and module summaries in full: the per-module prompts "
+        "read them as their only shared context.",
+        *_GUIDE_JSON_QUALITY_TAIL_LINES,
+    )
+
+
+def compile_guide_v1_skeleton_prompt(
+    topic: Topic,
+    approved_outline: str,
+    guide_contract: bytes,
+    profile: LearnerProfile | None = None,
+    *,
+    blueprint: Blueprint | None = None,
+    module_order: Sequence[str],
+) -> PromptArtifact:
+    """Compile the skeleton unit of the guide-v1 draft stage.
+
+    Same approved-outline, guide-contract, blueprint, and personalization
+    sections as :func:`compile_guide_v1_draft_prompt`; only the output
+    contract differs. The response is the whole guide with every module
+    reduced to a sectionless stub, in ``module_order`` -- the approved
+    outline's authored module order, which the per-module prompts and
+    assembly both depend on.
+    """
+
+    order = _module_order_tuple(module_order)
+    contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
+    return _compile_stage_prompt(
+        stage="draft",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "draft_lines"),
+        header_lines=_GUIDE_SKELETON_HEADER_LINES,
+        sections=_guide_draft_sections(approved_outline, contract_text),
+        output_and_quality_lines=_guide_authoring_output_lines(
+            _guide_skeleton_output_and_quality_lines(order),
+            guide_schema_version,
+            profile,
+        ),
+        topic=topic,
+        profile=_profile_without_authoritative_goals(profile, guide_schema_version),
+    )
+
+
+_MODULE_DRAFT_HEADER_LINES = (
+    "# Draft Stage Prompt (One Module)",
+    "",
+    "You are drafting exactly one module of an interactive course for a local-first education pipeline.",
+    "The course skeleton below was approved upstream: it fixes the course header, the outcomes, and "
+    "every module stub. Fill in this module's sections and return that module alone.",
+    "The other modules are drafted by their own prompts; do not write, revise, or repeat them.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The course skeleton and this module's contract entry.",
+    "4. The approved outline.",
+    "5. Topic requirements.",
+    "6. Learner profile context.",
+)
+
+_MODULE_DRAFT_QUALITY_LINES = (
+    "## Quality Bar",
+    "- Teach and assess this module's contract outcomes; keep `outcome_ids` inside them.",
+    "- Include every interaction type this module's contract entry requires, and at least one "
+    "interactive block.",
+    "- Keep the module within its estimated minutes; depth belongs where the outline asks for it.",
+    "- Do not restate another module's content; the skeleton's stubs say what they cover.",
+    "- Use only the registered keys and the six registered block types; never invent new keys or "
+    "block types.",
+    "- Never include private learner-profile values in the module JSON.",
+    "- Use Markdown only inside the designated `markdown` fields.",
+    "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in "
+    "the JSON.",
+)
+
+
+def compile_guide_v1_module_draft_prompt(
+    topic: Topic,
+    *,
+    module_id: str,
+    module_index: int,
+    module_order: Sequence[str],
+    skeleton_json: str,
+    guide_contract: bytes,
+    approved_outline: str,
+    profile: LearnerProfile | None = None,
+    blueprint: Blueprint | None = None,
+) -> PromptArtifact:
+    """Compile one module unit of the guide-v1 draft stage.
+
+    Structured like :func:`compile_guide_v1_module_repair_prompt`: one unit in,
+    one module object out. Embeds the approved skeleton (so the model sees the
+    course header, the outcomes, and the sibling stubs), this module's entry
+    from the guide contract, and the approved outline, and states the module's
+    position in the authored module order.
+
+    Because the parser keeps one id namespace across the whole guide and the
+    N module calls are independent, every section and block id must start with
+    ``<module-id>-``; glossary and source entries the skeleton lacks come back
+    in top-level contribution lists rather than being invented inline.
+    """
+
+    order = _module_order_tuple(module_order)
+    if module_id not in order:
+        raise ConfigError(
+            f"module {module_id!r} is not in the draft module order; "
+            f"known modules: {', '.join(order)}"
+        )
+    position = order.index(module_id)
+    if module_index != position:
+        raise ConfigError(
+            f"module {module_id!r} is at position {position} of the module order, "
+            f"not {module_index}"
+        )
+    _required_block(skeleton_json, "draft skeleton JSON")
+    _required_block(approved_outline, "outline")
+    contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
+
+    try:
+        skeleton = json.loads(skeleton_json)
+    except json.JSONDecodeError as exc:
+        raise ConfigError("draft skeleton must be valid JSON") from exc
+    if not isinstance(skeleton, dict):
+        raise ConfigError("draft skeleton must be a single JSON object")
+    skeleton_text = json.dumps(skeleton, ensure_ascii=False, indent=2, sort_keys=True)
+
+    contract = json.loads(contract_text)
+    contract_modules = contract.get("modules")
+    entry = contract_modules.get(module_id) if isinstance(contract_modules, dict) else None
+    if entry is None:
+        raise ConfigError(
+            f"module {module_id!r} has no entry in the guide contract"
+        )
+    entry_text = json.dumps(
+        {module_id: entry}, ensure_ascii=False, indent=2, sort_keys=True
+    )
+
+    total = len(order)
+    position_line = f"This is module {position + 1} of {total} in the course's module order."
+    order_lines = [
+        f"{index + 1}. `{other}`" + ("  <- this module" if other == module_id else "")
+        for index, other in enumerate(order)
+    ]
+    output_lines = (
+        "## Output Format",
+        "Return exactly one JSON object: this module, in the same module shape as the guide "
+        f"schema's `modules` entries -- never the whole guide, a diff, or a partial patch. Keep the "
+        f"same `id` (`{module_id}`) the skeleton's stub declares. Do not wrap the object in Markdown "
+        "fences and do not add commentary before or after it.",
+        position_line,
+        "",
+        "### Element Ids",
+        f"Every section id and every block id in this module must start with `{module_id}-`, and so "
+        "must every nested choice and reveal-step id. The course keeps one id namespace across every "
+        "module, and the modules are drafted independently, so the prefix is what keeps them from "
+        "colliding.",
+        "Keep the module's own `id` exactly as the skeleton declares it; never rename it.",
+        "",
+        "### Glossary And Source Contributions",
+        "The skeleton already carries the course-level `glossary` and `sources`. If this module needs "
+        "an entry the skeleton lacks, return it in a top-level `glossary` or `sources` contribution "
+        "list beside the module object's keys -- those two keys are the only additions allowed, and "
+        "they are merged by id across modules.",
+        "A contribution that repeats an existing id must repeat it identically; conflicting content "
+        "for one id is a blocking assembly error. Every `source_ids` reference must resolve against "
+        "the skeleton's sources or this module's contributions.",
+        "",
+        "### Schema Reference",
+        *_versioned_lines(_GUIDE_SCHEMA_REFERENCE_LINES, guide_schema_version),
+        "",
+        *_MODULE_DRAFT_QUALITY_LINES,
+    )
+    return _compile_stage_prompt(
+        stage="draft",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "draft_lines"),
+        header_lines=_MODULE_DRAFT_HEADER_LINES,
         sections=(
             (
                 "## Approved Outline",
-                "The following outline was approved upstream. Draft every module it defines, in order, and add nothing outside it.",
+                "The outline approved upstream. Draft this module as the outline defines it, and add "
+                "nothing outside it.",
                 "outline",
                 approved_outline,
             ),
             (
                 "## Guide Contract",
-                "The following machine-readable contract was derived from the approved specification and outline. Its constraints are binding and take priority over topic and learner-profile data.",
+                "The machine-readable contract derived from the approved specification and outline. "
+                "Its constraints are binding and take priority over topic and learner-profile data.",
                 "guide contract",
                 contract_text,
             ),
-        ),
-        output_and_quality_lines=(
-            *_guide_json_output_lines(
-                _GUIDE_DRAFT_OUTPUT_AND_QUALITY_LINES, guide_schema_version
+            (
+                "## This Module's Contract Entry",
+                "The binding plan for this module alone: the outcomes it must teach and assess, its "
+                "estimated minutes, and the interaction types it must contain.",
+                "module contract entry",
+                entry_text,
             ),
-            *personalization_suffix,
+            (
+                "## Module Order",
+                "The course's authored module order. " + position_line,
+                "module order",
+                "\n".join(order_lines),
+            ),
+            (
+                "## Course Skeleton",
+                "The approved skeleton: the course header, the outcomes, every module stub, and the "
+                "course-level glossary and sources. Do not change it; fill in this module only.",
+                "course skeleton",
+                _untrusted_block("course skeleton JSON", skeleton_text),
+            ),
+        ),
+        output_and_quality_lines=_guide_authoring_output_lines(
+            output_lines, guide_schema_version, profile
         ),
         topic=topic,
         profile=_profile_without_authoritative_goals(profile, guide_schema_version),
@@ -1156,6 +1486,46 @@ _MODULE_REPAIR_QUALITY_LINES = (
     "the JSON.",
 )
 
+_SECTION_REPAIR_HEADER_LINES = (
+    "# Repair Stage Prompt (Section Scope)",
+    "",
+    "You are regenerating exactly one section of one module of a course draft for a local-first "
+    "education pipeline.",
+    "Apply the in-scope findings to the section below and return the revised section in full.",
+    "Change only what the findings require; preserve everything the review did not flag.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The in-scope findings, which define the required fixes.",
+    "4. The section to regenerate, which is the base to revise.",
+    "5. Topic requirements.",
+    "6. Learner profile context.",
+)
+
+_SECTION_REPAIR_QUALITY_LINES = (
+    "## Quality Bar",
+    "- Resolve every in-scope blocking deterministic finding and every in-scope blocker or major "
+    "model-QA finding that falls inside this section.",
+    "- Resolve every blocker or major fact-check finding that applies to this section.",
+    "- On a factual conflict between the reports, prefer the fact-check report; on pedagogy or "
+    "coverage, prefer the QA report; do not invent a third answer.",
+    "- Module-level and guide-level findings are out of scope for this call: they cannot be fixed "
+    "from inside one section, so leave them to a module-scoped or whole-guide repair.",
+    "- Do not fix out-of-scope findings; they are context so cross-references stay coherent.",
+    "- Preserve stable IDs and valid unflagged structure inside the section; change only what the "
+    "findings require.",
+    "- Keep `outcome_ids` references within the guide contract's outcomes.",
+    "- Any new element id must be globally unique across the whole course, not just this section "
+    "or this module.",
+    "- Use only the registered keys and the six registered block types; never invent new keys or "
+    "block types.",
+    "- Never include private learner-profile values in the section JSON.",
+    "- Use Markdown only inside the designated `markdown` fields.",
+    "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in "
+    "the JSON.",
+)
+
 _QA_FINDINGS_HEADING_RE = re.compile(r"(?m)^##\s+Findings\s*$")
 _QA_SECTION_HEADING_RE = re.compile(r"(?m)^##\s+")
 _QA_ITEM_RE = re.compile(r"(?m)^\s*\d+\.\s")
@@ -1183,6 +1553,139 @@ def _split_qa_finding_items(qa_markdown: str) -> list[str]:
         if item:
             items.append(item)
     return items
+
+
+@dataclass(frozen=True)
+class _ScopedRepairInputs:
+    """The resolved, shared inputs of a module- or section-scoped repair prompt."""
+
+    contract_text: str
+    guide_schema_version: str
+    guide: Guide
+    module: Module
+    module_index: int
+    module_text: str
+    section: Section | None
+    section_index: int | None
+    section_text: str | None
+    scoped_findings_text: str
+
+
+def _scoped_repair_inputs(
+    *,
+    module_id: str,
+    section_id: str | None,
+    draft_guide_json: str,
+    qa_findings_markdown: str,
+    factcheck_findings_markdown: str,
+    draft_findings_json: str,
+    guide_contract: bytes,
+) -> _ScopedRepairInputs:
+    """Resolve the scope and filter the deterministic findings to it.
+
+    Shared by the module- and section-scoped repair compilers, so both agree
+    on the required blocks, the contract version, the target lookup (an
+    unknown module or section is a :class:`ConfigError` naming the known ids)
+    and the JSON-pointer prefix the deterministic findings are filtered by:
+    ``/modules/<i>`` for a module scope, ``/modules/<i>/sections/<j>`` for a
+    section scope. Anything above the scope -- a sibling section, a
+    module-level finding under a section scope, another module -- is dropped,
+    because the reply cannot carry a fix for it.
+    """
+
+    from education_pipeline.guides.canonical import guide_to_dict
+    from education_pipeline.guides.parse import normalize_guide, parse_guide
+
+    scope_label = "section-scoped" if section_id is not None else "module-scoped"
+    _required_block(draft_guide_json, "draft guide JSON")
+    _required_block(qa_findings_markdown, "QA findings")
+    _required_block(factcheck_findings_markdown, "factcheck findings")
+    _required_block(draft_findings_json, "draft findings")
+    contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
+
+    parsed = parse_guide(draft_guide_json)
+    if not parsed.ok:
+        raise ConfigError(
+            f"draft guide JSON must be a valid guide document for a {scope_label} repair"
+        )
+    guide = normalize_guide(parsed)
+    module_index = next(
+        (
+            position
+            for position, module in enumerate(guide.modules)
+            if module.id == module_id
+        ),
+        None,
+    )
+    if module_index is None:
+        known = ", ".join(module.id for module in guide.modules)
+        raise ConfigError(
+            f"module {module_id!r} is not present in the approved draft; "
+            f"known modules: {known}"
+        )
+    module = guide.modules[module_index]
+    module_text = json.dumps(
+        guide_to_dict(module), ensure_ascii=False, indent=2, sort_keys=True
+    )
+
+    section = None
+    section_index = None
+    section_text = None
+    prefix = f"/modules/{module_index}"
+    if section_id is not None:
+        section_index = next(
+            (
+                position
+                for position, candidate in enumerate(module.sections)
+                if candidate.id == section_id
+            ),
+            None,
+        )
+        if section_index is None:
+            known = ", ".join(candidate.id for candidate in module.sections)
+            raise ConfigError(
+                f"section {section_id!r} is not present in module {module_id!r} of the "
+                f"approved draft; known sections: {known}"
+            )
+        section = module.sections[section_index]
+        section_text = json.dumps(
+            guide_to_dict(section), ensure_ascii=False, indent=2, sort_keys=True
+        )
+        prefix = f"{prefix}/sections/{section_index}"
+
+    try:
+        findings_payload = json.loads(draft_findings_json)
+    except json.JSONDecodeError as exc:
+        raise ConfigError("draft findings must be valid JSON") from exc
+    all_findings = (
+        findings_payload.get("findings", [])
+        if isinstance(findings_payload, dict)
+        else []
+    )
+    in_scope_findings = [
+        finding
+        for finding in all_findings
+        if isinstance(finding, dict)
+        and isinstance(finding.get("path"), str)
+        and (
+            finding["path"] == prefix or finding["path"].startswith(prefix + "/")
+        )
+    ]
+    scoped_findings_text = json.dumps(
+        {"findings": in_scope_findings}, ensure_ascii=False, indent=2
+    )
+    return _ScopedRepairInputs(
+        contract_text=contract_text,
+        guide_schema_version=guide_schema_version,
+        guide=guide,
+        module=module,
+        module_index=module_index,
+        module_text=module_text,
+        section=section,
+        section_index=section_index,
+        section_text=section_text,
+        scoped_findings_text=scoped_findings_text,
+    )
 
 
 def compile_guide_v1_module_repair_prompt(
@@ -1214,62 +1717,21 @@ def compile_guide_v1_module_repair_prompt(
     Findings`` section is always present.
     """
 
-    from education_pipeline.guides.canonical import guide_to_dict
-    from education_pipeline.guides.parse import normalize_guide, parse_guide
-
-    _required_block(draft_guide_json, "draft guide JSON")
-    _required_block(qa_findings_markdown, "QA findings")
-    _required_block(factcheck_findings_markdown, "factcheck findings")
-    _required_block(draft_findings_json, "draft findings")
-    contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
-
-    parsed = parse_guide(draft_guide_json)
-    if not parsed.ok:
-        raise ConfigError(
-            "draft guide JSON must be a valid guide document for a module-scoped repair"
-        )
-    guide = normalize_guide(parsed)
-    module_index = next(
-        (
-            position
-            for position, module in enumerate(guide.modules)
-            if module.id == module_id
-        ),
-        None,
+    scoped = _scoped_repair_inputs(
+        module_id=module_id,
+        section_id=None,
+        draft_guide_json=draft_guide_json,
+        qa_findings_markdown=qa_findings_markdown,
+        factcheck_findings_markdown=factcheck_findings_markdown,
+        draft_findings_json=draft_findings_json,
+        guide_contract=guide_contract,
     )
-    if module_index is None:
-        known = ", ".join(module.id for module in guide.modules)
-        raise ConfigError(
-            f"module {module_id!r} is not present in the approved draft; "
-            f"known modules: {known}"
-        )
-    module = guide.modules[module_index]
-    module_text = json.dumps(
-        guide_to_dict(module), ensure_ascii=False, indent=2, sort_keys=True
-    )
-
-    try:
-        findings_payload = json.loads(draft_findings_json)
-    except json.JSONDecodeError as exc:
-        raise ConfigError("draft findings must be valid JSON") from exc
-    all_findings = (
-        findings_payload.get("findings", [])
-        if isinstance(findings_payload, dict)
-        else []
-    )
-    prefix = f"/modules/{module_index}"
-    in_module_findings = [
-        finding
-        for finding in all_findings
-        if isinstance(finding, dict)
-        and isinstance(finding.get("path"), str)
-        and (
-            finding["path"] == prefix or finding["path"].startswith(prefix + "/")
-        )
-    ]
-    scoped_findings_text = json.dumps(
-        {"findings": in_module_findings}, ensure_ascii=False, indent=2
-    )
+    contract_text = scoped.contract_text
+    guide_schema_version = scoped.guide_schema_version
+    guide = scoped.guide
+    module = scoped.module
+    module_text = scoped.module_text
+    scoped_findings_text = scoped.scoped_findings_text
 
     qa_items = _split_qa_finding_items(qa_findings_markdown)
     needles = (module_id.casefold(), module.title.casefold())
@@ -1363,6 +1825,181 @@ def compile_guide_v1_module_repair_prompt(
                 "structure.",
                 "module",
                 _untrusted_block("module JSON", module_text),
+            ),
+            (
+                "## Rest Of The Course (Context Only)",
+                "The other modules' ids, titles, and outcome ids, so cross-references stay "
+                "coherent. Do not modify them.",
+                "course summary",
+                "\n".join(summary_lines),
+            ),
+        ),
+        output_and_quality_lines=output_lines,
+        topic=topic,
+        profile=_profile_without_authoritative_goals(profile, guide_schema_version),
+    )
+
+
+def compile_guide_v1_section_repair_prompt(
+    topic: Topic,
+    *,
+    module_id: str,
+    section_id: str,
+    draft_guide_json: str,
+    qa_findings_markdown: str,
+    factcheck_findings_markdown: str,
+    draft_findings_json: str,
+    guide_contract: bytes,
+    profile: LearnerProfile | None = None,
+    blueprint: Blueprint | None = None,
+) -> PromptArtifact:
+    """Compile the section-scoped variant of the guide-v1 repair prompt.
+
+    The narrowest scope the repair stage offers, and structurally the module
+    prompt one level down: the guide contract, the deterministic findings
+    filtered to the ``/modules/<i>/sections/<j>`` prefix, the whole enclosing
+    module embedded for context (so cross-section references stay coherent),
+    the single section's JSON as the base to revise, and a compact summary of
+    the rest of the course. Output contract: exactly one section object with
+    the same ``id``.
+
+    Module-level and guide-level findings are stated to be out of scope: a
+    reply that is one section cannot carry a fix for them, so they are listed
+    as context and left to a module-scoped or whole-guide repair. The
+    fact-check report is embedded in full for the same reason the module
+    prompt embeds it in full (v1 does not filter fact-check findings by
+    location); the model is told to apply only the findings that fall inside
+    this section. An unknown module or section is a :class:`ConfigError`.
+    """
+
+    scoped = _scoped_repair_inputs(
+        module_id=module_id,
+        section_id=section_id,
+        draft_guide_json=draft_guide_json,
+        qa_findings_markdown=qa_findings_markdown,
+        factcheck_findings_markdown=factcheck_findings_markdown,
+        draft_findings_json=draft_findings_json,
+        guide_contract=guide_contract,
+    )
+    guide_schema_version = scoped.guide_schema_version
+    module = scoped.module
+
+    qa_items = _split_qa_finding_items(qa_findings_markdown)
+    section = scoped.section
+    needles = (
+        section_id.casefold(),
+        section.title.casefold(),
+        module_id.casefold(),
+        module.title.casefold(),
+    )
+    in_scope_items = [
+        item for item in qa_items if any(needle in item.casefold() for needle in needles)
+    ]
+    out_of_scope_items = [item for item in qa_items if item not in in_scope_items]
+
+    sibling_lines = [
+        f"- {other.id}: {other.title}"
+        for other in module.sections
+        if other.id != section_id
+    ] or ["- (this section is the only section in the module)"]
+    summary_lines = [
+        f"- {other.id}: {other.title} (outcomes: {', '.join(other.outcome_ids)})"
+        for other in scoped.guide.modules
+        if other.id != module_id
+    ] or ["- (this module is the only module in the course)"]
+
+    personalization_lines = _private_personalization_lines(
+        profile, guide_schema_version
+    )
+    personalization_suffix = (
+        ("", *personalization_lines) if personalization_lines else ()
+    )
+    output_lines = (
+        "## Output Format",
+        "Return exactly one JSON object: the revised section, in the same section shape as the "
+        "guide schema's `sections` entries -- never the whole guide, the whole module, a diff, or "
+        f"a partial patch. Keep the same `id` (`{section_id}`). Do not return the whole guide. "
+        "Do not wrap the object in Markdown fences and do not add commentary before or after it.",
+        "",
+        "### Schema Reference",
+        *_versioned_lines(_GUIDE_SCHEMA_REFERENCE_LINES, guide_schema_version),
+        "",
+        *_guide_json_output_lines(_SECTION_REPAIR_QUALITY_LINES, guide_schema_version),
+        *personalization_suffix,
+    )
+    return _compile_stage_prompt(
+        stage="repair",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "repair_lines"),
+        header_lines=_SECTION_REPAIR_HEADER_LINES,
+        sections=(
+            (
+                "## Guide Contract",
+                "The following machine-readable contract was derived from the approved "
+                "specification and outline. Its constraints are binding; the regenerated section "
+                "must not drift outside them.",
+                "guide contract",
+                scoped.contract_text,
+            ),
+            (
+                "## Approved Model-QA Findings (This Section)",
+                "The in-scope model-QA fixes for this section. Resolve every blocker and major "
+                "finding.",
+                "qa findings",
+                _untrusted_block(
+                    "in-scope model-QA findings",
+                    "\n".join(in_scope_items) if in_scope_items else "(none)",
+                ),
+            ),
+            (
+                "## Out-Of-Scope Findings (Context Only)",
+                "Findings that could not be matched to this section. Do not fix them here; they "
+                "are context only. Module-level and guide-level findings are out of scope for "
+                "this call: one section cannot carry their fix, so they are left to a "
+                "module-scoped or whole-guide repair.",
+                "out-of-scope findings",
+                _untrusted_block(
+                    "out-of-scope model-QA findings",
+                    "\n".join(out_of_scope_items) if out_of_scope_items else "(none)",
+                ),
+            ),
+            (
+                "## Approved Fact-Check Findings",
+                "The full fact-check report. Apply the factual fixes that fall inside this "
+                "section and treat the rest as context. Resolve every in-scope blocker and major "
+                "finding.",
+                "factcheck findings",
+                _untrusted_block(
+                    "approved fact-check findings", factcheck_findings_markdown
+                ),
+            ),
+            (
+                "## Deterministic Draft Findings (This Section)",
+                "Machine-generated validation findings located inside this section. Resolve every "
+                "blocking finding. Module-level and guide-level findings are out of scope and are "
+                "not listed here.",
+                "draft findings",
+                _untrusted_block("deterministic draft findings", scoped.scoped_findings_text),
+            ),
+            (
+                "## Enclosing Module (Context Only)",
+                "The whole module this section belongs to, so cross-section references, ordering, "
+                "and the module's interaction budget stay coherent. Do not return it; return only "
+                "the section below.",
+                "module",
+                _untrusted_block("module JSON", scoped.module_text),
+            ),
+            (
+                "## Section To Regenerate",
+                "The base section JSON to revise. Preserve stable IDs and valid unflagged "
+                "structure.",
+                "section",
+                _untrusted_block("section JSON", scoped.section_text or ""),
+            ),
+            (
+                "## Sibling Sections (Context Only)",
+                "The other sections' ids and titles in this module. Do not modify them.",
+                "sibling sections",
+                "\n".join(sibling_lines),
             ),
             (
                 "## Rest Of The Course (Context Only)",

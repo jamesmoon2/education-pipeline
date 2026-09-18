@@ -466,6 +466,117 @@ def test_worker_restamps_plan_source_when_overrides_edited_while_queued(tmp_path
         thread.join(timeout=10)
 
 
+# --- T23: serve() wires the workspace plan's parallelism into the Worker --
+
+
+def test_serve_constructs_worker_with_plan_parallelism(tmp_path, monkeypatch):
+    """``serve()`` reads ``parallelism`` off the workspace plan at startup.
+
+    Same monkeypatch-a-module-attribute seam
+    ``test_serve_polls_for_shutdown_at_a_responsive_interval`` above already
+    uses for ``build_server`` -- here applied to ``daemon.Worker``, the name
+    ``serve()`` actually calls, to observe the kwargs it is constructed with
+    without needing a new HTTP-visible seam.
+    """
+
+    from education_pipeline import daemon as daemon_module
+
+    RunStore(tmp_path).create_run("t", content_contract=ContentContract.legacy_markdown())
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "model-catalog.toml").write_text('[[providers]]\nid = "manual"\n', encoding="utf-8")
+    (cfg / "model-plan.toml").write_text(
+        'provider = "manual"\nparallelism = 3\n', encoding="utf-8"
+    )
+
+    captured = {}
+    real_worker_cls = daemon_module.Worker
+
+    class SpyWorker(real_worker_cls):
+        def __init__(self, *args, **kwargs):
+            captured["parallelism"] = kwargs.get("parallelism")
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(daemon_module, "Worker", SpyWorker)
+
+    ready = threading.Event()
+    thread = threading.Thread(target=serve, args=(tmp_path,), kwargs={"ready": ready}, daemon=True)
+    thread.start()
+    try:
+        assert ready.wait(timeout=10)
+        assert captured.get("parallelism") == 3
+    finally:
+        record = lifecycle.read_discovery(tmp_path)
+        if record is not None:
+            conn = http.client.HTTPConnection("127.0.0.1", record["port"])
+            conn.request("POST", "/v1/shutdown", headers={"X-EP-Token": record["token"]})
+            conn.getresponse().read()
+            conn.close()
+        thread.join(timeout=10)
+
+
+def test_serve_defaults_worker_parallelism_to_two_without_plan_key(tmp_path, monkeypatch):
+    from education_pipeline import daemon as daemon_module
+
+    RunStore(tmp_path).create_run("t", content_contract=ContentContract.legacy_markdown())
+    # No config/ directory at all -- falls back to the packaged example plan,
+    # which carries no parallelism key either.
+
+    captured = {}
+    real_worker_cls = daemon_module.Worker
+
+    class SpyWorker(real_worker_cls):
+        def __init__(self, *args, **kwargs):
+            captured["parallelism"] = kwargs.get("parallelism")
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(daemon_module, "Worker", SpyWorker)
+
+    ready = threading.Event()
+    thread = threading.Thread(target=serve, args=(tmp_path,), kwargs={"ready": ready}, daemon=True)
+    thread.start()
+    try:
+        assert ready.wait(timeout=10)
+        assert captured.get("parallelism") == 2
+    finally:
+        record = lifecycle.read_discovery(tmp_path)
+        if record is not None:
+            conn = http.client.HTTPConnection("127.0.0.1", record["port"])
+            conn.request("POST", "/v1/shutdown", headers={"X-EP-Token": record["token"]})
+            conn.getresponse().read()
+            conn.close()
+        thread.join(timeout=10)
+
+
+def test_worker_parallelism_helper_reads_plan_from_workspace_root(tmp_path):
+    """A small, fast, non-threaded unit test alongside the ``serve()`` ones above.
+
+    No clean *existing* seam reads workspace parallelism outside a running
+    daemon, so this names the factory function the brief suggests as a
+    fallback: ``education_pipeline.daemon.worker_parallelism(root) -> int``.
+    ``serve()`` is expected to use it (or equivalent logic) to build the
+    ``Worker`` in the two tests above.
+    """
+
+    from education_pipeline.daemon import worker_parallelism
+
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "model-catalog.toml").write_text('[[providers]]\nid = "manual"\n', encoding="utf-8")
+    (cfg / "model-plan.toml").write_text(
+        'provider = "manual"\nparallelism = 4\n', encoding="utf-8"
+    )
+
+    assert worker_parallelism(tmp_path) == 4
+
+
+def test_worker_parallelism_helper_defaults_to_two(tmp_path):
+    from education_pipeline.daemon import worker_parallelism
+
+    # No config/ directory at all -- falls back to the packaged example plan.
+    assert worker_parallelism(tmp_path) == 2
+
+
 def test_workspace_config_source_write_plan_retries_replace_on_permission_error(
     tmp_path, monkeypatch
 ):

@@ -54,10 +54,15 @@ from education_pipeline.prompts import (
     compile_guide_v1_outline_prompt,
     compile_guide_v1_qa_prompt,
     compile_guide_v1_repair_prompt,
+    compile_guide_v1_section_repair_prompt,
     compile_guide_v1_spec_prompt,
 )
 from education_pipeline.run_modes import CompiledPrompt, _RunMode, mode_for_kind
-from education_pipeline.guides.canonical import SpliceError, splice_module
+from education_pipeline.guides.canonical import (
+    SpliceError,
+    splice_module,
+    splice_section,
+)
 from education_pipeline.guides.blueprints import (
     Blueprint,
     get_blueprint,
@@ -90,14 +95,21 @@ from education_pipeline.runs_reports import (
 from education_pipeline.runs_waivers import WaiversMixin
 from education_pipeline.runs_personalization import PersonalizationMixin
 from education_pipeline.runs_finalize import FinalizeMixin
+from education_pipeline.runs_draft_units import DraftUnitsMixin
 from education_pipeline.run_core import (
     # Re-exported: the shared leaf primitives and value types moved to
     # ``run_core`` so every mixin can import them at module scope, but
     # importers (and tests) still read them from here.
     AdvanceResult,
+    AssembleResult,
+    AssembledStatus,
+    DraftProgress,
+    DraftUnitPaths,
+    DraftUnitStatus,
     MARKDOWN_CONTENT_TYPE,
     NextAction,
     PromptFile,
+    RepairScope,
     RunStatus,
     StageStatus,
     StagePaths,
@@ -121,6 +133,22 @@ JSON_CONTENT_TYPE = "application/json"
 GUIDE_V1_CONTENT_TYPE = (
     "application/vnd.education-pipeline.guide+json;version=1.0"
 )
+
+
+def _repair_scope_event(scope: RepairScope | None) -> dict[str, object] | None:
+    """The manifest keys that record a scoped repair, or None for no scope.
+
+    ``repair_section`` sits beside ``repair_module`` and is written only for a
+    section scope, so a module-scoped event stays exactly the shape it has
+    always had and an older manifest still reads back as a module scope.
+    """
+
+    if scope is None:
+        return None
+    event: dict[str, object] = {"repair_module": scope.module_id}
+    if scope.section_id is not None:
+        event["repair_section"] = scope.section_id
+    return event
 
 #: Per-thread manifest read scope. While a scope is open on the calling
 #: thread, ``entries`` maps a manifest path to the dict parsed from it once,
@@ -235,7 +263,9 @@ class _TopicWriteLock:
 
 
 @dataclass(frozen=True)
-class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
+class RunStore(
+    WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin, DraftUnitsMixin
+):
     """Create run directories and write stage prompt/response artifacts."""
 
     root: Path
@@ -641,8 +671,8 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
     def advance(self, topic_id: str) -> AdvanceResult:
         """Perform the run's next machine step, pausing at human steps.
 
-        Machine steps (writing the next stage prompt, validation, or finalizing)
-        are done automatically. Human steps (saving a response, approving it,
+        Machine steps (writing the next stage prompt, assembling a fanned-out
+        draft, validation, or finalizing) are done automatically. Human steps (saving a response, approving it,
         resolving findings) and a completed run are left untouched, so this can
         be called repeatedly to drive a run forward and resume it from wherever
         it stopped.
@@ -652,13 +682,25 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
         action = self.run_status(safe_id).next_action
         performed: str | None = None
         if action.action == "write_prompt" and action.stage is not None:
-            overwrite = False
-            if self._mode(safe_id).prompt_overwrite_on_advance:
-                paths = self.stage_paths(safe_id, action.stage)
-                if paths.prompt_path.exists():
-                    overwrite = True
-            self._write_stage_prompt(safe_id, action.stage, overwrite=overwrite)
+            if action.stage == "draft" and self._mode(safe_id).supports_draft_units:
+                # The draft stage has more than one prompt to write; which one
+                # is re-derived from the unit state (design decision 8).
+                self._advance_draft_prompt(safe_id)
+            else:
+                overwrite = False
+                if self._mode(safe_id).prompt_overwrite_on_advance:
+                    paths = self.stage_paths(safe_id, action.stage)
+                    if paths.prompt_path.exists():
+                        overwrite = True
+                self._write_stage_prompt(safe_id, action.stage, overwrite=overwrite)
             performed = "write_prompt"
+        elif action.action == "assemble" and action.stage == "draft":
+            result = self.assemble_draft(safe_id)
+            if not result.ok:
+                raise ConfigError(
+                    f"cannot assemble the draft for {safe_id!r}: {result.error}"
+                )
+            performed = "assemble"
         elif action.action == "validate":
             phase = "draft" if action.stage == "draft" else "final"
             self.validate_run(safe_id, phase)
@@ -725,7 +767,20 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
         by_stage = {status.stage: status for status in stages}
 
         for stage_name in _unbound_stages("interactive_guide"):
-            pending = self._pending_stage_action(topic_id, by_stage[stage_name])
+            status = by_stage[stage_name]
+            # The draft stage fans out into skeleton/module units. Their arms
+            # sit inside this slot, so they are reached only once spec and
+            # outline are approved, draft is not, and the stage response file
+            # is still absent -- decision 6's "the response file wins".
+            if (
+                stage_name == "draft"
+                and not status.approved
+                and not status.response_ingested
+            ):
+                unit_action = self._draft_unit_next_action(topic_id)
+                if unit_action is not None:
+                    return unit_action
+            pending = self._pending_stage_action(topic_id, status)
             if pending is not None:
                 return pending
 
@@ -1072,7 +1127,7 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
         text = paths.response_path.read_text(encoding="utf-8")
         mode = self._mode(paths.topic_id)
         mode.validate_approval(self, paths.topic_id, paths.stage, text)
-        scope: str | None = None
+        scope: RepairScope | None = None
         if mode.scoped_repair_on_approve and paths.stage == "repair":
             scope = self.repair_scope(paths.topic_id)
             if scope is not None:
@@ -1103,33 +1158,42 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
             action="response_approved",
             files=files,
             file_hashes=file_hashes,
-            extra={"repair_module": scope} if scope is not None else None,
+            extra=_repair_scope_event(scope),
         )
         return paths.approved_path
 
-    def repair_scope(self, topic_id: str) -> str | None:
-        """The target module id of the pending scoped repair, if any.
+    def repair_scope(self, topic_id: str) -> RepairScope | None:
+        """The target of the pending scoped repair, if any.
 
         Derived from the latest repair ``prompt_written`` event: a scoped
-        prompt records its module; a later whole-guide repair prompt clears
-        the scope.
+        prompt records its module and, for a section scope, its section; a
+        later whole-guide repair prompt clears the scope. A recorded section
+        without a module is not a scope -- the module is what locates it.
         """
 
         event = self._latest_stage_event(topic_id, "repair", "prompt_written")
         if event is None:
             return None
-        scope = event.get("repair_module")
-        return scope if isinstance(scope, str) else None
+        module_id = event.get("repair_module")
+        if not isinstance(module_id, str):
+            return None
+        section_id = event.get("repair_section")
+        return RepairScope(
+            module_id=module_id,
+            section_id=section_id if isinstance(section_id, str) else None,
+        )
 
     def _spliced_scoped_repair(
-        self, topic_id: str, module_id: str, response_text: str
+        self, topic_id: str, scope: RepairScope, response_text: str
     ) -> str:
         """Merge a scoped repair response into the approved draft, fail-closed.
 
         The scoped response is keyed to the exact base draft the prompt was
         built from: a drifted draft raises :class:`StaleContentError`, and any
-        splice violation (module rename, element-id collision, out-of-contract
-        reference) refuses the approval — never a silent fix.
+        splice violation (module or section rename, element-id collision,
+        out-of-contract reference) refuses the approval — never a silent fix.
+        A scope with a section splices exactly that section; a scope without
+        one splices the whole module.
         """
 
         prompt_event = self._latest_stage_event(topic_id, "repair", "prompt_written")
@@ -1149,13 +1213,19 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
                 f"the approved draft for {topic_id!r} changed since the scoped repair "
                 "prompt was written; rebuild the scoped repair prompt and re-run it"
             )
+        base_text = draft_bytes.decode("utf-8")
         try:
-            merged = splice_module(
-                draft_bytes.decode("utf-8"), module_id, response_text
+            merged = (
+                splice_module(base_text, scope.module_id, response_text)
+                if scope.section_id is None
+                else splice_section(
+                    base_text, scope.module_id, scope.section_id, response_text
+                )
             )
         except SpliceError as exc:
+            kind = "module" if scope.section_id is None else "section"
             raise ConfigError(
-                f"cannot approve module-scoped repair for guide run {topic_id!r}: {exc}"
+                f"cannot approve {kind}-scoped repair for guide run {topic_id!r}: {exc}"
             ) from exc
         return merged.decode("utf-8")
 
@@ -1498,7 +1568,15 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
         artifact, extra_files = self._mode(safe_id).compile_draft_prompt(
             self, safe_id, topic, approved_outline, profile, overwrite=overwrite
         )
-        return self._write_prompt(artifact, overwrite=overwrite, extra_event_files=extra_files)
+        written = self._write_prompt(
+            artifact, overwrite=overwrite, extra_event_files=extra_files
+        )
+        if self._mode(safe_id).supports_draft_units:
+            # The whole-guide prompt stays the documented single-call
+            # alternative (decision 5); the skeleton is where the fan-out
+            # actually starts, so both are written together.
+            self.write_skeleton_draft_prompt(safe_id)
+        return written
 
     def _guide_v1_draft_artifact(
         self,
@@ -1782,13 +1860,33 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
     ) -> PromptFile:
         """Compile and write the module-scoped variant of the repair prompt.
 
-        Available whenever repair is the run's active stage (QA approved, or
-        re-entry after final validation found problems). The scope and the
-        exact base-draft hash are recorded on the ``prompt_written`` event so
-        approval can key the scoped response to the draft it patches. An
-        unknown module id is a usage error.
+        A thin alias for :meth:`write_scoped_repair_prompt` with no section,
+        kept because the module scope is the older and more common call.
         """
 
+        return self.write_scoped_repair_prompt(
+            topic_id, RepairScope(module_id=module_id), overwrite=overwrite
+        )
+
+    def write_scoped_repair_prompt(
+        self,
+        topic_id: str,
+        scope: RepairScope,
+        *,
+        overwrite: bool = False,
+    ) -> PromptFile:
+        """Compile and write the module- or section-scoped repair prompt.
+
+        The one writer for a scoped repair. Available whenever repair is the
+        run's active stage (QA approved, or re-entry after final validation
+        found problems). The scope and the exact base-draft hash are recorded
+        on the ``prompt_written`` event so approval can key the scoped
+        response to the draft it patches. An unknown module or section id is a
+        usage error.
+        """
+
+        module_id = scope.module_id
+        section_id = scope.section_id
         safe_id = _artifact_id(topic_id, "topic id")
         if not self._mode(safe_id).supports_module_repair:
             raise ConfigError(
@@ -1811,9 +1909,7 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
         draft_guide_json, draft_findings_json, contract_path = self._require_repair_ready(
             safe_id, approved_draft
         )
-        artifact = compile_guide_v1_module_repair_prompt(
-            topic,
-            module_id=module_id,
+        shared = dict(
             draft_guide_json=draft_guide_json,
             qa_findings_markdown=approved_qa,
             factcheck_findings_markdown=approved_factcheck,
@@ -1821,6 +1917,13 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
             guide_contract=contract_path.read_bytes(),
             profile=profile,
             blueprint=self.run_blueprint(safe_id),
+        )
+        artifact = (
+            compile_guide_v1_module_repair_prompt(topic, module_id=module_id, **shared)
+            if section_id is None
+            else compile_guide_v1_section_repair_prompt(
+                topic, module_id=module_id, section_id=section_id, **shared
+            )
         )
         extra_files = {
             **self._source_files(safe_id, "repair"),
@@ -1831,7 +1934,7 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
             artifact,
             overwrite=overwrite,
             extra_event_files=extra_files,
-            extra_event={"repair_module": module_id},
+            extra_event=_repair_scope_event(scope),
         )
 
     def _write_prompt(

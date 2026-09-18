@@ -79,6 +79,15 @@ auto-approves your course.
 - **Manually:** open the stage's prompt, run it in any model interface,
   and paste or save the response back.
 
+The draft stage is the one exception to "one prompt per stage": a course is
+drafted as a short *skeleton* (course header, outcomes, one stub per module)
+followed by one prompt per module, so a long course never depends on a single
+model response. With a provider, "Run modules with provider" executes the
+outstanding modules as a batch (up to the workspace's `parallelism` at once,
+default 2); manually, you paste each module's response on the course board.
+When every module is in, the engine assembles them into the ordinary draft
+response and you approve the draft once, as with any other stage.
+
 After the draft and repair stages, deterministic validation shows its
 findings at the responsible stage; blocking findings must be resolved (or
 explicitly waived with a reason) before the course can finalize.

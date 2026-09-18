@@ -25,6 +25,21 @@ import ErrorNotice from "../components/ErrorNotice";
 const TABS = ["prompt", "response", "approved"] as const;
 type Tab = (typeof TABS)[number];
 
+// Review finding 4 (PR #39 automated review): the module nav below targets
+// #module-<id>, but JsonTreeView never emitted such an id, so the anchors
+// had nothing to scroll to in tree mode. This gives an id to exactly the
+// nodes the nav points at: objects directly under a top-level "modules"
+// array that carry a string "id" field.
+function draftModuleAnchorIdFor(
+  path: (string | number)[],
+  value: unknown,
+): string | undefined {
+  if (path.length !== 2 || path[0] !== "modules") return undefined;
+  if (value === null || typeof value !== "object") return undefined;
+  const id = (value as { id?: unknown }).id;
+  return typeof id === "string" ? `module-${id}` : undefined;
+}
+
 export default function StageViewerPage() {
   const { topicId, stage } = useParams<{ topicId: string; stage: string }>();
   if (!topicId || !stage) return <p className="error">Invalid stage route.</p>;
@@ -286,10 +301,9 @@ function StageViewerForRoute({
       </div>
       {data.stage === "repair" && data.repair_scope?.module_id && (
         <p className="warning" role="status">
-          The pending repair is scoped to module{" "}
-          <code>{data.repair_scope.module_id}</code>: the response must be that
-          single module's JSON, and approval splices it into the approved
-          draft.
+          {data.repair_scope.section_id
+            ? `The pending repair is scoped to section ${data.repair_scope.section_id} of module ${data.repair_scope.module_id}: the response must be that single section's JSON, and approval splices it into the approved draft.`
+            : `The pending repair is scoped to module ${data.repair_scope.module_id}: the response must be that single module's JSON, and approval splices it into the approved draft.`}
         </p>
       )}
       {data.stage === "repair" &&
@@ -340,6 +354,19 @@ function StageViewerForRoute({
           <DiffView a={approvalDelta.a} b={approvalDelta.b} />
         </section>
       )}
+      {data.stage === "draft" &&
+        run?.draft_progress &&
+        run.draft_progress.modules.length > 0 && (
+          <nav aria-label="Module contents">
+            <ul>
+              {run.draft_progress.modules.map((module) => (
+                <li key={module.id}>
+                  <a href={`#module-${module.id}`}>{module.title}</a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        )}
       {showEditor ? (
         <ResponseEditor
           topicId={topicId}
@@ -364,6 +391,7 @@ function StageViewerForRoute({
           label={tab}
           text={data[tab]}
           contentType={tab === "prompt" ? "text/markdown" : data.content_type}
+          treeAnchorIdFor={data.stage === "draft" ? draftModuleAnchorIdFor : undefined}
         />
       )}
       {diffOpen && draftApproved !== null && (
