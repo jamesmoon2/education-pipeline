@@ -71,7 +71,11 @@ instead of being discarded. The run status lists those names per stage as
 `failed_outputs`; `POST /v1/runs/<topic>/stages/<stage>/salvage` with
 `{"file": "<name>", "overwrite": false}` copies one into the stage's response
 file, where you can read, edit, and approve it as usual — salvaging never
-approves anything by itself.
+approves anything by itself. A failed *draft unit* is kept the same way, under
+`draft.skeleton.failed.<timestamp>.txt` or
+`draft.<module-id>.failed.<timestamp>.txt`; the status lists those separately
+as `failed_unit_outputs`, and the same salvage call promotes one into that
+unit's own response.
 
 **The daemon seems stuck or a stale daemon is recorded.** Run
 `education-pipeline workspace check` — a `stale_daemon_record` finding means

@@ -361,30 +361,73 @@ def recommend_blueprint_payload(body: object) -> dict:
     }
 
 
-def _failed_outputs_by_stage(runs: RunStore, topic_id: str) -> dict[str, list[str]]:
-    """Basenames of raw provider outputs salvaged after failed stage runs,
-    keyed by stage.
+def parse_failed_output_name(name: str) -> tuple[str, str | None, str | None] | None:
+    """``(stage, unit, module_id)`` for a salvage file name, else ``None``.
 
-    Written by ``JobRunner`` when parsing or ingesting a response fails; the
-    names are timestamped, so reverse-lexicographic order is newest-first.
-    One directory listing serves every stage: a per-stage glob costs a
-    listing per stage per topic on the poll path, which is the hot path T01
-    just made cheap.
+    ``JobRunner`` names a stage failure ``<stage>.failed.<ts>.txt`` and a
+    draft *unit* failure ``draft.skeleton.failed.<ts>.txt`` /
+    ``draft.<module-id>.failed.<ts>.txt`` (see ``JobRunner._unit_stem``), so
+    concurrent module jobs of one batch cannot collide on one name. ``unit``
+    is ``None`` for a stage-level file. Stage ids carry no dot and module ids
+    are guide slugs, so the first dot separates the two; a module whose id is
+    literally ``skeleton`` would read as the skeleton unit, which the guide
+    prompts never produce.
+    """
+
+    stem, sep, rest = name.partition(".failed.")
+    if not sep or not stem or not rest.endswith(".txt"):
+        return None
+    stage, _, unit_part = stem.partition(".")
+    if not stage:
+        return None
+    if not unit_part:
+        return (stage, None, None)
+    if unit_part == "skeleton":
+        return (stage, "skeleton", None)
+    return (stage, "module", unit_part)
+
+
+def _failed_outputs_by_stage(
+    runs: RunStore, topic_id: str
+) -> tuple[dict[str, list[str]], dict[str, list[dict]]]:
+    """Raw provider outputs salvaged after failed runs, keyed by stage.
+
+    Two buckets: the stage-level basenames (unchanged), and the draft unit
+    entries, which name the unit and module the output belongs to so a client
+    can offer the salvage against the right drop target. Written by
+    ``JobRunner`` when parsing or ingesting a response fails; the names are
+    timestamped, so reverse-lexicographic order is newest-first. One
+    directory listing serves every stage: a per-stage glob costs a listing
+    per stage per topic on the poll path, which is the hot path T01 just made
+    cheap.
     """
 
     buckets: dict[str, list[str]] = {}
+    unit_buckets: dict[str, list[dict]] = {}
     try:
         responses = runs.stage_paths(topic_id, SUPPORTED_STAGES[0]).response_path.parent
         with os.scandir(responses) as it:
             for entry in it:
                 name = entry.name
-                stage, sep, rest = name.partition(".failed.")
-                if not sep or not rest.endswith(".txt") or not entry.is_file():
+                parsed = parse_failed_output_name(name)
+                if parsed is None or not entry.is_file():
                     continue
-                buckets.setdefault(stage, []).append(name)
+                stage, unit, module_id = parsed
+                if unit is None:
+                    buckets.setdefault(stage, []).append(name)
+                else:
+                    unit_buckets.setdefault(stage, []).append(
+                        {"file": name, "unit": unit, "module_id": module_id}
+                    )
     except (OSError, ConfigError):
-        return {}
-    return {stage: sorted(names, reverse=True) for stage, names in buckets.items()}
+        return {}, {}
+    return (
+        {stage: sorted(names, reverse=True) for stage, names in buckets.items()},
+        {
+            stage: sorted(entries, key=lambda item: item["file"], reverse=True)
+            for stage, entries in unit_buckets.items()
+        },
+    )
 
 
 def run_status_payload(
@@ -415,7 +458,7 @@ def _run_status_payload_scoped(
         phase: _validation_summary(runs, topic_id, phase)
         for phase in ("draft", "final")
     }
-    failed_outputs = _failed_outputs_by_stage(runs, topic_id)
+    failed_outputs, failed_unit_outputs = _failed_outputs_by_stage(runs, topic_id)
     payload = {
         "topic_id": status.topic_id,
         "finalized": status.finalized,
@@ -431,6 +474,7 @@ def _run_status_payload_scoped(
                 "response_ingested": s.response_ingested,
                 "approved": s.approved,
                 "failed_outputs": failed_outputs.get(s.stage, []),
+                "failed_unit_outputs": failed_unit_outputs.get(s.stage, []),
             }
             for s in status.stages
         ],
