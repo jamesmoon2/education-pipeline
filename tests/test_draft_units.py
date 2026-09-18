@@ -958,3 +958,62 @@ def test_outline_change_rebuild_without_any_unit_response_records_nothing(
 
     assert _events(runs, TID, "draft_units_orphaned") == []
     assert not (runs.run_dir(TID) / "draft" / "orphaned").exists()
+
+
+def _module_response_with_title(module_id: str, title: str) -> str:
+    module = json.loads(_module_response(module_id))
+    module["title"] = title
+    return json.dumps(module, ensure_ascii=False)
+
+
+def test_forced_module_ingest_carries_force_into_the_automatic_assembly(
+    tmp_path: Path,
+) -> None:
+    """Finding 3: a forced rerun must force the assembly it triggers.
+
+    Without it the ingest lands, ``assemble_draft`` refuses the superseded
+    response, the ``StaleContentError`` is swallowed, and the caller (a
+    provider job) reports success over an unchanged stage response.
+    """
+
+    runs = _run_fully_assembled(tmp_path)
+    stage = runs.stage_paths(TID, "draft")
+    stage.response_path.write_text(tr.GUIDE_FIXTURE, encoding="utf-8")  # hand edit
+    assert runs.draft_progress(TID).superseded is True
+
+    runs.ingest_draft_unit(
+        TID,
+        "module",
+        _module_response_with_title("loop-basics", "Loops, revisited"),
+        module_id="loop-basics",
+        force=True,
+    )
+
+    assembled = stage.response_path.read_text(encoding="utf-8")
+    assert "Loops, revisited" in assembled
+    assert runs.draft_progress(TID).superseded is False
+    assert len(_events(runs, TID, "response_replaced")) == 1
+
+
+def test_unforced_module_ingest_on_a_superseded_draft_surfaces_the_refusal(
+    tmp_path: Path,
+) -> None:
+    """Finding 3: a refused automatic assembly is reported, not silent."""
+
+    runs = _run_with_one_module_saved(tmp_path)
+    stage = runs.stage_paths(TID, "draft")
+    stage.response_path.write_text(tr.GUIDE_FIXTURE, encoding="utf-8")
+
+    runs.ingest_draft_unit(
+        TID,
+        "module",
+        _module_response("intervention-practice"),
+        module_id="intervention-practice",
+    )
+
+    progress = runs.draft_progress(TID)
+    assert progress.assembled is not None
+    assert progress.assembled.ok is False
+    assert "force" in (progress.assembled.error or "")
+    # The hand-written response is still exactly what the user put there.
+    assert stage.response_path.read_text(encoding="utf-8") == tr.GUIDE_FIXTURE

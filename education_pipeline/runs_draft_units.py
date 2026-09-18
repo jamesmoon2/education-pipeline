@@ -503,7 +503,9 @@ class DraftUnitsMixin:
         if paths.unit == "skeleton":
             self._write_missing_module_draft_prompts(safe_id)
         else:
-            self._assemble_draft_if_ready(safe_id)
+            # A forced rerun forces the assembly it triggers, or the ingest
+            # would land while the stage response it supersedes stayed put.
+            self._assemble_draft_if_ready(safe_id, force=force)
         return paths
 
     def edit_draft_unit(
@@ -600,15 +602,23 @@ class DraftUnitsMixin:
         if missing:
             self.write_module_draft_prompts(topic_id, module_ids=missing)
 
-    def _assemble_draft_if_ready(self, topic_id: str) -> None:
+    def _assemble_draft_if_ready(self, topic_id: str, *, force: bool = False) -> None:
         """Attempt assembly after a module ingest, never fighting a hand edit."""
 
         try:
-            self.assemble_draft(topic_id)
-        except StaleContentError:
+            self.assemble_draft(topic_id, force=force)
+        except StaleContentError as exc:
             # Decision 6: the response file wins. Re-running a module against a
-            # superseded draft response needs an explicit force.
-            return
+            # superseded draft response needs an explicit force -- and the
+            # refusal is recorded, so ``draft_progress.assembled.error`` says
+            # why the stage response did not move rather than nothing at all.
+            self._append_event(
+                topic_id,
+                stage="draft",
+                action="draft_assembly_failed",
+                files={},
+                extra={"error": str(exc), "module_ids": []},
+            )
 
     # -- assembly ---------------------------------------------------------
 
