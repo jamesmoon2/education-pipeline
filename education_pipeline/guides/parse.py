@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from .model import (
@@ -173,54 +173,138 @@ class _Checker:
         return identifier
 
 
-def parse_guide(text: str | bytes) -> ParseResult:
-    """Parse JSON and return all practical render-blocking structural diagnostics."""
-    checker = _Checker()
-    if isinstance(text, bytes):
+ROOT_GUIDE_KEYS = {
+    "schema_version",
+    "course",
+    "outcomes",
+    "modules",
+    "glossary",
+    "sources",
+}
+
+
+def _decode_root(
+    c: _Checker, value: Any, *, allow_mapping: bool = False
+) -> dict[str, Any] | None:
+    """Decode guide input to the checked root object, or record why it cannot be."""
+
+    if isinstance(value, bytes):
         try:
-            text = text.decode("utf-8")
+            value = value.decode("utf-8")
         except UnicodeDecodeError as exc:
-            checker.error("json.invalid_utf8", "", f"input is not valid UTF-8: {exc}")
-            return ParseResult(None, tuple(checker.errors))
-    if not isinstance(text, str):
-        checker.error(
-            "schema.invalid_type", "", "guide input must be text or UTF-8 bytes"
-        )
-        return ParseResult(None, tuple(checker.errors))
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        checker.error(
-            "json.invalid",
-            "",
-            f"malformed JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}",
-        )
-        return ParseResult(None, tuple(checker.errors))
-    root = checker.obj(
-        data,
-        "",
-        {"schema_version", "course", "outcomes", "modules", "glossary", "sources"},
-    )
-    if root is None:
-        return ParseResult(None, tuple(checker.errors))
+            c.error("json.invalid_utf8", "", f"input is not valid UTF-8: {exc}")
+            return None
+    if isinstance(value, str):
+        try:
+            data: Any = json.loads(value)
+        except json.JSONDecodeError as exc:
+            c.error(
+                "json.invalid",
+                "",
+                f"malformed JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}",
+            )
+            return None
+    elif allow_mapping and isinstance(value, Mapping):
+        data = dict(value)
+    else:
+        c.error("schema.invalid_type", "", "guide input must be text or UTF-8 bytes")
+        return None
+    return c.obj(data, "", ROOT_GUIDE_KEYS)
+
+
+def _check_root(c: _Checker, root: dict[str, Any], *, skeleton: bool = False) -> None:
+    """Run every root-level structural arm over an already-decoded guide object."""
+
     schema_version = root.get("schema_version")
     if (
         not isinstance(schema_version, str)
         or schema_version not in SUPPORTED_GUIDE_SCHEMA_VERSIONS
     ):
-        checker.error(
+        c.error(
             "schema.unsupported_version",
             "/schema_version",
             "supported schema versions are exactly '1.0' and '1.1'",
         )
     annotations_allowed = schema_version == "1.1"
-    _check_course(checker, root.get("course"), "/course", annotations_allowed)
-    _check_outcomes(checker, root.get("outcomes"), "/outcomes", annotations_allowed)
-    _check_modules(checker, root.get("modules"), "/modules", annotations_allowed)
-    _check_glossary(checker, root.get("glossary"), "/glossary")
-    _check_sources(checker, root.get("sources"), "/sources")
-    _check_references_and_coverage(checker, root)
+    _check_course(c, root.get("course"), "/course", annotations_allowed)
+    _check_outcomes(c, root.get("outcomes"), "/outcomes", annotations_allowed)
+    _check_modules(
+        c, root.get("modules"), "/modules", annotations_allowed, skeleton=skeleton
+    )
+    _check_glossary(c, root.get("glossary"), "/glossary")
+    _check_sources(c, root.get("sources"), "/sources")
+    _check_references_and_coverage(c, root, skeleton=skeleton)
+
+
+def parse_guide(text: str | bytes) -> ParseResult:
+    """Parse JSON and return all practical render-blocking structural diagnostics."""
+    checker = _Checker()
+    root = _decode_root(checker, text)
+    if root is None:
+        return ParseResult(None, tuple(checker.errors))
+    _check_root(checker, root)
     return ParseResult(root if not checker.errors else None, tuple(checker.errors))
+
+
+def check_skeleton(
+    value: str | bytes | Mapping[str, Any], *, module_order: Sequence[str]
+) -> ParseResult:
+    """Validate a course *skeleton*: a guide whose modules are sectionless stubs.
+
+    A skeleton can never pass :func:`parse_guide` -- ``sections`` has
+    cardinality at least one, every module needs an interactive block, and
+    every outcome must be taught and assessed -- so it gets its own check.
+    The root shape, one shared id namespace, and every per-element rule are
+    the parser's own; only the completeness arms that a sectionless document
+    cannot satisfy are skipped, and each module must carry ``sections: []``.
+
+    ``module_order`` is the authored outline order: the stub ids must be
+    exactly those ids, in exactly that order. Malformed input yields
+    diagnostics, never an exception.
+    """
+
+    checker = _Checker()
+    root = _decode_root(checker, value, allow_mapping=True)
+    if root is None:
+        return ParseResult(None, tuple(checker.errors))
+    _check_root(checker, root, skeleton=True)
+    _check_skeleton_module_order(checker, root, tuple(module_order))
+    return ParseResult(root if not checker.errors else None, tuple(checker.errors))
+
+
+def _check_skeleton_module_order(
+    c: _Checker, root: dict[str, Any], module_order: tuple[str, ...]
+) -> None:
+    modules = root.get("modules")
+    if not isinstance(modules, list):
+        return
+    stub_ids = [
+        module["id"]
+        for module in modules
+        if isinstance(module, dict) and isinstance(module.get("id"), str)
+    ]
+    expected = list(module_order)
+    for position, module_id in enumerate(expected):
+        if module_id not in stub_ids:
+            c.error(
+                "skeleton.missing_module",
+                f"/modules/{position}",
+                f"skeleton is missing module {module_id!r} from the outline order",
+            )
+    for position, module_id in enumerate(stub_ids):
+        if module_id not in expected:
+            c.error(
+                "skeleton.extra_module",
+                f"/modules/{position}",
+                f"module {module_id!r} is not in the outline's module order",
+            )
+    if sorted(stub_ids) == sorted(expected) and stub_ids != expected:
+        c.error(
+            "skeleton.module_order",
+            "/modules",
+            "module stubs must appear in the outline's authored order: "
+            + ", ".join(expected),
+        )
 
 
 def normalize_guide(parsed: ParseResult | Mapping[str, Any]) -> Guide:
@@ -342,7 +426,12 @@ def _check_outcomes(
 
 
 def _check_modules(
-    c: _Checker, value: Any, path: str, annotations_allowed: bool
+    c: _Checker,
+    value: Any,
+    path: str,
+    annotations_allowed: bool,
+    *,
+    skeleton: bool = False,
 ) -> None:
     modules = c.array(value, path, 1)
     if modules is None:
@@ -365,6 +454,18 @@ def _check_modules(
         if "serves_goals" in module and annotations_allowed:
             _goal_refs(c, module["serves_goals"], f"{p}/serves_goals")
         _integer(c, module.get("estimated_minutes"), f"{p}/estimated_minutes", 1, 1_000)
+        if skeleton:
+            stub_sections = module.get("sections")
+            if not isinstance(stub_sections, list):
+                c.error("schema.invalid_type", f"{p}/sections", "must be an array")
+            elif stub_sections:
+                c.error(
+                    "skeleton.sections_not_empty",
+                    f"{p}/sections",
+                    "a skeleton module stub must carry an empty `sections` array; "
+                    "section content is drafted one module at a time",
+                )
+            continue
         sections = c.array(module.get("sections"), f"{p}/sections", 1)
         if sections is None:
             continue
@@ -650,7 +751,9 @@ def _integer(c: _Checker, value: Any, path: str, minimum: int, maximum: int) -> 
         )
 
 
-def _check_references_and_coverage(c: _Checker, root: dict[str, Any]) -> None:
+def _check_references_and_coverage(
+    c: _Checker, root: dict[str, Any], *, skeleton: bool = False
+) -> None:
     outcomes = {
         item.get("id")
         for item in root.get("outcomes", [])
@@ -667,11 +770,17 @@ def _check_references_and_coverage(c: _Checker, root: dict[str, Any]) -> None:
     for ref, path in c.source_refs:
         if ref not in sources:
             c.error("schema.unknown_reference", path, f"unknown source ID {ref!r}")
-    for ref, path in c.internal_refs:
-        if ref not in c.ids:
-            c.error(
-                "link.unknown_internal_target", path, f"unknown internal target {ref!r}"
-            )
+    if not skeleton:
+        # A skeleton's internal link targets mostly live inside sections that do
+        # not exist yet; assembly re-parses the merged guide strictly, which is
+        # where a genuinely dangling target is caught.
+        for ref, path in c.internal_refs:
+            if ref not in c.ids:
+                c.error(
+                    "link.unknown_internal_target",
+                    path,
+                    f"unknown internal target {ref!r}",
+                )
     assigned = set()
     taught = set()
     practiced = set()
@@ -706,13 +815,13 @@ def _check_references_and_coverage(c: _Checker, root: dict[str, Any]) -> None:
                 if kind in interactive:
                     practiced.update(refs)
                     has_interaction = True
-        if not has_interaction:
+        if not has_interaction and not skeleton:
             c.error(
                 "module.no_interaction",
                 f"/modules/{mi}",
                 "module must contain at least one interactive block",
             )
-    for missing_type in sorted(interactive - present_types):
+    for missing_type in sorted(() if skeleton else interactive - present_types):
         c.error(
             "interaction.missing_required_type",
             "/modules",
@@ -725,6 +834,10 @@ def _check_references_and_coverage(c: _Checker, root: dict[str, Any]) -> None:
                 "/outcomes",
                 f"outcome {outcome!r} is not assigned to a module",
             )
+        if skeleton:
+            # `taught` and `practiced` are properties of block content, which a
+            # skeleton has none of by construction.
+            continue
         if outcome not in taught:
             c.error(
                 "outcome.untaught",
