@@ -22,6 +22,7 @@ from education_pipeline.config import (
 )
 from education_pipeline.stage_graph import (
     required_stages as graph_required_stages,
+    source_labels as graph_source_labels,
     sources_of as graph_sources_of,
     stage as stage_spec,
 )
@@ -1105,37 +1106,32 @@ class RunStore:
         )
 
     def _stale_stage_rebuild_action(self, topic_id: str, stage: str) -> NextAction:
-        """When a guide-v1 qa/repair stage is approved but upstream hashes drifted."""
+        """When a guide-v1 qa/factcheck/repair stage is approved but upstream hashes drifted.
+
+        Whether the prompt itself has to be rebuilt is decided by walking the
+        stage's stage-graph sources in graph order and comparing each one's
+        approved hash against the hash the latest ``prompt_written`` event
+        recorded for it: any difference means the prompt no longer embeds the
+        current upstream bytes.
+        """
 
         prompt_event = self._latest_stage_event(topic_id, stage, "prompt_written")
-        draft_path = self.stage_paths(topic_id, "draft").approved_path
-        draft_sha = (
-            hashlib.sha256(read_bytes_retrying(draft_path)).hexdigest()
-            if draft_path.is_file()
-            else None
-        )
+        sources = graph_sources_of(stage)
         needs_prompt = True
-        if prompt_event is not None and draft_sha is not None:
-            recorded_draft = prompt_event.get("source_draft_file_sha256")
-            needs_prompt = recorded_draft != draft_sha
-            if stage in {"factcheck", "repair"} and not needs_prompt:
-                qa_path = self.stage_paths(topic_id, "qa").approved_path
-                qa_sha = (
-                    hashlib.sha256(read_bytes_retrying(qa_path)).hexdigest()
-                    if qa_path.is_file()
-                    else None
-                )
-                recorded_qa = prompt_event.get("source_qa_file_sha256")
-                needs_prompt = recorded_qa != qa_sha
-            if stage == "repair" and not needs_prompt:
-                fc_path = self.stage_paths(topic_id, "factcheck").approved_path
-                fc_sha = (
-                    hashlib.sha256(read_bytes_retrying(fc_path)).hexdigest()
-                    if fc_path.is_file()
-                    else None
-                )
-                recorded_fc = prompt_event.get("source_factcheck_file_sha256")
-                needs_prompt = recorded_fc != fc_sha
+        if prompt_event is not None and sources:
+            recorded = _recorded_source_shas(prompt_event, stage)
+            needs_prompt = False
+            for position, source in enumerate(sources):
+                current = self._approved_source_sha(topic_id, source)
+                # The base source (the approved draft) missing from disk leaves
+                # nothing to compare against, so the prompt has to be rebuilt
+                # without looking at the sources behind it.
+                if position == 0 and current is None:
+                    needs_prompt = True
+                    break
+                if recorded[source] != current:
+                    needs_prompt = True
+                    break
 
         if needs_prompt:
             return NextAction(
@@ -1310,23 +1306,17 @@ class RunStore:
             "approved_file": paths.approved_path,
         }
         file_hashes: dict[str, str] | None = None
-        if self._is_guide_v1(paths.topic_id) and paths.stage in {
-            "qa",
-            "factcheck",
-            "repair",
-        }:
-            files["source_draft_file"] = self.stage_paths(paths.topic_id, "draft").approved_path
-            if paths.stage in {"factcheck", "repair"}:
-                files["source_qa_file"] = self.stage_paths(paths.topic_id, "qa").approved_path
-            if paths.stage == "repair":
-                factcheck_approved = self.stage_paths(
-                    paths.topic_id, "factcheck"
-                ).approved_path
-                # Only bind the fact-check source when it exists: grandfathered
-                # pre-feature repairs have none, and recording an absent source
-                # would make the stale check false-positive forever.
-                if factcheck_approved.is_file():
-                    files["source_factcheck_file"] = factcheck_approved
+        if self._is_guide_v1(paths.topic_id) and graph_sources_of(paths.stage):
+            files.update(self._source_files(paths.topic_id, paths.stage))
+            # Only bind the fact-check source when it exists: grandfathered
+            # pre-feature repairs have none, and recording an absent source
+            # would make the stale check false-positive forever. This stays a
+            # named exception rather than a general "bind what exists" rule --
+            # the draft and qa a stage was compiled from are always on disk by
+            # the time its response is approved.
+            factcheck_approved = files.get("source_factcheck_file")
+            if factcheck_approved is not None and not factcheck_approved.is_file():
+                del files["source_factcheck_file"]
             file_hashes = self._prompt_bound_source_hashes(
                 paths.topic_id, paths.stage, files
             )
@@ -3205,7 +3195,7 @@ class RunStore:
                 blueprint=self.run_blueprint(safe_id),
             )
             extra_files = {
-                "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
+                **self._source_files(safe_id, "qa"),
                 "draft_report_file": self.draft_report_path(safe_id),
             }
             return self._write_prompt(
@@ -3278,8 +3268,7 @@ class RunStore:
             blueprint=self.run_blueprint(safe_id),
         )
         extra_files = {
-            "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
-            "source_qa_file": self.stage_paths(safe_id, "qa").approved_path,
+            **self._source_files(safe_id, "factcheck"),
             "draft_report_file": self.draft_report_path(safe_id),
         }
         return self._write_prompt(
@@ -3343,9 +3332,7 @@ class RunStore:
                 blueprint=self.run_blueprint(safe_id),
             )
             extra_files = {
-                "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
-                "source_qa_file": self.stage_paths(safe_id, "qa").approved_path,
-                "source_factcheck_file": self.stage_paths(safe_id, "factcheck").approved_path,
+                **self._source_files(safe_id, "repair"),
                 "draft_report_file": self.draft_report_path(safe_id),
                 "contract_file": contract_path,
             }
@@ -3433,9 +3420,7 @@ class RunStore:
             blueprint=self.run_blueprint(safe_id),
         )
         extra_files = {
-            "source_draft_file": self.stage_paths(safe_id, "draft").approved_path,
-            "source_qa_file": self.stage_paths(safe_id, "qa").approved_path,
-            "source_factcheck_file": self.stage_paths(safe_id, "factcheck").approved_path,
+            **self._source_files(safe_id, "repair"),
             "draft_report_file": self.draft_report_path(safe_id),
             "contract_file": contract_path,
         }
@@ -4022,48 +4007,48 @@ class RunStore:
                 return event
         return None
 
-    def _stage_upstream_stale(self, topic_id: str, stage: str) -> bool:
-        """True when an approved guide-v1 qa/factcheck/repair stage's recorded
-        upstream hashes drifted.
+    def _approved_source_sha(self, topic_id: str, source: str) -> str | None:
+        """SHA-256 of ``source``'s approved artifact, or ``None`` when it is absent."""
 
-        The chain deepens downstream: qa depends on the draft; factcheck on the
-        draft and approved qa; repair on the draft, approved qa, and approved
-        factcheck. A recorded hash that is absent (a pre-feature or
-        grandfathered event) is treated as "no dependency to check", never as
-        stale.
+        path = self.stage_paths(topic_id, source).approved_path
+        if not path.is_file():
+            return None
+        return hashlib.sha256(read_bytes_retrying(path)).hexdigest()
+
+    def _source_files(self, topic_id: str, stage: str) -> dict[str, Path]:
+        """``stage``'s approved upstream artifacts, keyed by manifest label.
+
+        One entry per stage-graph source, in graph order, so the chain lives in
+        ``stage_graph`` rather than in each call site.
+        """
+
+        return {
+            label: self.stage_paths(topic_id, source).approved_path
+            for source, label in zip(
+                graph_sources_of(stage), graph_source_labels(stage)
+            )
+        }
+
+    def _stage_upstream_stale(self, topic_id: str, stage: str) -> bool:
+        """True when an approved guide-v1 stage's recorded upstream hashes drifted.
+
+        The upstream stages are the stage's sources in the stage graph, walked
+        in graph order -- draft, then qa, then factcheck -- so the chain
+        deepening downstream is the graph's business, not this method's. A
+        recorded hash that is absent (a pre-feature or grandfathered event) is
+        treated as "no dependency to check": the walk stops there and reports
+        the stage as current, never as stale.
         """
 
         event = self._latest_stage_event(topic_id, stage, "response_approved")
         if event is None:
             return False
 
-        draft_path = self.stage_paths(topic_id, "draft").approved_path
-        recorded_draft = event.get("source_draft_file_sha256")
-        if recorded_draft is None:
-            return False
-        if not draft_path.is_file():
-            return True
-        if recorded_draft != hashlib.sha256(read_bytes_retrying(draft_path)).hexdigest():
-            return True
-
-        if stage in {"factcheck", "repair"}:
-            recorded_qa = event.get("source_qa_file_sha256")
-            if recorded_qa is None:
+        for source, recorded in _recorded_source_shas(event, stage).items():
+            if recorded is None:
                 return False
-            qa_path = self.stage_paths(topic_id, "qa").approved_path
-            if not qa_path.is_file():
-                return True
-            if recorded_qa != hashlib.sha256(read_bytes_retrying(qa_path)).hexdigest():
-                return True
-
-        if stage == "repair":
-            recorded_fc = event.get("source_factcheck_file_sha256")
-            if recorded_fc is None:
-                return False
-            fc_path = self.stage_paths(topic_id, "factcheck").approved_path
-            if not fc_path.is_file():
-                return True
-            if recorded_fc != hashlib.sha256(read_bytes_retrying(fc_path)).hexdigest():
+            current = self._approved_source_sha(topic_id, source)
+            if current is None or recorded != current:
                 return True
         return False
 
@@ -4182,6 +4167,20 @@ class RunStore:
 _GUIDE_SOURCE_SHA_MEMO_LIMIT = 256
 _GUIDE_SOURCE_SHA_MEMO: dict[str, str] = {}
 _GUIDE_SOURCE_SHA_MEMO_LOCK = threading.Lock()
+
+
+def _recorded_source_shas(event: dict, stage: str) -> dict[str, str | None]:
+    """The upstream hashes ``event`` recorded for ``stage``'s stage-graph sources.
+
+    Keyed by source stage name, in graph order, with ``None`` wherever the
+    event carries no hash for that source -- which is how a pre-feature or
+    grandfathered event reads.
+    """
+
+    return {
+        source: event.get(f"{label}_sha256")
+        for source, label in zip(graph_sources_of(stage), graph_source_labels(stage))
+    }
 
 
 def _guide_source_sha(text: str) -> str:
