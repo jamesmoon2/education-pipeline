@@ -93,6 +93,11 @@ class _RunMode:
     #: Whether module-scoped repair prompts apply.
     supports_module_repair: bool = False
 
+    #: Whether the draft stage fans out into skeleton/module units under
+    #: ``<run>/draft/``. Legacy Markdown runs never do, so every public
+    #: ``RunStore`` draft-unit method refuses them.
+    supports_draft_units: bool = False
+
     #: Whether the private personalization audit applies.
     supports_audit: bool = False
 
@@ -366,6 +371,7 @@ class InteractiveGuideMode(_RunMode):
     supports_validation = True
     supports_factcheck = True
     supports_module_repair = True
+    supports_draft_units = True
     supports_audit = True
 
     def next_action(

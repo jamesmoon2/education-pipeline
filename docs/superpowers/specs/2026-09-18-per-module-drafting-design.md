@@ -189,14 +189,25 @@ to the ordinary draft response path and `next_action` is `approve` for
    alone (downstream qa/factcheck/repair staleness is unchanged). T22 checks
    this arm against the Phase 1 characterization table; a contrary pin is
    updated and the behaviour change is flagged in the PR, as T11 did.
-8. **`next_action` keeps its shape and its action vocabulary.** Mid-fan-out
-   it is `{stage: "draft", action: "save_response", detail: "draft: k of N
-   module responses saved; …"}`. This keeps `enqueue_stage`'s structural
-   gate, `continueRun` and `PrimaryAction` valid without a new action, and
+8. **`next_action` keeps its shape, and gains exactly one action.**
+   Mid-fan-out it is `{stage: "draft", action: "save_response", detail:
+   "draft: k of N module responses saved; …"}`. This keeps `enqueue_stage`'s
+   structural gate, `continueRun` and `PrimaryAction` valid, and
    `POST /v1/jobs` with no stage naturally means "run whatever draft units
    are outstanding". A new status object `draft_progress` (below) carries the
    per-unit detail. `NextAction` gains no field; where `advance` needs to
    know *which* prompt to write it re-derives that from `draft_progress`.
+   **8b (revised in T22).** The one state this cannot express is "every
+   module response is saved, nothing is assembled yet", which the manual
+   file-drop path reaches whenever no ingest ran. Assembly is deterministic —
+   no model call — so it belongs with `validate` and `finalize` as a step
+   `advance` performs, not with the human steps. The action vocabulary
+   therefore gains `assemble`: `next_action` is `{stage: "draft", action:
+   "assemble"}` in that state, `advance` calls `assemble_draft` and reports
+   `performed: "assemble"`, and an `AssembleResult` with `ok=False` is raised
+   as a `ConfigError` rather than silently leaving no draft response. The
+   assembly-*failure* arm is unchanged and still reports `save_response`
+   naming the module(s): re-running a broken module is a human step.
 9. **Skeleton ingest writes the module prompts.** Writing prompts is a
    machine step, so the job runner (and the ingest route) call
    `write_module_draft_prompts` right after the skeleton response lands; on
@@ -356,7 +367,8 @@ Capability: `_RunMode.supports_draft_units` (true for
   ("skeleton"); skeleton response, module prompts missing for some contract
   module → `write_prompt` ("module prompts"); any module
   `not_run`/`prompt_written`/`stale` → `save_response` ("k of N"); all present
-  but assembly failed → `save_response` naming the module(s). Once the
+  but assembly failed → `save_response` naming the module(s); all present and
+  assembly would succeed → `assemble` (decision 8b). Once the
   response file exists — assembled, pasted whole, or edited — control falls
   through to `_pending_stage_action` (`runs.py:856`) and today's `approve`
   arm, which is what keeps the whole-guide drop pinned by
