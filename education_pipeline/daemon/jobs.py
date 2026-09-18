@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -854,6 +855,11 @@ class Worker:
         # job_id -> batch_id (None for an ordinary job) for jobs admitted and
         # not yet finished. Its emptiness *is* "nothing is running".
         self._running: dict[str, str | None] = {}
+        # Job ids enqueued and not yet admitted, in enqueue order. When the
+        # pool empties every parked thread wakes at once, so without this the
+        # winner is whichever thread the OS schedules first and a later batch
+        # job can start ahead of an ordinary job that has waited longer.
+        self._waiting: deque[str] = deque()
         self._threads: list[threading.Thread] = []
         self._stopping = False
 
@@ -903,6 +909,7 @@ class Worker:
                 raise ConfigError(f"a {existing.status} job already exists for {scope}")
             self.store.save(job)
             self._cancels[job.id] = threading.Event()
+            self._waiting.append(job.id)
             self._queue.put(job.id)
 
     def cancel(self, job_id: str) -> Job | None:
@@ -917,15 +924,30 @@ class Worker:
             self.store.save(job)
             if event is not None:
                 event.set()
-            self._wake_waiters()
+            self._forget_waiter(job_id)
             return job
         if event is not None:
             event.set()
-        self._wake_waiters()
+        self._forget_waiter(job_id)
         return self.store.find(job_id)
 
     def _wake_waiters(self) -> None:
         with self._admit:
+            self._admit.notify_all()
+
+    def _forget_waiter(self, job_id: str) -> None:
+        """Drop a job from the admission order and wake whoever is next.
+
+        Called for every job that leaves the queue without being admitted
+        (canceled, or already terminal by the time it was dequeued): leaving
+        it at the head would block every waiter behind it.
+        """
+
+        with self._admit:
+            try:
+                self._waiting.remove(job_id)
+            except ValueError:
+                pass
             self._admit.notify_all()
 
     def cancel_batch(self, batch_id: str) -> list[Job]:
@@ -963,6 +985,8 @@ class Worker:
         ):
             with self._lock:
                 self._cancels.setdefault(job.id, threading.Event())
+                if job.id not in self._waiting:
+                    self._waiting.append(job.id)
             self._queue.put(job.id)
 
     def _loop(self) -> None:
@@ -972,6 +996,7 @@ class Worker:
                 return
             job = self.store.find(job_id)
             if job is None or job.status != "queued":
+                self._forget_waiter(job_id)
                 continue
             with self._lock:
                 cancel = self._cancels.get(job_id, threading.Event())
@@ -979,12 +1004,14 @@ class Worker:
                 job.status = "canceled"
                 job.ended_at = _utcnow().isoformat()
                 self.store.save(job)
+                self._forget_waiter(job_id)
                 continue
             if not self._acquire_slot(job, cancel):
                 # Canceled while it waited for a slot; it never started.
                 job.status = "canceled"
                 job.ended_at = _utcnow().isoformat()
                 self.store.save(job)
+                self._forget_waiter(job_id)
                 continue
             try:
                 # runner_factory is inside the try so a factory that raises
@@ -1010,16 +1037,23 @@ class Worker:
     def _admissible(self, job: Job) -> bool:
         """The whole pool rule; caller holds ``_lock``.
 
-        Nothing running: anything may start. Otherwise only a job of the very
-        batch already running may join it -- which keeps an ordinary
-        (``batch_id is None``) job alone, as it has always been.
+        Something running: only a job of the very batch already running may
+        join it -- which keeps an ordinary (``batch_id is None``) job alone,
+        as it has always been, and lets a batch member start whatever its
+        position, since it is then the only admissible kind of job.
+
+        Nothing running: the job at the head of the admission order goes
+        first, so a batch job enqueued later cannot overtake an ordinary job
+        that has been waiting longer. A job that is not (or is no longer) on
+        that list is admitted rather than wedged behind a head it can never
+        reach.
         """
 
-        if not self._running:
-            return True
-        if job.batch_id is None:
-            return False
-        return all(batch_id == job.batch_id for batch_id in self._running.values())
+        if self._running:
+            if job.batch_id is None:
+                return False
+            return all(batch_id == job.batch_id for batch_id in self._running.values())
+        return job.id not in self._waiting or self._waiting[0] == job.id
 
     def _acquire_slot(self, job: Job, cancel: threading.Event) -> bool:
         """Block until this job may start. False when it was canceled instead.
@@ -1038,6 +1072,12 @@ class Worker:
             if cancel.is_set():
                 return False
             self._running[job.id] = job.batch_id
+            try:
+                self._waiting.remove(job.id)
+            except ValueError:
+                pass
+            # A sibling of this job's batch may have become admissible.
+            self._admit.notify_all()
         return True
 
     def _release_slot(self, job: Job) -> None:
