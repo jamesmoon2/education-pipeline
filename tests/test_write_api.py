@@ -1,5 +1,6 @@
 """Unit tests for the write-action payload builders (no HTTP layer)."""
 
+import hashlib
 import json
 import threading
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import test_runs
+import test_draft_units as tdu
 
 from education_pipeline.config import ConfigError, parse_model_catalog, parse_model_plan
 from education_pipeline.daemon import StaticConfigSource, read_api, write_api
@@ -1349,3 +1351,358 @@ def test_duplicate_attach_profile_with_deleted_profile_is_not_found(tmp_path):
     (tmp_path / "profiles" / "p.toml").unlink()
     with pytest.raises(NotFoundError):
         write_api.duplicate_topic(topics, profiles, "t", {"attach_profile": True})
+
+
+# ---------------------------------------------------------------------------
+# T24: write_api.ingest_draft_unit / edit_draft_unit / assemble_draft
+#
+# Per-module drafting design (docs/superpowers/specs/2026-09-18-per-module-
+# drafting-design.md), decision 9 and section 4. These are the unit-level
+# twins of ``write_api.ingest_response`` / ``edit_response`` -- same guard
+# order (not-archived, no-active-job), same conflict/stale mapping -- wired
+# to ``RunStore.ingest_draft_unit`` / ``edit_draft_unit`` / ``assemble_draft``
+# (``education_pipeline/runs_draft_units.py``) instead of the whole-stage
+# response.
+#
+# Chosen response shape (stated per the brief): ingest/edit both return
+# exactly {"unit", "module_id", "response_path", "response_sha256",
+# "status": run_status_payload(...)}. assemble returns the AssembleResult
+# fields {"ok", "response_sha256", "error", "module_ids"} plus "status".
+# None of ``ingest_draft_unit``/``edit_draft_unit``/``assemble_draft`` exist
+# on ``write_api`` yet, so every test below fails with AttributeError until
+# they are added.
+# ---------------------------------------------------------------------------
+
+
+def _fanout_jobs(tmp_path):
+    return JobStore(tmp_path)
+
+
+def test_write_api_ingest_draft_unit_skeleton_shape(tmp_path):
+    runs = tdu._run_with_skeleton_prompt(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+
+    result = write_api.ingest_draft_unit(
+        runs, jobs, tdu.TID, "skeleton", tdu._skeleton_response()
+    )
+
+    assert result["unit"] == "skeleton"
+    assert result["module_id"] is None
+    assert result["response_path"] == "draft/skeleton/response.json"
+    assert result["response_sha256"] == hashlib.sha256(
+        tdu._skeleton_response().encode("utf-8")
+    ).hexdigest()
+    assert result["status"]["topic_id"] == tdu.TID
+    # Decision 9: a skeleton ingest through the write-api route also writes
+    # the per-module prompts, exactly like the engine-level call.
+    for module_id in tdu.MODULE_ORDER:
+        assert runs.draft_unit_paths(
+            tdu.TID, "module", module_id=module_id
+        ).prompt_path.is_file()
+
+
+def test_write_api_ingest_draft_unit_module_shape(tmp_path):
+    runs = tdu._run_with_skeleton_ingested(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    module_id = "loop-basics"
+
+    result = write_api.ingest_draft_unit(
+        runs,
+        jobs,
+        tdu.TID,
+        "module",
+        tdu._module_response(module_id),
+        module_id=module_id,
+    )
+
+    assert result["unit"] == "module"
+    assert result["module_id"] == module_id
+    assert result["response_path"] == f"draft/modules/{module_id}/response.json"
+    assert result["status"]["topic_id"] == tdu.TID
+
+
+def test_write_api_ingest_draft_unit_refuses_existing_response_without_force(tmp_path):
+    runs = tdu._run_with_skeleton_ingested(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    write_api.ingest_draft_unit(
+        runs, jobs, tdu.TID, "module", tdu._module_response("loop-basics"),
+        module_id="loop-basics",
+    )
+    with pytest.raises(write_api.ConflictError) as excinfo:
+        write_api.ingest_draft_unit(
+            runs, jobs, tdu.TID, "module", tdu._module_response("loop-basics"),
+            module_id="loop-basics",
+        )
+    assert excinfo.value.code == "already_exists"
+
+
+def test_write_api_ingest_draft_unit_force_replaces(tmp_path):
+    runs = tdu._run_with_skeleton_ingested(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    write_api.ingest_draft_unit(
+        runs, jobs, tdu.TID, "module", tdu._module_response("loop-basics"),
+        module_id="loop-basics",
+    )
+    result = write_api.ingest_draft_unit(
+        runs, jobs, tdu.TID, "module", tdu._module_response("loop-basics"),
+        module_id="loop-basics", force=True,
+    )
+    assert result["module_id"] == "loop-basics"
+
+
+def test_write_api_ingest_draft_unit_refuses_when_archived(tmp_path):
+    runs = tdu._run_with_skeleton_prompt(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    runs.archive_run(tdu.TID)
+    with pytest.raises(write_api.ConflictError) as excinfo:
+        write_api.ingest_draft_unit(
+            runs, jobs, tdu.TID, "skeleton", tdu._skeleton_response()
+        )
+    assert excinfo.value.code == "archived_course"
+
+
+def test_write_api_ingest_draft_unit_refuses_with_active_job(tmp_path):
+    runs = tdu._run_with_skeleton_prompt(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    from education_pipeline.daemon.jobs import Job, new_job_id
+
+    jobs.save(
+        Job(
+            id=new_job_id(),
+            topic_id=tdu.TID,
+            stage="spec",
+            provider="fake",
+            model="m",
+            effort=None,
+            status="queued",
+        )
+    )
+    with pytest.raises(write_api.ConflictError) as excinfo:
+        write_api.ingest_draft_unit(
+            runs, jobs, tdu.TID, "skeleton", tdu._skeleton_response()
+        )
+    assert excinfo.value.code == "job_conflict"
+
+
+def test_write_api_edit_draft_unit_updates_and_returns_shape(tmp_path):
+    runs = tdu._run_with_skeleton_ingested(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    ingested = write_api.ingest_draft_unit(
+        runs, jobs, tdu.TID, "module", tdu._module_response("loop-basics"),
+        module_id="loop-basics",
+    )
+    base_sha = ingested["response_sha256"]
+    edited_text = tdu._module_response("loop-basics")
+
+    result = write_api.edit_draft_unit(
+        runs, jobs, tdu.TID, "module", edited_text,
+        module_id="loop-basics", base_sha256=base_sha,
+    )
+
+    assert result["unit"] == "module"
+    assert result["module_id"] == "loop-basics"
+    assert result["response_path"] == "draft/modules/loop-basics/response.json"
+    assert result["status"]["topic_id"] == tdu.TID
+
+
+def test_write_api_edit_draft_unit_stale_base_sha_is_409_conflict(tmp_path):
+    runs = tdu._run_with_skeleton_ingested(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    write_api.ingest_draft_unit(
+        runs, jobs, tdu.TID, "module", tdu._module_response("loop-basics"),
+        module_id="loop-basics",
+    )
+    with pytest.raises(write_api.ConflictError) as excinfo:
+        write_api.edit_draft_unit(
+            runs, jobs, tdu.TID, "module", tdu._module_response("loop-basics"),
+            module_id="loop-basics", base_sha256="0" * 64,
+        )
+    assert excinfo.value.code == "stale_content"
+
+
+def test_write_api_assemble_draft_returns_ok_result_and_status(tmp_path):
+    runs = tdu._run_with_one_module_saved(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    # Land the second (and last) module directly on disk, bypassing ingest's
+    # own auto-assemble, so ``write_api.assemble_draft`` is exercised as the
+    # thing that performs assembly rather than merely re-observing it.
+    second = "intervention-practice"
+    runs.draft_unit_paths(tdu.TID, "module", module_id=second).response_path.write_text(
+        tdu._module_response(second), encoding="utf-8"
+    )
+
+    result = write_api.assemble_draft(runs, jobs, tdu.TID)
+
+    assert result["ok"] is True
+    assert result["error"] is None
+    assert set(result["module_ids"]) == set(tdu.MODULE_ORDER)
+    assert isinstance(result["response_sha256"], str)
+    assert result["status"]["topic_id"] == tdu.TID
+
+
+def test_write_api_assemble_draft_refuses_superseded_response_without_force(tmp_path):
+    runs = tdu._run_fully_assembled(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    # A hand-edit of the assembled stage response (decision 6: "the response
+    # file wins").
+    runs.stage_paths(tdu.TID, "draft").response_path.write_text(
+        tdu._skeleton_response(), encoding="utf-8"
+    )
+    with pytest.raises(write_api.ConflictError) as excinfo:
+        write_api.assemble_draft(runs, jobs, tdu.TID)
+    assert excinfo.value.code == "stale_content"
+
+
+def test_write_api_assemble_draft_force_overwrites_superseded_response(tmp_path):
+    runs = tdu._run_fully_assembled(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    runs.stage_paths(tdu.TID, "draft").response_path.write_text(
+        tdu._skeleton_response(), encoding="utf-8"
+    )
+    result = write_api.assemble_draft(runs, jobs, tdu.TID, force=True)
+    assert result["ok"] is True
+
+
+def test_write_api_assemble_draft_refuses_when_archived(tmp_path):
+    runs = tdu._run_with_one_module_saved(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    runs.archive_run(tdu.TID)
+    with pytest.raises(write_api.ConflictError) as excinfo:
+        write_api.assemble_draft(runs, jobs, tdu.TID)
+    assert excinfo.value.code == "archived_course"
+
+
+# ---------------------------------------------------------------------------
+# T24: draft_progress in read_api.run_status_payload (guide runs only)
+# ---------------------------------------------------------------------------
+
+
+def test_run_status_payload_draft_progress_absent_for_legacy_present_for_guide(tmp_path):
+    legacy_runs, legacy_jobs = _workspace(tmp_path)
+    legacy_payload = read_api.run_status_payload(legacy_runs, "t", jobs=legacy_jobs)
+    assert "draft_progress" not in legacy_payload
+
+    guide_runs = tdu._run_to_outline_approved(tmp_path, "guide-progress")
+    guide_jobs = _fanout_jobs(tmp_path)
+    guide_payload = read_api.run_status_payload(
+        guide_runs, "guide-progress", jobs=guide_jobs
+    )
+    assert "draft_progress" in guide_payload
+    assert guide_payload["draft_progress"]["skeleton"]["state"] == "not_run"
+
+
+def test_run_status_payload_draft_progress_before_skeleton_prompt(tmp_path):
+    runs = tdu._run_to_outline_approved(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    payload = read_api.run_status_payload(runs, tdu.TID, jobs=jobs)
+    progress = payload["draft_progress"]
+    assert progress["skeleton"] == {"state": "not_run", "error": None, "job_id": None}
+    assert progress["modules"] == []
+    assert progress["assembled"] is None
+    assert progress["superseded"] is False
+    assert progress["parallelism"] == 2
+    assert progress["counts"] == {"total": 0, "saved": 0, "stale": 0}
+
+
+def test_run_status_payload_draft_progress_after_skeleton_written(tmp_path):
+    runs = tdu._run_with_skeleton_ingested(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    payload = read_api.run_status_payload(runs, tdu.TID, jobs=jobs)
+    progress = payload["draft_progress"]
+    assert progress["skeleton"]["state"] == "response_ingested"
+    module_ids = [m["id"] for m in progress["modules"]]
+    assert module_ids == list(tdu.MODULE_ORDER)
+    assert all(m["state"] == "prompt_written" for m in progress["modules"])
+    assert progress["counts"] == {"total": 2, "saved": 0, "stale": 0}
+
+
+def test_run_status_payload_draft_progress_mid_fanout_reports_job_id(tmp_path):
+    runs = tdu._run_with_one_module_saved(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    from education_pipeline.daemon.jobs import Job, new_job_id
+
+    job = Job(
+        id=new_job_id(),
+        topic_id=tdu.TID,
+        stage="draft",
+        provider="fake",
+        model="m",
+        effort=None,
+        status="succeeded",
+        unit="module",
+        module_id="loop-basics",
+        batch_id="batch-1",
+    )
+    jobs.save(job)
+
+    payload = read_api.run_status_payload(runs, tdu.TID, jobs=jobs)
+    progress = payload["draft_progress"]
+    by_id = {m["id"]: m for m in progress["modules"]}
+    assert by_id["loop-basics"]["state"] == "response_ingested"
+    assert by_id["loop-basics"]["job_id"] == job.id
+    assert by_id["intervention-practice"]["state"] == "prompt_written"
+    assert by_id["intervention-practice"]["job_id"] is None
+    assert progress["counts"] == {"total": 2, "saved": 1, "stale": 0}
+
+
+def test_run_status_payload_draft_progress_assembled(tmp_path):
+    runs = tdu._run_fully_assembled(tmp_path)
+    jobs = _fanout_jobs(tmp_path)
+    payload = read_api.run_status_payload(runs, tdu.TID, jobs=jobs)
+    progress = payload["draft_progress"]
+    assert progress["assembled"]["ok"] is True
+    assert isinstance(progress["assembled"]["response_sha256"], str)
+    assert progress["counts"] == {"total": 2, "saved": 2, "stale": 0}
+
+
+# ---------------------------------------------------------------------------
+# T24: ModelPlan.parallelism through plan_payload / update_global_plan /
+# update_run_plan (decision 10)
+# ---------------------------------------------------------------------------
+
+
+def test_plan_payload_includes_parallelism_default():
+    config = _config_source()
+    catalog, plan = config.load()
+    payload = read_api.plan_payload(catalog, plan, config.plan_sha256())
+    assert payload["parallelism"] == 2
+
+
+def test_update_global_plan_accepts_parallelism_within_range():
+    config = _config_source()
+    base_sha256 = config.plan_sha256()
+    result = write_api.update_global_plan(
+        config,
+        {"base_sha256": base_sha256, "provider": "fake", "parallelism": 3, "stages": {}},
+    )
+    assert result["parallelism"] == 3
+    assert config.plan.parallelism == 3
+
+
+@pytest.mark.parametrize("bad", [0, 5, -1, 1.5])
+def test_update_global_plan_rejects_parallelism_outside_one_to_four(bad):
+    config = _config_source()
+    base_sha256 = config.plan_sha256()
+    with pytest.raises(ConfigError):
+        write_api.update_global_plan(
+            config,
+            {
+                "base_sha256": base_sha256,
+                "provider": "fake",
+                "parallelism": bad,
+                "stages": {},
+            },
+        )
+    assert config.plan_sha256() == base_sha256
+
+
+def test_update_run_plan_rejects_parallelism_as_a_per_run_override(tmp_path):
+    """Decision 10: parallelism is a single workspace-wide setting, exposed
+    only through ``PUT /v1/config/plan`` -- never as a per-run override."""
+
+    config = _config_source()
+    runs, _jobs = _workspace(tmp_path)
+    with pytest.raises(ConfigError):
+        write_api.update_run_plan(
+            runs, config, "t", {"overrides": {}, "parallelism": 3}
+        )

@@ -8,6 +8,7 @@ import sys
 import pytest
 
 import test_runs
+import test_draft_units as tdu
 from education_pipeline import ContentContract, RunStore
 from education_pipeline.cli import main
 from education_pipeline.privacy import canonical_profile_toml_bytes, profile_to_dict
@@ -1382,3 +1383,183 @@ def test_ui_subcommand_honors_top_level_workspace_flag(
     seen = _patch_run_ui(monkeypatch)
     assert main(["--workspace", str(tmp_path), "ui", "--no-browser"]) == 0
     assert seen["workspace"] == str(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# T24: CLI surface for per-module draft fan-out (§6)
+#
+# ``run``/``cancel`` gain ``--modules``/``--batch``; ``status`` gains
+# skeleton/draft-progress lines for guide runs. None of this exists yet:
+# a flag the parser does not recognize makes argparse exit(2) itself
+# (SystemExit propagates out of ``_run``, which is a failing test), and the
+# batch/skeleton print-format assertions fail against today's single-job
+# ``_cmd_run`` output. That is the expected "red" state.
+# ---------------------------------------------------------------------------
+
+
+class _FakeBatchClient:
+    """A scripted ``DaemonClient`` stand-in for CLI print-format tests.
+
+    ``enqueue`` returns whatever ``self.enqueue_response`` (or, for
+    ``--modules``, ``self.enqueue_by_modules``) is set to; every call is
+    recorded in ``self.calls`` so a test can assert what the CLI actually
+    sent.
+    """
+
+    def __init__(self):
+        self.calls = []
+        self.enqueue_response = None
+        self.jobs_by_id = {}
+
+    def enqueue(self, topic_id, stage=None, force=False, modules=None):
+        self.calls.append(
+            {"method": "enqueue", "topic_id": topic_id, "stage": stage,
+             "force": force, "modules": modules}
+        )
+        return self.enqueue_response
+
+    def get_job(self, job_id):
+        self.calls.append({"method": "get_job", "job_id": job_id})
+        return self.jobs_by_id[job_id]
+
+    def get_batch(self, batch_id):
+        self.calls.append({"method": "get_batch", "batch_id": batch_id})
+        return {"batch_id": batch_id, "jobs": [self.jobs_by_id[j] for j in self._batch_job_ids]}
+
+    def cancel(self, job_id):
+        self.calls.append({"method": "cancel", "job_id": job_id})
+        return {"id": job_id, "status": "canceled"}
+
+    def cancel_batch(self, batch_id):
+        self.calls.append({"method": "cancel_batch", "batch_id": batch_id})
+        return {"batch_id": batch_id, "jobs": []}
+
+
+def _fake_batch_job(job_id, module_id, batch_id, status="queued"):
+    return {
+        "id": job_id, "topic_id": "t", "stage": "draft", "unit": "module",
+        "module_id": module_id, "batch_id": batch_id, "status": status,
+        "response_path": None, "error": None,
+    }
+
+
+def _patch_fake_client(monkeypatch, client):
+    from education_pipeline import cli
+
+    monkeypatch.setattr(cli, "ensure_daemon", lambda *a, **k: client)
+
+
+def test_run_prints_enqueued_batch_line_for_a_module_batch_and_job_line_for_skeleton(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(§6) ``run`` prints ``enqueued batch <id> (draft, N modules)`` when the
+    enqueue response carries a ``batch_id``, and keeps today's
+    ``enqueued job <id> (draft)`` line for a plain (skeleton) job."""
+
+    client = _FakeBatchClient()
+    job_a = _fake_batch_job("j-a", "loop-basics", "batch-1")
+    job_b = _fake_batch_job("j-b", "intervention-practice", "batch-1")
+    client.jobs_by_id = {"j-a": job_a, "j-b": job_b}
+    client._batch_job_ids = ["j-a", "j-b"]
+    client.enqueue_response = dict(job_a, jobs=[job_a, job_b])
+    _patch_fake_client(monkeypatch, client)
+
+    code = _run(tmp_path, "run", "t")
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "enqueued batch batch-1 (draft, 2 modules)" in out
+
+    client.enqueue_response = {
+        "id": "j-skeleton", "topic_id": "t", "stage": "draft", "unit": "skeleton",
+        "module_id": None, "batch_id": None, "status": "queued",
+        "response_path": None, "error": None,
+    }
+    code = _run(tmp_path, "run", "t")
+    assert code == 0
+    assert "enqueued job j-skeleton (draft)" in capsys.readouterr().out
+
+
+def test_run_modules_flag_passes_subset_to_client(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _FakeBatchClient()
+    job_a = _fake_batch_job("j-a", "loop-basics", "batch-1")
+    client.jobs_by_id = {"j-a": job_a}
+    client._batch_job_ids = ["j-a"]
+    client.enqueue_response = dict(job_a, jobs=[job_a])
+    _patch_fake_client(monkeypatch, client)
+
+    code = _run(tmp_path, "run", "t", "--modules", "loop-basics,intervention-practice")
+
+    assert code == 0
+    assert client.calls[0]["modules"] == ["loop-basics", "intervention-practice"]
+
+
+def test_run_wait_on_a_batch_prints_one_line_per_module_with_terminal_status(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _FakeBatchClient()
+    job_a = _fake_batch_job("j-a", "loop-basics", "batch-1", status="succeeded")
+    job_b = _fake_batch_job("j-b", "intervention-practice", "batch-1", status="failed")
+    client.jobs_by_id = {"j-a": job_a, "j-b": job_b}
+    client._batch_job_ids = ["j-a", "j-b"]
+    client.enqueue_response = dict(job_a, jobs=[job_a, job_b])
+    _patch_fake_client(monkeypatch, client)
+
+    code = _run(tmp_path, "run", "t", "--wait")
+
+    out = capsys.readouterr().out
+    assert "loop-basics" in out and "succeeded" in out
+    assert "intervention-practice" in out and "failed" in out
+
+
+def test_status_shows_draft_progress_lines_for_guide_run_but_not_legacy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(§6) ``status`` prints ``  skeleton: <state>`` and
+    ``  draft: k of N modules`` after the stage lines, but only when
+    ``draft_progress`` applies (guide runs) -- a legacy run's ``status``
+    output is unchanged."""
+
+    guide_ws = tmp_path / "guide"
+    tdu._run_with_one_module_saved(guide_ws)
+    code = _run(guide_ws, "status", tdu.TID)
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "  skeleton: response_ingested" in out
+    assert "  draft: 1 of 2 modules" in out
+
+    legacy_ws = tmp_path / "legacy"
+    _seed_topic_to_draft(legacy_ws)
+    code = _run(legacy_ws, "status", "systems-thinking")
+    assert code == 0
+    legacy_out = capsys.readouterr().out
+    assert "skeleton:" not in legacy_out
+    assert "modules" not in legacy_out
+
+
+def test_cancel_batch_flag_cancels_the_batch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _FakeBatchClient()
+    _patch_fake_client(monkeypatch, client)
+
+    code = _run(tmp_path, "cancel", "--batch", "batch-1")
+
+    assert code == 0
+    assert client.calls == [{"method": "cancel_batch", "batch_id": "batch-1"}]
+    assert "batch-1" in capsys.readouterr().out
+
+
+def test_run_modules_with_non_draft_stage_exits_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _FakeBatchClient()
+    _patch_fake_client(monkeypatch, client)
+
+    code = _run(tmp_path, "run", "t", "--stage", "qa", "--modules", "loop-basics")
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "--modules requires --stage draft" in err
