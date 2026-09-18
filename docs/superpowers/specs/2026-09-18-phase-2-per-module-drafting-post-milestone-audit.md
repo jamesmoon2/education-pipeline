@@ -75,10 +75,11 @@ flags it, as T11 did for the factcheck warning.
   `check_skeleton` itself; `write_module_draft_prompts` is that gate.
 - **T22:** response events spell `response_sha256` explicitly rather than
   through the `files` mechanism; `DraftProgress.total` counts orphaned units
-  while the "k of N" detail counts contract modules; the 7b rebuild leaves
-  orphaned unit responses on disk (ignored by assembly, never deleted); the
-  assembly-failure state stays `save_response` because fixing a module is a
-  human step.
+  while the "k of N" detail counts contract modules; the assembly-failure
+  state stays `save_response` because fixing a module is a human step.
+  (The third item recorded here — "the 7b rebuild leaves orphaned unit
+  responses on disk" — was a defect, not a limitation; see the PR #39 review
+  section below.)
 - **T23:** unit jobs write stage provenance for `draft`, so the last module
   to finish is the last writer; `parallelism` is read once at daemon start;
   `worker_parallelism` falls back to 2 on an unloadable plan (the error
@@ -110,6 +111,51 @@ flags it, as T11 did for the factcheck warning.
 - **T20:** parallelism overlaps only module jobs of one batch; two topics
   still cannot run at once. Widening the admission rule is a one-line
   change once cross-topic concurrency has been reasoned about.
+
+## PR #39 review (post-merge)
+
+An automated review of the phase PR raised eight findings against the engine
+and daemon. All eight reproduced; each is fixed under its own red-then-green
+commit prefixed `review: `. Consequences worth carrying forward:
+
+- **The 7b rebuild now orphans the unit responses** (finding 1). Decision 7b
+  always said the rebuild "moves existing unit responses aside as orphaned";
+  the implementation left them in place, so the rebuilt skeleton still read
+  `response_ingested` and a skeleton written against the old contract could
+  be assembled against the new one. `_orphan_draft_units` moves the skeleton
+  response and the whole `draft/modules` tree into `draft/orphaned/<ts>/`
+  (never deleted) and records `draft_units_orphaned`. Consequence: the
+  `orphaned` unit state is no longer reachable *through the rebuild arm* —
+  it now describes only a module directory that outlives its contract entry
+  without one. The contrary characterization pin was updated and renamed.
+- **A second engine lock** (finding 2). "Write a unit response, then attempt
+  assembly" is serialized by a process-wide reentrant lock keyed by
+  `(workspace root, topic id)`, because the worker pool overlaps the module
+  jobs of one batch and the manifest lock only covers each event append.
+  Lock order is unit lock → manifest lock, never the reverse; cross-process
+  concurrency stays the workspace file lock's job.
+- **A refused automatic assembly is recorded** (finding 3). `ingest_draft_unit`
+  carries its `force` into the assembly it triggers, and a refusal (superseded
+  response, no force) appends `draft_assembly_failed` so it surfaces as
+  `draft_progress.assembled.error`. Cost: one manifest event per unforced
+  ingest against a superseded draft.
+- **Stale modules are recompiled at enqueue** (finding 4), inside the same
+  locked section, and their jobs carry `force=True`. A stale module whose
+  skeleton no longer passes `check_skeleton` now fails the enqueue with the
+  skeleton's own diagnostics instead of queueing an obsolete prompt.
+- **Pool admission is FIFO among waiters** (finding 5): with nothing running
+  only the head of the waiting deque starts; a batch's members may still join
+  a running sibling whatever their position.
+- **Unit salvage** (finding 6). The status payload gains `failed_unit_outputs`
+  per stage beside the unchanged `failed_outputs`, and `salvage_stage_output`
+  promotes a unit failure through `ingest_draft_unit`. Known ambiguity: a
+  module whose id is literally `skeleton` would parse as the skeleton unit in
+  a salvage file name.
+- **`modules: []`** is a 400 at the request parser and a CLI usage error
+  (finding 7), not an `IndexError` 500.
+- **Contribution owners are tracked per kind** (finding 8): a glossary id
+  re-used as a source id is an `AssemblyError` naming both owners rather than
+  a bare `StopIteration` out of `assemble_guide`.
 
 ## Observations for other owners
 
