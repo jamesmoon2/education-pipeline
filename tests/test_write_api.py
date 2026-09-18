@@ -1315,3 +1315,60 @@ def test_duplicate_attach_profile_with_deleted_profile_is_not_found(tmp_path):
     (tmp_path / "profiles" / "p.toml").unlink()
     with pytest.raises(NotFoundError):
         write_api.duplicate_topic(topics, profiles, "t", {"attach_profile": True})
+
+
+# --- T26: section-scoped repair in the write API (spec D8) -------------------
+
+
+def _scoped_repair_ready(tmp_path):
+    runs = test_runs._create_guide_run(tmp_path)
+    test_runs._drive_guide_through_factcheck(runs, "systems-thinking")
+    return runs, JobStore(tmp_path)
+
+
+def test_advance_run_with_repair_section_writes_the_scoped_prompt(tmp_path):
+    from education_pipeline.runs import RepairScope
+
+    runs, jobs = _scoped_repair_ready(tmp_path)
+
+    result = write_api.advance_run(
+        runs,
+        jobs,
+        "systems-thinking",
+        repair_module="intervention-practice",
+        repair_section="garden-decision",
+    )
+
+    assert result["performed"] == "write_prompt"
+    assert result["scope"] == {
+        "module_id": "intervention-practice",
+        "section_id": "garden-decision",
+    }
+    assert result["status"]["topic_id"] == "systems-thinking"
+    assert runs.repair_scope("systems-thinking") == RepairScope(
+        "intervention-practice", "garden-decision"
+    )
+    assert "## Section To Regenerate" in runs.stage_paths(
+        "systems-thinking", "repair"
+    ).prompt_path.read_text(encoding="utf-8")
+
+
+def test_advance_run_rejects_a_repair_section_without_a_module(tmp_path):
+    runs, jobs = _scoped_repair_ready(tmp_path)
+
+    with pytest.raises(ConfigError, match="repair_module"):
+        write_api.advance_run(
+            runs, jobs, "systems-thinking", repair_section="garden-decision"
+        )
+
+
+def test_advance_run_with_repair_module_reports_a_module_scope(tmp_path):
+    runs, jobs = _scoped_repair_ready(tmp_path)
+
+    result = write_api.advance_run(
+        runs, jobs, "systems-thinking", repair_module="loop-basics"
+    )
+
+    assert result["performed"] == "write_prompt"
+    assert result["scope"] == {"module_id": "loop-basics", "section_id": None}
+    assert result["status"]["next_action"]["stage"] == "repair"

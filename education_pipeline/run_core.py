@@ -122,6 +122,18 @@ class AdvanceResult:
 
 
 @dataclass(frozen=True)
+class RepairScope:
+    """The target of a pending scoped repair: one module, optionally one section.
+
+    ``section_id`` is ``None`` for a module-scoped repair, so a workspace
+    written before section scope existed reads back as module scope.
+    """
+
+    module_id: str
+    section_id: str | None = None
+
+
+@dataclass(frozen=True)
 class StagePaths:
     """Filesystem locations for a single stage within a topic run."""
 

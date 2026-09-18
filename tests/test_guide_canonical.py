@@ -632,3 +632,205 @@ def test_validate_frame_rejects_stub_sections_of_the_wrong_type() -> None:
     del absent["modules"][0]["sections"]
     with pytest.raises(SpliceError, match="sections"):
         validate_frame(json.dumps(absent), module_ids=_module_ids())
+
+
+# --- T26: section-scoped splice (spec D8) -----------------------------------
+
+
+def _section_json(section: dict) -> str:
+    return json.dumps(section, ensure_ascii=False)
+
+
+def _fixture_section(module_index: int = 0, section_index: int = 0) -> dict:
+    return json.loads(
+        json.dumps(_fixture_data()["modules"][module_index]["sections"][section_index])
+    )
+
+
+def test_splice_section_replaces_only_the_target_section() -> None:
+    from education_pipeline.guides.canonical import splice_section
+
+    revised = _fixture_section(0, 0)
+    revised["title"] = "From events to loops, regenerated"
+    revised["blocks"][0]["markdown"] = "A fully regenerated opener."
+
+    merged_bytes = splice_section(
+        _base_json(), "loop-basics", "feedback-foundations", _section_json(revised)
+    )
+    merged = json.loads(merged_bytes)
+
+    # Canonical output that round-trips.
+    assert merged_bytes == canonical_guide_bytes(
+        normalize_guide(parse_guide(merged_bytes))
+    )
+
+    base_canonical = json.loads(canonical_guide_bytes(guide()))
+    target_module = merged["modules"][0]
+    assert target_module["sections"][0]["title"] == "From events to loops, regenerated"
+    # Section order inside the module is preserved.
+    assert [section["id"] for section in target_module["sections"]] == [
+        section["id"] for section in base_canonical["modules"][0]["sections"]
+    ]
+    # The sibling section, the other module, and every root key are byte-identical.
+    assert json.dumps(target_module["sections"][1], sort_keys=True) == json.dumps(
+        base_canonical["modules"][0]["sections"][1], sort_keys=True
+    )
+    assert json.dumps(merged["modules"][1], sort_keys=True) == json.dumps(
+        base_canonical["modules"][1], sort_keys=True
+    )
+    for key in ("course", "outcomes", "glossary", "sources", "schema_version"):
+        assert json.dumps(merged[key], sort_keys=True) == json.dumps(
+            base_canonical[key], sort_keys=True
+        )
+    # The enclosing module's own fields survive untouched.
+    for key in ("id", "title", "summary", "outcome_ids", "estimated_minutes"):
+        assert json.dumps(target_module[key], sort_keys=True) == json.dumps(
+            base_canonical["modules"][0][key], sort_keys=True
+        )
+
+
+def test_splice_section_accepts_bytes_base_and_is_pure() -> None:
+    from education_pipeline.guides.canonical import splice_section
+
+    revised = _fixture_section(1, 1)
+    revised["title"] = "Practice the gardening decision"
+    payload = _section_json(revised)
+    base_text = _base_json()
+
+    first = splice_section(
+        base_text.encode("utf-8"), "intervention-practice", "garden-decision", payload
+    )
+    second = splice_section(
+        base_text, "intervention-practice", "garden-decision", payload
+    )
+
+    assert first == second
+    # Inputs are untouched: a pure function, no file I/O, no mutation.
+    assert base_text == _base_json()
+    assert payload == _section_json(revised)
+
+
+def test_splice_section_rejects_section_id_rename() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    revised = _fixture_section(0, 0)
+    revised["id"] = "feedback-foundations-renamed"
+
+    with pytest.raises(SpliceError, match="section id must stay"):
+        splice_section(
+            _base_json(), "loop-basics", "feedback-foundations", _section_json(revised)
+        )
+
+
+def test_splice_section_rejects_unknown_target_module() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    with pytest.raises(SpliceError, match="loop-basics"):
+        splice_section(
+            _base_json(),
+            "no-such-module",
+            "feedback-foundations",
+            _section_json(_fixture_section(0, 0)),
+        )
+
+
+def test_splice_section_rejects_unknown_target_section() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    revised = _fixture_section(0, 0)
+    revised["id"] = "no-such-section"
+
+    with pytest.raises(SpliceError, match="recognize-loop-types"):
+        splice_section(
+            _base_json(), "loop-basics", "no-such-section", _section_json(revised)
+        )
+
+
+def test_splice_section_rejects_non_section_payloads() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    with pytest.raises(SpliceError, match="not valid JSON"):
+        splice_section(_base_json(), "loop-basics", "feedback-foundations", "not json {")
+
+    with pytest.raises(SpliceError, match="single JSON object"):
+        splice_section(
+            _base_json(), "loop-basics", "feedback-foundations", json.dumps([1, 2])
+        )
+
+    # A whole guide is not a section.
+    with pytest.raises(SpliceError, match="section"):
+        splice_section(
+            _base_json(), "loop-basics", "feedback-foundations", _base_json()
+        )
+
+    # A module object is not a section either (it carries `sections`).
+    with pytest.raises(SpliceError, match="section"):
+        splice_section(
+            _base_json(),
+            "loop-basics",
+            "feedback-foundations",
+            _module_json(_fixture_data()["modules"][0]),
+        )
+
+    # A section without blocks is refused rather than silently emptied.
+    blockless = _fixture_section(0, 0)
+    del blockless["blocks"]
+    with pytest.raises(SpliceError, match="section"):
+        splice_section(
+            _base_json(),
+            "loop-basics",
+            "feedback-foundations",
+            _section_json(blockless),
+        )
+
+
+def test_splice_section_rejects_element_id_collision_with_other_modules() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    data = _fixture_data()
+    revised = _fixture_section(0, 0)
+    # Steal a block id that lives in the other module.
+    revised["blocks"][0]["id"] = data["modules"][1]["sections"][0]["blocks"][0]["id"]
+
+    with pytest.raises(SpliceError, match="duplicate"):
+        splice_section(
+            _base_json(), "loop-basics", "feedback-foundations", _section_json(revised)
+        )
+
+
+def test_splice_section_rejects_out_of_contract_outcome_reference() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    revised = _fixture_section(0, 0)
+    revised["blocks"][0]["outcome_ids"] = ["not-a-contract-outcome"]
+
+    with pytest.raises(SpliceError, match="not-a-contract-outcome"):
+        splice_section(
+            _base_json(), "loop-basics", "feedback-foundations", _section_json(revised)
+        )
+
+
+def test_splice_section_rejects_an_unparseable_base_guide() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, splice_section
+
+    with pytest.raises(SpliceError, match="base guide"):
+        splice_section(
+            '{"schema_version": "1.0"}',
+            "loop-basics",
+            "feedback-foundations",
+            _section_json(_fixture_section(0, 0)),
+        )

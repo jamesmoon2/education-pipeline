@@ -542,6 +542,15 @@ def personalization_payload(runs: RunStore, topic_id: str) -> dict:
     }
 
 
+def _repair_scope_payload(runs: RunStore, topic_id: str) -> dict | None:
+    """The pending scoped repair's target as JSON, or ``None`` for whole-guide."""
+
+    scope = runs.repair_scope(topic_id)
+    if scope is None:
+        return None
+    return {"module_id": scope.module_id, "section_id": scope.section_id}
+
+
 def repair_modules_payload(runs: RunStore, topic_id: str) -> dict:
     """List the approved draft's modules with open finding counts and scope.
 
@@ -568,6 +577,11 @@ def repair_modules_payload(runs: RunStore, topic_id: str) -> dict:
         )
     guide = normalize_guide(parsed)
     counts = {module.id: 0 for module in guide.modules}
+    section_counts = {
+        (module.id, section.id): 0
+        for module in guide.modules
+        for section in module.sections
+    }
     for phase in ("draft", "final"):
         if runs.report_state(topic_id, phase) != "current":
             continue
@@ -585,18 +599,41 @@ def repair_modules_payload(runs: RunStore, topic_id: str) -> dict:
         for finding in findings:
             path = finding.get("path", "") if isinstance(finding, dict) else ""
             match = re.match(r"^/modules/(\d+)(?:/|$)", path)
-            if match:
-                index = int(match.group(1))
-                if index < len(guide.modules):
-                    counts[guide.modules[index].id] += 1
-    scope = runs.repair_scope(topic_id)
+            if not match:
+                continue
+            index = int(match.group(1))
+            if index >= len(guide.modules):
+                continue
+            module = guide.modules[index]
+            # A section finding counts toward its module as well as its
+            # section, so the module count stays the total it has always been.
+            counts[module.id] += 1
+            section_match = re.match(
+                r"^/modules/(\d+)/sections/(\d+)(?:/|$)", path
+            )
+            if section_match:
+                slot = int(section_match.group(2))
+                if slot < len(module.sections):
+                    section_counts[(module.id, module.sections[slot].id)] += 1
     return {
         "topic_id": topic_id,
         "modules": [
-            {"id": module.id, "title": module.title, "open_findings": counts[module.id]}
+            {
+                "id": module.id,
+                "title": module.title,
+                "open_findings": counts[module.id],
+                "sections": [
+                    {
+                        "id": section.id,
+                        "title": section.title,
+                        "open_findings": section_counts[(module.id, section.id)],
+                    }
+                    for section in module.sections
+                ],
+            }
             for module in guide.modules
         ],
-        "repair_scope": {"module_id": scope} if scope is not None else None,
+        "repair_scope": _repair_scope_payload(runs, topic_id),
     }
 
 
@@ -625,10 +662,7 @@ def stage_content(runs: RunStore, topic_id: str, stage: str) -> dict:
         paths.stage == "repair"
         and runs.content_contract(topic_id).kind == "interactive_guide"
     ):
-        scope = runs.repair_scope(topic_id)
-        payload["repair_scope"] = (
-            {"module_id": scope} if scope is not None else None
-        )
+        payload["repair_scope"] = _repair_scope_payload(runs, topic_id)
     return payload
 
 

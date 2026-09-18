@@ -648,7 +648,9 @@ def test_advance_repair_module_writes_scoped_prompt(
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "loop-basics" in out
-    assert runs.repair_scope("systems-thinking") == "loop-basics"
+    from education_pipeline.runs import RepairScope
+
+    assert runs.repair_scope("systems-thinking") == RepairScope("loop-basics", None)
     assert "## Module To Regenerate" in runs.stage_paths(
         "systems-thinking", "repair"
     ).prompt_path.read_text(encoding="utf-8")
@@ -1333,3 +1335,89 @@ def test_ui_subcommand_honors_top_level_workspace_flag(
     seen = _patch_run_ui(monkeypatch)
     assert main(["--workspace", str(tmp_path), "ui", "--no-browser"]) == 0
     assert seen["workspace"] == str(tmp_path)
+
+
+# --- T26: section-scoped repair on the CLI (spec D8) -------------------------
+
+
+def _run_expecting_exit(ws: Path, *args: str) -> int:
+    try:
+        return _run(ws, *args)
+    except SystemExit as exc:  # argparse usage errors
+        return int(exc.code or 0)
+
+
+def test_advance_repair_section_writes_section_scoped_prompt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from education_pipeline.runs import RepairScope
+
+    ws = tmp_path / "ws"
+    runs = test_runs._create_guide_run(ws)
+    test_runs._drive_guide_through_factcheck(runs, "systems-thinking")
+    capsys.readouterr()
+
+    exit_code = _run(
+        ws,
+        "advance",
+        "systems-thinking",
+        "--repair-module",
+        "intervention-practice",
+        "--repair-section",
+        "garden-decision",
+    )
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert (
+        "Performed: write_prompt (repair scoped to section garden-decision "
+        "of module intervention-practice)" in out
+    )
+    assert runs.repair_scope("systems-thinking") == RepairScope(
+        "intervention-practice", "garden-decision"
+    )
+    assert "## Section To Regenerate" in runs.stage_paths(
+        "systems-thinking", "repair"
+    ).prompt_path.read_text(encoding="utf-8")
+
+
+def test_advance_repair_section_without_module_is_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    runs = test_runs._create_guide_run(ws)
+    test_runs._drive_guide_through_factcheck(runs, "systems-thinking")
+    capsys.readouterr()
+
+    exit_code = _run_expecting_exit(
+        ws, "advance", "systems-thinking", "--repair-section", "garden-decision"
+    )
+
+    assert exit_code == 2
+    assert "repair-module" in capsys.readouterr().err
+    assert runs.repair_scope("systems-thinking") is None
+
+
+def test_advance_repair_section_unknown_section_is_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    runs = test_runs._create_guide_run(ws)
+    test_runs._drive_guide_through_factcheck(runs, "systems-thinking")
+    capsys.readouterr()
+
+    exit_code = _run_expecting_exit(
+        ws,
+        "advance",
+        "systems-thinking",
+        "--repair-module",
+        "intervention-practice",
+        "--repair-section",
+        "no-such-section",
+    )
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "no-such-section" in err
+    # A real usage error from the run store, not argparse refusing the flag.
+    assert "unrecognized arguments" not in err
