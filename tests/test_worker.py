@@ -499,3 +499,93 @@ def test_worker_cancel_batch_cancels_queued_and_signals_running(tmp_path):
     statuses = [store.find(job.id).status for job in jobs]
     assert all(status in {"canceled", "interrupted", "failed"} for status in statuses)
     assert "succeeded" not in statuses
+
+
+# --- T23 mutation pins: where admission is evaluated, and how it waits -----
+
+
+def test_worker_enqueue_does_not_wait_for_an_inadmissible_job_to_be_admissible(tmp_path):
+    """``enqueue`` returns at once even when the job cannot start yet.
+
+    Pins the "never in enqueue" half of the admission rule: enqueue runs
+    under the workspace lock (``server.py`` holds it around admission), so
+    blocking there would hold the whole workspace -- and the HTTP request --
+    for as long as the running job takes. Admission belongs in the
+    dispatcher, after dequeue. Without this, moving ``_acquire_slot`` into
+    ``enqueue`` passes every other test in this file.
+    """
+
+    store = JobStore(tmp_path)
+    tracker = _ConcurrencyTracker()
+    delay = 1.0
+    running = _batch_job("m0", "batch-6")
+    # A non-batch job at another stage: inadmissible while the batch job runs.
+    solo = Job(
+        id=new_job_id(), topic_id="t", stage="spec", provider="fake", model="m", effort=None
+    )
+    configs = {running.id: {"delay": delay}, solo.id: {"delay": 0.0}}
+
+    worker = Worker(store, _scripted_factory(store, tracker, configs), parallelism=2)
+    worker.start()
+    try:
+        worker.enqueue(running)
+        deadline = time.monotonic() + 5
+        while tracker.current < 1 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert tracker.current == 1  # sanity: the batch job really is running
+
+        began = time.monotonic()
+        worker.enqueue(solo)
+        assert time.monotonic() - began < 0.4 * delay
+
+        for job in (running, solo):
+            _wait_terminal(store, job.id, timeout=15)
+    finally:
+        worker.stop()
+
+    assert all(store.find(job.id).status == "succeeded" for job in (running, solo))
+
+
+def test_worker_thread_holding_an_inadmissible_job_stops_consuming_the_queue(tmp_path):
+    """A thread that dequeued an inadmissible job waits; it does not re-queue it.
+
+    Re-queueing to the tail would free that thread to take the *next* job,
+    so with ``parallelism=3`` a third batch job would start behind the
+    non-batch job's back -- three concurrent jobs where FIFO-plus-wait
+    allows only two. (It also spins hot whenever a non-batch job sits
+    between two batch jobs, which no assertion can see directly.)
+    """
+
+    store = JobStore(tmp_path)
+    tracker = _ConcurrencyTracker()
+    delay = 0.4
+    first = _batch_job("m0", "batch-7")
+    solo = Job(
+        id=new_job_id(), topic_id="t", stage="spec", provider="fake", model="m", effort=None
+    )
+    rest = [_batch_job("m1", "batch-7"), _batch_job("m2", "batch-7")]
+    order = [first, solo, *rest]
+    configs = {job.id: {"delay": delay} for job in order}
+
+    worker = Worker(store, _scripted_factory(store, tracker, configs), parallelism=3)
+    worker.start()
+    try:
+        # `first` must genuinely be running before the rest are enqueued:
+        # otherwise `solo` can win the race, run alone, and the three batch
+        # jobs legitimately overlap afterwards.
+        worker.enqueue(first)
+        deadline = time.monotonic() + 5
+        while tracker.current < 1 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert tracker.current == 1
+        for job in (solo, *rest):
+            worker.enqueue(job)
+        for job in order:
+            _wait_terminal(store, job.id, timeout=20)
+    finally:
+        worker.stop()
+
+    # One of the three threads is occupied holding `solo`, so at most the
+    # other two can run batch jobs at once -- never all three.
+    assert tracker.peak == 2
+    assert all(store.find(job.id).status == "succeeded" for job in order)

@@ -23,7 +23,14 @@ from typing import Callable
 
 from education_pipeline import cost as cost_module
 from education_pipeline.atomic_io import atomic_write_bytes, atomic_write_text
-from education_pipeline.config import ConfigError, ModelCatalog, ModelPlan
+from education_pipeline.config import (
+    DEFAULT_PARALLELISM,
+    MAX_PARALLELISM,
+    MIN_PARALLELISM,
+    ConfigError,
+    ModelCatalog,
+    ModelPlan,
+)
 from education_pipeline.providers import get_runner
 from education_pipeline.runs import RunStore, StaleContentError
 from education_pipeline.workspace_lock import workspace_lock
@@ -67,6 +74,16 @@ class Job:
     # fields existed load with both None (see ``from_dict``).
     cost_usd: float | None = None
     cost_source: str | None = None
+    # Draft fan-out (per-module-drafting design, decision 10). ``unit`` is
+    # "skeleton" or "module" for a job that executes one draft unit rather
+    # than a whole stage; ``module_id`` names the module for a module unit;
+    # ``batch_id`` groups the module jobs written by one fan-out, and is what
+    # the worker pool's admission rule is keyed on. All three stay None for an
+    # ordinary stage job, and records written before they existed load as None
+    # (see ``from_dict``).
+    unit: str | None = None
+    module_id: str | None = None
+    batch_id: str | None = None
     metadata: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -157,6 +174,10 @@ class JobStore:
         provider: str,
         model: str | None,
         effort: str | None,
+        *,
+        unit: str | None = None,
+        module_id: str | None = None,
+        batch_id: str | None = None,
     ) -> Job:
         with self.lock():
             job = Job(
@@ -167,6 +188,9 @@ class JobStore:
                 model=model,
                 effort=effort,
                 created_at=_utcnow().isoformat(),
+                unit=unit,
+                module_id=module_id,
+                batch_id=batch_id,
             )
             self.job_dir(topic_id, job.id).mkdir(parents=True, exist_ok=True)
         return job
@@ -260,6 +284,38 @@ class JobStore:
             if job.stage == stage and job.status not in TERMINAL_STATUSES:
                 return job
         return None
+
+    def active_unit_for(self, topic_id: str, stage: str, module_id: str | None) -> Job | None:
+        """The live job for exactly this module of this stage, if any.
+
+        ``active_for`` deliberately keeps matching *any* job of the stage, so
+        the enqueue-a-whole-stage guards still refuse mid-batch. This narrower
+        lookup serves only ``Worker.enqueue``'s duplicate check: during a draft
+        fan-out several module jobs of the same stage are live at once by
+        design, and only a second job for the *same* module is a duplicate.
+        """
+
+        for job in self.list(topic_id):
+            if (
+                job.stage == stage
+                and job.module_id == module_id
+                and job.status not in TERMINAL_STATUSES
+            ):
+                return job
+        return None
+
+    def batch(self, batch_id: str) -> list[Job]:
+        """Every job of one fan-out, in creation order, whatever its status.
+
+        Creation order is job-id order (``new_job_id`` is a sortable stamp),
+        not save order: callers (``Worker.cancel_batch``, the batch view) want
+        the order the fan-out wrote the jobs in.
+        """
+
+        if not batch_id:
+            return []
+        jobs = [job for job in self.all_jobs() if job.batch_id == batch_id]
+        return sorted(jobs, key=lambda j: j.id)
 
     def any_active_for(self, topic_id: str) -> Job | None:
         """The first queued/running job for the topic across all stages, if any."""
@@ -394,13 +450,24 @@ class JobRunner:
                 return self._fail(job, f"provider {job.provider!r} is not available on PATH")
 
             model = self._resolve_model(job)
-            prompt_path = self.runs.stage_paths(job.topic_id, job.stage).prompt_path
-            if job.stage == "audit":
-                prompt_path = self.runs.require_provider_ready_prompt(
-                    job.topic_id, job.stage
+            if job.unit is not None:
+                # A draft-unit job (skeleton, or one module of a fan-out) has
+                # its own prompt and its own response beside the stage's; it
+                # must never read or write the stage-level pair.
+                unit_paths = self.runs.draft_unit_paths(
+                    job.topic_id, job.unit, module_id=job.module_id
                 )
-            elif not prompt_path.exists():
-                return self._fail(job, f"prompt not written for stage {job.stage!r}")
+                prompt_path = unit_paths.prompt_path
+                if not prompt_path.exists():
+                    return self._fail(job, f"prompt not written for {self._unit_label(job)}")
+            else:
+                prompt_path = self.runs.stage_paths(job.topic_id, job.stage).prompt_path
+                if job.stage == "audit":
+                    prompt_path = self.runs.require_provider_ready_prompt(
+                        job.topic_id, job.stage
+                    )
+                elif not prompt_path.exists():
+                    return self._fail(job, f"prompt not written for stage {job.stage!r}")
             invocation = runner.build_invocation(model, stage_plan, prompt_path)
             stdout, stdout_truncated, exit_code, timed_out, canceled = self._spawn(
                 job, invocation, prompt_path, cancel
@@ -420,9 +487,18 @@ class JobRunner:
             parsed = runner.parse_response(stdout)
             job.metadata.update(parsed.metadata)
             self._record_cost(job, parsed, prompt_path, model)
-            response_path = self.runs.ingest_response(
-                job.topic_id, job.stage, parsed.text, force=self.force
-            )
+            if job.unit is not None:
+                response_path = self.runs.ingest_draft_unit(
+                    job.topic_id,
+                    job.unit,
+                    parsed.text,
+                    module_id=job.module_id,
+                    force=self.force,
+                ).response_path
+            else:
+                response_path = self.runs.ingest_response(
+                    job.topic_id, job.stage, parsed.text, force=self.force
+                )
             job.response_path = str(response_path)
             try:
                 self.runs.append_manifest_event(
@@ -677,16 +753,34 @@ class JobRunner:
         try:
             responses = self.runs.stage_paths(job.topic_id, job.stage).response_path.parent
             stamp = _utcnow().strftime("%Y%m%dT%H%M%SZ")
-            path = responses / f"{job.stage}.failed.{stamp}.txt"
+            # A unit job names the unit it failed for, so concurrent module
+            # jobs of one batch cannot collide on (or be mistaken for) the
+            # bare stage-level salvage file.
+            stem = self._unit_stem(job)
+            path = responses / f"{stem}.failed.{stamp}.txt"
             suffix = 1
             while path.exists():  # two failures within one second
-                path = responses / f"{job.stage}.failed.{stamp}-{suffix}.txt"
+                path = responses / f"{stem}.failed.{stamp}-{suffix}.txt"
                 suffix += 1
             atomic_write_bytes(path, stdout.encode("utf-8"))
             return path
         except Exception as exc:  # salvage is best effort; never mask the real error
             job.metadata["salvage_error"] = str(exc)
             return None
+
+    @staticmethod
+    def _unit_stem(job: Job) -> str:
+        """``draft.<module_id>`` / ``draft.skeleton`` for a unit job, else ``<stage>``."""
+
+        if job.unit is None:
+            return job.stage
+        return f"{job.stage}.{job.module_id or job.unit}"
+
+    @staticmethod
+    def _unit_label(job: Job) -> str:
+        if job.module_id is not None:
+            return f"draft module {job.module_id!r}"
+        return f"draft unit {job.unit!r}"
 
     def _fail(self, job: Job, error: str) -> Job:
         return self._terminal(job, "failed", error=error)
@@ -700,21 +794,76 @@ class JobRunner:
         return job
 
 
-class Worker:
-    """A single-worker job queue with FIFO ordering and crash recovery."""
+def _validate_parallelism(value: object) -> int:
+    """The same 1..4 whole-number rule the plan key carries, at the pool boundary.
 
-    def __init__(self, store: JobStore, runner_factory: Callable[[Job], JobRunner]) -> None:
+    ``Worker`` is constructed from a plan today, but also directly by tests
+    and by anything embedding the daemon, so the bound is enforced here too
+    rather than trusted.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"worker parallelism must be an integer; got {value!r}")
+    if not MIN_PARALLELISM <= value <= MAX_PARALLELISM:
+        raise ConfigError(
+            f"worker parallelism must be between {MIN_PARALLELISM} and "
+            f"{MAX_PARALLELISM}; got {value}"
+        )
+    return value
+
+
+class Worker:
+    """A bounded worker pool over one FIFO queue, with crash recovery.
+
+    ``parallelism`` threads share a single queue, so ordering is still FIFO.
+    What keeps concurrency honest is one admission rule, evaluated in
+    :meth:`_loop` *after* a job is dequeued: a job may start only when nothing
+    is running, or when every running job shares its ``batch_id``. So the
+    module jobs of one draft fan-out overlap up to ``parallelism``, and every
+    other job is exactly as serialized as it was when this was a single
+    thread -- an ordinary job never runs beside anything, and a batch never
+    starts while an ordinary job is in flight.
+
+    Admission is deliberately *not* checked in :meth:`enqueue`: enqueue runs
+    under the workspace lock (``server.py`` holds it around admission) and
+    must stay non-blocking. A thread holding an inadmissible job waits on
+    ``_admit``, a condition variable signalled at every job completion (and
+    at every cancel); it never re-queues the job to the tail, which would
+    spin whenever a non-batch job sat between two batch jobs. Waiting cannot
+    deadlock: a running job always reaches a terminal state (exit, timeout or
+    cancel), and its completion signals the condition.
+    """
+
+    def __init__(
+        self,
+        store: JobStore,
+        runner_factory: Callable[[Job], JobRunner],
+        *,
+        parallelism: int = DEFAULT_PARALLELISM,
+    ) -> None:
         self.store = store
         self.runner_factory = runner_factory
+        self.parallelism = _validate_parallelism(parallelism)
         self._queue: "queue.Queue[str | None]" = queue.Queue()
         self._cancels: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
+        # Shares ``_lock``: admission reads the same running-job map that
+        # completion mutates, and a waiter must release that lock while it
+        # sleeps or no completion could ever publish itself.
+        self._admit = threading.Condition(self._lock)
+        # job_id -> batch_id (None for an ordinary job) for jobs admitted and
+        # not yet finished. Its emptiness *is* "nothing is running".
+        self._running: dict[str, str | None] = {}
+        self._threads: list[threading.Thread] = []
         self._stopping = False
 
     def start(self) -> None:
-        self._thread = threading.Thread(target=self._loop, name="ep-worker", daemon=True)
-        self._thread.start()
+        self._threads = [
+            threading.Thread(target=self._loop, name=f"ep-worker-{index}", daemon=True)
+            for index in range(self.parallelism)
+        ]
+        for thread in self._threads:
+            thread.start()
 
     def stop(self, finish_inflight: bool = True) -> None:
         self._stopping = True
@@ -722,9 +871,15 @@ class Worker:
             with self._lock:
                 for event in self._cancels.values():
                     event.set()
-        self._queue.put(None)  # sentinel to wake the loop
-        if self._thread is not None:
-            self._thread.join(timeout=30)
+        # One sentinel per thread: each returns on the first one it takes, and
+        # a thread parked on ``_admit`` is woken by the notify below (its job
+        # becomes admissible as the others drain).
+        for _ in range(max(len(self._threads), 1)):
+            self._queue.put(None)
+        with self._admit:
+            self._admit.notify_all()
+        for thread in self._threads:
+            thread.join(timeout=30)
 
     def enqueue(self, job: Job) -> None:
         # Check + durable-save + queue insertion must be one atomic operation:
@@ -735,11 +890,17 @@ class Worker:
         # rejected job here is never saved, so `active_for` (which scans
         # job.json files) never sees it and no orphan is left behind.
         with self._lock:
-            existing = self.store.active_for(job.topic_id, job.stage)
+            # A module job collides only with a live job for the *same* module:
+            # a fan-out puts several jobs of one stage in flight on purpose.
+            # Ordinary jobs keep the stage-wide check unchanged.
+            if job.module_id is not None:
+                existing = self.store.active_unit_for(job.topic_id, job.stage, job.module_id)
+                scope = f"{job.topic_id}/{job.stage}/{job.module_id}"
+            else:
+                existing = self.store.active_for(job.topic_id, job.stage)
+                scope = f"{job.topic_id}/{job.stage}"
             if existing is not None and existing.id != job.id:
-                raise ConfigError(
-                    f"a {existing.status} job already exists for {job.topic_id}/{job.stage}"
-                )
+                raise ConfigError(f"a {existing.status} job already exists for {scope}")
             self.store.save(job)
             self._cancels[job.id] = threading.Event()
             self._queue.put(job.id)
@@ -756,10 +917,31 @@ class Worker:
             self.store.save(job)
             if event is not None:
                 event.set()
+            self._wake_waiters()
             return job
         if event is not None:
             event.set()
+        self._wake_waiters()
         return self.store.find(job_id)
+
+    def _wake_waiters(self) -> None:
+        with self._admit:
+            self._admit.notify_all()
+
+    def cancel_batch(self, batch_id: str) -> list[Job]:
+        """Cancel every job of one fan-out: queued ones flip, running ones signal.
+
+        Per job this is exactly :meth:`cancel`, so a queued job goes terminal
+        immediately and a running one is asked to stop through its cancel
+        event (the runner terminates the provider and writes the terminal
+        record). A job that has been dequeued but is still waiting for
+        admission sees its event too and never starts.
+        """
+
+        results = [self.cancel(job.id) for job in self.store.batch(batch_id)]
+        with self._admit:
+            self._admit.notify_all()
+        return [job for job in results if job is not None]
 
     def reconcile(self) -> None:
         for job in self.store.all_jobs():
@@ -798,6 +980,12 @@ class Worker:
                 job.ended_at = _utcnow().isoformat()
                 self.store.save(job)
                 continue
+            if not self._acquire_slot(job, cancel):
+                # Canceled while it waited for a slot; it never started.
+                job.status = "canceled"
+                job.ended_at = _utcnow().isoformat()
+                self.store.save(job)
+                continue
             try:
                 # runner_factory is inside the try so a factory that raises
                 # (e.g. bad config building the JobRunner) can't kill the loop.
@@ -816,6 +1004,46 @@ class Worker:
                     fresh.ended_at = _utcnow().isoformat()
                     fresh.pid = None
                     self.store.save(fresh)
+            finally:
+                self._release_slot(job)
+
+    def _admissible(self, job: Job) -> bool:
+        """The whole pool rule; caller holds ``_lock``.
+
+        Nothing running: anything may start. Otherwise only a job of the very
+        batch already running may join it -- which keeps an ordinary
+        (``batch_id is None``) job alone, as it has always been.
+        """
+
+        if not self._running:
+            return True
+        if job.batch_id is None:
+            return False
+        return all(batch_id == job.batch_id for batch_id in self._running.values())
+
+    def _acquire_slot(self, job: Job, cancel: threading.Event) -> bool:
+        """Block until this job may start. False when it was canceled instead.
+
+        The job is never put back on the queue: re-queueing an inadmissible
+        job to the tail spins hot whenever an ordinary job sits between two
+        batch jobs, and loses FIFO order. The wait timeout is only a
+        belt-and-braces poll -- every completion and cancel notifies.
+        """
+
+        with self._admit:
+            while not self._admissible(job):
+                if cancel.is_set():
+                    return False
+                self._admit.wait(timeout=0.5)
+            if cancel.is_set():
+                return False
+            self._running[job.id] = job.batch_id
+        return True
+
+    def _release_slot(self, job: Job) -> None:
+        with self._admit:
+            self._running.pop(job.id, None)
+            self._admit.notify_all()
 
 
 def _process_identity(pid: int) -> str | None:
