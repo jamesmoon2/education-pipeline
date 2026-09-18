@@ -15,11 +15,15 @@ import threading
 import tomllib
 
 from education_pipeline.config import (
-    GUIDE_V1_REQUIRED_STAGES,
     OPTIONAL_STAGES,
     REQUIRED_STAGES,
     SUPPORTED_STAGES,
     ConfigError,
+)
+from education_pipeline.stage_graph import (
+    required_stages as graph_required_stages,
+    sources_of as graph_sources_of,
+    stage as stage_spec,
 )
 from education_pipeline.export import (
     EXPORT_FORMATS,
@@ -542,11 +546,9 @@ class RunStore:
         safe_id = _artifact_id(topic_id, "topic id")
         safe_stage = _supported_stage(stage)
         contract = self.content_contract(safe_id)
-        is_guide_json = contract.kind == "interactive_guide" and safe_stage in {
-            "draft",
-            "repair",
-        }
-        is_json = is_guide_json or safe_stage == "audit"
+        content = stage_spec(safe_stage).content
+        is_guide_json = contract.kind == "interactive_guide" and content == "guide"
+        is_json = is_guide_json or content == "json"
         suffix = ".json" if is_json else ".md"
         response_suffix = f".response{suffix}"
         stub_suffix = f".SAVE_RESPONSE_HERE{suffix}"
@@ -554,7 +556,7 @@ class RunStore:
         content_type = MARKDOWN_CONTENT_TYPE
         if is_guide_json:
             content_type = _guide_content_type(contract.schema_version)
-        elif safe_stage == "audit":
+        elif content == "json":
             content_type = JSON_CONTENT_TYPE
         return StagePaths(
             stage=safe_stage,
@@ -787,9 +789,9 @@ class RunStore:
         stage between ``qa`` and ``repair``; legacy Markdown runs never do.
         """
 
-        if self.content_contract(topic_id).kind == "interactive_guide":
-            return GUIDE_V1_REQUIRED_STAGES
-        return REQUIRED_STAGES
+        kind = self.content_contract(topic_id).kind
+        mode = "interactive_guide" if kind == "interactive_guide" else "legacy_markdown"
+        return graph_required_stages(mode)
 
     def stage_status(self, topic_id: str, stage: str) -> StageStatus:
         """Report the persisted progress for one stage of a run."""
@@ -797,11 +799,7 @@ class RunStore:
         paths = self.stage_paths(topic_id, stage)
         approved = paths.approved_path.exists()
         stale = False
-        if approved and self._is_guide_v1(paths.topic_id) and paths.stage in {
-            "qa",
-            "factcheck",
-            "repair",
-        }:
+        if approved and self._is_guide_v1(paths.topic_id) and graph_sources_of(paths.stage):
             stale = self._stage_upstream_stale(paths.topic_id, paths.stage)
         elif paths.stage == "audit":
             stale = (
