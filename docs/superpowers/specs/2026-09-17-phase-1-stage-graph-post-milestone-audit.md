@@ -68,3 +68,11 @@ for the owner, not a refactor thread's.
   imports `run_modes` at module scope. T15/T16 can move those names to a leaf
   module and drop the lazy imports. `REQUIRED_STAGES` stays imported in
   `runs.py` only as a re-export that two test files rely on.
+- **T15:** moved report methods import `parse_guide`, `normalize_guide`,
+  `validate_guide`, `compute_static_checks`, `load_runtime_assets`,
+  `personalization_trace_is_fresh`, `_write_bytes_atomic`,
+  `QUALITY_REPORT_SCHEMA_VERSION`, `_relative_to` and `StageStatus` lazily
+  from `runs` because tests monkeypatch those names on
+  `education_pipeline.runs`. The names stay bound in `runs.py` for that
+  reason alone. Resolving this means repointing the patches at the mixin
+  modules (test-only edits), which T16 is allowed to do.
