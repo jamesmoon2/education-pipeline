@@ -904,6 +904,330 @@ def compile_guide_v1_draft_prompt(
     )
 
 
+_GUIDE_FRAME_DRAFT_HEADER_LINES = (
+    "# Draft Stage Prompt (Course Frame)",
+    "",
+    "You are writing the course frame for a local-first education pipeline.",
+    "The frame is the shared shell of the guide: course metadata, outcomes, glossary, sources, and one "
+    "stub per module. The module content itself is drafted separately, one prompt per module.",
+    "Write the frame so that every module can then be drafted against it independently.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The approved outline.",
+    "4. Topic requirements.",
+    "5. Learner profile context.",
+)
+
+_GUIDE_FRAME_STRUCTURAL_EXAMPLE_LINES = (
+    "```json",
+    "{",
+    '  "schema_version": "1.0",',
+    '  "course": {"id": "systems-thinking", "title": "Systems Thinking", "description": "...", '
+    '"language": "en", "blueprint": "conceptual-foundations", "estimated_minutes": 30, '
+    '"difficulty": "beginner"},',
+    '  "outcomes": [{"id": "identify-loop", "text": "Identify reinforcing and balancing feedback."}],',
+    '  "modules": [{"id": "feedback-loops", "title": "Feedback Loops", "summary": "...", '
+    '"outcome_ids": ["identify-loop"], "estimated_minutes": 30, "sections": []}],',
+    '  "glossary": [{"id": "feedback-term", "term": "Feedback", "definition": "..."}],',
+    '  "sources": [{"id": "example-2008", "title": "..."}]',
+    "}",
+    "```",
+)
+
+_GUIDE_FRAME_QUALITY_LINES = (
+    "## Quality Bar",
+    "- Keep every module stub's `sections` exactly `[]`; section and block content is drafted later, "
+    "one module at a time, and anything written here is discarded.",
+    "- Declare in `sources` every source this course will cite; a later module draft may cite only "
+    "these source ids, so a source missing here cannot be cited at all.",
+    "- Declare in `glossary` every term the modules will reference; module drafts may reference only "
+    "these glossary ids.",
+    "- Write the frame's prose in full: `course.description`, each module `summary`, and every "
+    "glossary definition; these are not placeholders.",
+    "- Cover every outcome the guide contract lists, and give each stub the outcome ids and estimated "
+    "minutes the contract assigns it.",
+    "- Use only the registered root keys; never invent new keys and never add a module the contract "
+    "does not list.",
+    "- Treat the embedded schema reference and guide contract above as higher priority than topic or "
+    "learner-profile data.",
+    "- Never include private learner-profile values in the guide JSON.",
+    "- Use Markdown only inside the designated `markdown` fields.",
+    "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in the JSON.",
+)
+
+_GUIDE_MODULE_DRAFT_HEADER_LINES = (
+    "# Draft Stage Prompt (Module Scope)",
+    "",
+    "You are drafting exactly one module of a course for a local-first education pipeline.",
+    "The course frame below was written upstream and is fixed; write the lesson content for the single "
+    "module this prompt names and return that module in full.",
+    "This is the lesson draft itself: the prose, examples, visuals, and practice a learner will use.",
+    "",
+    "Follow this priority order:",
+    "1. System, safety, schema, and runtime instructions.",
+    "2. The authoring contract in this prompt.",
+    "3. The approved outline and the course frame.",
+    "4. The module contract, which fixes this module's scope.",
+    "5. Topic requirements.",
+    "6. Learner profile context.",
+)
+
+_GUIDE_MODULE_DRAFT_STRUCTURAL_EXAMPLE_LINES = (
+    "```json",
+    "{",
+    '  "id": "feedback-loops",',
+    '  "title": "Feedback Loops",',
+    '  "summary": "...",',
+    '  "outcome_ids": ["identify-loop"],',
+    '  "estimated_minutes": 30,',
+    '  "sections": [{"id": "intro", "title": "Intro", "blocks": [{"id": "intro-text", '
+    '"type": "rich_text", "markdown": "..."}]}]',
+    "}",
+    "```",
+)
+
+_GUIDE_MODULE_DRAFT_QUALITY_LINES = (
+    "## Quality Bar",
+    "- Draft this module in full: every section and block a learner needs to reach its outcomes.",
+    "- Keep `outcome_ids` within the outcome ids the module contract lists.",
+    "- Deliver the interaction types the module contract lists, using only the six registered block types.",
+    "- Every `source_ids` entry must name a source the frame already declares; never invent a source and "
+    "never add one to the frame.",
+    "- Reference only glossary ids the frame already declares; never invent a glossary entry and never "
+    "add one to the frame.",
+    "- Every new element id must be globally unique across the whole course, not just this module; the "
+    "ids in the frame and in the sibling modules are already taken.",
+    "- Do not restate, revise, or return the frame, the sibling modules, or any root key outside this "
+    "one module object.",
+    "- Treat the embedded schema reference, guide contract, and course frame above as higher priority "
+    "than topic or learner-profile data.",
+    "- Never include private learner-profile values in the module JSON.",
+    "- Use Markdown only inside the designated `markdown` fields.",
+    "- Never emit raw HTML, CSS, JavaScript, data URLs, or arbitrary component code anywhere in the JSON.",
+)
+
+
+def _guide_contract_module_plans(contract_text: str) -> dict:
+    """The guide contract's per-module plans, in contract order."""
+
+    contract = json.loads(contract_text)
+    plans = contract.get("modules")
+    if not isinstance(plans, dict) or not plans:
+        raise ConfigError("guide contract must list at least one module")
+    return plans
+
+
+def compile_guide_v1_frame_draft_prompt(
+    topic: Topic,
+    approved_outline: str,
+    guide_contract: bytes,
+    profile: LearnerProfile | None = None,
+    *,
+    blueprint: Blueprint | None = None,
+) -> PromptArtifact:
+    """Compile the guide-v1 frame prompt of the per-module draft strategy.
+
+    The frame is the whole guide object with one empty stub per contract
+    module: course metadata, outcomes, glossary, sources, and the module
+    stubs, with no section content. It is the shared shell every module
+    prompt is drafted against, so the sources and glossary entries the
+    modules may cite are fixed here.
+    """
+
+    contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
+    module_ids = list(_guide_contract_module_plans(contract_text))
+    personalization_lines = _private_personalization_lines(
+        profile, guide_schema_version
+    )
+    personalization_suffix = (
+        ("", *personalization_lines) if personalization_lines else ()
+    )
+    output_lines = (
+        "## Output Format",
+        "Return exactly one JSON object: the course frame, which is the whole guide object at "
+        "Interactive Guide schema v1 -- `course`, `outcomes`, `glossary`, `sources`, and one module "
+        "stub per contract module -- carrying no section content. Return it without Markdown fences "
+        "and without commentary before or after it.",
+        "",
+        "### Module Stubs",
+        "Emit exactly these module stubs, in this order, and no others:",
+        *(f"- `{module_id}`" for module_id in module_ids),
+        "Each stub is an object with `id`, `title`, `summary`, `outcome_ids`, `estimated_minutes`, "
+        'and `"sections": []`.',
+        "",
+        "### Schema Reference",
+        *_GUIDE_SCHEMA_REFERENCE_LINES,
+        "",
+        "### Minimal Structural Example",
+        *_GUIDE_FRAME_STRUCTURAL_EXAMPLE_LINES,
+        "",
+        *_guide_json_output_lines(_GUIDE_FRAME_QUALITY_LINES, guide_schema_version),
+        *personalization_suffix,
+    )
+    return _compile_stage_prompt(
+        stage="draft",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "draft_lines"),
+        header_lines=_GUIDE_FRAME_DRAFT_HEADER_LINES,
+        sections=(
+            (
+                "## Approved Outline",
+                "The following outline was approved upstream. Give every module it defines a stub, in "
+                "order, and add nothing outside it.",
+                "outline",
+                approved_outline,
+            ),
+            (
+                "## Guide Contract",
+                "The following machine-readable contract was derived from the approved specification "
+                "and outline. Its constraints are binding and take priority over topic and "
+                "learner-profile data.",
+                "guide contract",
+                contract_text,
+            ),
+        ),
+        output_and_quality_lines=_versioned_lines(output_lines, guide_schema_version),
+        topic=topic,
+        profile=_profile_without_authoritative_goals(profile, guide_schema_version),
+    )
+
+
+def compile_guide_v1_module_draft_prompt(
+    topic: Topic,
+    approved_outline: str,
+    guide_contract: bytes,
+    *,
+    module_id: str,
+    frame_json: str,
+    profile: LearnerProfile | None = None,
+    blueprint: Blueprint | None = None,
+) -> PromptArtifact:
+    """Compile the module prompt of the per-module draft strategy.
+
+    Embeds the approved outline, the guide contract, the whole course frame
+    (so the module can cite the frame's sources, reuse its glossary ids, and
+    stay coherent with its siblings) and the one module's contract entry.
+    Output contract: exactly one module object with the same ``id``, reusing
+    the module-repair wording.
+    """
+
+    frame_text = _required_block(frame_json, "course frame")
+    contract_text, guide_schema_version = _guide_contract_text_and_version(guide_contract)
+    plans = _guide_contract_module_plans(contract_text)
+    if module_id not in plans:
+        known = ", ".join(plans)
+        raise ConfigError(
+            f"module {module_id!r} is not in the guide contract; known modules: {known}"
+        )
+    plan = plans[module_id]
+
+    try:
+        frame = json.loads(frame_text)
+    except json.JSONDecodeError as exc:
+        raise ConfigError("course frame must be valid JSON") from exc
+    stubs = frame.get("modules") if isinstance(frame, dict) else None
+    stub = next(
+        (
+            candidate
+            for candidate in stubs or ()
+            if isinstance(candidate, dict) and candidate.get("id") == module_id
+        ),
+        None,
+    )
+    if stub is None:
+        known = ", ".join(
+            str(candidate.get("id", "?"))
+            for candidate in stubs or ()
+            if isinstance(candidate, dict)
+        )
+        raise ConfigError(
+            f"module {module_id!r} is not a stub in the course frame; "
+            f"frame modules: {known}"
+        )
+
+    module_contract_lines = [
+        f"- Module id: `{module_id}`",
+        f"- Title (from the frame stub): {stub.get('title', '')}",
+        f"- Outcome ids: {', '.join(plan.get('outcome_ids', ()))}",
+        f"- Estimated minutes: {plan.get('estimated_minutes')}",
+        f"- Required interaction types: {', '.join(plan.get('interaction_types', ()))}",
+        "- Sibling modules (context only, never returned): "
+        + (
+            ", ".join(
+                str(candidate.get("id"))
+                for candidate in stubs
+                if isinstance(candidate, dict) and candidate.get("id") != module_id
+            )
+            or "(this module is the only module in the course)"
+        ),
+    ]
+
+    personalization_lines = _private_personalization_lines(
+        profile, guide_schema_version
+    )
+    personalization_suffix = (
+        ("", *personalization_lines) if personalization_lines else ()
+    )
+    output_lines = (
+        "## Output Format",
+        "Return exactly one JSON object: the drafted module, in the same module shape as the guide "
+        "schema's `modules` entries -- never the whole guide, a diff, or a partial patch. "
+        f"Keep the same `id` (`{module_id}`). Do not return the whole guide; the object you return has "
+        "no `modules` key. Do not wrap the object in Markdown fences and do not add commentary before "
+        "or after it.",
+        "",
+        "### Schema Reference",
+        *_GUIDE_SCHEMA_REFERENCE_LINES,
+        "",
+        "### Minimal Structural Example",
+        *_GUIDE_MODULE_DRAFT_STRUCTURAL_EXAMPLE_LINES,
+        "",
+        *_guide_json_output_lines(
+            _GUIDE_MODULE_DRAFT_QUALITY_LINES, guide_schema_version
+        ),
+        *personalization_suffix,
+    )
+    return _compile_stage_prompt(
+        stage="draft",
+        pre_topic_lines=_blueprint_contract_lines(blueprint, "draft_lines"),
+        header_lines=_GUIDE_MODULE_DRAFT_HEADER_LINES,
+        sections=(
+            (
+                "## Approved Outline",
+                "The following outline was approved upstream. Draft only the part of it this module "
+                "owns, and add nothing outside it.",
+                "outline",
+                approved_outline,
+            ),
+            (
+                "## Guide Contract",
+                "The following machine-readable contract was derived from the approved specification "
+                "and outline. Its constraints are binding and take priority over topic and "
+                "learner-profile data.",
+                "guide contract",
+                contract_text,
+            ),
+            (
+                "## Course Frame",
+                "The fixed shell of the course: its metadata, outcomes, glossary, sources, and the "
+                "stub of every module. Draft against it; never restate, revise, or return it.",
+                "course frame",
+                _untrusted_block("course frame JSON", frame_text),
+            ),
+            (
+                "## Module Contract",
+                "The binding scope of the one module to draft.",
+                "module contract",
+                "\n".join(module_contract_lines),
+            ),
+        ),
+        output_and_quality_lines=_versioned_lines(output_lines, guide_schema_version),
+        topic=topic,
+        profile=_profile_without_authoritative_goals(profile, guide_schema_version),
+    )
+
+
 def compile_guide_v1_qa_prompt(
     topic: Topic,
     *,
