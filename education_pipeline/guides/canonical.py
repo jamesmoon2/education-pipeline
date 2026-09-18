@@ -270,7 +270,7 @@ def _collect_ids(value: Any) -> list[str]:
 
 def _merge_contributions(
     merged: dict[str, list[Any]],
-    owners: dict[str, str],
+    owners: dict[str, tuple[str, str]],
     entries: Any,
     key: str,
     owner: str,
@@ -281,6 +281,12 @@ def _merge_contributions(
     modules may legitimately need the same term); differing content is an
     :class:`AssemblyError` naming both contributors, because no deterministic
     rule can pick a winner.
+
+    ``owners`` spans both kinds -- the parser keeps one id namespace, so a
+    glossary entry and a source may not share an id -- but it records which
+    kind claimed each id, because the duplicate lookup below searches only
+    the current kind's merged list. A cross-kind duplicate is refused by name
+    rather than left to raise a bare ``StopIteration``.
     """
 
     if entries is None:
@@ -294,18 +300,24 @@ def _merge_contributions(
                 f"every `{key}` contribution must be an object with a string `id`",
             )
         entry_id = entry["id"]
-        previous_owner = owners.get(entry_id)
-        if previous_owner is None:
-            owners[entry_id] = owner
+        previous = owners.get(entry_id)
+        if previous is None:
+            owners[entry_id] = (key, owner)
             merged[key].append(dict(entry))
             continue
+        previous_kind, previous_owner = previous
+        implicated = tuple(
+            dict.fromkeys(name for name in (previous_owner, owner) if name is not None)
+        )
+        if previous_kind != key:
+            raise AssemblyError(
+                implicated,
+                f"id {entry_id!r} is contributed as a `{previous_kind}` entry by "
+                f"{previous_owner} and as a `{key}` entry by {owner}; the guide "
+                "keeps one id namespace, so the same id cannot name both",
+            )
         existing = next(item for item in merged[key] if item.get("id") == entry_id)
         if dict(entry) != existing:
-            implicated = tuple(
-                dict.fromkeys(
-                    name for name in (previous_owner, owner) if name is not None
-                )
-            )
             raise AssemblyError(
                 implicated,
                 f"`{key}` entry {entry_id!r} is contributed twice with different "
@@ -380,13 +392,13 @@ def assemble_guide(
 
     merged_lists: dict[str, list[Any]] = {"glossary": [], "sources": []}
     id_owners: dict[str, str] = {}
-    contribution_owners: dict[str, str] = {}
+    contribution_owners: dict[str, tuple[str, str]] = {}
     for key in merged_lists:
         skeleton_entries = skeleton.get(key)
         if isinstance(skeleton_entries, list):
             for entry in skeleton_entries:
                 if isinstance(entry, Mapping) and isinstance(entry.get("id"), str):
-                    contribution_owners[entry["id"]] = "the skeleton"
+                    contribution_owners[entry["id"]] = (key, "the skeleton")
                 merged_lists[key].append(dict(entry) if isinstance(entry, Mapping) else entry)
 
     skeleton_without_modules = {
