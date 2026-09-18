@@ -52,7 +52,8 @@ export default function ModuleRepairControl({
     setSectionId(module ? preselectSection(module) : "");
   };
 
-  const scopedToSection = selectedModule && sectionId !== "";
+  const scopedToSection =
+    selectedModule && selectedModule.module_level_findings === 0 && sectionId !== "";
 
   return (
     <section className="module-repair" aria-labelledby="module-repair-heading">
@@ -82,6 +83,7 @@ export default function ModuleRepairControl({
           Section
           <select
             value={sectionId}
+            disabled={selectedModule.module_level_findings > 0}
             onChange={(e) => setSectionId(e.target.value)}
           >
             <option value="">Whole module</option>
