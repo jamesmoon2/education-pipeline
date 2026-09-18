@@ -9,7 +9,32 @@
 
 ## Closeout disposition
 
-(Filled in at T28.)
+Nine threads, each merged into the phase branch only after the full pytest
+suite was green on the merged result (plus `npm run build`, vitest and the
+relevant Playwright spec whenever `web/` changed). Every behaviour thread
+was strict TDD with a Sonnet test writer and a separate implementer (Opus
+for engine, daemon and prompt work; Sonnet for the cockpit and the fixture),
+and every implementer ran a short mutation pass: of fourteen mutations tried
+across T21–T24, nine were caught by the red set and five survived and were
+pinned before the thread merged (T21 contribution order; T23 admission in
+`enqueue` and re-queue-to-tail; T24 assemble without the active-job guard;
+T26 `module_level_findings` only type-asserted). Baseline at open was pytest
+1775 passed / 1 skipped, vitest 554, Playwright 87; at close 2012 / 1,
+596, 88 on Python 3.11.
+
+Three threads (T21, T22, T24) exceeded the ~800-changed-line guideline;
+T21 because prompt, check and assembly are one contract, T22 because the
+lifecycle is one mixin with a 59-case red set, T24 because it is the whole
+API/CLI surface for one feature. None was split; each is reviewable by the
+red commit followed by the green commit.
+
+Design-review findings applied before any code (T20): a skeleton cannot pass
+`parse_guide`, so it has its own structural check; the unit next-action arms
+live inside the draft slot and yield to an existing response file; module
+staleness hashes the immutable contract file, not the live outline; batch
+admission is evaluated in the worker loop, never under the workspace lock;
+`active_for` keeps matching module jobs so every existing guard still holds;
+the batch enqueue response stays job-shaped.
 
 ## Decisions that departed from the plan text
 
@@ -44,6 +69,39 @@ flags it, as T11 did for the factcheck warning.
 
 ## Accepted limitations
 
+- **T21:** `check_skeleton` skips `link.unknown_internal_target` (link
+  targets live in sections that do not exist yet); the merged guide's strict
+  parse still catches a dangling link. The module draft prompt does not run
+  `check_skeleton` itself; `write_module_draft_prompts` is that gate.
+- **T22:** response events spell `response_sha256` explicitly rather than
+  through the `files` mechanism; `DraftProgress.total` counts orphaned units
+  while the "k of N" detail counts contract modules; the 7b rebuild leaves
+  orphaned unit responses on disk (ignored by assembly, never deleted); the
+  assembly-failure state stays `save_response` because fixing a module is a
+  human step.
+- **T23:** unit jobs write stage provenance for `draft`, so the last module
+  to finish is the last writer; `parallelism` is read once at daemon start;
+  `worker_parallelism` falls back to 2 on an unloadable plan (the error
+  still surfaces per job); the concurrency bound is the thread count, so it
+  depends on `start()` creating exactly `parallelism` threads.
+- **T24:** the 20-topic poll's local budget in
+  `tests/test_final_validation_cache.py` widened 50 → 70 ms (see
+  Observations); batch order comes from `metadata.batch_index` because
+  same-second job ids do not sort.
+- **T25:** the stage-level paste loop still writes the whole-stage response
+  (the whole-guide bypass), so the skeleton has its own paste control in the
+  panel; the per-module "changes since last run" diff is deferred —
+  `response.previous.json` is written but not yet read by the viewer; draft
+  content is plain JSON text, so module anchors live on the nav only.
+- **T26:** `stage_content`'s `repair_scope` was module-only until T27
+  widened it; section-scope QA-item matching reuses the module prompt's
+  substring heuristic widened with the section id and title.
+- **T27:** the pending-scope notice is one plain string so the text matcher
+  can read it; Playwright in this image needs the
+  `PLAYWRIGHT_CHROMIUM_EXECUTABLE` override `playwright.config.ts` documents.
+- **T28:** the example README's manual-CLI walkthrough is illustrative prose,
+  not test-covered; `draft.guide.json` was deleted rather than kept as a
+  second, driftable copy of the assembled draft.
 - **T20:** the module id namespace is enforced by prompt convention
   (`<module-id>-` prefix) plus an assembly-time collision check; a model
   that ignores the convention gets a named `AssemblyError`, not a silent
@@ -54,6 +112,12 @@ flags it, as T11 did for the factcheck warning.
   change once cross-topic concurrency has been reasoned about.
 
 ## Observations for other owners
+
+- **Retired open questions (T20 §11).** 1: the skeleton has no approval
+  gate, and the cockpit lets a user read and re-paste it before "Run
+  modules". 2: `parallelism` is workspace-only (`update_run_plan` rejects
+  it). 3: the whole-guide prompt is still written. 4: a module response
+  replaces its stub wholesale, id fixed.
 
 - **Status poll cost (T24).** `draft_progress` is computed on every status
   read of a guide run (~0.2 ms per topic after trimming). The Phase 0 T01
