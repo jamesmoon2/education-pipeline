@@ -14,7 +14,7 @@
 
 | ID | Thread | Exit criteria | Status |
 | --- | --- | --- | --- |
-| T20 | Design spec | Spec in the repo's shape, adversarially reviewed against `runs.py` invariants, every line reference verified; this plan lists T21–T28. | - [ ] |
+| T20 | Design spec | Spec in the repo's shape, adversarially reviewed against `runs.py` invariants, every line reference verified; this plan lists T21–T28. | - [x] |
 | T21 | Frame/module draft prompts and assembly | `compile_guide_v1_frame_draft_prompt`, `compile_guide_v1_module_draft_prompt`; `assemble_guide(frame, modules, module_ids)` in `canonical.py` is byte-deterministic and refuses id collisions, renames, missing or extra stubs; prompt snapshot tests. | - [ ] |
 | T22 | RunStore module lifecycle | `draft_strategy` recorded at `create_run`; part paths under `prompts/draft/`, `responses/draft/`; per-part events and staleness; `NextAction.part`; `advance` writes part prompts and performs `assemble`; `ingest_part_response`; characterization cases for every row of the D5 table; resume from workspace alone. | - [ ] |
 | T23 | Job fan-out and bounded parallelism | `Job.batch_id` / `Job.part`; batch enqueue; worker pool with `[jobs] parallelism` (default 2, cap 4); batch cancel; one failure leaves siblings running; part ingest and salvage paths; fake-provider tests. | - [ ] |
@@ -27,3 +27,5 @@
 ## Closeout log
 
 (One line per thread as it lands: what changed, test counts, accepted limitations.)
+
+- **T20** landed: `2026-09-18-per-module-drafting-design.md` (decisions D1–D9, surface table, thread map). Opus adversarial review returned twelve findings; four were blockers and all twelve are folded in: frame stubs cannot pass `parse_guide` (min one section, `parse.py:368`) so the frame gets a lenient shape check; the three "latest draft event" helpers must filter by part; the worker's single-job state becomes a dict and batches persist across reconcile; `frame` is a legal module id so `parts` filters name modules only; there is no create-run route so `draft_strategy` rides the first `advance` body like `blueprint`. Sonnet checked 32 line references, one range off by one, fixed. Owner review is still open on the two questions in the spec (default strategy, where `parallelism` lives); the phase proceeds on the spec's answers.
