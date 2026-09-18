@@ -131,6 +131,43 @@ per module, so a partial failure names exactly which modules to re-run rather
 than costing the whole draft again. At most `parallelism` module jobs run at
 once (`parallelism` in `config/model-plan.toml`, 1–4, default 2).
 
+## Running to the next judgment
+
+```bash
+education-pipeline -C ./ws run <topic> --until approval
+```
+
+This keeps taking the steps that need no judgment — writing the next stage
+prompt, running the configured provider and waiting for the job, assembling a
+module-by-module draft, running validation — and stops at the first step that
+does. It prints one line per step, then one line for where the run now stands.
+
+What it never does: **approve, finalize or export.** It stops at the first
+gate instead — a stage waiting for your approval, findings waiting for
+review, a finished run waiting to be finalized or exported — and it also
+hands back when the stage's provider is `manual` or the model plan cannot be
+read, leaving the prompt on disk for you to run yourself. It cannot be
+combined with `--stage` or `--modules` (usage error, exit 2), since those ask
+for one specific job instead.
+
+Exit codes: `0` when it reached a judgment point (including a manual
+hand-back), `1` when a step failed or the run was still moving when the step
+budget ran out, `2` for the usage error above.
+
+To do this for several courses one after another, queue them:
+
+```bash
+education-pipeline -C ./ws queue add <topic>      # queue a course (or re-queue it)
+education-pipeline -C ./ws queue list             # topic, status, where it stopped
+education-pipeline -C ./ws queue remove <topic>
+education-pipeline -C ./ws queue run              # drive each pending course, in order
+```
+
+`queue run` drives one course at a time, recording each one's stop in
+`<workspace>/queue/courses.json` as it lands, and exits `1` if any course
+stopped on a failure. A course interrupted mid-run stays `running` in that
+file and is picked up again by the next `queue run`.
+
 ## Privacy notes
 
 - Stage prompts include your topic and the private learner-profile context

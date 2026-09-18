@@ -105,7 +105,19 @@ absent from both; see
 ## Prefer the terminal?
 
 The CLI drives the same engine end to end (`topic import`, `advance`,
-`approve`, `validate`, `finalize`, `export`). The example project's
+`approve`, `validate`, `finalize`, `export`). `education-pipeline run
+<topic> --until approval` takes every step that needs no judgment — next
+prompt, provider job, assemble, validate — and stops at the first one that
+does, without ever approving, finalizing or exporting.
+
+To carry several courses to their next gate in one go, queue them:
+`queue add <topic>` for each, then `queue run`. Courses run one at a time,
+in the order they were added, and each one's stopping point is recorded as
+it lands, so `queue list` afterwards tells you which courses are waiting on
+you and for what. Leave it running while you do something else and come
+back to a list of decisions rather than a list of chores.
+
+The example project's
 [README](../examples/feedback-loops/README.md) walks the full CLI flow
 using its committed stage responses, so you can complete a whole run
 without calling any model.
