@@ -1563,3 +1563,18 @@ def test_run_modules_with_non_draft_stage_exits_2(
     assert code == 2
     err = capsys.readouterr().err
     assert "--modules requires --stage draft" in err
+
+
+def test_run_empty_modules_value_exits_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 7: ``--modules ""`` named no module; the daemon then 500'd."""
+
+    client = _FakeBatchClient()
+    _patch_fake_client(monkeypatch, client)
+
+    code = _run(tmp_path, "run", "t", "--modules", "")
+
+    assert code == 2
+    assert "at least one module" in capsys.readouterr().err
+    assert client.calls == []

@@ -300,3 +300,140 @@ def test_salvage_stage_output_blank_file_does_not_replace_an_existing_response(t
         )
 
     assert paths.response_path.read_text(encoding="utf-8") == "already here"
+
+
+# --- PR #39 review finding 6: unit salvage files must be recoverable -------
+#
+# ``JobRunner._unit_stem`` names a draft unit's salvage file
+# ``draft.<module-id>.failed.<ts>.txt`` / ``draft.skeleton.failed.<ts>.txt``,
+# which the stage-keyed listing bucketed under a stage that does not exist and
+# the salvage endpoint refused outright.
+
+
+def _guide_run_with_units(tmp_path):
+    import test_draft_units as tdu
+
+    runs = tdu._run_with_skeleton_prompt(tmp_path)
+    return runs, JobStore(tmp_path), tdu
+
+
+def _responses_dir(runs, topic_id):
+    path = runs.stage_paths(topic_id, "draft").response_path.parent
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def test_run_status_lists_unit_failed_outputs_with_unit_and_module(tmp_path):
+    runs, _jobs, tdu = _guide_run_with_units(tmp_path)
+    responses = _responses_dir(runs, tdu.TID)
+    (responses / "draft.failed.20260918T000000Z.txt").write_text("stage", encoding="utf-8")
+    (responses / "draft.skeleton.failed.20260918T000000Z.txt").write_text("sk", encoding="utf-8")
+    (responses / "draft.loop-basics.failed.20260918T000000Z.txt").write_text("mod", encoding="utf-8")
+
+    status = read_api.run_status_payload(runs, tdu.TID)
+    by_stage = {s["stage"]: s for s in status["stages"]}
+
+    # The existing key keeps meaning exactly what it meant: stage-level files.
+    assert by_stage["draft"]["failed_outputs"] == ["draft.failed.20260918T000000Z.txt"]
+    assert by_stage["draft"]["failed_unit_outputs"] == [
+        {
+            "file": "draft.skeleton.failed.20260918T000000Z.txt",
+            "unit": "skeleton",
+            "module_id": None,
+        },
+        {
+            "file": "draft.loop-basics.failed.20260918T000000Z.txt",
+            "unit": "module",
+            "module_id": "loop-basics",
+        },
+    ]
+    assert by_stage["qa"]["failed_unit_outputs"] == []
+
+
+def test_salvage_promotes_a_skeleton_failure_into_the_skeleton_response(tmp_path):
+    runs, jobs, tdu = _guide_run_with_units(tmp_path)
+    responses = _responses_dir(runs, tdu.TID)
+    raw = tdu._skeleton_response()
+    failed = responses / "draft.skeleton.failed.20260918T000000Z.txt"
+    failed.write_text(raw, encoding="utf-8")
+
+    result = write_api.salvage_stage_output(runs, jobs, tdu.TID, "draft", failed.name)
+
+    paths = runs.draft_unit_paths(tdu.TID, "skeleton")
+    assert paths.response_path.read_text(encoding="utf-8") == raw
+    assert result["stage"] == "draft"
+    assert result["unit"] == "skeleton"
+    assert result["module_id"] is None
+    assert result["response_path"] == "draft/skeleton/response.json"
+    # Promoted through ingest_draft_unit, so decision 9's follow-up ran.
+    assert runs.draft_unit_paths(
+        tdu.TID, "module", module_id="loop-basics"
+    ).prompt_path.is_file()
+    actions = [e["action"] for e in runs.read_manifest(tdu.TID)["events"]]
+    assert "response_salvaged" in actions
+
+
+def test_salvage_promotes_a_module_failure_into_its_unit_response(tmp_path):
+    import test_draft_units as tdu
+
+    runs = tdu._run_with_skeleton_ingested(tmp_path)
+    jobs = JobStore(tmp_path)
+    responses = _responses_dir(runs, tdu.TID)
+    raw = tdu._module_response("loop-basics")
+    failed = responses / "draft.loop-basics.failed.20260918T000000Z.txt"
+    failed.write_text(raw, encoding="utf-8")
+
+    result = write_api.salvage_stage_output(runs, jobs, tdu.TID, "draft", failed.name)
+
+    paths = runs.draft_unit_paths(tdu.TID, "module", module_id="loop-basics")
+    assert paths.response_path.read_text(encoding="utf-8") == raw
+    assert result["unit"] == "module"
+    assert result["module_id"] == "loop-basics"
+    assert result["response_path"] == "draft/modules/loop-basics/response.json"
+
+
+def test_salvage_unit_refuses_an_existing_unit_response_without_overwrite(tmp_path):
+    import test_draft_units as tdu
+
+    runs = tdu._run_with_one_module_saved(tmp_path, module_id="loop-basics")
+    jobs = JobStore(tmp_path)
+    responses = _responses_dir(runs, tdu.TID)
+    raw = tdu._module_response_with_title("loop-basics", "Salvaged title")
+    failed = responses / "draft.loop-basics.failed.20260918T000000Z.txt"
+    failed.write_text(raw, encoding="utf-8")
+    paths = runs.draft_unit_paths(tdu.TID, "module", module_id="loop-basics")
+    before = paths.response_path.read_text(encoding="utf-8")
+
+    with pytest.raises(write_api.ConflictError) as exc:
+        write_api.salvage_stage_output(runs, jobs, tdu.TID, "draft", failed.name)
+    assert exc.value.code == "already_exists"
+    assert paths.response_path.read_text(encoding="utf-8") == before
+
+    write_api.salvage_stage_output(
+        runs, jobs, tdu.TID, "draft", failed.name, overwrite=True
+    )
+    assert paths.response_path.read_text(encoding="utf-8") == raw
+
+
+def test_salvage_unit_refuses_a_blank_unit_failed_file(tmp_path):
+    runs, jobs, tdu = _guide_run_with_units(tmp_path)
+    responses = _responses_dir(runs, tdu.TID)
+    failed = responses / "draft.skeleton.failed.20260918T000000Z.txt"
+    failed.write_text("  \n", encoding="utf-8")
+
+    with pytest.raises(ConfigError) as exc:
+        write_api.salvage_stage_output(runs, jobs, tdu.TID, "draft", failed.name)
+
+    assert "blank" in str(exc.value)
+    assert not runs.draft_unit_paths(tdu.TID, "skeleton").response_path.exists()
+    assert failed.exists()
+
+
+def test_salvage_still_rejects_a_unit_file_named_for_another_stage(tmp_path):
+    runs, jobs, tdu = _guide_run_with_units(tmp_path)
+    responses = _responses_dir(runs, tdu.TID)
+    failed = responses / "draft.skeleton.failed.20260918T000000Z.txt"
+    failed.write_text("raw", encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        write_api.salvage_stage_output(runs, jobs, tdu.TID, "qa", failed.name)

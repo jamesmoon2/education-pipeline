@@ -4323,3 +4323,76 @@ def test_config_plan_route_round_trips_parallelism(server):
     )
     assert status == 200
     assert body["parallelism"] == 3
+
+
+# ---------------------------------------------------------------------------
+# PR #39 review findings: stale module prompts, and an empty ``modules`` list.
+# ---------------------------------------------------------------------------
+
+
+def _stale_the_first_module(tmp_path):
+    """One module with a saved response, made ``stale`` by a skeleton reingest."""
+
+    runs = tdu._run_with_one_module_saved(tmp_path, module_id="loop-basics")
+    revised = json.loads(tdu._skeleton_response())
+    revised["modules"][0]["title"] = "Loops, restubbed"
+    runs.ingest_draft_unit(
+        tdu.TID, "skeleton", json.dumps(revised, ensure_ascii=False), force=True
+    )
+    by_id = {m.module_id: m for m in runs.draft_progress(tdu.TID).modules}
+    assert by_id["loop-basics"].state == "stale"
+    return runs
+
+
+def test_enqueue_stage_recompiles_stale_module_prompts_before_queueing_them(
+    tmp_path, server_with_context
+):
+    """Finding 4: a stale module's ``prompt.md`` was compiled from inputs that
+    have since changed. Queueing it as-is runs the obsolete prompt, and its
+    existing response then refuses the job's ``force=False`` ingest."""
+
+    port, context = server_with_context
+    runs = _stale_the_first_module(tmp_path)
+    stale_prompt = runs.draft_unit_paths(tdu.TID, "module", module_id="loop-basics").prompt_path
+    before = stale_prompt.read_text(encoding="utf-8")
+
+    first = context.enqueue_stage(tdu.TID, "draft", False, modules=None)
+
+    after = stale_prompt.read_text(encoding="utf-8")
+    assert after != before
+    assert "Loops, restubbed" in after
+    by_id = {m.module_id: m for m in runs.draft_progress(tdu.TID).modules}
+    assert by_id["loop-basics"].state != "stale"
+
+    jobs = {job.module_id: job for job in context.store.batch(first.batch_id)}
+    assert set(jobs) == set(tdu.MODULE_ORDER)
+    # The recompiled module already has a response, so its job must force the
+    # ingest; the untouched module keeps the request's own force flag.
+    assert jobs["loop-basics"].metadata["force"] is True
+    assert jobs["intervention-practice"].metadata["force"] is False
+
+
+def test_enqueue_stage_empty_modules_list_is_a_config_error(tmp_path, server_with_context):
+    """Finding 7: ``modules: []`` selected nothing and then indexed ``jobs[0]``."""
+
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+
+    with pytest.raises(ConfigError, match="at least one module"):
+        context.enqueue_stage(tdu.TID, "draft", False, modules=[])
+
+
+def test_post_jobs_empty_modules_list_is_400(tmp_path, server_with_context):
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+
+    status, body = _req(
+        port,
+        "POST",
+        "/v1/jobs",
+        body={"topic_id": tdu.TID, "stage": "draft", "modules": []},
+    )
+
+    assert status == 400
+    assert body["error"]["code"] == "invalid_request"
+    assert "at least one module" in body["error"]["message"]

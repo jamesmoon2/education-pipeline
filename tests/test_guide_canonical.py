@@ -658,3 +658,64 @@ def test_assemble_guide_merges_contributions_skeleton_first_then_module_order() 
     assert [entry["id"] for entry in decoded["glossary"]] == [
         entry["id"] for entry in data["glossary"]
     ]
+
+
+# ---------------------------------------------------------------------------
+# PR #39 review finding 8: contribution owners are tracked per kind.
+# ---------------------------------------------------------------------------
+
+
+def test_assemble_guide_rejects_a_glossary_id_reused_as_a_source_id() -> None:
+    """One id namespace: the same id cannot name a glossary entry and a source.
+
+    ``_merge_contributions`` shared one ``owners`` map between the two kinds
+    while looking the previous entry up in the *current* kind's list only, so
+    this raised a bare ``StopIteration`` instead of an ``AssemblyError``.
+    """
+
+    from education_pipeline.guides.canonical import AssemblyError, assemble_guide
+
+    data = _fixture_data()
+    skeleton_dict = json.loads(_skeleton_json(data))
+    skeleton_dict["glossary"] = []
+    skeleton = json.dumps(skeleton_dict, ensure_ascii=False)
+
+    module0 = dict(data["modules"][0])
+    module0["glossary"] = [
+        {"id": "shared-id", "term": "Shared", "definition": "From loop-basics."}
+    ]
+    module1 = dict(data["modules"][1])
+    module1["sources"] = [
+        {"id": "shared-id", "title": "A source that stole a glossary id"}
+    ]
+    modules = {
+        "loop-basics": json.dumps(module0, ensure_ascii=False),
+        "intervention-practice": json.dumps(module1, ensure_ascii=False),
+    }
+
+    with pytest.raises(AssemblyError) as excinfo:
+        assemble_guide(skeleton, modules, module_order=_module_order())
+
+    message = str(excinfo.value)
+    assert "shared-id" in message
+    assert "loop-basics" in message and "intervention-practice" in message
+    assert set(excinfo.value.module_ids) == {"loop-basics", "intervention-practice"}
+
+
+def test_assemble_guide_rejects_a_skeleton_glossary_id_reused_as_a_module_source() -> None:
+    from education_pipeline.guides.canonical import AssemblyError, assemble_guide
+
+    data = _fixture_data()
+    skeleton = _skeleton_json(data)
+    shared_id = data["glossary"][0]["id"]
+
+    module1 = dict(data["modules"][1])
+    module1["sources"] = [{"id": shared_id, "title": "Not a glossary entry"}]
+    modules = dict(_modules_map(data))
+    modules["intervention-practice"] = json.dumps(module1, ensure_ascii=False)
+
+    with pytest.raises(AssemblyError) as excinfo:
+        assemble_guide(skeleton, modules, module_order=_module_order())
+
+    assert shared_id in str(excinfo.value)
+    assert "the skeleton" in str(excinfo.value)

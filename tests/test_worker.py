@@ -592,3 +592,48 @@ def test_worker_thread_holding_an_inadmissible_job_stops_consuming_the_queue(tmp
     # other two can run batch jobs at once -- never all three.
     assert tracker.peak == 2
     assert all(store.find(job.id).status == "succeeded" for job in order)
+
+
+def test_worker_admits_waiting_jobs_in_enqueue_order(tmp_path):
+    """Finding 5 (PR #39 review): admission among waiters is FIFO.
+
+    When the pool empties, every parked thread wakes and re-checks the
+    admission rule, so a batch job enqueued *after* an ordinary job could win
+    the race and start first -- and then keep the pool to itself while its
+    siblings joined it. The ordinary job that has been waiting longest must
+    go first.
+    """
+
+    store = JobStore(tmp_path)
+    tracker = _ConcurrencyTracker()
+    delay = 0.5
+    running = _batch_job("m0", "batch-first")
+    solo = Job(
+        id=new_job_id(), topic_id="t", stage="spec", provider="fake", model="m", effort=None
+    )
+    later = [_batch_job("m1", "batch-later"), _batch_job("m2", "batch-later")]
+    order = [running, solo, *later]
+    configs = {job.id: {"delay": delay} for job in order}
+
+    worker = Worker(store, _scripted_factory(store, tracker, configs), parallelism=4)
+    worker.start()
+    try:
+        worker.enqueue(running)
+        deadline = time.monotonic() + 5
+        while tracker.current < 1 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert tracker.current == 1  # the first batch really is running
+
+        # `solo` is dequeued (and parked) before the later batch's jobs are.
+        worker.enqueue(solo)
+        time.sleep(0.1)
+        for job in later:
+            worker.enqueue(job)
+        for job in order:
+            _wait_terminal(store, job.id, timeout=30)
+    finally:
+        worker.stop()
+
+    solo_start = tracker.spans[solo.id][0]
+    assert all(solo_start < tracker.spans[job.id][0] for job in later)
+    assert all(store.find(job.id).status == "succeeded" for job in order)

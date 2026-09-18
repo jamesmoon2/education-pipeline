@@ -64,6 +64,16 @@ export interface StageStatus {
   // Salvaged provider output that never became a response (thread T04).
   // Optional: fixtures and payloads predating the field simply omit it.
   failed_outputs?: string[];
+  // The same, for a draft unit (skeleton or one module): those salvage files
+  // are named `draft.<unit>.failed.<ts>.txt` and are promoted into the unit's
+  // own response. Optional for the same reason as `failed_outputs`.
+  failed_unit_outputs?: FailedUnitOutput[];
+}
+
+export interface FailedUnitOutput {
+  file: string;
+  unit: "skeleton" | "module";
+  module_id: string | null;
 }
 
 /** One stage's cost roll-up over its job records

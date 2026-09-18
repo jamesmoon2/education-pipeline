@@ -874,3 +874,282 @@ def test_resume_from_a_fresh_runstore_matches_progress_and_next_action(tmp_path:
         next_action_before.action,
         next_action_before.detail,
     )
+
+
+# --------------------------------------------------------------------------
+# PR #39 review findings.
+# --------------------------------------------------------------------------
+
+
+def _reapprove_outline_with_changed_contract(runs: RunStore, topic_id: str = TID) -> None:
+    """Re-approve the outline with a module renamed, so decision 7b fires."""
+
+    outline = runs.write_outline_prompt(topic_id, overwrite=True)
+    changed = {
+        "contract_version": 1,
+        "modules": {
+            "loop-basics": FIXTURE_OUTLINE_CONTRACT["modules"]["loop-basics"],
+            "wrap-up": {
+                "outcome_ids": ["choose-intervention"],
+                "estimated_minutes": 10,
+                "interaction_types": ["reflection"],
+            },
+        },
+    }
+    outline.response_path.write_text(
+        tr._guide_outline_response(changed), encoding="utf-8"
+    )
+    runs.approve_stage(topic_id, "outline", overwrite=True)
+
+
+def test_outline_change_rebuild_moves_the_skeleton_response_aside(tmp_path: Path) -> None:
+    """Finding 1: the rebuilt skeleton must read ``prompt_written``.
+
+    Decision 7b says the rebuild "moves existing unit responses aside as
+    orphaned"; leaving ``draft/skeleton/response.json`` in place keeps
+    ``draft_progress`` reporting ``response_ingested`` for a skeleton that
+    was written against the *old* contract, and lets the old skeleton be
+    assembled against the new one.
+    """
+
+    runs = _run_with_one_module_saved(tmp_path)
+    skeleton_paths = runs.draft_unit_paths(TID, "skeleton")
+    skeleton_bytes = skeleton_paths.response_path.read_bytes()
+    module_paths = runs.draft_unit_paths(TID, "module", module_id="loop-basics")
+    module_bytes = module_paths.response_path.read_bytes()
+    _reapprove_outline_with_changed_contract(runs)
+
+    result = runs.advance(TID)
+
+    assert result.performed == "write_prompt"
+    assert skeleton_paths.prompt_path.is_file()
+    assert not skeleton_paths.response_path.exists()
+    assert not module_paths.response_path.exists()
+    assert runs.draft_progress(TID).skeleton.state == "prompt_written"
+
+    # Never delete model output: both responses are still on disk, aside.
+    orphaned = sorted((runs.run_dir(TID) / "draft" / "orphaned").glob("*/**/response.json"))
+    assert [path.read_bytes() for path in orphaned].count(skeleton_bytes) == 1
+    assert [path.read_bytes() for path in orphaned].count(module_bytes) == 1
+
+
+def test_outline_change_rebuild_records_an_orphaned_units_event(tmp_path: Path) -> None:
+    runs = _run_with_one_module_saved(tmp_path)
+    _reapprove_outline_with_changed_contract(runs)
+
+    runs.advance(TID)
+
+    events = _events(runs, TID, "draft_units_orphaned")
+    assert len(events) == 1
+    assert "skeleton" in events[0]["units"]
+    assert "loop-basics" in events[0]["units"]
+    assert events[0]["orphaned_dir"].startswith("draft/orphaned/")
+
+
+def test_outline_change_rebuild_without_any_unit_response_records_nothing(
+    tmp_path: Path,
+) -> None:
+    """Nothing to move aside is not an event: the rebuild is idempotent."""
+
+    runs = _run_with_skeleton_prompt(tmp_path)
+    _reapprove_outline_with_changed_contract(runs)
+
+    runs.advance(TID)
+
+    assert _events(runs, TID, "draft_units_orphaned") == []
+    assert not (runs.run_dir(TID) / "draft" / "orphaned").exists()
+
+
+def _module_response_with_title(module_id: str, title: str) -> str:
+    module = json.loads(_module_response(module_id))
+    module["title"] = title
+    return json.dumps(module, ensure_ascii=False)
+
+
+def test_forced_module_ingest_carries_force_into_the_automatic_assembly(
+    tmp_path: Path,
+) -> None:
+    """Finding 3: a forced rerun must force the assembly it triggers.
+
+    Without it the ingest lands, ``assemble_draft`` refuses the superseded
+    response, the ``StaleContentError`` is swallowed, and the caller (a
+    provider job) reports success over an unchanged stage response.
+    """
+
+    runs = _run_fully_assembled(tmp_path)
+    stage = runs.stage_paths(TID, "draft")
+    stage.response_path.write_text(tr.GUIDE_FIXTURE, encoding="utf-8")  # hand edit
+    assert runs.draft_progress(TID).superseded is True
+
+    runs.ingest_draft_unit(
+        TID,
+        "module",
+        _module_response_with_title("loop-basics", "Loops, revisited"),
+        module_id="loop-basics",
+        force=True,
+    )
+
+    assembled = stage.response_path.read_text(encoding="utf-8")
+    assert "Loops, revisited" in assembled
+    assert runs.draft_progress(TID).superseded is False
+    assert len(_events(runs, TID, "response_replaced")) == 1
+
+
+def test_unforced_module_ingest_on_a_superseded_draft_surfaces_the_refusal(
+    tmp_path: Path,
+) -> None:
+    """Finding 3: a refused automatic assembly is reported, not silent."""
+
+    runs = _run_with_one_module_saved(tmp_path)
+    stage = runs.stage_paths(TID, "draft")
+    stage.response_path.write_text(tr.GUIDE_FIXTURE, encoding="utf-8")
+
+    runs.ingest_draft_unit(
+        TID,
+        "module",
+        _module_response("intervention-practice"),
+        module_id="intervention-practice",
+    )
+
+    progress = runs.draft_progress(TID)
+    assert progress.assembled is not None
+    assert progress.assembled.ok is False
+    assert "force" in (progress.assembled.error or "")
+    # The hand-written response is still exactly what the user put there.
+    assert stage.response_path.read_text(encoding="utf-8") == tr.GUIDE_FIXTURE
+
+
+def _assembly_of_units_on_disk(runs: RunStore, topic_id: str = TID) -> bytes:
+    from education_pipeline.guides.canonical import assemble_guide
+
+    skeleton = runs.draft_unit_paths(topic_id, "skeleton").response_path.read_text(
+        encoding="utf-8"
+    )
+    modules = {
+        module_id: runs.draft_unit_paths(
+            topic_id, "module", module_id=module_id
+        ).response_path.read_text(encoding="utf-8")
+        for module_id in MODULE_ORDER
+    }
+    return assemble_guide(skeleton, modules, module_order=MODULE_ORDER)
+
+
+def _last_assembled_event(runs: RunStore, topic_id: str = TID) -> dict:
+    events = _events(runs, topic_id, "draft_assembled")
+    assert events, "no draft_assembled event was recorded"
+    return events[-1]
+
+
+def _module_sha256_on_disk(runs: RunStore, topic_id: str = TID) -> dict[str, str]:
+    return {
+        module_id: _sha256(
+            runs.draft_unit_paths(
+                topic_id, "module", module_id=module_id
+            ).response_path.read_text(encoding="utf-8")
+        )
+        for module_id in MODULE_ORDER
+    }
+
+
+def test_concurrent_module_ingests_never_assemble_a_stale_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 2: ingest + assembly must be serialized per run.
+
+    The damaging interleaving, forced here: one thread snapshots the module
+    responses and the (absent) stage response, a second thread re-runs
+    another module and assembles it, and the first thread then writes its
+    *older* assembly over the top. Both threads report success; the stage
+    response no longer matches the unit responses on disk.
+    """
+
+    import threading
+
+    import education_pipeline.runs_draft_units as unit_module
+
+    runs = _run_with_one_module_saved(tmp_path, module_id="intervention-practice")
+    snapshot_taken = threading.Event()
+    other_done = threading.Event()
+    real_assemble = unit_module.assemble_guide
+
+    def hooked_assemble(*args, **kwargs):
+        if threading.current_thread().name == "ingest-first":
+            snapshot_taken.set()
+            other_done.wait(timeout=1.0)
+        return real_assemble(*args, **kwargs)
+
+    monkeypatch.setattr(unit_module, "assemble_guide", hooked_assemble)
+
+    errors: list[BaseException] = []
+
+    def _first() -> None:
+        try:
+            runs.ingest_draft_unit(
+                TID, "module", _module_response("loop-basics"), module_id="loop-basics"
+            )
+        except BaseException as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    first = threading.Thread(target=_first, name="ingest-first")
+    first.start()
+    assert snapshot_taken.wait(timeout=5)
+    try:
+        runs.ingest_draft_unit(
+            TID,
+            "module",
+            _module_response_with_title("intervention-practice", "Intervening, v2"),
+            module_id="intervention-practice",
+            force=True,
+        )
+    finally:
+        other_done.set()
+        first.join(timeout=10)
+    assert errors == []
+
+    assert runs.stage_paths(TID, "draft").response_path.read_bytes() == (
+        _assembly_of_units_on_disk(runs)
+    )
+    assert _last_assembled_event(runs)["module_sha256"] == _module_sha256_on_disk(runs)
+
+
+def test_parallel_batch_completions_leave_a_consistent_assembly(tmp_path: Path) -> None:
+    """Finding 2: the worker pool finishes two module jobs of one batch at once."""
+
+    import threading
+
+    for attempt in range(30):
+        topic_id = f"race-{attempt}"
+        runs = _run_with_skeleton_ingested(tmp_path, topic_id)
+        start = threading.Barrier(len(MODULE_ORDER))
+        errors: list[BaseException] = []
+
+        def _ingest(module_id: str) -> None:
+            try:
+                start.wait(timeout=10)
+                runs.ingest_draft_unit(
+                    topic_id,
+                    "module",
+                    _module_response(module_id),
+                    module_id=module_id,
+                )
+            except BaseException as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_ingest, args=(module_id,))
+            for module_id in MODULE_ORDER
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert errors == [], f"attempt {attempt}: {errors!r}"
+        assert runs.stage_paths(topic_id, "draft").response_path.read_bytes() == (
+            _assembly_of_units_on_disk(runs, topic_id)
+        )
+        assert _last_assembled_event(runs, topic_id)["module_sha256"] == (
+            _module_sha256_on_disk(runs, topic_id)
+        )
+        progress = runs.draft_progress(topic_id)
+        assert progress.assembled is not None and progress.assembled.ok is True

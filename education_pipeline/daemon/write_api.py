@@ -329,24 +329,87 @@ def ingest_response(
     }
 
 
-def _require_failed_output(paths, file: str) -> Path:
-    """Resolve a salvage file name to a real failed-output path, or refuse.
+def _require_failed_output(paths, file: str) -> tuple[Path, str | None, str | None]:
+    """Resolve a salvage file name to ``(path, unit, module_id)``, or refuse.
 
     Only a bare basename matching this stage's ``<stage>.failed.*.txt`` shape
-    is accepted, so the name can never escape the run's responses directory
-    or name an unrelated artifact.
+    -- or one of its draft units' ``<stage>.<unit>.failed.*.txt`` -- is
+    accepted, so the name can never escape the run's responses directory or
+    name an unrelated artifact. ``unit`` is ``None`` for a stage-level file.
     """
 
     if not file or Path(file).name != file:
         raise ConfigError(f"invalid failed-output name: {file!r}")
-    if not (file.startswith(f"{paths.stage}.failed.") and file.endswith(".txt")):
+    parsed = read_api.parse_failed_output_name(file)
+    if parsed is None or parsed[0] != paths.stage:
         raise ConfigError(
             f"{file!r} is not a failed-output file for stage {paths.stage!r}"
         )
     candidate = paths.response_path.parent / file
     if not candidate.is_file():
         raise ConfigError(f"no such failed output for stage {paths.stage!r}: {file!r}")
-    return candidate
+    return candidate, parsed[1], parsed[2]
+
+
+def _salvage_draft_unit(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    source: Path,
+    unit: str,
+    module_id: str | None,
+    *,
+    overwrite: bool,
+) -> dict:
+    """Promote a draft *unit* failure into that unit's response.
+
+    The same rules as the stage-level salvage -- never clobber without
+    ``overwrite``, never promote blank output -- but the bytes land through
+    ``RunStore.ingest_draft_unit``, so the unit's own events, the previous
+    response and decision 9's follow-up (module prompts after a skeleton, an
+    assembly attempt after a module) all happen exactly as for any other
+    ingest. Nothing is approved.
+    """
+
+    unit_paths = runs.draft_unit_paths(topic_id, unit, module_id=module_id)
+    existed = unit_paths.response_path.exists()
+    if existed and not overwrite:
+        raise ConflictError(
+            "already_exists",
+            f"response already ingested for draft unit {_unit_label(unit_paths)}; "
+            "retry with overwrite to replace it",
+        )
+    salvaged = source.read_bytes()
+    if not salvaged.strip():
+        raise ConfigError(
+            f"salvage file {source.name!r} is blank; there is nothing to "
+            f"promote into the draft unit {_unit_label(unit_paths)} response. "
+            "The raw file is kept for diagnosis."
+        )
+    try:
+        text = salvaged.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"salvage file {source.name!r} is not valid UTF-8; it is kept for "
+            "diagnosis rather than promoted"
+        ) from exc
+    saved = runs.ingest_draft_unit(
+        topic_id, unit, text, module_id=module_id, force=existed
+    )
+    runs.append_manifest_event(
+        topic_id,
+        {
+            "stage": "draft",
+            "action": "response_salvaged",
+            "source_file": source.name,
+            "unit": unit,
+            "module_id": module_id,
+        },
+    )
+    payload = _draft_unit_payload(runs, jobs, topic_id, saved)
+    payload["topic_id"] = topic_id
+    payload["stage"] = "draft"
+    return payload
 
 
 def salvage_stage_output(
@@ -369,7 +432,11 @@ def salvage_stage_output(
     _require_not_archived(runs, topic_id)
     _require_no_active_job(jobs, topic_id)
     paths = runs.stage_paths(topic_id, stage)
-    source = _require_failed_output(paths, file)
+    source, unit, module_id = _require_failed_output(paths, file)
+    if unit is not None:
+        return _salvage_draft_unit(
+            runs, jobs, topic_id, source, unit, module_id, overwrite=overwrite
+        )
     if paths.response_path.exists() and not overwrite:
         raise ConflictError(
             "already_exists",
