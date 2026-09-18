@@ -55,4 +55,9 @@ flags it, as T11 did for the factcheck warning.
 
 ## Observations for other owners
 
-(Filled in as found.)
+- **Status poll cost (T24).** `draft_progress` is computed on every status
+  read of a guide run (~0.2 ms per topic after trimming). The Phase 0 T01
+  local budget for the 20-topic poll moved from 50 ms to 70 ms; the CI budget
+  (200 ms) and the zero-revalidation call-count pins are unchanged. If the
+  poll grows again, memoize `draft_progress` on the manifest tail and the
+  unit directory mtimes the way the final-validation memo is keyed.

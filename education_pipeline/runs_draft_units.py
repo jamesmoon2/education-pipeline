@@ -169,8 +169,10 @@ class DraftUnitsMixin:
         modules = payload.get("modules") if isinstance(payload, dict) else None
         return dict(modules) if isinstance(modules, dict) else {}
 
-    def _draft_skeleton_text(self, topic_id: str) -> str | None:
-        path = self.draft_unit_paths(topic_id, "skeleton").response_path
+    def _draft_skeleton_text(
+        self, topic_id: str, paths: DraftUnitPaths | None = None
+    ) -> str | None:
+        path = (paths or self.draft_unit_paths(topic_id, "skeleton")).response_path
         if not path.is_file():
             return None
         return read_bytes_retrying(path).decode("utf-8")
@@ -771,48 +773,46 @@ class DraftUnitsMixin:
 
         safe_id = self._require_draft_units(topic_id)
         skeleton_paths = self.draft_unit_paths(safe_id, "skeleton")
-        skeleton_text = self._draft_skeleton_text(safe_id)
+        skeleton_text = self._draft_skeleton_text(safe_id, skeleton_paths)
+
+        assembled = self._recorded_assembly(safe_id)
+        response_path = self.stage_paths(safe_id, "draft").response_path
+        last_assembled = self._last_assembled_sha256(safe_id)
+        superseded = False
+        if response_path.exists():
+            # With nothing ever assembled, any response on disk came from
+            # outside the unit layer by definition -- no need to read and hash
+            # a whole guide to learn that on every status poll.
+            superseded = last_assembled is None or (
+                hashlib.sha256(read_bytes_retrying(response_path)).hexdigest()
+                != last_assembled
+            )
+
+        if skeleton_text is None:
+            # The module units *are* the skeleton's stubs, so nothing below
+            # this point needs the contract's module order -- and reading it
+            # means parsing the approved outline, which every status poll of
+            # every run would otherwise pay for.
+            skeleton = DraftUnitStatus(
+                unit="skeleton",
+                state="prompt_written"
+                if skeleton_paths.prompt_path.exists()
+                else "not_run",
+            )
+            return DraftProgress(
+                skeleton=skeleton, assembled=assembled, superseded=superseded
+            )
         try:
             order = self._draft_module_order(safe_id)
         except ConfigError:
             order = ()
-
-        assembled = self._recorded_assembly(safe_id)
-        stage_paths = self.stage_paths(safe_id, "draft")
-        superseded = False
-        if stage_paths.response_path.exists():
-            current = hashlib.sha256(
-                read_bytes_retrying(stage_paths.response_path)
-            ).hexdigest()
-            superseded = current != self._last_assembled_sha256(safe_id)
-
-        skeleton_error: str | None = None
-        if skeleton_text is None:
-            skeleton_state = (
-                "prompt_written" if skeleton_paths.prompt_path.exists() else "not_run"
-            )
-            skeleton_sha = None
-        else:
-            skeleton_state = "response_ingested"
-            skeleton_sha = hashlib.sha256(
-                skeleton_text.encode("utf-8")
-            ).hexdigest()
-            checked = check_skeleton(skeleton_text, module_order=order)
-            if not checked.ok:
-                skeleton_error = _diagnostics_text(checked)
+        checked = check_skeleton(skeleton_text, module_order=order)
         skeleton = DraftUnitStatus(
             unit="skeleton",
-            state=skeleton_state,
-            response_sha256=skeleton_sha,
-            error=skeleton_error,
+            state="response_ingested",
+            response_sha256=hashlib.sha256(skeleton_text.encode("utf-8")).hexdigest(),
+            error=None if checked.ok else _diagnostics_text(checked),
         )
-
-        if skeleton_text is None:
-            # The module units *are* the skeleton's stubs: before it lands
-            # there is nothing per module to report.
-            return DraftProgress(
-                skeleton=skeleton, assembled=assembled, superseded=superseded
-            )
 
         stubs = self._draft_skeleton_stubs(skeleton_text)
         states = self._module_unit_states(safe_id, order, skeleton_text)

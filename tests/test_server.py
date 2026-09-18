@@ -4,6 +4,7 @@ import json
 import shutil
 import sys
 import threading
+import time
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,8 +12,10 @@ from types import SimpleNamespace
 import pytest
 
 import test_runs
+import test_draft_units as tdu
 from education_pipeline import (
     STAGE_ORDER,
+    ConfigError,
     ContentContract,
     RunStore,
     load_model_plan,
@@ -3845,3 +3848,478 @@ def test_workspace_first_run_true_with_zero_runs(tmp_path, monkeypatch):
 def test_workspace_requires_token(server):
     status, body = _req(server, "GET", "/v1/workspace", token="wrong")
     assert status == 401
+
+
+# ---------------------------------------------------------------------------
+# T24: DaemonContext.enqueue_stage draft fan-out (decisions 8, 8b, 10; §5)
+#
+# None of these pass today: ``DaemonContext.enqueue_stage`` has the signature
+# ``(self, topic_id, stage, force)`` -- no ``modules`` parameter -- so every
+# call below that passes ``modules=`` raises ``TypeError`` immediately, before
+# any of the assertions run. That is the expected "red" failure; the
+# assertions below pin the exact contract the implementer must satisfy once
+# the parameter (and the batch fan-out behind it) exists.
+# ---------------------------------------------------------------------------
+
+
+def test_enqueue_stage_draft_skeleton_only_job(tmp_path, server_with_context):
+    """(a) skeleton prompt written, no skeleton response -> one job, unit=skeleton."""
+
+    port, context = server_with_context
+    tdu._run_with_skeleton_prompt(tmp_path)
+
+    job = context.enqueue_stage(tdu.TID, "draft", False, modules=None)
+
+    assert job.unit == "skeleton"
+    assert job.module_id is None
+    assert job.batch_id is None
+
+
+def test_enqueue_stage_draft_module_batch_shares_one_batch_id(tmp_path, server_with_context):
+    """(b) skeleton response present, module prompts written -> one job per
+    outstanding module, all sharing one ``batch_id``, ``unit="module"``."""
+
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)  # decision 9: auto-writes both module prompts
+
+    first = context.enqueue_stage(tdu.TID, "draft", False, modules=None)
+
+    assert first.unit == "module"
+    assert first.module_id in tdu.MODULE_ORDER
+    assert first.batch_id is not None
+    batch = context.store.batch(first.batch_id)
+    assert {j.module_id for j in batch} == set(tdu.MODULE_ORDER)
+    assert all(j.batch_id == first.batch_id for j in batch)
+
+
+def test_enqueue_stage_draft_module_batch_excludes_saved_modules_unless_forced(
+    tmp_path, server_with_context
+):
+    """(b) a module with a current response is excluded unless ``force``."""
+
+    port, context = server_with_context
+    tdu._run_with_one_module_saved(tmp_path, module_id="loop-basics")
+
+    first = context.enqueue_stage(tdu.TID, "draft", False, modules=None)
+    batch = context.store.batch(first.batch_id)
+    assert {j.module_id for j in batch} == {"intervention-practice"}
+
+    # This fixture's worker is live, so the batch above is really executing.
+    # The active-job guard (pinned by
+    # ``test_enqueue_stage_draft_refuses_second_batch_while_one_is_active``)
+    # refuses any second draft enqueue while it is, force or not -- so let it
+    # finish before asking the same question with force.
+    deadline = time.monotonic() + 30
+    while (
+        context.store.any_active_for(tdu.TID) is not None
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.02)
+
+    forced_first = context.enqueue_stage(tdu.TID, "draft", True, modules=None)
+    forced_batch = context.store.batch(forced_first.batch_id)
+    assert {j.module_id for j in forced_batch} == set(tdu.MODULE_ORDER)
+
+
+def test_enqueue_stage_draft_modules_restricts_to_requested_subset(tmp_path, server_with_context):
+    """(c) ``modules=["loop-basics"]`` restricts the batch to that subset."""
+
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+
+    job = context.enqueue_stage(tdu.TID, "draft", False, modules=["loop-basics"])
+
+    batch = context.store.batch(job.batch_id)
+    assert {j.module_id for j in batch} == {"loop-basics"}
+
+
+def test_enqueue_stage_draft_modules_unknown_id_is_config_error(tmp_path, server_with_context):
+    """(c) a module id outside the outline contract -> ConfigError."""
+
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+
+    with pytest.raises(ConfigError):
+        context.enqueue_stage(tdu.TID, "draft", False, modules=["no-such-module"])
+
+
+def test_enqueue_stage_draft_modules_with_current_response_no_force_is_config_error(
+    tmp_path, server_with_context
+):
+    """(c) naming a module that already has a current response, without
+    ``force``, is a ConfigError -- not a silent skip."""
+
+    port, context = server_with_context
+    tdu._run_with_one_module_saved(tmp_path, module_id="loop-basics")
+
+    with pytest.raises(ConfigError):
+        context.enqueue_stage(tdu.TID, "draft", False, modules=["loop-basics"])
+
+
+def test_enqueue_stage_modules_on_non_draft_stage_is_config_error(tmp_path, server_with_context):
+    """(d) ``modules`` given for a stage other than draft -> ConfigError."""
+
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+
+    with pytest.raises(ConfigError):
+        context.enqueue_stage(tdu.TID, "qa", False, modules=["loop-basics"])
+
+
+def test_enqueue_stage_draft_module_prompts_not_written_tells_caller_to_advance(
+    tmp_path, server_with_context
+):
+    """(e) requesting a module before its prompt exists (no skeleton response
+    ingested yet) -> ConfigError telling the caller to advance."""
+
+    port, context = server_with_context
+    tdu._run_with_skeleton_prompt(tmp_path)  # prompt written, no response -> no module prompts
+
+    with pytest.raises(ConfigError, match="advance"):
+        context.enqueue_stage(tdu.TID, "draft", False, modules=["loop-basics"])
+
+
+def test_enqueue_stage_structural_gate_unchanged_when_stage_omitted(tmp_path, server_with_context):
+    """(f) the structural gate (stage omitted requires next_action.action ==
+    'save_response') is unchanged by the ``modules`` parameter."""
+
+    port, context = server_with_context
+    tdu._run_fully_assembled(tmp_path)  # next_action is now 'approve', not 'save_response'
+
+    with pytest.raises(ConfigError):
+        context.enqueue_stage(tdu.TID, None, False, modules=None)
+
+
+def test_enqueue_stage_draft_refuses_second_batch_while_one_is_active(tmp_path, server_with_context):
+    """(g) while a module batch is active, a second ``enqueue_stage`` for
+    draft hits today's active-job guard (``JobStore.active_for`` already
+    matches any job of the stage, module jobs included -- see
+    ``JobStore.active_for`` decision in §5)."""
+
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+    from education_pipeline.daemon.jobs import Job, new_job_id
+
+    context.store.save(
+        Job(
+            id=new_job_id(),
+            topic_id=tdu.TID,
+            stage="draft",
+            provider="fake",
+            model="m",
+            effort=None,
+            status="queued",
+            unit="module",
+            module_id="loop-basics",
+            batch_id="already-active-batch",
+        )
+    )
+
+    with pytest.raises(ConfigError):
+        context.enqueue_stage(tdu.TID, "draft", False, modules=None)
+
+
+def test_write_api_refuses_approve_and_validate_while_draft_batch_active(tmp_path, server_with_context):
+    """(g) ``write_api.approve_stage``/``validate_run`` refuse while a module
+    batch is active, via the existing ``_require_no_active_job`` guard."""
+
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+    from education_pipeline.daemon.jobs import Job, new_job_id
+    from education_pipeline.daemon import write_api
+
+    context.store.save(
+        Job(
+            id=new_job_id(),
+            topic_id=tdu.TID,
+            stage="draft",
+            provider="fake",
+            model="m",
+            effort=None,
+            status="running",
+            unit="module",
+            module_id="loop-basics",
+            batch_id="active-batch",
+        )
+    )
+
+    with pytest.raises(write_api.ConflictError) as excinfo:
+        write_api.approve_stage(context.runs, context.store, tdu.TID, "draft")
+    assert excinfo.value.code == "job_conflict"
+    with pytest.raises(write_api.ConflictError) as excinfo:
+        write_api.validate_run(context.runs, context.store, tdu.TID, "draft")
+    assert excinfo.value.code == "job_conflict"
+
+
+# ---------------------------------------------------------------------------
+# T24: routes -- POST /v1/jobs modules, batch routes, per-unit draft routes
+# ---------------------------------------------------------------------------
+
+
+def test_post_jobs_modules_field_wrong_type_is_400(server):
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/jobs",
+        body={"topic_id": "g", "stage": "draft", "modules": "not-a-list"},
+    )
+    assert status == 400
+
+
+def test_post_jobs_modules_field_non_string_item_is_400(server):
+    status, body = _req(
+        server,
+        "POST",
+        "/v1/jobs",
+        body={"topic_id": "g", "stage": "draft", "modules": [1, 2]},
+    )
+    assert status == 400
+
+
+def test_post_jobs_batch_response_shape(tmp_path, server_with_context):
+    """The batch enqueue's HTTP response is the first job's dict plus
+    ``batch_id`` and ``jobs`` (job dicts in module order)."""
+
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+
+    status, body = _req(port, "POST", "/v1/jobs", body={"topic_id": tdu.TID, "stage": "draft"})
+
+    assert status == 200
+    assert body["unit"] == "module"
+    assert "batch_id" in body
+    assert [j["module_id"] for j in body["jobs"]] == list(tdu.MODULE_ORDER)
+    # job-shaped at the top level: the same keys a single job dict carries.
+    assert body["id"] == body["jobs"][0]["id"]
+
+
+def test_get_jobs_batch_route(tmp_path, server_with_context):
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+    _status, enqueue_body = _req(
+        port, "POST", "/v1/jobs", body={"topic_id": tdu.TID, "stage": "draft"}
+    )
+    batch_id = enqueue_body["batch_id"]
+
+    status, body = _req(port, "GET", f"/v1/jobs/batch/{batch_id}")
+    assert status == 200
+    assert body["batch_id"] == batch_id
+    assert {j["module_id"] for j in body["jobs"]} == set(tdu.MODULE_ORDER)
+
+    status, body = _req(port, "GET", "/v1/jobs/batch/no-such-batch")
+    assert status == 404
+
+
+def test_post_jobs_batch_cancel_route(tmp_path, server_with_context):
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+    _status, enqueue_body = _req(
+        port, "POST", "/v1/jobs", body={"topic_id": tdu.TID, "stage": "draft"}
+    )
+    batch_id = enqueue_body["batch_id"]
+
+    status, body = _req(port, "POST", f"/v1/jobs/batch/{batch_id}/cancel")
+    assert status == 200
+
+    # Cancelling a *running* job signals it; the runner then terminates the
+    # provider and writes the terminal record a moment later -- exactly as for
+    # the single-job cancel route, whose tests poll the same way.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        status, body = _req(port, "GET", f"/v1/jobs/batch/{batch_id}")
+        assert status == 200
+        if all(
+            j["status"] in {"canceled", "succeeded", "failed", "interrupted"}
+            for j in body["jobs"]
+        ):
+            break
+        time.sleep(0.02)
+
+    assert all(j["status"] in {"canceled", "succeeded", "failed"} for j in body["jobs"])
+    assert any(j["status"] == "canceled" for j in body["jobs"])
+
+
+def test_post_draft_skeleton_response_route(tmp_path, server_with_context):
+    port, context = server_with_context
+    tdu._run_with_skeleton_prompt(tmp_path)
+
+    status, body = _req(
+        port,
+        "POST",
+        f"/v1/runs/{tdu.TID}/draft/skeleton/response",
+        body={"text": tdu._skeleton_response()},
+    )
+
+    assert status == 200
+    assert body["unit"] == "skeleton"
+    assert body["module_id"] is None
+    assert body["response_path"] == "draft/skeleton/response.json"
+    assert "response_sha256" in body
+    assert body["status"]["topic_id"] == tdu.TID
+
+
+def test_post_draft_module_response_route(tmp_path, server_with_context):
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+
+    status, body = _req(
+        port,
+        "POST",
+        f"/v1/runs/{tdu.TID}/draft/modules/loop-basics/response",
+        body={"text": tdu._module_response("loop-basics")},
+    )
+
+    assert status == 200
+    assert body["unit"] == "module"
+    assert body["module_id"] == "loop-basics"
+    assert body["response_path"] == "draft/modules/loop-basics/response.json"
+
+
+def test_put_draft_module_response_route_stale_is_409(tmp_path, server_with_context):
+    port, context = server_with_context
+    tdu._run_with_skeleton_ingested(tmp_path)
+    _req(
+        port,
+        "POST",
+        f"/v1/runs/{tdu.TID}/draft/modules/loop-basics/response",
+        body={"text": tdu._module_response("loop-basics")},
+    )
+
+    status, body = _req(
+        port,
+        "PUT",
+        f"/v1/runs/{tdu.TID}/draft/modules/loop-basics/response",
+        body={"text": tdu._module_response("loop-basics"), "base_sha256": "0" * 64},
+    )
+
+    assert status == 409
+    assert body["error"]["code"] == "stale_content"
+
+
+def test_put_draft_skeleton_response_route_edits(tmp_path, server_with_context):
+    port, context = server_with_context
+    tdu._run_with_skeleton_prompt(tmp_path)
+    _status, ingested = _req(
+        port,
+        "POST",
+        f"/v1/runs/{tdu.TID}/draft/skeleton/response",
+        body={"text": tdu._skeleton_response()},
+    )
+
+    status, body = _req(
+        port,
+        "PUT",
+        f"/v1/runs/{tdu.TID}/draft/skeleton/response",
+        body={
+            "text": tdu._skeleton_response(),
+            "base_sha256": ingested["response_sha256"],
+        },
+    )
+
+    assert status == 200
+    assert body["unit"] == "skeleton"
+
+
+def test_post_draft_assemble_route(tmp_path, server_with_context):
+    port, context = server_with_context
+    tdu._run_with_one_module_saved(tmp_path)
+    second = "intervention-practice"
+    context.runs.draft_unit_paths(
+        tdu.TID, "module", module_id=second
+    ).response_path.write_text(tdu._module_response(second), encoding="utf-8")
+
+    status, body = _req(port, "POST", f"/v1/runs/{tdu.TID}/draft/assemble")
+
+    assert status == 200
+    assert body["ok"] is True
+    assert set(body["module_ids"]) == set(tdu.MODULE_ORDER)
+    assert body["status"]["topic_id"] == tdu.TID
+
+
+def test_post_draft_assemble_route_stale_is_409_and_force_clears_it(tmp_path, server_with_context):
+    port, context = server_with_context
+    tdu._run_fully_assembled(tmp_path)
+    context.runs.stage_paths(tdu.TID, "draft").response_path.write_text(
+        tdu._skeleton_response(), encoding="utf-8"
+    )
+
+    status, body = _req(port, "POST", f"/v1/runs/{tdu.TID}/draft/assemble")
+    assert status == 409
+    assert body["error"]["code"] == "stale_content"
+
+    status, body = _req(
+        port, "POST", f"/v1/runs/{tdu.TID}/draft/assemble", body={"force": True}
+    )
+    assert status == 200
+    assert body["ok"] is True
+
+
+def test_draft_unit_routes_refuse_archived_and_active_job(tmp_path, server_with_context):
+    """The three draft-unit routes are guarded exactly like ``ingest_response``:
+    not-archived and no-active-job."""
+
+    port, context = server_with_context
+    tdu._run_with_skeleton_prompt(tmp_path)
+    context.runs.archive_run(tdu.TID)
+
+    status, body = _req(
+        port,
+        "POST",
+        f"/v1/runs/{tdu.TID}/draft/skeleton/response",
+        body={"text": tdu._skeleton_response()},
+    )
+    assert status == 409
+    assert body["error"]["code"] == "archived_course"
+
+    context.runs.unarchive_run(tdu.TID)
+    from education_pipeline.daemon.jobs import Job, new_job_id
+
+    context.store.save(
+        Job(
+            id=new_job_id(),
+            topic_id=tdu.TID,
+            stage="spec",
+            provider="fake",
+            model="m",
+            effort=None,
+            status="queued",
+        )
+    )
+
+    status, body = _req(
+        port,
+        "POST",
+        f"/v1/runs/{tdu.TID}/draft/skeleton/response",
+        body={"text": tdu._skeleton_response()},
+    )
+    assert status == 409
+    assert body["error"]["code"] == "job_conflict"
+
+
+def test_run_status_route_includes_draft_progress_for_guide_run(tmp_path, server_with_context):
+    port, context = server_with_context
+    tdu._run_with_one_module_saved(tmp_path)
+
+    status, body = _req(port, "GET", f"/v1/runs/{tdu.TID}")
+
+    assert status == 200
+    assert "draft_progress" in body
+    progress = body["draft_progress"]
+    assert progress["counts"] == {"total": 2, "saved": 1, "stale": 0}
+    by_id = {m["id"]: m for m in progress["modules"]}
+    assert by_id["loop-basics"]["state"] == "response_ingested"
+
+
+def test_config_plan_route_round_trips_parallelism(server):
+    status, body = _req(server, "GET", "/v1/config/plan")
+    assert status == 200
+    assert body["parallelism"] == 2
+
+    status, body = _req(
+        server,
+        "PUT",
+        "/v1/config/plan",
+        body={"base_sha256": body["plan_sha256"], "provider": "fake", "parallelism": 3, "stages": {}},
+    )
+    assert status == 200
+    assert body["parallelism"] == 3

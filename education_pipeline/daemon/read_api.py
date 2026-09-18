@@ -39,6 +39,7 @@ from education_pipeline.profiles import (
 )
 from education_pipeline.export import EXPORT_FORMATS
 from education_pipeline.runs import SUPPORTED_STAGES, RunStore
+from education_pipeline.run_modes import mode_for_kind
 from education_pipeline.workspace import ProfileRecord, ProfileStore, TopicStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -440,11 +441,117 @@ def _run_status_payload_scoped(
             "detail": status.next_action.detail,
         },
     }
+    if mode_for_kind(contract.kind).supports_draft_units:
+        payload["draft_progress"] = draft_progress_payload(runs, topic_id, jobs=jobs)
     if jobs is not None:
         payload["cost"] = cost_module.summarize_job_costs(
             jobs.list(topic_id), SUPPORTED_STAGES
         )
     return payload
+
+
+def _unit_job_ids(jobs: "JobStore | None", topic_id: str) -> dict[str | None, str]:
+    """The latest draft-unit job id per unit, keyed by module id (None = skeleton).
+
+    Latest wins: a module rerun should point the cockpit at the run that is
+    live now, and job ids sort by creation stamp. Ordinary stage jobs carry no
+    ``unit`` and are ignored, so a whole-stage draft job never claims a unit.
+    """
+
+    if jobs is None:
+        return {}
+    latest: dict[str | None, str] = {}
+    for job in sorted(jobs.list(topic_id), key=lambda j: j.id):
+        if job.stage != "draft" or job.unit is None:
+            continue
+        latest[job.module_id] = job.id
+    return latest
+
+
+def draft_progress_payload(
+    runs: RunStore, topic_id: str, jobs: "JobStore | None" = None
+) -> dict:
+    """``RunStore.draft_progress`` as JSON, plus the job ids driving each unit.
+
+    The engine's snapshot is a pure read of workspace files; the daemon is the
+    only layer that also knows which job (if any) is executing a unit, so the
+    ``job_id`` fields are joined on here rather than in ``RunStore``.
+    """
+
+    progress = runs.draft_progress(topic_id)
+    job_ids = _unit_job_ids(jobs, topic_id)
+    assembled = progress.assembled
+    return {
+        "skeleton": {
+            "state": progress.skeleton.state,
+            "error": progress.skeleton.error,
+            "job_id": job_ids.get(None),
+        },
+        "modules": [
+            {
+                "id": unit.module_id,
+                "state": unit.state,
+                "title": unit.title,
+                "response_sha256": unit.response_sha256,
+                "error": unit.error,
+                "job_id": job_ids.get(unit.module_id),
+            }
+            for unit in progress.modules
+        ],
+        "assembled": None
+        if assembled is None
+        else {
+            "ok": assembled.ok,
+            "response_sha256": assembled.response_sha256,
+            "error": assembled.error,
+            "module_ids": list(assembled.module_ids),
+        },
+        "superseded": progress.superseded,
+        "parallelism": _workspace_parallelism(runs),
+        "counts": {
+            "total": progress.total,
+            "saved": progress.saved,
+            "stale": progress.stale,
+        },
+    }
+
+
+#: workspace root -> (plan-file identity, parallelism). Keyed on the plan
+#: file's own mtime/size, so an edited plan simply misses; a run-board poll
+#: over twenty topics otherwise re-reads and re-parses the catalog and plan
+#: twenty times for one unchanging integer.
+_PARALLELISM_CACHE: dict[str, tuple[object, int]] = {}
+
+
+def _plan_file_identity(root: Path) -> object:
+    path = root / "config" / "model-plan.toml"
+    try:
+        stat = path.stat()
+    except OSError:
+        # No workspace plan: the packaged default answers, and its identity
+        # is "absent" until a plan file appears.
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _workspace_parallelism(runs: RunStore) -> int:
+    """How many module jobs this workspace's plan lets overlap.
+
+    Imported lazily: ``education_pipeline.daemon`` imports ``server``, which
+    imports this module, so a top-level import would close the cycle.
+    """
+
+    from education_pipeline.daemon import worker_parallelism
+
+    root = Path(runs.root)
+    key = str(root)
+    identity = _plan_file_identity(root)
+    cached = _PARALLELISM_CACHE.get(key)
+    if cached is not None and cached[0] == identity:
+        return cached[1]
+    value = worker_parallelism(root)
+    _PARALLELISM_CACHE[key] = (identity, value)
+    return value
 
 
 def list_runs(runs: RunStore) -> dict:
@@ -963,6 +1070,9 @@ def plan_payload(catalog: ModelCatalog, plan: ModelPlan, plan_sha256: str) -> di
     return {
         "provider": plan.provider,
         "plan_sha256": plan_sha256,
+        # Decision 10: the workspace-wide worker-pool size travels with the
+        # plan it is stored in, so the cockpit edits it beside the stages.
+        "parallelism": plan.parallelism,
         "stages": stages,
     }
 
