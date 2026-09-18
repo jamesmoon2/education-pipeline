@@ -18,6 +18,7 @@ every ``self.`` collaborator used here, exactly as the other Phase 1 mixins do.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
 import json
@@ -52,6 +53,7 @@ DRAFT_UNITS = ("skeleton", "module")
 _DRAFT_DIRNAME = "draft"
 _SKELETON_DIRNAME = "skeleton"
 _MODULES_DIRNAME = "modules"
+_ORPHANED_DIRNAME = "orphaned"
 
 
 def _canonical_json(value: object) -> bytes:
@@ -226,6 +228,66 @@ class DraftUnitsMixin:
         self._point_stage_stub_at_units(safe_id)
         self._append_unit_prompt_event(safe_id, paths, contract_path=contract_path)
         return paths
+
+    def _orphan_draft_units(self, topic_id: str) -> Path | None:
+        """Move every draft unit artifact aside, before the inputs are rebuilt.
+
+        Decision 7b: an outline change rebuilds the guide contract, the
+        whole-guide prompt and the skeleton prompt, and "moves existing unit
+        responses aside as orphaned". Left in place, the old
+        ``draft/skeleton/response.json`` keeps ``draft_progress`` reporting
+        ``response_ingested`` and lets a skeleton written against the *old*
+        contract be assembled against the new one. Model output is never
+        deleted -- everything lands under ``draft/orphaned/<ts>/``, so the
+        rebuilt skeleton reads ``prompt_written`` and nothing stale can be
+        assembled. Returns the directory it moved things into, or ``None``
+        when there was nothing to move.
+        """
+
+        safe_id = self._require_draft_units(topic_id)
+        draft_dir = self.run_dir(safe_id) / _DRAFT_DIRNAME
+        skeleton_dir = draft_dir / _SKELETON_DIRNAME
+        modules_dir = draft_dir / _MODULES_DIRNAME
+        skeleton_response = skeleton_dir / "response.json"
+        module_dirs = (
+            sorted(child for child in modules_dir.iterdir() if child.is_dir())
+            if modules_dir.is_dir()
+            else []
+        )
+        if not skeleton_response.is_file() and not module_dirs:
+            return None
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        target = draft_dir / _ORPHANED_DIRNAME / stamp
+        suffix = 1
+        while target.exists():  # two rebuilds within one second
+            target = draft_dir / _ORPHANED_DIRNAME / f"{stamp}-{suffix}"
+            suffix += 1
+        target.mkdir(parents=True)
+
+        moved: list[str] = []
+        if skeleton_response.is_file():
+            (target / _SKELETON_DIRNAME).mkdir()
+            for name in ("response.json", "response.previous.json"):
+                source = skeleton_dir / name
+                if source.is_file():
+                    source.replace(target / _SKELETON_DIRNAME / name)
+            moved.append("skeleton")
+        if module_dirs:
+            modules_dir.replace(target / _MODULES_DIRNAME)
+            moved.extend(child.name for child in module_dirs)
+
+        self._append_event(
+            safe_id,
+            stage="draft",
+            action="draft_units_orphaned",
+            files={},
+            extra={
+                "orphaned_dir": _relative_to(target, self.run_dir(safe_id)),
+                "units": moved,
+            },
+        )
+        return target
 
     def _point_stage_stub_at_units(self, topic_id: str) -> None:
         """Rewrite the stage-level draft stub so it names the unit drop targets.
@@ -1047,6 +1109,9 @@ class DraftUnitsMixin:
 
         stage_prompt = self.stage_paths(topic_id, "draft").prompt_path
         if self._draft_outline_changed(topic_id):
+            # Decision 7b: the unit responses were written against the old
+            # contract, so they move aside before the new inputs land.
+            self._orphan_draft_units(topic_id)
             self.write_draft_prompt(topic_id, overwrite=True)
             return
         if not stage_prompt.is_file():

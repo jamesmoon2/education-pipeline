@@ -1437,7 +1437,7 @@ def _build_draft_unit_outline_changed_after_module_prompts(
     paths.response_path.write_text(_draft_unit_module_response("loop-basics"), encoding="utf-8")
 
 
-def test_advance_on_outline_change_rewrites_contract_and_skeleton_and_orphans_dropped_modules(
+def test_advance_on_outline_change_rewrites_contract_and_orphans_every_unit(
     tmp_path: Path,
 ) -> None:
     runs = _create_guide_run(tmp_path, TID)
@@ -1470,17 +1470,24 @@ def test_advance_on_outline_change_rewrites_contract_and_skeleton_and_orphans_dr
     )
     assert "wrap-up" in skeleton_prompt_text
 
+    # Decision 7b moves the existing unit responses aside, so the rebuilt
+    # skeleton is what the run waits on and nothing written against the old
+    # contract can be assembled against the new one. (This pin previously
+    # asserted the unit responses stayed put and the dropped module showed as
+    # ``orphaned`` in ``draft_progress``; that was the defect PR #39's review
+    # found, not the intended behaviour.)
     progress = runs.draft_progress(TID)
-    orphan = next(
-        (m for m in progress.modules if m.module_id == "intervention-practice"), None
-    )
-    assert orphan is not None
-    assert orphan.state == "orphaned"
-
-    # The dropped-then-orphaned module's own response is left on disk -- the
-    # design only says orphaned units are ignored by assembly, never deleted.
+    assert progress.skeleton.state == "prompt_written"
+    assert progress.modules == ()
     loop_basics_paths = runs.draft_unit_paths(TID, "module", module_id="loop-basics")
-    assert loop_basics_paths.response_path.exists()
+    assert not loop_basics_paths.response_path.exists()
+
+    # Never delete model output: every response is still on disk, aside.
+    orphaned = sorted((runs.run_dir(TID) / "draft" / "orphaned").glob("*/**/response.json"))
+    assert [path.parent.name for path in orphaned] == [
+        "loop-basics",
+        "skeleton",
+    ]
 
 
 def test_outline_reapproval_does_not_disturb_an_already_approved_draft(

@@ -874,3 +874,87 @@ def test_resume_from_a_fresh_runstore_matches_progress_and_next_action(tmp_path:
         next_action_before.action,
         next_action_before.detail,
     )
+
+
+# --------------------------------------------------------------------------
+# PR #39 review findings.
+# --------------------------------------------------------------------------
+
+
+def _reapprove_outline_with_changed_contract(runs: RunStore, topic_id: str = TID) -> None:
+    """Re-approve the outline with a module renamed, so decision 7b fires."""
+
+    outline = runs.write_outline_prompt(topic_id, overwrite=True)
+    changed = {
+        "contract_version": 1,
+        "modules": {
+            "loop-basics": FIXTURE_OUTLINE_CONTRACT["modules"]["loop-basics"],
+            "wrap-up": {
+                "outcome_ids": ["choose-intervention"],
+                "estimated_minutes": 10,
+                "interaction_types": ["reflection"],
+            },
+        },
+    }
+    outline.response_path.write_text(
+        tr._guide_outline_response(changed), encoding="utf-8"
+    )
+    runs.approve_stage(topic_id, "outline", overwrite=True)
+
+
+def test_outline_change_rebuild_moves_the_skeleton_response_aside(tmp_path: Path) -> None:
+    """Finding 1: the rebuilt skeleton must read ``prompt_written``.
+
+    Decision 7b says the rebuild "moves existing unit responses aside as
+    orphaned"; leaving ``draft/skeleton/response.json`` in place keeps
+    ``draft_progress`` reporting ``response_ingested`` for a skeleton that
+    was written against the *old* contract, and lets the old skeleton be
+    assembled against the new one.
+    """
+
+    runs = _run_with_one_module_saved(tmp_path)
+    skeleton_paths = runs.draft_unit_paths(TID, "skeleton")
+    skeleton_bytes = skeleton_paths.response_path.read_bytes()
+    module_paths = runs.draft_unit_paths(TID, "module", module_id="loop-basics")
+    module_bytes = module_paths.response_path.read_bytes()
+    _reapprove_outline_with_changed_contract(runs)
+
+    result = runs.advance(TID)
+
+    assert result.performed == "write_prompt"
+    assert skeleton_paths.prompt_path.is_file()
+    assert not skeleton_paths.response_path.exists()
+    assert not module_paths.response_path.exists()
+    assert runs.draft_progress(TID).skeleton.state == "prompt_written"
+
+    # Never delete model output: both responses are still on disk, aside.
+    orphaned = sorted((runs.run_dir(TID) / "draft" / "orphaned").glob("*/**/response.json"))
+    assert [path.read_bytes() for path in orphaned].count(skeleton_bytes) == 1
+    assert [path.read_bytes() for path in orphaned].count(module_bytes) == 1
+
+
+def test_outline_change_rebuild_records_an_orphaned_units_event(tmp_path: Path) -> None:
+    runs = _run_with_one_module_saved(tmp_path)
+    _reapprove_outline_with_changed_contract(runs)
+
+    runs.advance(TID)
+
+    events = _events(runs, TID, "draft_units_orphaned")
+    assert len(events) == 1
+    assert "skeleton" in events[0]["units"]
+    assert "loop-basics" in events[0]["units"]
+    assert events[0]["orphaned_dir"].startswith("draft/orphaned/")
+
+
+def test_outline_change_rebuild_without_any_unit_response_records_nothing(
+    tmp_path: Path,
+) -> None:
+    """Nothing to move aside is not an event: the rebuild is idempotent."""
+
+    runs = _run_with_skeleton_prompt(tmp_path)
+    _reapprove_outline_with_changed_contract(runs)
+
+    runs.advance(TID)
+
+    assert _events(runs, TID, "draft_units_orphaned") == []
+    assert not (runs.run_dir(TID) / "draft" / "orphaned").exists()
