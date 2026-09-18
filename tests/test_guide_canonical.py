@@ -203,3 +203,432 @@ def test_empty_personalization_annotations_are_omitted_for_both_versions() -> No
 
         assert b'"serves_goals"' not in canonical
         assert b'"goal_exclusions"' not in canonical
+
+
+# ---------------------------------------------------------------------------
+# T21: validate_frame / assemble_guide (per-module drafting, D2/D3)
+# ---------------------------------------------------------------------------
+#
+# These interfaces do not exist yet; the new names are imported inside each
+# test function body (as the splice_module tests above already do), so
+# collection of this module keeps succeeding for every existing test while
+# these new ones fail on import.
+
+
+def _frame_data() -> dict:
+    """A frame built from the fixture: same stubs, every ``sections`` emptied."""
+
+    data = _fixture_data()
+    frame = json.loads(json.dumps(data))
+    for module in frame["modules"]:
+        module["sections"] = []
+    return frame
+
+
+def _frame_json_text() -> str:
+    return json.dumps(_frame_data(), ensure_ascii=False)
+
+
+def _module_ids() -> list:
+    return [module["id"] for module in _fixture_data()["modules"]]
+
+
+def _modules_map() -> dict:
+    return {
+        module["id"]: _module_json(module) for module in _fixture_data()["modules"]
+    }
+
+
+def _expected_assembled_bytes() -> bytes:
+    return canonical_guide_bytes(normalize_guide(parse_guide(FIXTURE.read_bytes())))
+
+
+# -- validate_frame -----------------------------------------------------
+
+
+def test_validate_frame_accepts_valid_frame_and_returns_loaded_dict() -> None:
+    from education_pipeline.guides.canonical import validate_frame
+
+    frame_text = _frame_json_text()
+    result = validate_frame(frame_text, module_ids=_module_ids())
+
+    assert result == json.loads(frame_text)
+    assert [module["id"] for module in result["modules"]] == _module_ids()
+    assert all(module["sections"] == [] for module in result["modules"])
+
+
+def test_validate_frame_accepts_bytes_input() -> None:
+    from education_pipeline.guides.canonical import validate_frame
+
+    result = validate_frame(
+        _frame_json_text().encode("utf-8"), module_ids=_module_ids()
+    )
+
+    assert result["schema_version"] == "1.0"
+
+
+def test_validate_frame_passes_through_other_keys_untouched() -> None:
+    from education_pipeline.guides.canonical import validate_frame
+
+    frame = _frame_data()
+    result = validate_frame(
+        json.dumps(frame, ensure_ascii=False), module_ids=_module_ids()
+    )
+
+    for key in ("course", "outcomes", "glossary", "sources"):
+        assert result[key] == frame[key]
+
+
+def test_validate_frame_rejects_invalid_json() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    with pytest.raises(SpliceError):
+        validate_frame("not json {", module_ids=_module_ids())
+
+
+def test_validate_frame_rejects_non_object_root() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    with pytest.raises(SpliceError):
+        validate_frame(json.dumps([1, 2, 3]), module_ids=_module_ids())
+
+
+def test_validate_frame_rejects_missing_root_key() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    frame = _frame_data()
+    del frame["glossary"]
+
+    with pytest.raises(SpliceError):
+        validate_frame(json.dumps(frame), module_ids=_module_ids())
+
+
+def test_validate_frame_rejects_extra_root_key() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    frame = _frame_data()
+    frame["extra_top_level_key"] = "nope"
+
+    with pytest.raises(SpliceError):
+        validate_frame(json.dumps(frame), module_ids=_module_ids())
+
+
+def test_validate_frame_rejects_modules_not_a_list() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    frame = _frame_data()
+    frame["modules"] = {module["id"]: module for module in frame["modules"]}
+
+    with pytest.raises(SpliceError):
+        validate_frame(json.dumps(frame), module_ids=_module_ids())
+
+
+def test_validate_frame_rejects_module_stub_not_an_object() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    frame = _frame_data()
+    frame["modules"][0] = "loop-basics"
+
+    with pytest.raises(SpliceError):
+        validate_frame(json.dumps(frame), module_ids=_module_ids())
+
+
+def test_validate_frame_rejects_missing_stub_id() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    frame = _frame_data()
+    frame["modules"] = frame["modules"][:1]
+
+    with pytest.raises(SpliceError):
+        validate_frame(json.dumps(frame), module_ids=_module_ids())
+
+
+def test_validate_frame_rejects_extra_stub_id() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    frame = _frame_data()
+    extra = json.loads(json.dumps(frame["modules"][0]))
+    extra["id"] = "extra-module"
+    frame["modules"].append(extra)
+
+    with pytest.raises(SpliceError):
+        validate_frame(json.dumps(frame), module_ids=_module_ids())
+
+
+def test_validate_frame_rejects_reordered_stub_ids() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    frame = _frame_data()
+    frame["modules"] = list(reversed(frame["modules"]))
+
+    with pytest.raises(SpliceError):
+        validate_frame(json.dumps(frame), module_ids=_module_ids())
+
+
+def test_validate_frame_rejects_duplicate_stub_id() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    frame = _frame_data()
+    frame["modules"][1] = json.loads(json.dumps(frame["modules"][0]))
+
+    with pytest.raises(SpliceError):
+        validate_frame(json.dumps(frame), module_ids=_module_ids())
+
+
+def test_validate_frame_rejects_non_string_stub_id() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    frame = _frame_data()
+    frame["modules"][0]["id"] = 123
+
+    with pytest.raises(SpliceError):
+        validate_frame(json.dumps(frame), module_ids=_module_ids())
+
+
+def test_validate_frame_rejects_stub_sections_not_empty() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    frame = _frame_data()
+    frame["modules"][0]["sections"] = [{"id": "s", "title": "S", "blocks": []}]
+
+    with pytest.raises(SpliceError):
+        validate_frame(json.dumps(frame), module_ids=_module_ids())
+
+
+# -- assemble_guide -------------------------------------------------------
+
+
+def test_assemble_guide_returns_expected_canonical_bytes() -> None:
+    from education_pipeline.guides.canonical import assemble_guide
+
+    result = assemble_guide(
+        _frame_json_text(), _modules_map(), module_ids=_module_ids()
+    )
+
+    assert result == _expected_assembled_bytes()
+
+
+def test_assemble_guide_is_deterministic() -> None:
+    from education_pipeline.guides.canonical import assemble_guide
+
+    frame_json = _frame_json_text()
+    modules = _modules_map()
+    module_ids = _module_ids()
+
+    first = assemble_guide(frame_json, modules, module_ids=module_ids)
+    second = assemble_guide(frame_json, modules, module_ids=module_ids)
+
+    assert first == second == _expected_assembled_bytes()
+
+
+def test_assemble_guide_accepts_bytes_frame_json() -> None:
+    from education_pipeline.guides.canonical import assemble_guide
+
+    result = assemble_guide(
+        _frame_json_text().encode("utf-8"), _modules_map(), module_ids=_module_ids()
+    )
+
+    assert result == _expected_assembled_bytes()
+
+
+def test_assemble_guide_propagates_frame_validation_errors() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, assemble_guide
+
+    frame = _frame_data()
+    frame["modules"][0]["sections"] = [{"id": "s", "title": "S", "blocks": []}]
+
+    with pytest.raises(SpliceError):
+        assemble_guide(
+            json.dumps(frame), _modules_map(), module_ids=_module_ids()
+        )
+
+
+def test_assemble_guide_rejects_missing_module() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, assemble_guide
+
+    modules = _modules_map()
+    del modules["intervention-practice"]
+
+    with pytest.raises(SpliceError, match="intervention-practice"):
+        assemble_guide(_frame_json_text(), modules, module_ids=_module_ids())
+
+
+def test_assemble_guide_rejects_extra_module() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, assemble_guide
+
+    modules = _modules_map()
+    modules["unexpected-module"] = _module_json(_fixture_data()["modules"][0])
+
+    with pytest.raises(SpliceError, match="unexpected-module"):
+        assemble_guide(_frame_json_text(), modules, module_ids=_module_ids())
+
+
+def test_assemble_guide_rejects_module_value_not_json() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, assemble_guide
+
+    modules = _modules_map()
+    modules["loop-basics"] = "not json {"
+
+    with pytest.raises(SpliceError):
+        assemble_guide(_frame_json_text(), modules, module_ids=_module_ids())
+
+
+def test_assemble_guide_rejects_module_value_not_a_single_object() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, assemble_guide
+
+    modules = _modules_map()
+    modules["loop-basics"] = json.dumps([1, 2])
+
+    with pytest.raises(SpliceError):
+        assemble_guide(_frame_json_text(), modules, module_ids=_module_ids())
+
+
+def test_assemble_guide_rejects_module_value_with_modules_key() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, assemble_guide
+
+    modules = _modules_map()
+    # A whole guide document is not a single module object.
+    modules["loop-basics"] = _base_json()
+
+    with pytest.raises(SpliceError):
+        assemble_guide(_frame_json_text(), modules, module_ids=_module_ids())
+
+
+def test_assemble_guide_rejects_module_id_mismatch_with_key() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, assemble_guide
+
+    modules = _modules_map()
+    renamed = json.loads(modules["loop-basics"])
+    renamed["id"] = "loop-basics-renamed"
+    modules["loop-basics"] = json.dumps(renamed)
+
+    with pytest.raises(SpliceError, match="rename"):
+        assemble_guide(_frame_json_text(), modules, module_ids=_module_ids())
+
+
+def test_assemble_guide_rejects_element_id_collision_across_modules() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, assemble_guide
+
+    modules = _modules_map()
+    data = _fixture_data()
+    other_block_id = data["modules"][1]["sections"][0]["blocks"][0]["id"]
+    revised = json.loads(modules["loop-basics"])
+    revised["sections"][0]["blocks"][0]["id"] = other_block_id
+    modules["loop-basics"] = json.dumps(revised)
+
+    with pytest.raises(SpliceError, match="duplicate"):
+        assemble_guide(_frame_json_text(), modules, module_ids=_module_ids())
+
+
+def test_assemble_guide_rejects_out_of_contract_outcome_reference() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, assemble_guide
+
+    modules = _modules_map()
+    revised = json.loads(modules["loop-basics"])
+    revised["outcome_ids"] = ["identify-loop", "not-a-contract-outcome"]
+    modules["loop-basics"] = json.dumps(revised)
+
+    with pytest.raises(SpliceError, match="not-a-contract-outcome"):
+        assemble_guide(_frame_json_text(), modules, module_ids=_module_ids())
+
+
+
+def test_assemble_guide_ignores_mapping_order_and_preserves_module_order() -> None:
+    from education_pipeline.guides.canonical import assemble_guide
+
+    modules = _modules_map()
+    reversed_mapping = {key: modules[key] for key in reversed(list(modules))}
+
+    assembled = assemble_guide(
+        _frame_json_text(), reversed_mapping, module_ids=_module_ids()
+    )
+
+    assert assembled == _expected_assembled_bytes()
+    assert [module["id"] for module in json.loads(assembled)["modules"]] == _module_ids()
+
+
+def test_assemble_guide_output_round_trips_and_matches_the_frozen_hash() -> None:
+    from education_pipeline.guides.canonical import assemble_guide
+
+    assembled = assemble_guide(
+        _frame_json_text(), _modules_map(), module_ids=_module_ids()
+    )
+    reparsed = normalize_guide(parse_guide(assembled))
+
+    assert guide_sha256(reparsed) == EXPECTED_SHA256
+    assert canonical_guide_bytes(reparsed) == assembled
+
+
+def test_assemble_guide_is_pure_and_leaves_its_inputs_untouched() -> None:
+    from education_pipeline.guides.canonical import assemble_guide
+
+    frame_json = _frame_json_text()
+    modules = _modules_map()
+    modules_snapshot = dict(modules)
+
+    assemble_guide(frame_json, modules, module_ids=_module_ids())
+
+    assert frame_json == _frame_json_text()
+    assert modules == modules_snapshot
+    assert all(
+        module["sections"] == [] for module in json.loads(frame_json)["modules"]
+    )
+
+
+def test_validate_frame_rejects_stub_sections_of_the_wrong_type() -> None:
+    import pytest
+
+    from education_pipeline.guides.canonical import SpliceError, validate_frame
+
+    for bad_sections in ({}, "", None, [{"id": "s"}]):
+        frame = _frame_data()
+        frame["modules"][0]["sections"] = bad_sections
+        with pytest.raises(SpliceError, match="sections"):
+            validate_frame(json.dumps(frame), module_ids=_module_ids())
+
+    absent = _frame_data()
+    del absent["modules"][0]["sections"]
+    with pytest.raises(SpliceError, match="sections"):
+        validate_frame(json.dumps(absent), module_ids=_module_ids())
