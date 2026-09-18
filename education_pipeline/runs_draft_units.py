@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
 import json
+import os
+import threading
 
 from education_pipeline.atomic_io import read_bytes_retrying
 from education_pipeline.config import ConfigError
@@ -54,6 +56,28 @@ _DRAFT_DIRNAME = "draft"
 _SKELETON_DIRNAME = "skeleton"
 _MODULES_DIRNAME = "modules"
 _ORPHANED_DIRNAME = "orphaned"
+
+#: Process-wide per-run locks serializing "write one unit response, then try
+#: to assemble". The worker pool overlaps the module jobs of one batch, so two
+#: threads can reach ``ingest_draft_unit`` for the same run at once and one
+#: can otherwise write the stage response from a snapshot the other has
+#: already superseded. Keyed by ``(workspace root, topic id)`` rather than
+#: held on the store so two ``RunStore`` objects over one workspace still
+#: serialize, and reentrant because an ingest attempts the assembly from
+#: inside the section it already holds. Concurrency *between processes* stays
+#: the workspace file lock's job, exactly as for the manifest.
+_DRAFT_UNIT_LOCKS: dict[tuple[str, str], threading.RLock] = {}
+_DRAFT_UNIT_LOCKS_GUARD = threading.Lock()
+
+
+def _draft_unit_lock_for(root: Path, topic_id: str) -> threading.RLock:
+    key = (os.path.abspath(root), topic_id)
+    with _DRAFT_UNIT_LOCKS_GUARD:
+        lock = _DRAFT_UNIT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _DRAFT_UNIT_LOCKS[key] = lock
+        return lock
 
 
 def _canonical_json(value: object) -> bytes:
@@ -108,6 +132,11 @@ class DraftUnitsMixin:
                 f"{safe_id!r} is a legacy Markdown run"
             )
         return safe_id
+
+    def _draft_unit_lock(self, topic_id: str) -> threading.RLock:
+        """The lock serializing this run's unit writes and assemblies."""
+
+        return _draft_unit_lock_for(self.root, topic_id)
 
     def draft_unit_paths(
         self, topic_id: str, unit: str, *, module_id: str | None = None
@@ -480,32 +509,33 @@ class DraftUnitsMixin:
             raise ConfigError(
                 f"refusing to ingest empty response for draft unit {paths.unit!r}"
             )
-        existed = paths.response_path.exists()
-        if existed and not force:
-            raise ConfigError(
-                f"response already ingested for draft unit {paths.unit!r}: "
-                f"{paths.response_path}"
-            )
-        previous = read_bytes_retrying(paths.response_path) if existed else None
-        paths.response_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_text_atomic(paths.response_path, text)
-        if previous is not None:
-            _write_bytes_atomic(paths.previous_path, previous)
-        if paths.stub_path.exists():
-            paths.stub_path.unlink()
-        if previous is not None:
-            self._append_unit_response_event(
-                safe_id,
-                paths,
-                action="unit_response_replaced",
-                extra={"previous_sha256": hashlib.sha256(previous).hexdigest()},
-            )
-        if paths.unit == "skeleton":
-            self._write_missing_module_draft_prompts(safe_id)
-        else:
-            # A forced rerun forces the assembly it triggers, or the ingest
-            # would land while the stage response it supersedes stayed put.
-            self._assemble_draft_if_ready(safe_id, force=force)
+        with self._draft_unit_lock(safe_id):
+            existed = paths.response_path.exists()
+            if existed and not force:
+                raise ConfigError(
+                    f"response already ingested for draft unit {paths.unit!r}: "
+                    f"{paths.response_path}"
+                )
+            previous = read_bytes_retrying(paths.response_path) if existed else None
+            paths.response_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_text_atomic(paths.response_path, text)
+            if previous is not None:
+                _write_bytes_atomic(paths.previous_path, previous)
+            if paths.stub_path.exists():
+                paths.stub_path.unlink()
+            if previous is not None:
+                self._append_unit_response_event(
+                    safe_id,
+                    paths,
+                    action="unit_response_replaced",
+                    extra={"previous_sha256": hashlib.sha256(previous).hexdigest()},
+                )
+            if paths.unit == "skeleton":
+                self._write_missing_module_draft_prompts(safe_id)
+            else:
+                # A forced rerun forces the assembly it triggers, or the ingest
+                # would land while the stage response it supersedes stayed put.
+                self._assemble_draft_if_ready(safe_id, force=force)
         return paths
 
     def edit_draft_unit(
@@ -530,23 +560,26 @@ class DraftUnitsMixin:
                 f"no response to edit for draft unit {paths.unit!r}: "
                 f"{paths.response_path}"
             )
-        current = hashlib.sha256(read_bytes_retrying(paths.response_path)).hexdigest()
-        if current != base_sha256:
-            raise StaleContentError(
-                f"the draft {paths.unit} response changed on disk since it was "
-                "loaded; reload the current content before saving"
+        with self._draft_unit_lock(safe_id):
+            current = hashlib.sha256(
+                read_bytes_retrying(paths.response_path)
+            ).hexdigest()
+            if current != base_sha256:
+                raise StaleContentError(
+                    f"the draft {paths.unit} response changed on disk since it was "
+                    "loaded; reload the current content before saving"
+                )
+            _write_text_atomic(paths.response_path, text)
+            self._append_unit_response_event(
+                safe_id,
+                paths,
+                action="unit_response_edited",
+                extra={"base_sha256": base_sha256},
             )
-        _write_text_atomic(paths.response_path, text)
-        self._append_unit_response_event(
-            safe_id,
-            paths,
-            action="unit_response_edited",
-            extra={"base_sha256": base_sha256},
-        )
-        if paths.unit == "skeleton":
-            self._write_missing_module_draft_prompts(safe_id)
-        else:
-            self._assemble_draft_if_ready(safe_id)
+            if paths.unit == "skeleton":
+                self._write_missing_module_draft_prompts(safe_id)
+            else:
+                self._assemble_draft_if_ready(safe_id)
         return paths
 
     def _append_unit_response_event(
@@ -637,9 +670,22 @@ class DraftUnitsMixin:
         fan-out that is simply unfinished). A stage response file whose bytes
         are not the last assembled bytes was written by hand and is never
         overwritten without ``force``.
+
+        Runs under this run's unit lock, so the read of the unit responses,
+        the read of the stage response and the write back are one critical
+        section even when two module jobs of a batch finish together.
         """
 
         safe_id = self._require_draft_units(topic_id)
+        with self._draft_unit_lock(safe_id):
+            return self._assemble_draft_locked(safe_id, force=force)
+
+    def _assemble_draft_locked(
+        self, topic_id: str, *, force: bool = False
+    ) -> AssembleResult:
+        """The assembly itself; caller holds ``_draft_unit_lock(topic_id)``."""
+
+        safe_id = topic_id
         order = self._draft_module_order(safe_id)
         skeleton_text = self._draft_skeleton_text(safe_id)
         if skeleton_text is None:
