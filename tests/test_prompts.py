@@ -1330,3 +1330,384 @@ def test_compile_personalization_audit_prompt_rejects_missing_inputs(
             personalization_trace_json=trace_json,
             profile=None,
         )
+
+
+# ---------------------------------------------------------------------------
+# T21: compile_guide_v1_frame_draft_prompt / compile_guide_v1_module_draft_prompt
+# (per-module drafting, D2/D3)
+# ---------------------------------------------------------------------------
+#
+# Neither function exists yet; the new names are imported inside each test
+# (and inside these module-level helpers, mirroring `_compile_module_repair`
+# above) so collection of this module keeps succeeding for every existing
+# test while these new ones fail on import.
+
+GUIDE_FRAME_SPEC_CONTRACT = {
+    "contract_version": 1,
+    "guide_schema_version": "1.0",
+    "blueprint": "conceptual-foundations",
+    "estimated_minutes": 30,
+    "outcomes": [
+        {"id": "identify-loop", "text": "Identify reinforcing and balancing feedback."},
+        {"id": "map-loop", "text": "Map a feedback loop."},
+        {"id": "choose-intervention", "text": "Choose an intervention."},
+    ],
+    "required_interactions": ["knowledge_check", "worked_reveal", "scenario", "reflection"],
+    "personalization_requirements": ["Use gardening examples where they clarify the concept."],
+    "source_policy": "Sources required for factual claims that are not common knowledge.",
+}
+
+GUIDE_FRAME_OUTLINE_CONTRACT = {
+    "contract_version": 1,
+    "modules": {
+        "loop-basics": {
+            "outcome_ids": ["identify-loop", "map-loop"],
+            "estimated_minutes": 14,
+            "interaction_types": ["knowledge_check", "worked_reveal"],
+        },
+        "intervention-practice": {
+            "outcome_ids": ["map-loop", "choose-intervention"],
+            "estimated_minutes": 16,
+            "interaction_types": ["scenario", "reflection"],
+        },
+    },
+}
+
+
+def _frame_guide_contract() -> bytes:
+    return build_guide_contract(GUIDE_FRAME_SPEC_CONTRACT, GUIDE_FRAME_OUTLINE_CONTRACT)
+
+
+def _frame_dict_for_draft_prompts() -> dict:
+    data = json.loads(_MODULE_REPAIR_FIXTURE.read_text(encoding="utf-8"))
+    for module in data["modules"]:
+        module["sections"] = []
+    return data
+
+
+def _frame_json_for_draft_prompts() -> str:
+    return json.dumps(_frame_dict_for_draft_prompts(), ensure_ascii=False)
+
+
+# -- compile_guide_v1_frame_draft_prompt ----------------------------------
+
+
+def test_frame_draft_prompt_requests_json_only_and_stub_shape() -> None:
+    from education_pipeline.prompts import compile_guide_v1_frame_draft_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking", brief="A brief.")
+    artifact = compile_guide_v1_frame_draft_prompt(
+        topic, APPROVED_OUTLINE, _frame_guide_contract()
+    )
+    text = artifact.text
+
+    assert artifact.stage == "draft"
+    assert "## Approved Outline" in text
+    assert "## Guide Contract" in text
+    for field in ("course", "outcomes", "glossary", "sources"):
+        assert f"`{field}`" in text
+    for field in ("id", "title", "summary", "outcome_ids", "estimated_minutes"):
+        assert f"`{field}`" in text
+    assert '"sections": []' in text
+    assert "loop-basics" in text
+    assert "intervention-practice" in text
+    assert "stub" in text.lower()
+
+
+def test_frame_draft_prompt_lists_contract_module_ids_in_contract_order() -> None:
+    from education_pipeline.prompts import compile_guide_v1_frame_draft_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    contract = _frame_guide_contract()
+    module_ids = list(json.loads(contract.decode("utf-8"))["modules"].keys())
+    assert len(module_ids) == 2  # sanity: the fixture contract has two modules
+
+    text = compile_guide_v1_frame_draft_prompt(topic, APPROVED_OUTLINE, contract).text
+
+    positions = [text.index(module_id) for module_id in module_ids]
+    assert positions == sorted(positions)
+
+
+def test_frame_draft_prompt_says_sources_must_be_declared_here() -> None:
+    from education_pipeline.prompts import compile_guide_v1_frame_draft_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    text = compile_guide_v1_frame_draft_prompt(
+        topic, APPROVED_OUTLINE, _frame_guide_contract()
+    ).text
+
+    assert "sources" in text.lower()
+    assert "cite" in text.lower()
+
+
+def test_frame_draft_prompt_requires_outline_text() -> None:
+    from education_pipeline.prompts import compile_guide_v1_frame_draft_prompt
+
+    with pytest.raises(ValueError, match="must be a non-empty string"):
+        compile_guide_v1_frame_draft_prompt(
+            Topic(id="x", title="X"), "\n\n", _frame_guide_contract()
+        )
+
+
+def test_frame_draft_prompt_composes_blueprint_lines() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+    from education_pipeline.prompts import compile_guide_v1_frame_draft_prompt
+
+    blueprint = get_blueprint("procedural-skill")
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    text = compile_guide_v1_frame_draft_prompt(
+        topic, APPROVED_OUTLINE, _frame_guide_contract(), blueprint=blueprint
+    ).text
+
+    assert "## Blueprint Contract" in text
+    for line in blueprint.draft_lines:
+        assert line in text
+
+
+def test_frame_draft_prompt_includes_profile_context(tmp_path: Path) -> None:
+    from education_pipeline.prompts import compile_guide_v1_frame_draft_prompt
+
+    store = ProfileStore(tmp_path)
+    store.save_profile_toml("visual-profile", PROFILE_TOML)
+    profile = store.load_profile("visual-profile")
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    artifact = compile_guide_v1_frame_draft_prompt(
+        topic, APPROVED_OUTLINE, _frame_guide_contract(), profile
+    )
+
+    assert "# Learner Profile Context" in artifact.text
+    assert "No learner profile is attached." not in artifact.text
+
+
+# -- compile_guide_v1_module_draft_prompt ---------------------------------
+
+
+def test_module_draft_prompt_embeds_frame_and_module_contract() -> None:
+    import re
+
+    from education_pipeline.prompts import compile_guide_v1_module_draft_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking", brief="A brief.")
+    artifact = compile_guide_v1_module_draft_prompt(
+        topic,
+        APPROVED_OUTLINE,
+        _frame_guide_contract(),
+        module_id="loop-basics",
+        frame_json=_frame_json_for_draft_prompts(),
+    )
+    text = artifact.text
+
+    assert artifact.stage == "draft"
+    assert "## Approved Outline" in text
+    assert "## Guide Contract" in text
+    assert "## Course Frame" in text
+    assert '"loop-basics"' in text  # the frame JSON is embedded
+    assert "## Module Contract" in text
+    assert "identify-loop" in text and "map-loop" in text
+    assert "knowledge_check" in text and "worked_reveal" in text
+
+    # Names the module id and title (from the frame stub) to draft.
+    assert "loop-basics" in text
+    assert "How loops behave" in text
+
+    # Output contract: exactly one module object, same id, never the whole guide.
+    assert "exactly one" in text.lower()
+    assert "same `id` (`loop-basics`)" in text
+    assert "Do not return the whole guide" in text
+    assert re.search(r"no [`\"]?modules[`\"]? key", text, re.IGNORECASE)
+
+    # Citation restriction to frame-declared sources/glossary ids.
+    assert "meadows-2008" in text  # frame's source id
+    assert "feedback-loop-term" in text  # frame's glossary id
+
+
+def test_module_draft_prompt_rejects_module_not_in_contract() -> None:
+    from education_pipeline.prompts import compile_guide_v1_module_draft_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    with pytest.raises(ValueError, match="no-such-module"):
+        compile_guide_v1_module_draft_prompt(
+            topic,
+            APPROVED_OUTLINE,
+            _frame_guide_contract(),
+            module_id="no-such-module",
+            frame_json=_frame_json_for_draft_prompts(),
+        )
+
+
+def test_module_draft_prompt_rejects_module_not_a_stub_in_frame() -> None:
+    from education_pipeline.prompts import compile_guide_v1_module_draft_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    frame = _frame_dict_for_draft_prompts()
+    frame["modules"] = [
+        module for module in frame["modules"] if module["id"] != "loop-basics"
+    ]
+
+    with pytest.raises(ValueError, match="loop-basics"):
+        compile_guide_v1_module_draft_prompt(
+            topic,
+            APPROVED_OUTLINE,
+            _frame_guide_contract(),
+            module_id="loop-basics",
+            frame_json=json.dumps(frame, ensure_ascii=False),
+        )
+
+
+def test_module_draft_prompt_requires_outline_text() -> None:
+    from education_pipeline.prompts import compile_guide_v1_module_draft_prompt
+
+    with pytest.raises(ValueError, match="must be a non-empty string"):
+        compile_guide_v1_module_draft_prompt(
+            Topic(id="x", title="X"),
+            "\n\n",
+            _frame_guide_contract(),
+            module_id="loop-basics",
+            frame_json=_frame_json_for_draft_prompts(),
+        )
+
+
+def test_module_draft_prompt_composes_blueprint_lines() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+    from education_pipeline.prompts import compile_guide_v1_module_draft_prompt
+
+    blueprint = get_blueprint("procedural-skill")
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    text = compile_guide_v1_module_draft_prompt(
+        topic,
+        APPROVED_OUTLINE,
+        _frame_guide_contract(),
+        module_id="loop-basics",
+        frame_json=_frame_json_for_draft_prompts(),
+        blueprint=blueprint,
+    ).text
+
+    assert "## Blueprint Contract" in text
+    for line in blueprint.draft_lines:
+        assert line in text
+
+
+def test_module_draft_prompt_includes_profile_context(tmp_path: Path) -> None:
+    from education_pipeline.prompts import compile_guide_v1_module_draft_prompt
+
+    store = ProfileStore(tmp_path)
+    store.save_profile_toml("visual-profile", PROFILE_TOML)
+    profile = store.load_profile("visual-profile")
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    artifact = compile_guide_v1_module_draft_prompt(
+        topic,
+        APPROVED_OUTLINE,
+        _frame_guide_contract(),
+        module_id="loop-basics",
+        frame_json=_frame_json_for_draft_prompts(),
+        profile=profile,
+    )
+
+    assert "# Learner Profile Context" in artifact.text
+    assert "No learner profile is attached." not in artifact.text
+
+
+def _line_containing(text: str, *needles: str) -> str:
+    """The first line holding every needle (case-insensitive), '' if none."""
+
+    for line in text.splitlines():
+        folded = line.casefold()
+        if all(needle.casefold() in folded for needle in needles):
+            return line
+    return ""
+
+
+def test_frame_draft_prompt_requires_json_only_and_the_whole_guide_object() -> None:
+    from education_pipeline.prompts import compile_guide_v1_frame_draft_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    text = compile_guide_v1_frame_draft_prompt(
+        topic, APPROVED_OUTLINE, _frame_guide_contract()
+    ).text
+
+    assert "## Output Format" in text
+    assert "JSON object" in text
+    assert (
+        "without Markdown fences" in text or "no Markdown fences" in text.lower()
+    )
+    # The frame is the whole guide object with empty module stubs, not a module.
+    assert _line_containing(text, "guide", "object")
+    assert '"sections": []' in text
+    # Sources live in the frame because module drafts may only cite these.
+    assert _line_containing(text, "source", "cite")
+
+
+def test_frame_draft_prompt_blueprint_changes_the_text_and_names_the_blueprint() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+    from education_pipeline.prompts import compile_guide_v1_frame_draft_prompt
+
+    blueprint = get_blueprint("procedural-skill")
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    plain = compile_guide_v1_frame_draft_prompt(
+        topic, APPROVED_OUTLINE, _frame_guide_contract()
+    ).text
+    with_blueprint = compile_guide_v1_frame_draft_prompt(
+        topic, APPROVED_OUTLINE, _frame_guide_contract(), blueprint=blueprint
+    ).text
+
+    assert with_blueprint != plain
+    assert blueprint.title in with_blueprint
+    assert blueprint.title not in plain
+
+
+def test_module_draft_prompt_embeds_the_frame_verbatim() -> None:
+    from education_pipeline.prompts import compile_guide_v1_module_draft_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    frame_json = _frame_json_for_draft_prompts()
+    text = compile_guide_v1_module_draft_prompt(
+        topic,
+        APPROVED_OUTLINE,
+        _frame_guide_contract(),
+        module_id="loop-basics",
+        frame_json=frame_json,
+    ).text
+
+    frame_index = text.index("## Course Frame")
+    assert frame_json.strip() in text[frame_index:]
+
+
+def test_module_draft_prompt_module_contract_carries_minutes_and_interactions() -> None:
+    from education_pipeline.prompts import compile_guide_v1_module_draft_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    contract = _frame_guide_contract()
+    plan = json.loads(contract.decode("utf-8"))["modules"]["loop-basics"]
+    text = compile_guide_v1_module_draft_prompt(
+        topic,
+        APPROVED_OUTLINE,
+        contract,
+        module_id="loop-basics",
+        frame_json=_frame_json_for_draft_prompts(),
+    ).text
+
+    section = text[text.index("## Module Contract") :]
+    assert str(plan["estimated_minutes"]) in section
+    for outcome_id in plan["outcome_ids"]:
+        assert outcome_id in section
+    for interaction in plan["interaction_types"]:
+        assert interaction in section
+
+
+def test_module_draft_prompt_restricts_citations_to_the_frame() -> None:
+    from education_pipeline.prompts import compile_guide_v1_module_draft_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking")
+    text = compile_guide_v1_module_draft_prompt(
+        topic,
+        APPROVED_OUTLINE,
+        _frame_guide_contract(),
+        module_id="loop-basics",
+        frame_json=_frame_json_for_draft_prompts(),
+    ).text
+
+    assert _line_containing(text, "source_ids", "frame")
+    assert _line_containing(text, "glossary", "frame")
+    assert "`modules`" in text
