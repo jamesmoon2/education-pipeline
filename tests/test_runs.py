@@ -2109,7 +2109,7 @@ def test_failed_audit_projection_write_cannot_leave_approval_current(
         force=True,
     )
 
-    import education_pipeline.runs as runs_module
+    import education_pipeline.runs_personalization as runs_module
 
     real_write = runs_module._write_bytes_atomic
 
@@ -3406,7 +3406,7 @@ def test_guide_v1_partial_finalization_leaves_no_finalized_event(
     def boom(_guide: object) -> str:
         raise RuntimeError("projection failed")
 
-    monkeypatch.setattr("education_pipeline.runs.project_guide_markdown", boom)
+    monkeypatch.setattr("education_pipeline.runs_finalize.project_guide_markdown", boom)
     with pytest.raises(RuntimeError, match="projection failed"):
         runs.finalize_run(tid)
 
@@ -3427,7 +3427,7 @@ def test_guide_v1_partial_finalization_leaves_no_finalized_event(
 def test_guide_v1_failure_between_final_writes_never_reports_finalized(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from education_pipeline import runs as runs_module
+    from education_pipeline import runs_finalize as runs_module
 
     tid = "systems-thinking"
     runs = _create_guide_run(tmp_path, tid)
@@ -3492,7 +3492,7 @@ def test_export_refuses_when_render_fails(tmp_path: Path, monkeypatch) -> None:
     store = _create_guide_run(tmp_path, tid)
     _drive_guide_to_finalize_ready(store, tid)
 
-    from education_pipeline import runs as runs_mod
+    from education_pipeline import runs_reports as runs_mod
     from education_pipeline.guides.static_checks import StaticCheckResult
     from education_pipeline.guides.validation import ValidationContext
 
@@ -3731,7 +3731,7 @@ def test_export_state_binds_final_report_and_quality_report_schema(
     store.export_run(tid)
     assert store.export_state(tid) == "current"
 
-    import education_pipeline.runs as runs_module
+    import education_pipeline.runs_reports as runs_module
 
     monkeypatch.setattr(runs_module, "QUALITY_REPORT_SCHEMA_VERSION", 999)
     assert store.export_state(tid) == "stale"
@@ -3791,7 +3791,7 @@ def test_export_uses_one_runtime_asset_snapshot(
 ) -> None:
     store, tid = guide_v1_run
     store.finalize_run(tid)
-    import education_pipeline.runs as runs_module
+    import education_pipeline.runs_finalize as runs_module
     from education_pipeline.guide_runtime import RuntimeAssets, load_runtime_assets
 
     first = load_runtime_assets()
@@ -3822,7 +3822,7 @@ def test_trace_replacement_between_freshness_check_and_projection_fails(
     store.finalize_run(tid)
     trace_path = store.personalization_trace_path(tid)
     original = trace_path.read_bytes()
-    import education_pipeline.runs as runs_module
+    import education_pipeline.runs_reports as runs_module
 
     real_fresh = runs_module.personalization_trace_is_fresh
 
@@ -3985,7 +3985,7 @@ def test_profile_reattachment_waits_for_audit_approval_persistence(
             tmp_path, tid, "audit-replacement-profile"
         )
     )
-    import education_pipeline.runs as runs_module
+    import education_pipeline.runs_personalization as runs_module
 
     real_projection = runs_module.canonical_safe_audit_projection_bytes
 
@@ -4442,7 +4442,7 @@ def test_concurrent_validation_serializes_report_trace_and_event_provenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from education_pipeline import runs as runs_module
+    from education_pipeline import runs_reports as runs_module
 
     tid = "systems-thinking"
     runs = _create_profiled_guide_run(tmp_path)

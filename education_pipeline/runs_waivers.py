@@ -18,6 +18,7 @@ from education_pipeline.guides import (
     WaiverSet,
     apply_waivers,
 )
+from education_pipeline.run_core import _write_bytes_atomic
 
 
 class WaiversMixin:
@@ -227,8 +228,6 @@ class WaiversMixin:
         write-side of the read-modify-write cycle instead of two divergent
         copies.
         """
-
-        from education_pipeline.runs import _write_bytes_atomic
 
         new_set = self._build_waiver_set(guide_sha256, items)
         path = self.waivers_path(topic_id)

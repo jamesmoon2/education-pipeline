@@ -8,9 +8,9 @@ feed them, the export sidecar's quality report, and the ``missing`` /
 :class:`ReportsMixin` holds no state of its own -- ``RunStore`` supplies every
 ``self.`` collaborator used here.
 
-Names that ``runs.py`` (and its tests) monkeypatch are imported lazily from
-``education_pipeline.runs`` inside the methods that call them, so a patch on
-the ``runs`` module namespace still reaches this code.
+Every collaborator is imported at module scope from the leaf module that
+owns it, so a test that needs to stub one patches it here, on
+``education_pipeline.runs_reports``, rather than on the ``runs`` namespace.
 """
 
 from __future__ import annotations
@@ -24,19 +24,25 @@ import threading
 
 from education_pipeline.config import ConfigError
 from education_pipeline.guides import (
+    DEFAULT_GUIDE_SCHEMA_VERSION,
     Finding,
     Guide,
     MAX_GUIDE_SOURCE_BYTES,
+    QUALITY_REPORT_SCHEMA_VERSION,
     REPORT_SCHEMA_VERSION,
     ValidationReport,
     WaiverResult,
     WaiverSet,
     apply_waivers,
     canonical_report_bytes,
+    compute_static_checks,
     guide_sha256,
+    normalize_guide,
+    parse_guide,
     quality_report_bytes,
+    validate_guide,
 )
-from education_pipeline.guide_runtime import RuntimeAssets
+from education_pipeline.guide_runtime import RuntimeAssets, load_runtime_assets
 from education_pipeline.guides.validation import (
     CalibrationContext,
     PersonalizationValidationContext,
@@ -51,12 +57,14 @@ from education_pipeline.guides.personalization import (
     canonical_personalization_trace_bytes,
     canonical_safe_personalization_trace_bytes,
     parse_personalization_trace,
+    personalization_trace_is_fresh,
 )
 from education_pipeline.guides.audit import AUDIT_PROJECTION_SCHEMA_VERSION
 from education_pipeline.guides.projection import public_guide_projection
 from education_pipeline.privacy import profile_private_values
 from education_pipeline.profiles import LearnerProfile
 from education_pipeline.atomic_io import read_bytes_retrying
+from education_pipeline.run_core import StageStatus, _relative_to, _write_bytes_atomic
 from education_pipeline.workspace import (
     ProfileStore,
     TopicStore,
@@ -209,8 +217,6 @@ class ReportsMixin:
     ) -> _PublicAuditSnapshot:
         """Capture one approval-bound audit generation under the topic lock."""
 
-        from education_pipeline.runs import _relative_to
-
         safe_id = _artifact_id(topic_id, "topic id")
         events = self._manifest_events(safe_id)
         approval_index = next(
@@ -290,8 +296,6 @@ class ReportsMixin:
         profile lock, and manifest-only writers never acquire the profile lock
         from inside their critical section.
         """
-
-        from education_pipeline.runs import StageStatus
 
         safe_id = _artifact_id(topic_id, "topic id")
         profiles = ProfileStore(self.root)
@@ -414,11 +418,6 @@ class ReportsMixin:
         audit_snapshot: _PublicAuditSnapshot | None = None,
     ) -> str:
         """Unlocked export-state derivation for an existing topic lock."""
-
-        from education_pipeline.runs import (
-            QUALITY_REPORT_SCHEMA_VERSION,
-            load_runtime_assets,
-        )
 
         safe_id = _artifact_id(topic_id, "topic id")
         export_path = self.export_path(safe_id, "html")
@@ -547,7 +546,7 @@ class ReportsMixin:
         if any(finding.stage != "audit" for finding in findings):
             raise ConfigError("current audit projection is invalid")
         ordered = ValidationReport(
-            guide_schema_version="1.0",
+            guide_schema_version=DEFAULT_GUIDE_SCHEMA_VERSION,
             phase="final",
             guide_sha256="",
             findings=findings,
@@ -561,8 +560,6 @@ class ReportsMixin:
         guide: Guide,
         profile_snapshot: tuple[LearnerProfile, Path, str] | None,
     ) -> tuple[bytes | None, str | None]:
-        from education_pipeline.runs import personalization_trace_is_fresh
-
         path = self.personalization_trace_path(topic_id)
         if profile_snapshot is None:
             return None, None
@@ -613,8 +610,6 @@ class ReportsMixin:
         audit_snapshot: _PublicAuditSnapshot,
         trace_projection: bytes | None,
     ) -> bytes:
-        from education_pipeline.runs import QUALITY_REPORT_SCHEMA_VERSION
-
         audit_state = audit_snapshot.state
         audit_findings = audit_snapshot.findings
         audit_projection_sha256 = audit_snapshot.projection_sha256
@@ -779,8 +774,6 @@ class ReportsMixin:
     ) -> str:
         """Derive trace freshness from bytes captured by the current reader."""
 
-        from education_pipeline.runs import personalization_trace_is_fresh
-
         try:
             artifacts = self._compute_phase_report(topic_id, phase)
         except (ConfigError, OSError, UnicodeError):
@@ -878,13 +871,6 @@ class ReportsMixin:
         ``guide`` is the normalized guide. Surfacing ``guide`` lets callers
         reuse the single parse instead of re-parsing the source.
         """
-
-        from education_pipeline.runs import (
-            compute_static_checks,
-            normalize_guide,
-            parse_guide,
-            validate_guide,
-        )
 
         private_values, personalization_context, calibration_context = (
             validation_inputs
@@ -999,12 +985,6 @@ class ReportsMixin:
         ``ConfigError`` when there is no approved source for the phase yet
         (nothing to validate).
         """
-
-        from education_pipeline.runs import (
-            normalize_guide,
-            parse_guide,
-            validate_guide,
-        )
 
         safe_id = _artifact_id(topic_id, "topic id")
         if not self._mode(safe_id).supports_validation:
@@ -1148,8 +1128,6 @@ class ReportsMixin:
         ``validate`` command -- that need both the persisted-report side
         effect and the gate outcome from a single invocation.
         """
-
-        from education_pipeline.runs import _write_bytes_atomic
 
         safe_id = _artifact_id(topic_id, "topic id")
         with self._profile_generation_lock(safe_id):

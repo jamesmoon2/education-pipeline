@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from education_pipeline.config import REQUIRED_STAGES
+from education_pipeline.run_core import NextAction, _FINAL_SOURCE_STAGE, _write_text
 from education_pipeline.export import (
     build_markdown_bundle,
     render_markdown_to_html,
@@ -49,7 +50,8 @@ from education_pipeline.workspace import TopicStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from education_pipeline.profiles import LearnerProfile
-    from education_pipeline.runs import NextAction, RunStore, StageStatus
+    from education_pipeline.run_core import StageStatus
+    from education_pipeline.runs import RunStore
     from education_pipeline.topics import Topic
 
 
@@ -213,8 +215,6 @@ class LegacyMarkdownMode(_RunMode):
         stages: tuple[StageStatus, ...],
         finalized: bool,
     ) -> NextAction:
-        from education_pipeline.runs import NextAction, _FINAL_SOURCE_STAGE
-
         by_stage = {status.stage: status for status in stages}
         for stage_name in REQUIRED_STAGES:
             status = by_stage[stage_name]
@@ -242,8 +242,6 @@ class LegacyMarkdownMode(_RunMode):
         return store.final_path(topic_id).exists()
 
     def finalize(self, store: RunStore, topic_id: str, *, overwrite: bool) -> Path:
-        from education_pipeline.runs import _FINAL_SOURCE_STAGE, _write_text
-
         content = store.read_approved(topic_id, _FINAL_SOURCE_STAGE)
         store.create_run(topic_id)
         final = store.final_path(topic_id)
@@ -260,8 +258,6 @@ class LegacyMarkdownMode(_RunMode):
         return final
 
     def export(self, store: RunStore, topic_id: str, *, format: str, overwrite: bool) -> Path:
-        from education_pipeline.runs import _write_text
-
         export_path = store.export_path(topic_id, format)
         guide = store._read_final_guide(topic_id)
         topic = TopicStore(store.root).load_topic(topic_id)

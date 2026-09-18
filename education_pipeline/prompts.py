@@ -8,6 +8,10 @@ from dataclasses import dataclass, replace
 
 from education_pipeline.config import ConfigError
 from education_pipeline.guides.blueprints import Blueprint
+from education_pipeline.guides.model import (
+    DEFAULT_GUIDE_SCHEMA_VERSION,
+    SUPPORTED_GUIDE_SCHEMA_VERSIONS,
+)
 from education_pipeline.guides.personalization import (
     active_personalization_facets,
     authoritative_goals,
@@ -619,7 +623,6 @@ def _blueprint_spec_contract_requirement_lines(
     )
 
 
-_SUPPORTED_GUIDE_SCHEMA_VERSIONS = frozenset({"1.0", "1.1"})
 _ACTIVE_FACET_PROMPT_INSTRUCTIONS = {
     "prior_knowledge": "Calibrate prerequisites and remediation to the learner's existing knowledge.",
     "interests_examples": "Choose examples that fit the learner's stated interests and avoidances.",
@@ -630,10 +633,10 @@ _ACTIVE_FACET_PROMPT_INSTRUCTIONS = {
 
 
 def _guide_schema_version(value: object) -> str:
-    if not isinstance(value, str) or value not in _SUPPORTED_GUIDE_SCHEMA_VERSIONS:
+    if not isinstance(value, str) or value not in SUPPORTED_GUIDE_SCHEMA_VERSIONS:
         raise ConfigError(
             "guide_schema_version must be one of "
-            f"{sorted(_SUPPORTED_GUIDE_SCHEMA_VERSIONS)}, got {value!r}"
+            f"{sorted(SUPPORTED_GUIDE_SCHEMA_VERSIONS)}, got {value!r}"
         )
     return value
 
@@ -651,7 +654,7 @@ def _guide_json_output_lines(
     lines: tuple[str, ...], guide_schema_version: str
 ) -> tuple[str, ...]:
     versioned = _versioned_lines(lines, guide_schema_version)
-    if guide_schema_version == "1.0":
+    if guide_schema_version == DEFAULT_GUIDE_SCHEMA_VERSION:
         return versioned
     return (
         *versioned,
@@ -752,7 +755,7 @@ def _untrusted_block(label: str, text: str) -> str:
 def compile_guide_v1_spec_prompt(
     spec_input: SpecPromptInput,
     *,
-    guide_schema_version: str = "1.0",
+    guide_schema_version: str = DEFAULT_GUIDE_SCHEMA_VERSION,
     blueprint: Blueprint | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 spec-stage prompt.
@@ -813,7 +816,7 @@ def compile_guide_v1_outline_prompt(
     approved_spec: str,
     profile: LearnerProfile | None = None,
     *,
-    guide_schema_version: str = "1.0",
+    guide_schema_version: str = DEFAULT_GUIDE_SCHEMA_VERSION,
     blueprint: Blueprint | None = None,
 ) -> PromptArtifact:
     """Compile the guide-v1 outline-stage prompt.

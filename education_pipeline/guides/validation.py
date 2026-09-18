@@ -16,7 +16,15 @@ from education_pipeline.text_scalars import (
 )
 
 from .canonical import guide_sha256
-from .model import Callout, Guide, KnowledgeCheck, RichText, Scenario, WorkedReveal
+from .model import (
+    DEFAULT_GUIDE_SCHEMA_VERSION,
+    Callout,
+    Guide,
+    KnowledgeCheck,
+    RichText,
+    Scenario,
+    WorkedReveal,
+)
 from .parse import ParseDiagnostic, normalize_guide, parse_guide
 from .personalization import AuthoritativeGoal, index_personalization_annotations
 from .projection import public_guide_projection
@@ -734,7 +742,7 @@ def validate_guide(
                 (_invalid_scalar_finding(),) if invalid_scalar_replaced else ()
             )
             return _validation_report(
-                "1.0",
+                DEFAULT_GUIDE_SCHEMA_VERSION,
                 phase,
                 digest,
                 (finding,) + invalid_findings + personalization_findings,
@@ -751,7 +759,7 @@ def validate_guide(
                 (_invalid_scalar_finding(),) if invalid_scalar_replaced else ()
             )
             return _validation_report(
-                "1.0",
+                DEFAULT_GUIDE_SCHEMA_VERSION,
                 phase,
                 digest,
                 tuple(_diagnostic_finding(x, supplied_private) for x in parsed.diagnostics)
