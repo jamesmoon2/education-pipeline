@@ -414,3 +414,173 @@ def test_schema_1_1_rejects_over_padded_goal_id_aliases(goal_id: str) -> None:
 
     assert "schema.invalid_goal_id" in serves_codes
     assert "schema.invalid_goal_id" in exclusion_codes
+
+
+# --- check_skeleton -------------------------------------------------------
+#
+# A skeleton is a guide JSON object whose every module is a sectionless stub
+# (`id, title, summary, outcome_ids, estimated_minutes`, `sections: []`, plus
+# `serves_goals` only on schema 1.1). `check_skeleton` validates that shape
+# directly rather than delegating to `parse_guide`, which can never accept a
+# skeleton (empty `sections` fails cardinality, and no module has an
+# interactive block).
+
+
+def _skeleton_data() -> dict:
+    data = fixture_data()
+    data["modules"] = [
+        {**{key: value for key, value in module.items() if key != "sections"}, "sections": []}
+        for module in data["modules"]
+    ]
+    return data
+
+
+SKELETON_MODULE_ORDER = ("loop-basics", "intervention-practice")
+
+
+def test_check_skeleton_accepts_a_valid_sectionless_skeleton() -> None:
+    from education_pipeline.guides.parse import check_skeleton
+
+    skeleton = _skeleton_data()
+
+    result = check_skeleton(
+        json.dumps(skeleton, ensure_ascii=False), module_order=SKELETON_MODULE_ORDER
+    )
+
+    assert result.ok
+    assert result.parsed == skeleton
+
+
+def test_check_skeleton_accepts_mapping_and_bytes_input() -> None:
+    from education_pipeline.guides.parse import check_skeleton
+
+    skeleton = _skeleton_data()
+
+    from_mapping = check_skeleton(skeleton, module_order=SKELETON_MODULE_ORDER)
+    from_bytes = check_skeleton(
+        json.dumps(skeleton, ensure_ascii=False).encode("utf-8"),
+        module_order=SKELETON_MODULE_ORDER,
+    )
+
+    assert from_mapping.ok
+    assert from_bytes.ok
+
+
+def test_check_skeleton_rejects_a_module_with_sections() -> None:
+    from education_pipeline.guides.parse import check_skeleton
+
+    skeleton = _skeleton_data()
+    real_module = fixture_data()["modules"][0]
+    skeleton["modules"][0]["sections"] = [real_module["sections"][0]]
+
+    result = check_skeleton(
+        json.dumps(skeleton, ensure_ascii=False), module_order=SKELETON_MODULE_ORDER
+    )
+    result_codes = codes(result)
+
+    assert not result.ok
+    assert "skeleton.sections_not_empty" in result_codes
+    # None of the ordinary guide-completeness rules apply to a skeleton --
+    # they can never be satisfied by a document with (mostly) empty modules.
+    assert "module.no_interaction" not in result_codes
+    assert "interaction.missing_required_type" not in result_codes
+    assert "outcome.untaught" not in result_codes
+    assert "outcome.unassessed" not in result_codes
+    assert "schema.cardinality" not in result_codes
+
+
+def test_check_skeleton_rejects_a_missing_module() -> None:
+    from education_pipeline.guides.parse import check_skeleton
+
+    skeleton = _skeleton_data()
+    skeleton["modules"] = skeleton["modules"][:1]
+
+    result = check_skeleton(
+        json.dumps(skeleton, ensure_ascii=False), module_order=SKELETON_MODULE_ORDER
+    )
+
+    assert not result.ok
+    assert "skeleton.missing_module" in codes(result)
+
+
+def test_check_skeleton_rejects_an_extra_module() -> None:
+    from education_pipeline.guides.parse import check_skeleton
+
+    skeleton = _skeleton_data()
+    extra = dict(skeleton["modules"][0])
+    extra["id"] = "surprise-module"
+    skeleton["modules"].append(extra)
+
+    result = check_skeleton(
+        json.dumps(skeleton, ensure_ascii=False), module_order=SKELETON_MODULE_ORDER
+    )
+
+    assert not result.ok
+    assert "skeleton.extra_module" in codes(result)
+
+
+def test_check_skeleton_rejects_stubs_out_of_module_order() -> None:
+    from education_pipeline.guides.parse import check_skeleton
+
+    skeleton = _skeleton_data()
+    skeleton["modules"].reverse()
+
+    result = check_skeleton(
+        json.dumps(skeleton, ensure_ascii=False), module_order=SKELETON_MODULE_ORDER
+    )
+
+    assert not result.ok
+    assert "skeleton.module_order" in codes(result)
+
+
+def test_check_skeleton_rejects_duplicate_ids_across_categories() -> None:
+    from education_pipeline.guides.parse import check_skeleton
+
+    skeleton = _skeleton_data()
+    # A glossary entry stealing an outcome's id: the parser keeps one id
+    # namespace across outcomes, modules, glossary, and sources.
+    skeleton["glossary"][0]["id"] = skeleton["outcomes"][0]["id"]
+
+    result = check_skeleton(
+        json.dumps(skeleton, ensure_ascii=False), module_order=SKELETON_MODULE_ORDER
+    )
+
+    assert not result.ok
+    assert "schema.duplicate_id" in codes(result)
+
+
+def test_check_skeleton_non_json_and_non_object_input_yield_diagnostics_not_exceptions() -> None:
+    from education_pipeline.guides.parse import check_skeleton
+
+    malformed = check_skeleton("{not json", module_order=SKELETON_MODULE_ORDER)
+    root_array = check_skeleton("[]", module_order=SKELETON_MODULE_ORDER)
+    bad_utf8 = check_skeleton(b"\xff", module_order=SKELETON_MODULE_ORDER)
+
+    assert not malformed.ok and malformed.parsed is None
+    assert not root_array.ok and root_array.parsed is None
+    assert not bad_utf8.ok and bad_utf8.parsed is None
+    assert "json.invalid" in codes(malformed)
+    assert "schema.invalid_type" in codes(root_array)
+    assert "json.invalid_utf8" in codes(bad_utf8)
+
+
+def test_check_skeleton_allows_serves_goals_on_module_stubs_only_for_schema_1_1() -> None:
+    from education_pipeline.guides.parse import check_skeleton
+
+    allowed = _skeleton_data()
+    allowed["schema_version"] = "1.1"
+    allowed["modules"][0]["serves_goals"] = ["goal-001"]
+
+    rejected = _skeleton_data()
+    rejected["modules"][0]["serves_goals"] = ["goal-001"]
+
+    allowed_result = check_skeleton(
+        json.dumps(allowed, ensure_ascii=False), module_order=SKELETON_MODULE_ORDER
+    )
+    rejected_result = check_skeleton(
+        json.dumps(rejected, ensure_ascii=False), module_order=SKELETON_MODULE_ORDER
+    )
+
+    assert allowed_result.ok
+    assert not rejected_result.ok
+    assert "schema.unknown_field" in codes(rejected_result)
