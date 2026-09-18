@@ -467,3 +467,139 @@ def test_scoped_lookups_refuse_path_escaping_ids(tmp_path):
         assert store.list(hostile) == []
         assert store.active_for(hostile, "draft") is None
         assert store.any_active_for(hostile) is None
+
+
+# ---------------------------------------------------------------------------
+# Batches and draft parts (thread T23). The names reached through the helpers
+# below do not exist yet, so every test here fails today while the rest of
+# this file stays green; imports stay inside helpers so collection succeeds.
+# ---------------------------------------------------------------------------
+
+
+def _jobs_module():
+    from education_pipeline.daemon import jobs as jobs_module
+
+    return jobs_module
+
+
+def _parts():
+    from education_pipeline import draft_parts
+
+    return draft_parts
+
+
+def test_job_round_trips_batch_id_and_part():
+    part = _parts().DraftPart("module", "loop-basics").to_manifest()
+    job = Job(
+        id="j1",
+        topic_id="t",
+        stage="draft",
+        provider="fake",
+        model="m",
+        effort=None,
+        batch_id="b-123",
+        part=part,
+    )
+    data = job.to_dict()
+    assert data["batch_id"] == "b-123"
+    assert data["part"] == {"kind": "module", "module_id": "loop-basics"}
+    restored = Job.from_dict(json.loads(json.dumps(data)))
+    assert restored.batch_id == "b-123"
+    assert restored.part == part
+
+
+def test_job_from_dict_tolerates_legacy_records_without_batch_fields():
+    legacy = {
+        "id": "j0",
+        "topic_id": "t",
+        "stage": "draft",
+        "provider": "fake",
+        "model": "m",
+        "effort": None,
+        "status": "succeeded",
+    }
+    job = Job.from_dict(legacy)
+    assert job.batch_id is None
+    assert job.part is None
+    assert job.part_key is None
+
+
+def test_job_part_key_is_the_draft_part_key():
+    frame = Job(
+        id="j1", topic_id="t", stage="draft", provider="fake", model="m", effort=None,
+        part=_parts().FRAME.to_manifest(),
+    )
+    module = Job(
+        id="j2", topic_id="t", stage="draft", provider="fake", model="m", effort=None,
+        part=_parts().DraftPart("module", "loop-basics").to_manifest(),
+    )
+    whole = Job(
+        id="j3", topic_id="t", stage="draft", provider="fake", model="m", effort=None
+    )
+    assert frame.part_key == "frame"
+    assert module.part_key == "module:loop-basics"
+    assert whole.part_key is None
+
+
+def test_jobstore_create_persists_batch_id_and_part(tmp_path):
+    parts = _parts()
+    store = JobStore(tmp_path)
+    job = store.create(
+        "t", "draft", "fake", "m", None, batch_id="b-1", part=parts.FRAME.to_manifest()
+    )
+    store.save(job)
+    loaded = store.load("t", job.id)
+    assert loaded.batch_id == "b-1"
+    assert loaded.part == {"kind": "frame"}
+    assert loaded.part_key == "frame"
+
+
+def test_active_for_part_matches_only_that_part(tmp_path):
+    parts = _parts()
+    store = JobStore(tmp_path)
+    first = store.create(
+        "t", "draft", "fake", "m", None, part=parts.DraftPart("module", "a").to_manifest()
+    )
+    store.save(first)
+    assert store.active_for_part("t", parts.DraftPart("module", "a")).id == first.id
+    assert store.active_for_part("t", parts.DraftPart("module", "b")) is None
+    assert store.active_for_part("t", parts.FRAME) is None
+    first.status = "succeeded"
+    store.save(first)
+    assert store.active_for_part("t", parts.DraftPart("module", "a")) is None
+
+
+def test_active_for_stage_still_sees_a_part_job(tmp_path):
+    parts = _parts()
+    store = JobStore(tmp_path)
+    job = store.create(
+        "t", "draft", "fake", "m", None, part=parts.DraftPart("module", "a").to_manifest()
+    )
+    store.save(job)
+    # active_for is unchanged: any non-terminal draft job, part or not.
+    assert store.active_for("t", "draft").id == job.id
+    assert store.any_active_for("t").id == job.id
+
+
+def test_jobstore_batch_returns_only_that_batch_newest_first(tmp_path):
+    parts = _parts()
+    store = JobStore(tmp_path)
+    members = []
+    for module_id in ("a", "b"):
+        job = store.create(
+            "t", "draft", "fake", "m", None,
+            batch_id="b-1", part=parts.DraftPart("module", module_id).to_manifest(),
+        )
+        store.save(job)
+        members.append(job)
+    other = store.create(
+        "t", "draft", "fake", "m", None,
+        batch_id="b-2", part=parts.DraftPart("module", "c").to_manifest(),
+    )
+    store.save(other)
+    loose = store.create("t", "qa", "fake", "m", None)
+    store.save(loose)
+    found = store.batch("t", "b-1")
+    assert {job.id for job in found} == {job.id for job in members}
+    assert store.batch("t", "b-2")[0].id == other.id
+    assert store.batch("t", "nope") == []

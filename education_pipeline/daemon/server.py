@@ -15,6 +15,7 @@ import sys
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Callable, Protocol
 from urllib.parse import unquote
 
@@ -25,12 +26,19 @@ from education_pipeline.config import (
     apply_overrides_lenient,
 )
 from education_pipeline.daemon import read_api, reveal, write_api
-from education_pipeline.daemon.jobs import Job, JobStore, Worker
+from education_pipeline.daemon.jobs import (
+    TERMINAL_STATUSES,
+    Job,
+    JobStore,
+    Worker,
+    new_batch_id,
+)
 from education_pipeline.daemon.static import (
     cockpit_build_report,
     inject_cockpit_build_warning,
     resolve_static,
 )
+from education_pipeline.draft_parts import FRAME, DraftPart
 from education_pipeline.export import render_html_body
 from education_pipeline.guides import (
     ContractError,
@@ -123,6 +131,13 @@ class DaemonContext:
                 f"override for stage {target_stage!r} is invalid: "
                 f"{override_errors[target_stage]}"
             )
+        if target_stage == "draft" and self.runs.draft_strategy(topic_id) == "modular":
+            # The two enqueue paths must never race over one draft: a modular
+            # draft is run part by part through enqueue_draft_batch.
+            raise ConfigError(
+                "draft_is_modular: this run drafts per module; enqueue the "
+                "current wave as a batch instead of the whole draft stage"
+            )
         if target_stage == "audit":
             try:
                 self.runs.require_provider_ready_prompt(topic_id, target_stage)
@@ -150,6 +165,142 @@ class DaemonContext:
         # under its lock, so a rejected job never gets a job.json written.
         self.worker.enqueue(job)
         return job
+
+    def enqueue_draft_batch(
+        self,
+        topic_id: str,
+        *,
+        parts: "Sequence[str] | None" = None,
+        force: bool = False,
+    ) -> list[Job]:
+        """Admit the modular draft's current wave as one batch of part jobs.
+
+        Same workspace-lock discipline and the same archive / plan / override
+        guards as :meth:`enqueue_stage`; the only difference is what gets
+        enqueued -- one frame job, or one job per module still waiting (or the
+        ``parts`` subset, or every module with ``force``).
+        """
+
+        with workspace_lock(self.root, timeout_seconds=self.store.lock_timeout_seconds):
+            return self._enqueue_draft_batch_locked(topic_id, parts, force)
+
+    def _enqueue_draft_batch_locked(
+        self, topic_id: str, parts: "Sequence[str] | None", force: bool
+    ) -> list[Job]:
+        if self.runs.is_archived(topic_id):
+            raise write_api.ConflictError(
+                "archived_course",
+                f"course {topic_id!r} is archived; unarchive it first",
+            )
+        catalog, plan = self.config.load()
+        overrides = self.runs.read_plan_overrides(topic_id)
+        plan, override_errors = apply_overrides_lenient(plan, overrides, catalog)
+        if "draft" in override_errors:
+            raise ConfigError(
+                f"override for stage 'draft' is invalid: {override_errors['draft']}"
+            )
+        status = self.runs.draft_parts(topic_id)
+        if status is None:
+            raise ConfigError(
+                f"run {topic_id!r} does not draft per module; enqueue the draft "
+                "stage instead"
+            )
+        targets = self._batch_parts(status, parts, force)
+        # Refuse while any draft job that could collide is still live: a
+        # whole-stage draft job (part_key None) collides with everything, and
+        # a part job collides with a request for that same part.
+        wanted = {part.key for part in targets}
+        for job in self.store.list(topic_id):
+            if job.stage != "draft" or job.status in TERMINAL_STATUSES:
+                continue
+            if job.part_key is None or job.part_key in wanted:
+                raise ConfigError(
+                    f"a job is already active for {topic_id}/draft"
+                )
+        stage_plan = plan.stage("draft")
+        provider = stage_plan.provider or plan.provider
+        plan_source = "override" if "draft" in overrides.get("stages", {}) else "default"
+        batch_id = new_batch_id()
+        jobs: list[Job] = []
+        for part in targets:
+            job = self.store.create(
+                topic_id,
+                "draft",
+                provider,
+                stage_plan.model,
+                stage_plan.effort,
+                batch_id=batch_id,
+                part=part.to_manifest(),
+            )
+            job.metadata["force"] = force
+            job.metadata["plan_source"] = plan_source
+            jobs.append(job)
+        # All-or-nothing, exactly like enqueue(): a refused batch leaves no
+        # job.json behind for any member.
+        self.worker.enqueue_batch(jobs)
+        return jobs
+
+    def _batch_parts(self, status, parts, force: bool) -> list[DraftPart]:
+        """Which parts this request runs, or a ConfigError saying why none."""
+
+        wave = status.wave
+        if wave is None:
+            raise ConfigError(
+                "nothing to run: every draft part is responded and assembled"
+            )
+        if wave == "frame":
+            if parts is not None:
+                raise ConfigError(
+                    "nothing to run: the frame must be drafted before any module; "
+                    "retry without a parts subset"
+                )
+            if status.frame.state != "prompted":
+                raise ConfigError(
+                    "write the frame prompt first: the draft frame prompt is not "
+                    f"current ({status.frame.state})"
+                )
+            return [FRAME]
+
+        known = {module.part.module_id: module for module in status.modules}
+        if parts is None:
+            if force:
+                wanted = [
+                    str(module.part.module_id)
+                    for module in status.modules
+                    if module.prompt_current
+                ]
+            else:
+                wanted = list(status.waiting_module_ids())
+        else:
+            wanted = []
+            for name in parts:
+                if name == "frame":
+                    raise ConfigError(
+                        "the frame is not a batch part: it is drafted on its own, "
+                        "before the modules"
+                    )
+                module = known.get(name)
+                if module is None:
+                    listed = ", ".join(known) or "(none)"
+                    raise ConfigError(
+                        f"unknown draft module {name!r}; contract modules: {listed}"
+                    )
+                if not module.prompt_current:
+                    raise ConfigError(
+                        f"module {name!r} has no current prompt ({module.state}); "
+                        "write the draft part prompts first"
+                    )
+                wanted.append(name)
+        if not wanted:
+            raise ConfigError(
+                "nothing to run: no module has a prompt waiting for a response"
+            )
+        return [DraftPart("module", module_id) for module_id in wanted]
+
+    def cancel_batch(self, topic_id: str, batch_id: str) -> list[Job]:
+        """Cancel every queued or running job of one batch."""
+
+        return self.worker.cancel_batch(topic_id, batch_id)
 
 
 class _LoopbackHTTPServer(ThreadingHTTPServer):

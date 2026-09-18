@@ -1,5 +1,12 @@
 provider = "claude-code"
 
+# How many provider jobs the daemon may run at once (integer 1-4, default 2).
+# Daemon-wide, never per run: it bounds a modular draft's module jobs, which
+# are the reason it exists. Read once when the worker pool starts, so a change
+# takes effect when the daemon restarts.
+# [jobs]
+# parallelism = 2
+
 [stages.profile]
 recommendation = "fast_or_strong_summary"
 model = "sonnet-5"
