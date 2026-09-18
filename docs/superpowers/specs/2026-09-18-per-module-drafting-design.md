@@ -121,7 +121,8 @@ to the ordinary draft response path and `next_action` is `approve` for
    The skeleton call returns the whole guide *without section content*:
    course header, outcomes (with `serves_goals`), glossary seed, sources
    seed, and one stub per contract module (`id, title, summary, outcome_ids,
-   estimated_minutes, serves_goals, sections: []`). Module calls receive the
+   estimated_minutes, sections: []`, plus `serves_goals` only on schema 1.1,
+   where `parse.py:216,352` allow it). Module calls receive the
    skeleton and return one full module object. Rationale: the course header
    is prose no deterministic step can write (see Current state), and giving
    every module the same header, outcome texts and sibling stubs is what
@@ -139,7 +140,13 @@ to the ordinary draft response path and `next_action` is `approve` for
    an `AssemblyError`), merges optional per-module `glossary` and `sources`
    contributions by id (skeleton first, then modules in order; the same id
    with different content is an error), and re-parses the result strictly,
-   exactly as `splice_module` does. Output is canonical bytes.
+   exactly as `splice_module` does. Output is canonical bytes. Because the
+   parser keeps **one id namespace** across outcomes, modules, sections,
+   blocks, glossary and sources (`parse.py:78,164-172`), N independent calls
+   can collide on ids like `intro` or `check-1`; the module prompt therefore
+   requires every section and block id to start with `<module-id>-`, and
+   assembly checks cross-module id uniqueness *before* the strict parse so
+   the `AssemblyError` names both colliding modules and only those rerun.
 5. **The whole-guide prompt keeps being written** at `prompts/draft.prompt.md`
    as the documented single-call alternative for short courses and manual
    users. The daemon never runs it for guide-v1 runs; a whole guide pasted or
@@ -148,29 +155,48 @@ to the ordinary draft response path and `next_action` is `approve` for
    runs untouched. Alternative considered: a `draft_mode` plan setting
    (`whole|per_module`) — rejected for now as surface without a user asking
    for it; the owner can add it later without touching the unit layer.
-6. **Manual edits win.** If `responses/draft.response.json` exists and its
-   bytes are not the last assembled bytes (per the manifest), the unit layer
-   reports every module as `superseded` and never overwrites the file.
+6. **The response file wins.** Whenever `responses/draft.response.json`
+   exists, `next_action` falls through to today's arms (`approve`), whether
+   the file came from assembly, a whole-guide paste, or an edit. If its bytes
+   are not the last assembled bytes (per the manifest), the unit layer
+   reports the modules as `superseded` and never overwrites the file.
    Re-running a module then requires `force`, which re-assembles, overwrites,
    and records `response_replaced` — the same rule `ingest_response(force=)`
    applies today.
-7. **A module is stale when its inputs changed, not when the stage did.** Per
-   module the engine records, at prompt time, the SHA-256 of its outline
-   contract entry (canonical JSON) and of its skeleton stub. A module whose
-   recorded hashes differ from the current approved outline and skeleton is
-   `stale`; a contract module with no prompt is `not_run`; a prompt whose
-   module id is no longer in the contract is `orphaned` and ignored by
-   assembly. Course-level skeleton edits (description, glossary) therefore do
-   not stale modules. Whole-stage staleness for draft stays as pinned by the
-   Phase 1 characterization tests (draft has no graph sources and never
-   reports stale); the unit layer is the finer signal the map asked for.
+7. **A module is stale when the inputs its prompt embedded changed.** Per
+   module the engine records, at prompt time, the SHA-256 of its entry in
+   `inputs/guide-contract.json` (the bytes the prompt embeds, canonical JSON)
+   and of its skeleton stub. A module whose recorded hashes differ from the
+   current contract file and skeleton response is `stale`; a contract module
+   with no prompt is `not_run`; a prompt whose module id is no longer in the
+   contract is `orphaned` and ignored by assembly. Course-level skeleton
+   edits (description, glossary) do not stale modules. The hashes are
+   deliberately **not** taken against the live approved outline:
+   `_write_guide_contract` (`runs_personalization.py:95-125`) refuses
+   divergent bytes without `overwrite`, and after the draft prompt exists no
+   arm rewrites it, so hashing against the outline would mark every module
+   stale with no action that clears it.
+   **7b. Outline re-approval before draft approval rebuilds the draft
+   inputs.** Today nothing rebuilds the contract after an outline is
+   re-approved (draft has no graph sources; `stage_status` never marks it
+   stale, as Phase 1 pinned). This design adds one arm, scoped to an
+   *unapproved* draft: when the approved outline's SHA differs from the
+   `source_outline_file_sha256` recorded by the draft `prompt_written` event,
+   `next_action` is `write_prompt` ("outline changed; rebuild draft inputs")
+   and `advance` calls `write_draft_prompt(overwrite=True)`, which rewrites
+   the contract, the whole-guide prompt and the skeleton prompt, and moves
+   existing unit responses aside as `orphaned`. An approved draft is left
+   alone (downstream qa/factcheck/repair staleness is unchanged). T22 checks
+   this arm against the Phase 1 characterization table; a contrary pin is
+   updated and the behaviour change is flagged in the PR, as T11 did.
 8. **`next_action` keeps its shape and its action vocabulary.** Mid-fan-out
    it is `{stage: "draft", action: "save_response", detail: "draft: k of N
    module responses saved; …"}`. This keeps `enqueue_stage`'s structural
    gate, `continueRun` and `PrimaryAction` valid without a new action, and
    `POST /v1/jobs` with no stage naturally means "run whatever draft units
    are outstanding". A new status object `draft_progress` (below) carries the
-   per-unit detail.
+   per-unit detail. `NextAction` gains no field; where `advance` needs to
+   know *which* prompt to write it re-derives that from `draft_progress`.
 9. **Skeleton ingest writes the module prompts.** Writing prompts is a
    machine step, so the job runner (and the ingest route) call
    `write_module_draft_prompts` right after the skeleton response lands; on
@@ -212,7 +238,11 @@ to the ordinary draft response path and `next_action` is `approve` for
 Unit paths come from one helper, `RunStore.draft_unit_paths(topic_id, unit,
 module_id=None) -> DraftUnitPaths(prompt_path, response_path, stub_path)`;
 nothing else spells the layout. Module ids are already validated slugs by
-`validate_outline_contract`, so they are safe as directory names.
+`validate_outline_contract` (`contract.py:93-98`), so they are safe as
+directory names. The stage-level stub `responses/draft.SAVE_RESPONSE_HERE.json`
+stays (it is the whole-guide alternative's drop target) but, on guide runs,
+its text points at `draft/skeleton/` and `draft/modules/` as the primary
+path, so a manual user is not told to paste a whole guide by default.
 
 Manifest events (all `stage: "draft"`, all appended under the manifest
 lock, all carrying `recorded_at`):
@@ -247,7 +277,11 @@ and reads as "whole-guide draft" throughout.
   module's contract entry (outcomes, minutes, required interaction types),
   and the outline's prose for that module; demands exactly one module object
   with the same `id`, optionally followed by no other top-level keys except
-  `glossary` and `sources` additions. Position ("module 2 of 5") is stated.
+  `glossary` and `sources` additions. Every section and block id must start
+  with `<module-id>-`; any source or glossary entry the module cites that the
+  skeleton lacks must be returned in the contribution lists (blocks resolve
+  `source_ids` against root `sources`, `parse.py:664-668`). Position
+  ("module 2 of 5") is stated.
 - Prompt snapshot tests pin both; `blueprint is None` and profile-less
   variants stay byte-stable across the phase.
 
@@ -259,15 +293,25 @@ assemble_guide(skeleton_json: bytes | str,
                *, module_order: Sequence[str]) -> bytes
 ```
 
-Steps: parse skeleton strictly (it must parse as a guide whose modules all
-have empty `sections`); check stub ids == `module_order` exactly; for each id
-parse the fragment (single object, `id` equal, no `modules` key — the
-`splice_module` rules), lift optional `glossary`/`sources` lists, replace the
-stub; merge contributions by id; canonicalize; strict re-parse. Any failure
-raises `AssemblyError(module_id | None, message)`, a subclass of the
-existing `SpliceError` so callers that already map `SpliceError` →
-`ConfigError` keep working. `splice_module` is reimplemented as the
-single-module case of the same internals; `splice_section` (§7) joins it.
+A skeleton **cannot** pass `parse_guide`: `sections` has cardinality ≥ 1
+(`parse.py:368`), `module.no_interaction` fires per module (`parse.py:709`),
+`interaction.missing_required_type` at `/modules` (`parse.py:715`) and
+`outcome.untaught`/`outcome.unassessed` (`parse.py:730-740`), and
+`ParseResult.ok` means zero diagnostics with no lenient mode
+(`parse.py:60-62`). So the skeleton gets its own check, `check_skeleton`
+(in `guides/parse.py`, reusing `_check_modules` with a `skeleton=True` flag
+that requires `sections == []` and skips the coverage and interaction arms):
+`json.loads`, top-level keys and types as for a guide, modules are stubs, all
+ids unique, stub ids == `module_order` exactly. Then for each id parse the
+fragment (single object, `id` equal, no `modules` key — the `splice_module`
+rules), lift optional `glossary`/`sources` lists, replace the stub; check
+id uniqueness across the merged document and name both owners of a
+collision; merge contributions by id; canonicalize; strict `parse_guide`
+on the result. Any failure raises `AssemblyError(module_ids, message)`, a
+subclass of the existing `SpliceError` so callers that already map
+`SpliceError` → `ConfigError` keep working. `splice_module` is reimplemented
+as the single-module case of the same internals; `splice_section` (§7)
+joins it.
 
 ### 4. Engine lifecycle (`RunStore`, new mixin `runs_draft_units.py`)
 
@@ -279,9 +323,12 @@ Capability: `_RunMode.supports_draft_units` (true for
   runs, additionally writes the skeleton prompt (event
   `unit_prompt_written{unit: skeleton}`). Its return value is unchanged.
 - `write_module_draft_prompts(topic_id, *, module_ids=None, overwrite=False)
-  -> tuple[DraftUnitPaths, ...]`: requires a skeleton response that parses
-  per §3; module set defaults to the contract's; writes prompts and stubs;
-  records the hashes of decision 7.
+  -> tuple[DraftUnitPaths, ...]`: requires a skeleton response that passes
+  `check_skeleton` (§3); module set defaults to the contract's; writes
+  prompts and stubs; records the hashes of decision 7. The unit writers are
+  idempotent and ignore the stage-level `prompt_overwrite_on_advance` flag
+  (`run_modes.py:365`) — only the 7b rebuild arm passes `overwrite=True`,
+  and only `write_draft_prompt` rewrites the contract.
 - `ingest_draft_unit(topic_id, unit, text, *, module_id=None, force=False)`
   and `edit_draft_unit(..., base_sha256)`: the unit-level twins of
   `ingest_response` / `edit_response`, same empty-text and
@@ -300,14 +347,21 @@ Capability: `_RunMode.supports_draft_units` (true for
   skeleton state, ordered module states, `assembled` info, `superseded`
   flag. States per unit: `not_run | prompt_written | response_ingested |
   stale | orphaned | superseded`.
-- `next_action` for draft on guide runs, before the existing arms:
-  no skeleton prompt → `write_prompt`; skeleton prompt, no response →
-  `save_response` ("skeleton"); skeleton response, module prompts missing
-  for some contract module → `write_prompt` ("module prompts"); any module
+- `next_action` for draft on guide runs: the unit arms live *inside* the
+  draft slot of the existing `_unbound_stages` loop (`runs.py:727`), so they
+  are reached only once spec and outline are approved and draft is not, and
+  only while `responses/draft.response.json` is absent. In that window:
+  outline changed since the draft prompt (7b) → `write_prompt`; no skeleton
+  prompt → `write_prompt`; skeleton prompt, no response → `save_response`
+  ("skeleton"); skeleton response, module prompts missing for some contract
+  module → `write_prompt` ("module prompts"); any module
   `not_run`/`prompt_written`/`stale` → `save_response` ("k of N"); all present
-  but assembly failed → `save_response` naming the module; assembled or
-  superseded → fall through to today's `approve`. `advance` maps the two
-  `write_prompt` arms to the two writers.
+  but assembly failed → `save_response` naming the module(s). Once the
+  response file exists — assembled, pasted whole, or edited — control falls
+  through to `_pending_stage_action` (`runs.py:856`) and today's `approve`
+  arm, which is what keeps the whole-guide drop pinned by
+  `tests/test_characterization_guide_v1.py:329-330` intact. `advance` at
+  draft re-derives which writer to call from `draft_progress`.
 - Resume from the workspace alone holds: every state above is a function of
   files under `<run>/draft/`, the manifest, and the approved outline.
 
@@ -315,23 +369,33 @@ Capability: `_RunMode.supports_draft_units` (true for
 
 - `Job` gains `unit: str | None`, `module_id: str | None`, `batch_id: str |
   None`; `to_dict` carries them; old records load with `None`.
-- `JobStore.active_for(topic, stage, module_id=None)`: the uniqueness key
-  becomes `(topic, stage, module_id)`; `any_active_for(topic)` is unchanged, so
-  every write route that refuses while a job is active still refuses while any
-  module job is active.
+- `JobStore.active_for(topic, stage)` keeps matching **any** job of that
+  stage, module jobs included, so `enqueue_stage`'s guard (`server.py:137`)
+  and `validate_run`'s (`write_api.py:186`) still refuse mid-batch; a new
+  `active_unit_for(topic, stage, module_id)` serves only the duplicate check
+  in `Worker.enqueue` (`jobs.py:738`). `any_active_for(topic)` is unchanged.
 - `JobRunner.execute` picks the prompt path from `draft_unit_paths` when
   `job.unit` is set and ingests through `ingest_draft_unit`; the salvage path
   (`<stage>.failed.<ts>.txt`) writes `draft.<module_id>.failed.<ts>.txt`.
 - `Worker` becomes a pool: `parallelism` threads over the same FIFO, with one
   admission rule — a job starts only if nothing is running, or if every
-  running job shares its `batch_id`. Non-batch jobs are therefore exactly as
-  serialized as today. `cancel_batch(batch_id)` cancels every queued and
-  running job of a batch. `reconcile` is per job and unchanged.
+  running job shares its `batch_id`. The rule is evaluated **dispatcher-side
+  in `_loop` after dequeue**, never in `enqueue` (which runs under the
+  workspace lock, `server.py:101,148`, and must stay non-blocking). A thread
+  holding an inadmissible job waits on a condition variable signalled at
+  every job completion; it never re-queues to the tail (that spins when a
+  non-batch job sits between batch jobs). Waiting cannot deadlock because
+  running jobs always terminate (timeout, cancel, or exit). Non-batch jobs
+  are therefore exactly as serialized as today. `cancel_batch(batch_id)`
+  cancels every queued and running job of a batch. `reconcile` is per job
+  and unchanged; re-queued batch jobs keep their `batch_id`.
 - `enqueue_stage(topic, stage=None, force=False, modules=None)`: for draft on a
   guide run, when the skeleton lacks a response → one skeleton job (response
   is the job dict, as today); otherwise → one batch of module jobs for the
-  outstanding (or the requested) modules, response `{"batch_id", "jobs":
-  [...]}`. `modules` on a stage other than draft is a `ConfigError`. The
+  outstanding (or the requested) modules. The batch response is
+  **job-shaped at the top level** (the first job's dict, so `cli.py:791-806`
+  and the web client keep reading `id`/`stage`/`status`) plus `batch_id` and
+  `jobs: [...]`. `modules` on a stage other than draft is a `ConfigError`. The
   structural gate (`next_action.action == "save_response"` when the stage is
   omitted) is unchanged.
 - Routes: `POST /v1/jobs` (body gains `modules?: [id]`),
@@ -409,17 +473,24 @@ Capability: `_RunMode.supports_draft_units` (true for
   the skeleton prompt on its next `advance` (idempotent, `overwrite=False`);
   pasting a whole guide still works.
 - `scripts/build_example.py` moves to the unit path (skeleton + module
-  responses split deterministically from the committed `draft.guide.json`);
-  the committed export is regenerated if canonical assembly changes the
-  approved draft bytes, and `test_example_project.py` keeps pinning it.
+  responses split deterministically from the committed `draft.guide.json`).
+  The committed `draft.guide.json` is not canonical, so assembly changes the
+  approved draft bytes; the export derives from the repair response and is
+  unaffected, but `tests/test_example_project.py:84` compares the two
+  committed response files byte-for-byte, so T28 canonicalizes both
+  `draft.guide.json` and `repair.guide.json` together and any round-trip
+  test compares canonical forms, not the committed text.
 - Job records without the new fields load as before; the batch id is `None`.
 
 ### 10. Testing strategy (TDD; tests before behaviour)
 
-- `test_guide_canonical.py`: `assemble_guide` determinism (same inputs →
-  same bytes, twice), refusal matrix (missing/extra/renamed module, `modules`
-  key in a fragment, glossary id conflict, skeleton with content), and
-  `splice_section` byte-preservation of every sibling.
+- `test_guide_canonical.py` / `test_guide_parse.py`: `check_skeleton`
+  accepts a sectionless guide and rejects content, missing stubs and wrong
+  order; `assemble_guide` determinism (same inputs → same bytes, twice),
+  refusal matrix (missing/extra/renamed module, `modules` key in a fragment,
+  glossary id conflict, cross-module id collision naming both modules,
+  dangling `source_ids`), and `splice_section` byte-preservation of every
+  sibling.
 - `test_prompts.py`: snapshots for skeleton, module draft and section repair
   prompts; `blueprint is None` byte-stability.
 - `test_characterization_guide_v1.py` (extended in T22): a table of unit
@@ -463,5 +534,5 @@ Capability: `_RunMode.supports_draft_units` (true for
   other module's bytes unchanged (pinned by test).
 - With `parallelism = 2`, a 4-module fake-provider batch with a 0.5 s delay
   completes in about two delays, never one.
-- Every pre-existing pytest case passes unmodified except the prompt
-  snapshot for `write_draft_prompt`'s manifest event list, if that grows.
+- Pre-existing pytest cases pass unmodified except where a thread flags a
+  deliberate behaviour change (7b) or a widened manifest event list.

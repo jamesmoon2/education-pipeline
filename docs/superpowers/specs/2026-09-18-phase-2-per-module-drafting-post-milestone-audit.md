@@ -29,9 +29,29 @@ because it leaves every existing draft test, the example builder and legacy
 runs untouched. A `draft_mode` setting was considered and deferred. See the
 design's decision 5.
 
+### T20: outline re-approval after draft gets a rebuild arm (7b)
+
+Pre-existing gap, not introduced here: draft has no stage-graph sources, so
+re-approving the outline after the draft prompt exists neither marks draft
+stale nor rewrites the immutable `inputs/guide-contract.json`. Hashing
+modules against the live outline (the map's wording) would therefore
+live-lock: every module stale, nothing able to clear it. The design hashes
+against the contract file instead and adds one explicit arm, scoped to an
+unapproved draft, that offers `write_prompt` to rebuild the contract and
+units. An approved draft is left alone. If T22 finds a Phase 1
+characterization pin that contradicts the arm, the pin changes and the PR
+flags it, as T11 did for the factcheck warning.
+
 ## Accepted limitations
 
-(One entry per thread as it lands.)
+- **T20:** the module id namespace is enforced by prompt convention
+  (`<module-id>-` prefix) plus an assembly-time collision check; a model
+  that ignores the convention gets a named `AssemblyError`, not a silent
+  fix. Modules therefore cannot share a section id even when the outline
+  would read naturally that way.
+- **T20:** parallelism overlaps only module jobs of one batch; two topics
+  still cannot run at once. Widening the admission rule is a one-line
+  change once cross-topic concurrency has been reasoned about.
 
 ## Observations for other owners
 
