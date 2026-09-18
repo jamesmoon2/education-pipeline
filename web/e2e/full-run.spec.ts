@@ -228,17 +228,13 @@ test("guide run drafts module by module through the paste loop", async ({ page }
   await page.getByLabel("Response for skeleton").fill(skeletonText);
   await page.getByRole("button", { name: "Save" }).click();
 
-  // Ingesting the skeleton response auto-writes the per-module prompts
-  // (design decision 9); Advance again only if the daemon left that step
-  // pending, so this works whichever route actually landed the skeleton.
+  // Ingesting the skeleton response through the unit route auto-writes the
+  // per-module prompts (design decision 9), so no Advance is needed here:
+  // wait for the board to refresh into the module rows. (Clicking a
+  // still-visible, about-to-vanish "Advance" here raced the refresh in CI.)
   const firstModulePaste = page.getByRole("button", {
     name: `Paste response for ${fixture.modules[0].title}`,
   });
-  await page.getByRole("button", { name: "Advance" }).or(firstModulePaste).first().waitFor();
-  const advanceButton = page.getByRole("button", { name: "Advance" });
-  if (await advanceButton.isVisible()) {
-    await advanceButton.click();
-  }
   await firstModulePaste.waitFor();
 
   // One module at a time: DraftProgressPanel's "Save" button is not
