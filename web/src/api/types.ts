@@ -146,8 +146,18 @@ export interface RunBlueprint {
 
 export interface RepairModulesPayload {
   topic_id: string;
-  modules: { id: string; title: string; open_findings: number }[];
-  repair_scope: { module_id: string } | null;
+  modules: {
+    id: string;
+    title: string;
+    open_findings: number;
+    // Findings that sit above every section of the module (e.g.
+    // `module.no_interaction`, guide-wide rules): a section-scoped repair
+    // cannot carry their fix, so the picker forces whole-module scope
+    // whenever this is nonzero.
+    module_level_findings: number;
+    sections: { id: string; title: string; open_findings: number }[];
+  }[];
+  repair_scope: { module_id: string; section_id: string | null } | null;
 }
 
 export interface RunStatus {
@@ -229,8 +239,10 @@ export interface StageContent {
     | "text/markdown"
     | "application/json"
     | "application/vnd.education-pipeline.guide+json;version=1.0";
-  // Present only on the repair stage of interactive-guide runs.
-  repair_scope?: { module_id: string } | null;
+  // Present only on the repair stage of interactive-guide runs. `section_id`
+  // is present (non-null) only for a section-scoped repair; a whole-module
+  // scope carries no `section_id` key, matching the daemon's payload.
+  repair_scope?: { module_id: string; section_id?: string | null } | null;
 }
 
 export interface Job {

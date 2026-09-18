@@ -4,6 +4,7 @@ import {
   api,
   apiPost,
   download,
+  postAdvance,
   postPreview,
   postGuidePreview,
   postValidate,
@@ -148,6 +149,53 @@ describe("apiPost", () => {
     expect(err).toBeInstanceOf(ApiRequestError);
     expect(err.status).toBe(409);
     expect(err.code).toBe("already_exists");
+  });
+});
+
+describe("postAdvance", () => {
+  afterEach(() => {
+    resetSessionForTests();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("sends repair_module and repair_section together when both are given", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/t/advance": {
+        status: 200,
+        body: { performed: null, status: {} },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postAdvance("t", { repairModule: "loop-basics", repairSection: "practice" });
+
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/runs/t/advance");
+    const init = call![1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({
+      repair_module: "loop-basics",
+      repair_section: "practice",
+    });
+  });
+
+  it("omits repair_section from the body when only repair_module is given", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/t/advance": {
+        status: 200,
+        body: { performed: null, status: {} },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postAdvance("t", { repairModule: "loop-basics" });
+
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/runs/t/advance");
+    const init = call![1] as RequestInit;
+    const body = JSON.parse(init.body as string);
+    expect(body).toEqual({ repair_module: "loop-basics" });
+    expect(body).not.toHaveProperty("repair_section");
   });
 });
 

@@ -354,7 +354,9 @@ export const getRepairModules = (topicId: string) =>
   );
 export const postAdvance = (
   topicId: string,
-  options?: { blueprint?: string; repairModule?: string },
+  // repairSection requires repairModule (a section is scoped within a
+  // module); the daemon rejects repair_section without repair_module.
+  options?: { blueprint?: string; repairModule?: string; repairSection?: string },
 ) =>
   apiPost<AdvanceResult>(`/v1/runs/${encodeURIComponent(topicId)}/advance`, {
     ...(options?.blueprint ? { blueprint: options.blueprint } : {}),
