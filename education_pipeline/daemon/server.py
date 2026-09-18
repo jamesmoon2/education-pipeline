@@ -326,6 +326,20 @@ class DaemonContext:
                     )
             selected = [module_id for module_id in order if module_id in requested]
 
+        # A stale module's prompt.md was compiled from inputs (its guide
+        # contract entry, its skeleton stub) that have since changed: running
+        # it as-is drafts against the obsolete prompt, and the response it
+        # already has would refuse the job's unforced ingest. Recompile those
+        # prompts inside this same locked section, and let their jobs replace
+        # the responses they supersede.
+        stale = [
+            module_id for module_id in selected if units[module_id].state == "stale"
+        ]
+        if stale:
+            self.runs.write_module_draft_prompts(
+                topic_id, module_ids=stale, overwrite=True
+            )
+
         # A batch id is minted exactly like a job id: a sortable stamp plus
         # random bytes, unique per fan-out and safe in a URL path segment.
         batch_id = new_job_id()
@@ -341,7 +355,7 @@ class DaemonContext:
                 module_id=module_id,
                 batch_id=batch_id,
             )
-            job.metadata["force"] = force
+            job.metadata["force"] = force or module_id in stale
             job.metadata["plan_source"] = plan_source
             # Job ids are stamped to the second and tie-broken at random, so
             # they do not order a same-second fan-out. The index does, and it
