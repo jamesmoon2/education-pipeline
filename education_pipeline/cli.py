@@ -28,7 +28,7 @@ from education_pipeline.daemon.jobs import JobStore, TERMINAL_STATUSES
 from education_pipeline.errors import ERROR_CATALOG
 from education_pipeline.export import EXPORT_FORMATS
 from education_pipeline.profiles import load_learner_profile
-from education_pipeline.runs import ContentContract, RunStore
+from education_pipeline.runs import ContentContract, RepairScope, RunStore
 from education_pipeline.topics import load_topic
 from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
 from education_pipeline.workspace_lock import workspace_lock
@@ -220,6 +220,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="MODULE_ID",
         help="write a module-scoped repair prompt instead (repair stage only)",
+    )
+    p.add_argument(
+        "--repair-section",
+        default=None,
+        metavar="SECTION_ID",
+        help=(
+            "narrow --repair-module to one section of that module "
+            "(requires --repair-module)"
+        ),
     )
     p.set_defaults(func=_cmd_advance)
 
@@ -459,28 +468,42 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 def _cmd_advance(args: argparse.Namespace) -> int:
     runs = RunStore(_root(args))
+    if args.repair_section is not None and args.repair_module is None:
+        # The module is what locates the section, so a bare --repair-section
+        # is a usage error rather than a guess at which module owns that id.
+        print(
+            "error: --repair-section requires --repair-module",
+            file=sys.stderr,
+        )
+        return 2
     if args.repair_module is not None:
         # A scoped repair request outside the repair stage or naming an
-        # unknown module is a usage error (exit 2), distinct from ordinary
-        # run failures. Reported after the lock is dropped so nothing slow
-        # happens inside the critical section.
+        # unknown module or section is a usage error (exit 2), distinct from
+        # ordinary run failures. Reported after the lock is dropped so nothing
+        # slow happens inside the critical section.
+        scope = RepairScope(
+            module_id=args.repair_module, section_id=args.repair_section
+        )
         usage_error: ConfigError | None = None
         with _guarded_mutation(runs, args.topic_id):
             try:
                 prompt_exists = runs.stage_paths(
                     args.topic_id, "repair"
                 ).prompt_path.exists()
-                prompt = runs.write_module_repair_prompt(
-                    args.topic_id, args.repair_module, overwrite=prompt_exists
+                prompt = runs.write_scoped_repair_prompt(
+                    args.topic_id, scope, overwrite=prompt_exists
                 )
             except ConfigError as exc:
                 usage_error = exc
         if usage_error is not None:
             print(f"error: {usage_error}", file=sys.stderr)
             return 2
-        print(
-            f"Performed: write_prompt (repair scoped to module {args.repair_module})"
+        target = (
+            f"module {scope.module_id}"
+            if scope.section_id is None
+            else f"section {scope.section_id} of module {scope.module_id}"
         )
+        print(f"Performed: write_prompt (repair scoped to {target})")
         print(f"  prompt: {prompt.prompt_path}")
         _print_next(runs.run_status(args.topic_id).next_action)
         return 0
