@@ -16,6 +16,8 @@ import tomllib
 
 from education_pipeline.config import (
     OPTIONAL_STAGES,
+    # Re-exported: the legacy stage list moved to run_modes with the legacy
+    # next-action walk, but importers (and tests) still read it from here.
     REQUIRED_STAGES,
     SUPPORTED_STAGES,
     ConfigError,
@@ -26,11 +28,7 @@ from education_pipeline.stage_graph import (
     sources_of as graph_sources_of,
     stage as stage_spec,
 )
-from education_pipeline.export import (
-    EXPORT_FORMATS,
-    build_markdown_bundle,
-    render_markdown_to_html,
-)
+from education_pipeline.export import EXPORT_FORMATS
 from education_pipeline.guides import (
     ContractError,
     Finding,
@@ -84,10 +82,10 @@ from education_pipeline.guides.audit import (
 from education_pipeline.guides.projection import public_guide_projection
 from education_pipeline.privacy import profile_private_values
 from education_pipeline.profiles import LearnerProfile, parse_learner_profile
+from education_pipeline.topics import Topic
 from education_pipeline.prompts import (
     PromptArtifact,
     SpecPromptInput,
-    compile_draft_prompt,
     compile_guide_v1_draft_prompt,
     compile_guide_v1_factcheck_prompt,
     compile_guide_v1_module_repair_prompt,
@@ -95,13 +93,9 @@ from education_pipeline.prompts import (
     compile_guide_v1_qa_prompt,
     compile_guide_v1_repair_prompt,
     compile_guide_v1_spec_prompt,
-    compile_outline_prompt,
     compile_personalization_audit_prompt,
-    compile_qa_prompt,
-    compile_repair_prompt,
-    compile_spec_prompt,
-    compile_topic_spec_prompt,
 )
+from education_pipeline.run_modes import CompiledPrompt, _RunMode, mode_for_kind
 from education_pipeline.guides.canonical import SpliceError, splice_module
 from education_pipeline.guides.blueprints import (
     Blueprint,
@@ -790,9 +784,7 @@ class RunStore:
         stage between ``qa`` and ``repair``; legacy Markdown runs never do.
         """
 
-        kind = self.content_contract(topic_id).kind
-        mode = "interactive_guide" if kind == "interactive_guide" else "legacy_markdown"
-        return graph_required_stages(mode)
+        return graph_required_stages(self._mode(topic_id).graph_mode)
 
     def stage_status(self, topic_id: str, stage: str) -> StageStatus:
         """Report the persisted progress for one stage of a run."""
@@ -800,7 +792,7 @@ class RunStore:
         paths = self.stage_paths(topic_id, stage)
         approved = paths.approved_path.exists()
         stale = False
-        if approved and self._is_guide_v1(paths.topic_id) and graph_sources_of(paths.stage):
+        if approved and self._mode(paths.topic_id).binds_sources and graph_sources_of(paths.stage):
             stale = self._stage_upstream_stale(paths.topic_id, paths.stage)
         elif paths.stage == "audit":
             stale = (
@@ -851,7 +843,7 @@ class RunStore:
         performed: str | None = None
         if action.action == "write_prompt" and action.stage is not None:
             overwrite = False
-            if self._is_guide_v1(safe_id):
+            if self._mode(safe_id).prompt_overwrite_on_advance:
                 paths = self.stage_paths(safe_id, action.stage)
                 if paths.prompt_path.exists():
                     overwrite = True
@@ -894,38 +886,7 @@ class RunStore:
         finalized: bool,
     ) -> NextAction:
         with self.manifest_read_scope():
-            if self._is_guide_v1(topic_id):
-                return self._next_action_guide_v1(topic_id, stages, finalized)
-            return self._next_action_legacy(topic_id, stages, finalized)
-
-    def _next_action_legacy(
-        self,
-        topic_id: str,
-        stages: tuple[StageStatus, ...],
-        finalized: bool,
-    ) -> NextAction:
-        by_stage = {status.stage: status for status in stages}
-        for stage_name in REQUIRED_STAGES:
-            status = by_stage[stage_name]
-            pending = self._pending_stage_action(topic_id, status)
-            if pending is not None:
-                return pending
-        if not finalized:
-            return NextAction(
-                topic_id=topic_id,
-                stage=None,
-                action="finalize",
-                detail=(
-                    f"Finalize {topic_id!r}: assemble the approved {_FINAL_SOURCE_STAGE} draft "
-                    f"into {self.final_path(topic_id)}."
-                ),
-            )
-        return NextAction(
-            topic_id=topic_id,
-            stage=None,
-            action="done",
-            detail=f"Run {topic_id!r} is complete and finalized.",
-        )
+            return self._mode(topic_id).next_action(self, topic_id, stages, finalized)
 
     def _factcheck_grandfathered(self, by_stage: dict[str, StageStatus]) -> bool:
         """True when an approved repair excuses a run's missing factcheck.
@@ -1299,10 +1260,10 @@ class RunStore:
             return self._approve_personalization_audit(paths.topic_id, overwrite=overwrite)
 
         text = paths.response_path.read_text(encoding="utf-8")
-        if self._is_guide_v1(paths.topic_id) and paths.stage in {"spec", "outline"}:
-            self._validate_guide_approval(paths.topic_id, paths.stage, text)
+        mode = self._mode(paths.topic_id)
+        mode.validate_approval(self, paths.topic_id, paths.stage, text)
         scope: str | None = None
-        if self._is_guide_v1(paths.topic_id) and paths.stage == "repair":
+        if mode.scoped_repair_on_approve and paths.stage == "repair":
             scope = self.repair_scope(paths.topic_id)
             if scope is not None:
                 text = self._spliced_scoped_repair(paths.topic_id, scope, text)
@@ -1312,7 +1273,7 @@ class RunStore:
             "approved_file": paths.approved_path,
         }
         file_hashes: dict[str, str] | None = None
-        if self._is_guide_v1(paths.topic_id) and graph_sources_of(paths.stage):
+        if mode.binds_sources and graph_sources_of(paths.stage):
             files.update(self._source_files(paths.topic_id, paths.stage))
             # Only bind the fact-check source when it exists: grandfathered
             # pre-feature repairs have none, and recording an absent source
@@ -1943,7 +1904,7 @@ class RunStore:
             != QUALITY_REPORT_SCHEMA_VERSION
         ):
             return "stale"
-        if not self._is_guide_v1(safe_id) or not self.is_finalized(safe_id):
+        if not self._mode(safe_id).supports_validation or not self.is_finalized(safe_id):
             return "stale"
         try:
             assets = load_runtime_assets()
@@ -2209,27 +2170,10 @@ class RunStore:
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
-        if self._is_guide_v1(safe_id):
-            if format != "html":
-                raise ConfigError("guide-v1 runs support only HTML export")
-            return self._export_guide_v1(safe_id, overwrite=overwrite)
-        export_path = self.export_path(safe_id, format)
-        guide = self._read_final_guide(safe_id)
-        topic = TopicStore(self.root).load_topic(safe_id)
-
-        if format == "markdown":
-            content = build_markdown_bundle(guide, front_matter=self._export_front_matter(safe_id, topic))
-        else:
-            content = render_markdown_to_html(guide, title=topic.title)
-
-        _write_text(export_path, content, overwrite=overwrite)
-        self._append_event(
-            safe_id,
-            stage="export",
-            action="exported",
-            files={"export_file": export_path, "source_file": self.final_path(safe_id)},
-        )
-        return export_path
+        mode = self._mode(safe_id)
+        if format != "html" and not mode.supports_markdown_export:
+            raise ConfigError("guide-v1 runs support only HTML export")
+        return mode.export(self, safe_id, format=format, overwrite=overwrite)
 
     def _export_guide_v1(self, topic_id: str, *, overwrite: bool) -> Path:
         """Export only the finalized canonical guide through the packaged runtime."""
@@ -2399,16 +2343,23 @@ class RunStore:
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
-        if not self._is_guide_v1(safe_id):
-            return self.final_path(safe_id).exists()
+        return self._mode(safe_id).is_finalized(self, safe_id)
 
-        final_json = self.final_guide_json_path(safe_id)
-        final_md = self.final_guide_md_path(safe_id)
+    def _is_finalized_guide_v1(self, topic_id: str) -> bool:
+        """Hash-derived finalized check for an interactive-guide run.
+
+        A finalized event must exist, both final artifacts must exist, and the
+        event's ``source_file_sha256`` must still match the current approved
+        repair bytes.
+        """
+
+        final_json = self.final_guide_json_path(topic_id)
+        final_md = self.final_guide_md_path(topic_id)
         if not final_json.is_file() or not final_md.is_file():
             return False
 
         try:
-            events = self.read_manifest(safe_id).get("events", [])
+            events = self.read_manifest(topic_id).get("events", [])
         except ConfigError:
             return False
 
@@ -2422,7 +2373,7 @@ class RunStore:
         recorded = finalized.get("source_file_sha256")
         if not isinstance(recorded, str):
             return False
-        source = self.stage_paths(safe_id, _FINAL_SOURCE_STAGE).approved_path
+        source = self.stage_paths(topic_id, _FINAL_SOURCE_STAGE).approved_path
         if not source.is_file():
             return False
         return recorded == hashlib.sha256(source.read_bytes()).hexdigest()
@@ -2436,23 +2387,7 @@ class RunStore:
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
-        if self._is_guide_v1(safe_id):
-            return self._finalize_guide_v1(safe_id, overwrite=overwrite)
-
-        content = self.read_approved(safe_id, _FINAL_SOURCE_STAGE)
-        self.create_run(safe_id)
-        final = self.final_path(safe_id)
-        _write_text(final, content, overwrite=overwrite)
-        self._append_event(
-            safe_id,
-            stage="finalize",
-            action="finalized",
-            files={
-                "final_file": final,
-                "source_file": self.stage_paths(safe_id, _FINAL_SOURCE_STAGE).approved_path,
-            },
-        )
-        return final
+        return self._mode(safe_id).finalize(self, safe_id, overwrite=overwrite)
 
     def _finalize_guide_v1(self, topic_id: str, *, overwrite: bool) -> Path:
         source_text = self.read_approved(topic_id, _FINAL_SOURCE_STAGE)
@@ -2525,7 +2460,7 @@ class RunStore:
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
-        if not self._is_guide_v1(safe_id):
+        if not self._mode(safe_id).supports_validation:
             raise ConfigError("validation applies only to guide runs")
         if phase not in {"draft", "final"}:
             raise ConfigError(f"phase must be 'draft' or 'final'; got {phase!r}")
@@ -2824,7 +2759,7 @@ class RunStore:
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
-        if not self._is_guide_v1(safe_id):
+        if not self._mode(safe_id).supports_validation:
             raise ConfigError("validation applies only to guide runs")
         if phase not in {"draft", "final"}:
             raise ConfigError(f"phase must be 'draft' or 'final'; got {phase!r}")
@@ -3036,15 +2971,19 @@ class RunStore:
             topic_brief=topic_brief,
             profile=profile,
         )
-        if self._is_guide_v1(safe_id):
-            artifact = compile_guide_v1_spec_prompt(
-                spec_input,
-                guide_schema_version=self.content_contract(safe_id).schema_version or "1.0",
-                blueprint=self.run_blueprint(safe_id),
-            )
-        else:
-            artifact = compile_spec_prompt(spec_input)
+        artifact = self._mode(safe_id).compile_spec_prompt(self, safe_id, spec_input)
         return self._write_prompt(artifact, overwrite=overwrite)
+
+    def _guide_v1_spec_artifact(
+        self, topic_id: str, spec_input: SpecPromptInput
+    ) -> PromptArtifact:
+        """Compile the guide-v1 spec prompt for an already-materialized run."""
+
+        return compile_guide_v1_spec_prompt(
+            spec_input,
+            guide_schema_version=self.content_contract(topic_id).schema_version or "1.0",
+            blueprint=self.run_blueprint(topic_id),
+        )
 
     def write_topic_spec_prompt(
         self,
@@ -3065,20 +3004,26 @@ class RunStore:
         self.create_run(safe_id)
         topic = TopicStore(self.root).load_topic(safe_id)
         profile = self._load_attached_profile(safe_id)
-        if self._is_guide_v1(safe_id):
-            artifact = compile_guide_v1_spec_prompt(
-                SpecPromptInput(
-                    topic_id=topic.id,
-                    title=topic.title,
-                    topic_brief=topic.brief,
-                    profile=profile,
-                ),
-                guide_schema_version=self.content_contract(safe_id).schema_version or "1.0",
-                blueprint=self.run_blueprint(safe_id),
-            )
-        else:
-            artifact = compile_topic_spec_prompt(topic, profile)
+        artifact = self._mode(safe_id).compile_topic_spec_prompt(
+            self, safe_id, topic, profile
+        )
         return self._write_prompt(artifact, overwrite=overwrite)
+
+    def _guide_v1_topic_spec_artifact(
+        self, topic_id: str, topic: Topic, profile: LearnerProfile | None
+    ) -> PromptArtifact:
+        """Compile the guide-v1 spec prompt from a stored topic artifact."""
+
+        return compile_guide_v1_spec_prompt(
+            SpecPromptInput(
+                topic_id=topic.id,
+                title=topic.title,
+                topic_brief=topic.brief,
+                profile=profile,
+            ),
+            guide_schema_version=self.content_contract(topic_id).schema_version or "1.0",
+            blueprint=self.run_blueprint(topic_id),
+        )
 
     def write_outline_prompt(
         self,
@@ -3098,21 +3043,31 @@ class RunStore:
         topic = TopicStore(self.root).load_topic(safe_id)
         approved_spec = self.read_approved(safe_id, "spec")
         profile = self._load_attached_profile(safe_id)
-        if self._is_guide_v1(safe_id):
-            artifact = compile_guide_v1_outline_prompt(
-                topic,
-                approved_spec,
-                profile,
-                guide_schema_version=self.content_contract(safe_id).schema_version or "1.0",
-                blueprint=self.run_blueprint(safe_id),
-            )
-            extra_files = {
-                "source_spec_file": self.stage_paths(safe_id, "spec").approved_path,
-            }
-        else:
-            artifact = compile_outline_prompt(topic, approved_spec, profile)
-            extra_files = None
+        artifact, extra_files = self._mode(safe_id).compile_outline_prompt(
+            self, safe_id, topic, approved_spec, profile
+        )
         return self._write_prompt(artifact, overwrite=overwrite, extra_event_files=extra_files)
+
+    def _guide_v1_outline_artifact(
+        self,
+        topic_id: str,
+        topic: Topic,
+        approved_spec: str,
+        profile: LearnerProfile | None,
+    ) -> CompiledPrompt:
+        """Compile the guide-v1 outline prompt and its bound spec source."""
+
+        artifact = compile_guide_v1_outline_prompt(
+            topic,
+            approved_spec,
+            profile,
+            guide_schema_version=self.content_contract(topic_id).schema_version or "1.0",
+            blueprint=self.run_blueprint(topic_id),
+        )
+        extra_files = {
+            "source_spec_file": self.stage_paths(topic_id, "spec").approved_path,
+        }
+        return artifact, extra_files
 
     def write_draft_prompt(
         self,
@@ -3132,24 +3087,36 @@ class RunStore:
         topic = TopicStore(self.root).load_topic(safe_id)
         approved_outline = self.read_approved(safe_id, "outline")
         profile = self._load_attached_profile(safe_id)
-        if self._is_guide_v1(safe_id):
-            self.create_run(safe_id)
-            contract_bytes = self._write_guide_contract(safe_id, profile=profile, overwrite=overwrite)
-            artifact = compile_guide_v1_draft_prompt(
-                topic,
-                approved_outline,
-                contract_bytes,
-                profile,
-                blueprint=self.run_blueprint(safe_id),
-            )
-            extra_files = {
-                "source_outline_file": self.stage_paths(safe_id, "outline").approved_path,
-                "contract_file": self._guide_contract_path(safe_id),
-            }
-        else:
-            artifact = compile_draft_prompt(topic, approved_outline, profile)
-            extra_files = None
+        artifact, extra_files = self._mode(safe_id).compile_draft_prompt(
+            self, safe_id, topic, approved_outline, profile, overwrite=overwrite
+        )
         return self._write_prompt(artifact, overwrite=overwrite, extra_event_files=extra_files)
+
+    def _guide_v1_draft_artifact(
+        self,
+        topic_id: str,
+        topic: Topic,
+        approved_outline: str,
+        profile: LearnerProfile | None,
+        *,
+        overwrite: bool,
+    ) -> CompiledPrompt:
+        """Write the immutable guide contract and compile the draft prompt."""
+
+        self.create_run(topic_id)
+        contract_bytes = self._write_guide_contract(topic_id, profile=profile, overwrite=overwrite)
+        artifact = compile_guide_v1_draft_prompt(
+            topic,
+            approved_outline,
+            contract_bytes,
+            profile,
+            blueprint=self.run_blueprint(topic_id),
+        )
+        extra_files = {
+            "source_outline_file": self.stage_paths(topic_id, "outline").approved_path,
+            "contract_file": self._guide_contract_path(topic_id),
+        }
+        return artifact, extra_files
 
     def write_qa_prompt(
         self,
@@ -3171,50 +3138,64 @@ class RunStore:
         approved_outline = self.read_approved(safe_id, "outline")
         approved_draft = self.read_approved(safe_id, "draft")
         profile = self._load_attached_profile(safe_id)
-        if self._is_guide_v1(safe_id):
-            state = self.report_state(safe_id, "draft")
-            if state != "current":
-                if state == "missing":
-                    raise ConfigError(
-                        f"draft validation is required before QA for {safe_id!r}; "
-                        "run draft validation first"
-                    )
-                raise ConfigError(
-                    f"draft validation is stale for {safe_id!r}; "
-                    "the draft changed and must be revalidated before QA"
-                )
-            parsed = parse_guide(approved_draft)
-            if not parsed.ok:
-                raise ConfigError(
-                    f"approved draft for {safe_id!r} is too malformed for QA; "
-                    "correct and reapprove the draft response"
-                )
-            draft_guide_json = canonical_guide_bytes(normalize_guide(parsed)).decode("utf-8")
-            draft_findings_json = self.draft_report_path(safe_id).read_text(encoding="utf-8")
-            artifact = compile_guide_v1_qa_prompt(
-                topic,
-                approved_spec=approved_spec,
-                approved_outline=approved_outline,
-                draft_guide_json=draft_guide_json,
-                draft_findings_json=draft_findings_json,
-                profile=profile,
-                blueprint=self.run_blueprint(safe_id),
-            )
-            extra_files = {
-                **self._source_files(safe_id, "qa"),
-                "draft_report_file": self.draft_report_path(safe_id),
-            }
-            return self._write_prompt(
-                artifact, overwrite=overwrite, extra_event_files=extra_files
-            )
-        artifact = compile_qa_prompt(
+        artifact, extra_files = self._mode(safe_id).compile_qa_prompt(
+            self,
+            safe_id,
             topic,
             approved_spec=approved_spec,
             approved_outline=approved_outline,
             approved_draft=approved_draft,
             profile=profile,
         )
-        return self._write_prompt(artifact, overwrite=overwrite)
+        return self._write_prompt(
+            artifact, overwrite=overwrite, extra_event_files=extra_files
+        )
+
+    def _guide_v1_qa_artifact(
+        self,
+        topic_id: str,
+        topic: Topic,
+        *,
+        approved_spec: str,
+        approved_outline: str,
+        approved_draft: str,
+        profile: LearnerProfile | None,
+    ) -> CompiledPrompt:
+        """Gate on a current draft report, then compile the guide-v1 QA prompt."""
+
+        state = self.report_state(topic_id, "draft")
+        if state != "current":
+            if state == "missing":
+                raise ConfigError(
+                    f"draft validation is required before QA for {topic_id!r}; "
+                    "run draft validation first"
+                )
+            raise ConfigError(
+                f"draft validation is stale for {topic_id!r}; "
+                "the draft changed and must be revalidated before QA"
+            )
+        parsed = parse_guide(approved_draft)
+        if not parsed.ok:
+            raise ConfigError(
+                f"approved draft for {topic_id!r} is too malformed for QA; "
+                "correct and reapprove the draft response"
+            )
+        draft_guide_json = canonical_guide_bytes(normalize_guide(parsed)).decode("utf-8")
+        draft_findings_json = self.draft_report_path(topic_id).read_text(encoding="utf-8")
+        artifact = compile_guide_v1_qa_prompt(
+            topic,
+            approved_spec=approved_spec,
+            approved_outline=approved_outline,
+            draft_guide_json=draft_guide_json,
+            draft_findings_json=draft_findings_json,
+            profile=profile,
+            blueprint=self.run_blueprint(topic_id),
+        )
+        extra_files = {
+            **self._source_files(topic_id, "qa"),
+            "draft_report_file": self.draft_report_path(topic_id),
+        }
+        return artifact, extra_files
 
     def write_factcheck_prompt(
         self,
@@ -3232,7 +3213,7 @@ class RunStore:
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
-        if not self._is_guide_v1(safe_id):
+        if not self._mode(safe_id).supports_factcheck:
             raise ConfigError(
                 f"the factcheck stage applies only to interactive-guide runs; "
                 f"{safe_id!r} is a legacy Markdown run"
@@ -3299,59 +3280,72 @@ class RunStore:
         approved_draft = self.read_approved(safe_id, "draft")
         approved_qa = self.read_approved(safe_id, "qa")
         profile = self._load_attached_profile(safe_id)
-        if self._is_guide_v1(safe_id):
-            approved_factcheck = self.read_approved(safe_id, "factcheck")
-            self._require_current_upstream(safe_id, "repair", "qa")
-            self._require_current_upstream(safe_id, "repair", "factcheck")
-            state = self.report_state(safe_id, "draft")
-            if state != "current":
-                if state == "missing":
-                    raise ConfigError(
-                        f"draft validation is required before repair for {safe_id!r}; "
-                        "run draft validation first"
-                    )
-                raise ConfigError(
-                    f"draft validation is stale for {safe_id!r}; "
-                    "the draft changed and must be revalidated before repair"
-                )
-            contract_path = self._guide_contract_path(safe_id)
-            if not contract_path.is_file():
-                raise ConfigError(
-                    f"guide contract not found for {safe_id!r}: {contract_path}"
-                )
-            parsed = parse_guide(approved_draft)
-            if not parsed.ok:
-                raise ConfigError(
-                    f"approved draft for {safe_id!r} is too malformed for repair; "
-                    "correct and reapprove the draft response"
-                )
-            draft_guide_json = canonical_guide_bytes(normalize_guide(parsed)).decode("utf-8")
-            draft_findings_json = self.draft_report_path(safe_id).read_text(encoding="utf-8")
-            artifact = compile_guide_v1_repair_prompt(
-                topic,
-                draft_guide_json=draft_guide_json,
-                qa_findings_markdown=approved_qa,
-                factcheck_findings_markdown=approved_factcheck,
-                draft_findings_json=draft_findings_json,
-                guide_contract=contract_path.read_bytes(),
-                profile=profile,
-                blueprint=self.run_blueprint(safe_id),
-            )
-            extra_files = {
-                **self._source_files(safe_id, "repair"),
-                "draft_report_file": self.draft_report_path(safe_id),
-                "contract_file": contract_path,
-            }
-            return self._write_prompt(
-                artifact, overwrite=overwrite, extra_event_files=extra_files
-            )
-        artifact = compile_repair_prompt(
+        artifact, extra_files = self._mode(safe_id).compile_repair_prompt(
+            self,
+            safe_id,
             topic,
             approved_draft=approved_draft,
             approved_qa=approved_qa,
             profile=profile,
         )
-        return self._write_prompt(artifact, overwrite=overwrite)
+        return self._write_prompt(
+            artifact, overwrite=overwrite, extra_event_files=extra_files
+        )
+
+    def _guide_v1_repair_artifact(
+        self,
+        topic_id: str,
+        topic: Topic,
+        *,
+        approved_draft: str,
+        approved_qa: str,
+        profile: LearnerProfile | None,
+    ) -> CompiledPrompt:
+        """Gate the guide-v1 repair inputs, then compile the whole-guide prompt."""
+
+        approved_factcheck = self.read_approved(topic_id, "factcheck")
+        self._require_current_upstream(topic_id, "repair", "qa")
+        self._require_current_upstream(topic_id, "repair", "factcheck")
+        state = self.report_state(topic_id, "draft")
+        if state != "current":
+            if state == "missing":
+                raise ConfigError(
+                    f"draft validation is required before repair for {topic_id!r}; "
+                    "run draft validation first"
+                )
+            raise ConfigError(
+                f"draft validation is stale for {topic_id!r}; "
+                "the draft changed and must be revalidated before repair"
+            )
+        contract_path = self._guide_contract_path(topic_id)
+        if not contract_path.is_file():
+            raise ConfigError(
+                f"guide contract not found for {topic_id!r}: {contract_path}"
+            )
+        parsed = parse_guide(approved_draft)
+        if not parsed.ok:
+            raise ConfigError(
+                f"approved draft for {topic_id!r} is too malformed for repair; "
+                "correct and reapprove the draft response"
+            )
+        draft_guide_json = canonical_guide_bytes(normalize_guide(parsed)).decode("utf-8")
+        draft_findings_json = self.draft_report_path(topic_id).read_text(encoding="utf-8")
+        artifact = compile_guide_v1_repair_prompt(
+            topic,
+            draft_guide_json=draft_guide_json,
+            qa_findings_markdown=approved_qa,
+            factcheck_findings_markdown=approved_factcheck,
+            draft_findings_json=draft_findings_json,
+            guide_contract=contract_path.read_bytes(),
+            profile=profile,
+            blueprint=self.run_blueprint(topic_id),
+        )
+        extra_files = {
+            **self._source_files(topic_id, "repair"),
+            "draft_report_file": self.draft_report_path(topic_id),
+            "contract_file": contract_path,
+        }
+        return artifact, extra_files
 
     def write_module_repair_prompt(
         self,
@@ -3370,7 +3364,7 @@ class RunStore:
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
-        if not self._is_guide_v1(safe_id):
+        if not self._mode(safe_id).supports_module_repair:
             raise ConfigError(
                 f"module-scoped repair applies only to interactive-guide runs; "
                 f"{safe_id!r} is a legacy Markdown run"
@@ -3474,8 +3468,16 @@ class RunStore:
             artifact=artifact,
         )
 
-    def _is_guide_v1(self, topic_id: str) -> bool:
-        return self.content_contract(topic_id).kind == "interactive_guide"
+    def _mode(self, topic_id: str) -> _RunMode:
+        """The strategy for this run's content mode: the one dispatch site.
+
+        Every place ``RunStore`` once branched on "is this a guide-v1 run?"
+        now asks this for a mode object instead, so the legacy Markdown
+        bodies can live in :mod:`education_pipeline.run_modes` and never
+        interleave with the guide-v1 ones again.
+        """
+
+        return mode_for_kind(self.content_contract(topic_id).kind)
 
     def _guide_contract_path(self, topic_id: str) -> Path:
         return self.run_dir(topic_id) / "inputs" / _GUIDE_CONTRACT_FILENAME
@@ -3574,7 +3576,7 @@ class RunStore:
         """Load one exact, eligible set of private audit inputs."""
 
         safe_id = _artifact_id(topic_id, "topic id")
-        if not self._is_guide_v1(safe_id):
+        if not self._mode(safe_id).supports_audit:
             raise ConfigError(
                 "personalization audit unavailable: run is not an interactive guide"
             )
