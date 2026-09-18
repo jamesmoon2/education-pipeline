@@ -16,6 +16,38 @@ from education_pipeline.daemon.jobs import (
 )
 
 
+def _unit_job(
+    topic_id="t",
+    stage="draft",
+    *,
+    job_id=None,
+    unit="module",
+    module_id="loop-basics",
+    batch_id="batch-1",
+    status="queued",
+):
+    """A ``Job`` built with the T23 fan-out fields set via keyword args.
+
+    Deliberately bypasses ``JobStore.create`` (whose signature the brief
+    leaves unchanged) so these tests fail with a clean ``TypeError`` for
+    unknown keyword arguments until ``Job`` gains ``unit``/``module_id``/
+    ``batch_id``.
+    """
+
+    return Job(
+        id=job_id or new_job_id(),
+        topic_id=topic_id,
+        stage=stage,
+        provider="fake",
+        model="m",
+        effort=None,
+        status=status,
+        unit=unit,
+        module_id=module_id,
+        batch_id=batch_id,
+    )
+
+
 def test_new_job_id_is_sortable_and_suffixed():
     a = new_job_id(datetime(2026, 7, 9, 18, 30, 42, tzinfo=timezone.utc))
     assert a.startswith("20260709T183042Z-")
@@ -467,3 +499,132 @@ def test_scoped_lookups_refuse_path_escaping_ids(tmp_path):
         assert store.list(hostile) == []
         assert store.active_for(hostile, "draft") is None
         assert store.any_active_for(hostile) is None
+
+
+# --- T23: Job fan-out fields (unit / module_id / batch_id) ----------------
+
+
+def test_job_round_trips_unit_module_batch_fields():
+    job = Job(
+        id="20260918T120000Z-aaaa",
+        topic_id="t",
+        stage="draft",
+        provider="fake",
+        model="m",
+        effort=None,
+        unit="module",
+        module_id="loop-basics",
+        batch_id="batch-1",
+    )
+    data = job.to_dict()
+    assert data["unit"] == "module"
+    assert data["module_id"] == "loop-basics"
+    assert data["batch_id"] == "batch-1"
+
+    restored = Job.from_dict(data)
+    assert restored.unit == "module"
+    assert restored.module_id == "loop-basics"
+    assert restored.batch_id == "batch-1"
+    assert restored == job
+
+
+def test_job_from_dict_legacy_record_defaults_unit_fields_to_none():
+    # A record written before this phase (no unit/module_id/batch_id keys).
+    legacy = {
+        "id": "20260918T120000Z-bbbb",
+        "topic_id": "t",
+        "stage": "draft",
+        "provider": "fake",
+        "model": "m",
+        "effort": None,
+        "status": "succeeded",
+    }
+    job = Job.from_dict(legacy)
+    assert job.unit is None
+    assert job.module_id is None
+    assert job.batch_id is None
+
+
+def test_jobstore_save_load_roundtrips_unit_fields(tmp_path):
+    store = JobStore(tmp_path)
+    job = _unit_job(job_id="20260918T120000Z-cccc")
+    store.save(job)
+    loaded = store.load("t", job.id)
+    assert loaded.unit == "module"
+    assert loaded.module_id == "loop-basics"
+    assert loaded.batch_id == "batch-1"
+
+
+def test_active_for_matches_a_module_job_of_that_stage(tmp_path):
+    store = JobStore(tmp_path)
+    job = _unit_job(job_id="20260918T120000Z-dddd")
+    store.save(job)
+
+    found = store.active_for("t", "draft")
+    assert found is not None
+    assert found.id == job.id
+    assert found.module_id == "loop-basics"
+
+
+def test_active_unit_for_matches_only_the_same_module(tmp_path):
+    store = JobStore(tmp_path)
+    a = _unit_job(job_id="20260918T120000Z-eeee", module_id="loop-basics", batch_id="b1")
+    b = _unit_job(job_id="20260918T120000Z-ffff", module_id="intervention-practice", batch_id="b1")
+    store.save(a)
+    store.save(b)
+
+    same = store.active_unit_for("t", "draft", "loop-basics")
+    assert same is not None and same.id == a.id
+    other = store.active_unit_for("t", "draft", "intervention-practice")
+    assert other is not None and other.id == b.id
+    assert store.active_unit_for("t", "draft", "no-such-module") is None
+    # A different stage entirely never matches.
+    assert store.active_unit_for("t", "qa", "loop-basics") is None
+
+    a.status = "succeeded"
+    store.save(a)
+    assert store.active_unit_for("t", "draft", "loop-basics") is None
+    # The sibling module job is unaffected.
+    assert store.active_unit_for("t", "draft", "intervention-practice").id == b.id
+
+
+def test_jobstore_batch_returns_jobs_in_creation_order_across_statuses(tmp_path):
+    from datetime import datetime, timezone
+
+    store = JobStore(tmp_path)
+    t0 = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    a = _unit_job(
+        job_id=new_job_id(t0.replace(second=0)),
+        module_id="mod-a",
+        batch_id="batch-x",
+        status="succeeded",
+    )
+    b = _unit_job(
+        job_id=new_job_id(t0.replace(second=1)),
+        module_id="mod-b",
+        batch_id="batch-x",
+        status="queued",
+    )
+    c = _unit_job(
+        job_id=new_job_id(t0.replace(second=2)),
+        module_id="mod-c",
+        batch_id="batch-x",
+        status="running",
+    )
+    outsider = _unit_job(
+        job_id=new_job_id(t0.replace(second=1, microsecond=500)),
+        module_id="mod-d",
+        batch_id="batch-y",
+    )
+    # Saved out of creation order, to prove batch() sorts rather than reflects
+    # save order.
+    store.save(c)
+    store.save(a)
+    store.save(outsider)
+    store.save(b)
+
+    jobs = store.batch("batch-x")
+    assert [j.id for j in jobs] == [a.id, b.id, c.id]
+    assert {j.status for j in jobs} == {"succeeded", "queued", "running"}
+    assert store.batch("batch-y") == [outsider]
+    assert store.batch("no-such-batch") == []

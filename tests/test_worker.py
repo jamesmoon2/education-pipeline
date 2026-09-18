@@ -1,3 +1,5 @@
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -7,7 +9,15 @@ import pytest
 
 from education_pipeline import ContentContract, RunStore, parse_model_catalog, parse_model_plan
 from education_pipeline.config import ConfigError
-from education_pipeline.daemon.jobs import Job, JobRunner, JobStore, Worker
+from education_pipeline.daemon.jobs import (
+    Job,
+    JobRunner,
+    JobStore,
+    Worker,
+    new_job_id,
+    popen_kwargs,
+    terminate_process,
+)
 from education_pipeline.providers import Invocation, ProviderResponse, register_runner
 
 FAKE = Path(__file__).parent / "fake_provider.py"
@@ -213,3 +223,279 @@ def test_cancel_queued_job_marks_canceled(tmp_path):
     worker.enqueue(job)
     result = worker.cancel(job.id)
     assert result.status == "canceled"
+
+
+# --- T23: bounded parallelism / batch fan-out ------------------------------
+
+
+def _batch_job(module_id, batch_id, *, stage="draft", topic_id="t"):
+    """A module draft job with the T23 fan-out fields set.
+
+    Built via ``Job(...)`` directly (not ``JobStore.create``, whose signature
+    the brief leaves unchanged), so this fails with ``TypeError`` on the
+    unknown ``unit``/``module_id``/``batch_id`` keywords until ``Job`` gains
+    them (item 1) -- ahead of, and independently of, ``Worker`` gaining
+    ``parallelism`` (item 3).
+    """
+
+    return Job(
+        id=new_job_id(),
+        topic_id=topic_id,
+        stage=stage,
+        provider="fake",
+        model="m",
+        effort=None,
+        unit="module",
+        module_id=module_id,
+        batch_id=batch_id,
+    )
+
+
+class _ConcurrencyTracker:
+    """Counts overlapping ``execute`` calls and records each job's [start, end)."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.current = 0
+        self.peak = 0
+        self.spans: dict = {}
+
+    def begin(self, job_id):
+        with self.lock:
+            self.current += 1
+            self.peak = max(self.peak, self.current)
+        self.spans[job_id] = [time.monotonic(), None]
+
+    def end(self, job_id):
+        with self.lock:
+            self.current -= 1
+        self.spans[job_id][1] = time.monotonic()
+
+
+class _ScriptedRunner:
+    """A ``JobRunner`` stand-in for Worker fan-out tests.
+
+    Spawns the fake provider directly (a real subprocess, driven by real
+    ``FAKE_DELAY``/``FAKE_EXIT`` env vars) so timing and pass/fail behaviour
+    are realistic, but never touches ``RunStore`` -- ``Worker``'s pool/
+    admission mechanics are independent of stage prompts and ingestion
+    (that's ``JobRunner``'s concern, covered in ``test_job_runner.py``).
+    Cancellation reuses ``jobs.terminate_process``, the same helper the real
+    ``JobRunner`` uses.
+    """
+
+    def __init__(self, store, tracker, *, delay=0.0, fail=False):
+        self.store = store
+        self.tracker = tracker
+        self.delay = delay
+        self.fail = fail
+
+    def execute(self, job, cancel):
+        self.tracker.begin(job.id)
+        try:
+            job.status = "running"
+            self.store.save(job)
+            env = dict(os.environ)
+            env["FAKE_DELAY"] = str(self.delay)
+            env["FAKE_STDOUT"] = "OK\n"
+            if self.fail:
+                env["FAKE_EXIT"] = "1"
+            else:
+                env.pop("FAKE_EXIT", None)
+            proc = subprocess.Popen(
+                [sys.executable, str(FAKE)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+                **popen_kwargs(),
+            )
+            while proc.poll() is None:
+                if cancel.is_set():
+                    terminate_process(proc, grace=1.0)
+                    job.status = "canceled"
+                    self.store.save(job)
+                    return job
+                time.sleep(0.02)
+            job.exit_code = proc.returncode
+            job.status = "succeeded" if proc.returncode == 0 else "failed"
+            self.store.save(job)
+        finally:
+            self.tracker.end(job.id)
+        return job
+
+
+def _scripted_factory(store, tracker, configs, *, default_delay=0.0):
+    """``runner_factory`` keyed by ``job.id`` (not ``job.module_id``).
+
+    ``Worker._loop`` re-loads each job from disk (``store.find``) before
+    handing it to the factory, so any field the round trip doesn't carry
+    would be lost -- keying by ``job.id`` (a real field on ``Job`` today)
+    keeps these tests independent of whether ``module_id`` survives that
+    round trip, which is squarely item 1's concern, not item 3's.
+    """
+
+    def factory(job):
+        cfg = configs.get(job.id, {})
+        return _ScriptedRunner(
+            store, tracker, delay=cfg.get("delay", default_delay), fail=cfg.get("fail", False)
+        )
+
+    return factory
+
+
+@pytest.mark.parametrize("bad", [0, 5, -1, 1.5])
+def test_worker_rejects_parallelism_outside_one_to_four(tmp_path, bad):
+    store = JobStore(tmp_path)
+    with pytest.raises(ConfigError):
+        Worker(store, lambda job: None, parallelism=bad)
+
+
+def test_worker_parallelism_defaults_to_two(tmp_path):
+    store = JobStore(tmp_path)
+    worker = Worker(store, lambda job: None)
+    assert worker.parallelism == 2
+
+
+def test_worker_accepts_explicit_parallelism_within_range(tmp_path):
+    store = JobStore(tmp_path)
+    worker = Worker(store, lambda job: None, parallelism=3)
+    assert worker.parallelism == 3
+
+
+def test_worker_bounds_concurrent_batch_jobs_to_parallelism_and_overlaps(tmp_path):
+    store = JobStore(tmp_path)
+    tracker = _ConcurrencyTracker()
+    delay = 0.4
+    jobs = [_batch_job(f"m{i}", "batch-1") for i in range(4)]
+    configs = {job.id: {"delay": delay} for job in jobs}
+
+    worker = Worker(store, _scripted_factory(store, tracker, configs), parallelism=2)
+    worker.start()
+    try:
+        start = time.monotonic()
+        for job in jobs:
+            worker.enqueue(job)
+        for job in jobs:
+            _wait_terminal(store, job.id, timeout=15)
+        elapsed = time.monotonic() - start
+    finally:
+        worker.stop()
+
+    assert tracker.peak <= 2
+    assert all(store.find(job.id).status == "succeeded" for job in jobs)
+    # 4 jobs at parallelism 2 take 2 "rounds": faster than fully serial (4
+    # delays -- generous margin below 3) but not faster than fully parallel
+    # (1 delay -- generous margin above 2 rounds of 2).
+    assert elapsed < 3 * delay
+    assert elapsed >= 1.6 * delay
+
+
+def test_worker_never_runs_a_non_batch_job_concurrently_with_a_batch_job(tmp_path):
+    store = JobStore(tmp_path)
+    tracker = _ConcurrencyTracker()
+    delay = 0.3
+    batch_jobs = [_batch_job(f"m{i}", "batch-2") for i in range(2)]
+    solo_job = Job(
+        id=new_job_id(), topic_id="t", stage="spec", provider="fake", model="m", effort=None
+    )
+    configs = {job.id: {"delay": delay} for job in (*batch_jobs, solo_job)}
+
+    worker = Worker(store, _scripted_factory(store, tracker, configs), parallelism=2)
+    worker.start()
+    try:
+        # Enqueue the non-batch job *between* two batch jobs of the same batch.
+        worker.enqueue(batch_jobs[0])
+        worker.enqueue(solo_job)
+        worker.enqueue(batch_jobs[1])
+        for job in (*batch_jobs, solo_job):
+            _wait_terminal(store, job.id, timeout=15)
+    finally:
+        worker.stop()
+
+    solo_start, solo_end = tracker.spans[solo_job.id]
+    batch_spans = [tracker.spans[job.id] for job in batch_jobs]
+    assert all(
+        solo_start >= batch_end or solo_end <= batch_start
+        for batch_start, batch_end in batch_spans
+    )
+    assert all(store.find(job.id).status == "succeeded" for job in (*batch_jobs, solo_job))
+
+
+def test_worker_isolates_one_batch_job_failure_from_its_siblings(tmp_path):
+    store = JobStore(tmp_path)
+    tracker = _ConcurrencyTracker()
+    delay = 0.2
+    jobs = [_batch_job(f"m{i}", "batch-3") for i in range(3)]
+    configs = {job.id: {"delay": delay} for job in jobs}
+    configs[jobs[1].id]["fail"] = True
+
+    worker = Worker(store, _scripted_factory(store, tracker, configs), parallelism=2)
+    worker.start()
+    try:
+        for job in jobs:
+            worker.enqueue(job)
+        for job in jobs:
+            _wait_terminal(store, job.id, timeout=15)
+    finally:
+        worker.stop()
+
+    statuses = {job.id: store.find(job.id).status for job in jobs}
+    assert statuses[jobs[1].id] == "failed"
+    assert statuses[jobs[0].id] == "succeeded"
+    assert statuses[jobs[2].id] == "succeeded"
+
+
+def test_worker_enqueue_dedup_is_scoped_to_module_id_for_module_jobs(tmp_path):
+    store = JobStore(tmp_path)
+    tracker = _ConcurrencyTracker()
+    worker = Worker(store, _scripted_factory(store, tracker, {}), parallelism=2)
+    # not started: jobs stay queued, so the duplicate check is exercised
+    # without any timing dependency.
+
+    a = _batch_job("loop-basics", "batch-4")
+    worker.enqueue(a)
+
+    dup = _batch_job("loop-basics", "batch-4")
+    with pytest.raises(ConfigError):
+        worker.enqueue(dup)
+
+    other_module = _batch_job("intervention-practice", "batch-4")
+    worker.enqueue(other_module)  # a different module_id at the same stage: fine
+
+    saved_ids = {job.id for job in store.list("t")}
+    assert a.id in saved_ids
+    assert other_module.id in saved_ids
+    assert dup.id not in saved_ids
+    worker.stop()
+
+
+def test_worker_cancel_batch_cancels_queued_and_signals_running(tmp_path):
+    store = JobStore(tmp_path)
+    tracker = _ConcurrencyTracker()
+    delay = 2.0  # long enough that cancel_batch definitely lands mid-flight
+    jobs = [_batch_job(f"m{i}", "batch-5") for i in range(4)]
+    configs = {job.id: {"delay": delay} for job in jobs}
+
+    worker = Worker(store, _scripted_factory(store, tracker, configs), parallelism=2)
+    worker.start()
+    try:
+        for job in jobs:
+            worker.enqueue(job)
+        # Wait for the first parallelism-many jobs to actually start running
+        # before cancelling, so the "signals running ones" half is exercised.
+        deadline = time.monotonic() + 5
+        while tracker.current < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert tracker.current >= 1  # sanity: something was actually running
+
+        worker.cancel_batch("batch-5")
+
+        for job in jobs:
+            _wait_terminal(store, job.id, timeout=10)
+    finally:
+        worker.stop()
+
+    statuses = [store.find(job.id).status for job in jobs]
+    assert all(status in {"canceled", "interrupted", "failed"} for status in statuses)
+    assert "succeeded" not in statuses
