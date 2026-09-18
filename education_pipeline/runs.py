@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar
@@ -12,7 +12,6 @@ import hashlib
 import json
 import stat
 import threading
-import tomllib
 
 from education_pipeline.config import (
     OPTIONAL_STAGES,
@@ -28,42 +27,23 @@ from education_pipeline.stage_graph import (
     sources_of as graph_sources_of,
     stage as stage_spec,
 )
-from education_pipeline.export import EXPORT_FORMATS
-# ``runs_reports`` looks a few of these up lazily through this module's
-# namespace (QUALITY_REPORT_SCHEMA_VERSION, compute_static_checks,
-# validate_guide, personalization_trace_is_fresh), so they stay bound here.
 from education_pipeline.guides import (
     ContractError,
-    Guide,
-    QUALITY_REPORT_SCHEMA_VERSION,
+    DEFAULT_GUIDE_SCHEMA_VERSION,
     apply_waivers,
-    build_guide_contract,
     canonical_guide_bytes,
     check_contract_conflict,
-    compute_static_checks,
     extract_outline_contract,
     extract_spec_contract,
-    guide_sha256,
     normalize_guide,
     parse_guide,
-    project_guide_markdown,
-    validate_guide,
-)
-from education_pipeline.guide_runtime import load_runtime_assets
-from education_pipeline.guides.validation import (
-    PersonalizationValidationContext,
-)
-from education_pipeline.guides.personalization import (
-    authoritative_goals,
-    personalization_trace_is_fresh,
 )
 from education_pipeline.guides.audit import (
     AuditResponseError,
-    canonical_safe_audit_projection_bytes,
     parse_audit_response,
 )
 from education_pipeline.privacy import profile_private_values
-from education_pipeline.profiles import LearnerProfile, parse_learner_profile
+from education_pipeline.profiles import LearnerProfile
 from education_pipeline.topics import Topic
 from education_pipeline.prompts import (
     PromptArtifact,
@@ -75,7 +55,6 @@ from education_pipeline.prompts import (
     compile_guide_v1_qa_prompt,
     compile_guide_v1_repair_prompt,
     compile_guide_v1_spec_prompt,
-    compile_personalization_audit_prompt,
 )
 from education_pipeline.run_modes import CompiledPrompt, _RunMode, mode_for_kind
 from education_pipeline.guides.canonical import SpliceError, splice_module
@@ -84,11 +63,7 @@ from education_pipeline.guides.blueprints import (
     get_blueprint,
     recommend_blueprint,
 )
-from education_pipeline.atomic_io import (
-    atomic_write_bytes,
-    atomic_write_text,
-    read_bytes_retrying,
-)
+from education_pipeline.atomic_io import read_bytes_retrying
 from education_pipeline.workspace_lock import workspace_lock
 from education_pipeline.workspace import (
     ProfileStore,
@@ -113,12 +88,27 @@ from education_pipeline.runs_reports import (
     _guide_source_sha,
 )
 from education_pipeline.runs_waivers import WaiversMixin
-
-_GUIDE_CONTRACT_FILENAME = "guide-contract.json"
-
-
-class StaleContentError(Exception):
-    """The response file changed on disk since the client loaded it."""
+from education_pipeline.runs_personalization import PersonalizationMixin
+from education_pipeline.runs_finalize import FinalizeMixin
+from education_pipeline.run_core import (
+    # Re-exported: the shared leaf primitives and value types moved to
+    # ``run_core`` so every mixin can import them at module scope, but
+    # importers (and tests) still read them from here.
+    AdvanceResult,
+    MARKDOWN_CONTENT_TYPE,
+    NextAction,
+    PromptFile,
+    RunStatus,
+    StageStatus,
+    StagePaths,
+    StaleContentError,
+    _FINAL_SOURCE_STAGE,
+    _relative_to,
+    _stub_text,
+    _write_bytes_atomic,
+    _write_text,
+    _write_text_atomic,
+)
 
 
 MANIFEST_SCHEMA_VERSION = 1
@@ -127,15 +117,10 @@ RUN_SUBDIRS = ("inputs", "prompts", "responses", "approved", "reports", "final")
 
 _PROMPT_SUFFIX = ".prompt.md"
 
-MARKDOWN_CONTENT_TYPE = "text/markdown"
 JSON_CONTENT_TYPE = "application/json"
 GUIDE_V1_CONTENT_TYPE = (
     "application/vnd.education-pipeline.guide+json;version=1.0"
 )
-
-#: The stage whose approved output is assembled into the final guide.
-_FINAL_SOURCE_STAGE = "repair"
-_FINAL_FILENAME = "guide.md"
 
 #: Per-thread manifest read scope. While a scope is open on the calling
 #: thread, ``entries`` maps a manifest path to the dict parsed from it once,
@@ -192,98 +177,6 @@ class ContentContract:
         return value
 
 
-@dataclass(frozen=True)
-class StagePaths:
-    """Filesystem locations for a single stage within a topic run."""
-
-    stage: str
-    topic_id: str
-    prompt_path: Path
-    response_path: Path
-    stub_path: Path
-    approved_path: Path
-    content_type: str = MARKDOWN_CONTENT_TYPE
-
-
-@dataclass(frozen=True)
-class PromptFile:
-    """The result of writing a compiled stage prompt to a topic run."""
-
-    stage: str
-    topic_id: str
-    prompt_path: Path
-    response_path: Path
-    stub_path: Path
-    artifact: PromptArtifact
-
-
-@dataclass(frozen=True)
-class _AuditInputs:
-    guide: Guide
-    guide_bytes: bytes
-    guide_sha256: str
-    profile: LearnerProfile
-    profile_snapshot_path: Path
-    profile_snapshot_sha256: str
-    trace_path: Path
-    trace_bytes: bytes
-    trace_sha256: str
-
-
-@dataclass(frozen=True)
-class StageStatus:
-    """Persisted progress for a single stage, derived from workspace files."""
-
-    stage: str
-    prompt_written: bool
-    response_ingested: bool
-    approved: bool
-    stale: bool = False
-
-    @property
-    def state(self) -> str:
-        """The furthest milestone this stage has durably reached."""
-
-        if self.stale:
-            return "stale"
-        if self.approved:
-            return "approved"
-        if self.response_ingested:
-            return "response_ingested"
-        if self.prompt_written:
-            return "prompt_written"
-        if self.stage in OPTIONAL_STAGES:
-            return "not_run"
-        return "pending"
-
-
-@dataclass(frozen=True)
-class NextAction:
-    """The next step needed to move a run forward, for resuming work."""
-
-    topic_id: str
-    stage: str | None
-    action: str
-    detail: str
-
-
-@dataclass(frozen=True)
-class RunStatus:
-    """A resumable snapshot of a run's progress across supported stages."""
-
-    topic_id: str
-    stages: tuple[StageStatus, ...]
-    finalized: bool
-    next_action: NextAction
-
-
-@dataclass(frozen=True)
-class AdvanceResult:
-    """The outcome of advancing a run by one machine step."""
-
-    topic_id: str
-    performed: str | None
-    status: RunStatus
 
 
 class _TopicWriteLock:
@@ -342,7 +235,7 @@ class _TopicWriteLock:
 
 
 @dataclass(frozen=True)
-class RunStore(WaiversMixin, ReportsMixin):
+class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
     """Create run directories and write stage prompt/response artifacts."""
 
     root: Path
@@ -442,17 +335,6 @@ class RunStore(WaiversMixin, ReportsMixin):
                 self._manifest_locks[topic_id] = existing
             return existing
 
-    def _profile_generation_lock(self, topic_id: str) -> threading.Lock:
-        """Return the outer lock for profile-derived run transactions.
-
-        Persisted artifacts derived from an attached profile hold this lock
-        across their complete read/validate/write transaction. If the
-        manifest lock is also needed, this profile lock is always acquired
-        first. Attachment uses the same lock, so replacement can land only
-        before or after one persisted generation, never midway through it.
-        """
-
-        return ProfileStore(self.root).topic_profile_snapshot_lock(topic_id)
 
     @property
     def runs_dir(self) -> Path:
@@ -1454,119 +1336,6 @@ class RunStore(WaiversMixin, ReportsMixin):
         manifest.setdefault("stage_provenance", []).append(entry)
         _write_manifest(run / "manifest.json", manifest)
 
-    def final_path(self, topic_id: str) -> Path:
-        """Path of the assembled final guide for a run (legacy ``final/guide.md``)."""
-
-        return self.run_dir(topic_id) / "final" / _FINAL_FILENAME
-
-    def final_guide_json_path(self, topic_id: str) -> Path:
-        """Path of the guide-v1 final JSON artifact (``final/guide.json``)."""
-
-        return self.final_path(topic_id).with_name("guide.json")
-
-    def final_guide_md_path(self, topic_id: str) -> Path:
-        """Path of the guide-v1 projected Markdown artifact (``final/guide.md``)."""
-
-        return self.final_path(topic_id).with_name("guide.md")
-
-    def prepare_personalization_audit(
-        self, topic_id: str, *, overwrite: bool = False
-    ) -> PromptFile:
-        """Explicitly compile and persist a current personalization-audit prompt."""
-
-        safe_id = _artifact_id(topic_id, "topic id")
-        self.create_run(safe_id)
-        inputs = self._current_audit_inputs(safe_id)
-        artifact = compile_personalization_audit_prompt(
-            topic_id=safe_id,
-            final_guide_json=inputs.guide_bytes.decode("utf-8"),
-            personalization_trace_json=inputs.trace_bytes.decode("utf-8"),
-            profile=inputs.profile,
-        )
-        paths = self.stage_paths(safe_id, "audit")
-        prompt_bytes = artifact.text.encode("utf-8")
-
-        with self._manifest_write_lock(safe_id):
-            current = self._current_audit_inputs(safe_id)
-            if self._audit_input_hashes(current) != self._audit_input_hashes(inputs):
-                raise StaleContentError(
-                    "personalization audit inputs changed while the prompt was prepared; retry"
-                )
-            if paths.prompt_path.exists() and not overwrite:
-                raise ConfigError(f"refusing to overwrite existing file: {paths.prompt_path}")
-            preserved_approval = None
-            if self._public_audit_snapshot_locked(safe_id).state == "current":
-                candidate = self._latest_stage_event(
-                    safe_id, "audit", "response_approved"
-                )
-                if (
-                    candidate is not None
-                    and candidate.get("prompt_file_sha256")
-                    == hashlib.sha256(prompt_bytes).hexdigest()
-                ):
-                    preserved_approval = candidate
-            _write_bytes_atomic(paths.prompt_path, prompt_bytes)
-            if not paths.response_path.exists():
-                _write_bytes_atomic(paths.stub_path, _stub_text(paths).encode("utf-8"))
-            self._append_event_locked(
-                safe_id,
-                stage="audit",
-                action="prompt_written",
-                files={
-                    "prompt_file": paths.prompt_path,
-                    "profile_snapshot_file": current.profile_snapshot_path,
-                    "personalization_trace_file": current.trace_path,
-                },
-                extra={
-                    "guide_sha256": current.guide_sha256,
-                    **(
-                        {
-                            "preserved_approval_event_sha256": (
-                                self._manifest_event_sha256(preserved_approval)
-                            )
-                        }
-                        if preserved_approval is not None
-                        else {}
-                    ),
-                },
-            )
-        return PromptFile(
-            stage="audit",
-            topic_id=safe_id,
-            prompt_path=paths.prompt_path,
-            response_path=paths.response_path,
-            stub_path=paths.stub_path,
-            artifact=artifact,
-        )
-
-    def audit_prompt_is_current(self, topic_id: str) -> bool:
-        """Whether the latest audit prompt event and bytes bind current inputs."""
-
-        safe_id = _artifact_id(topic_id, "topic id")
-        paths = self.stage_paths(safe_id, "audit")
-        if not paths.prompt_path.is_file():
-            return False
-        event = self._latest_stage_event(safe_id, "audit", "prompt_written")
-        if event is None:
-            return False
-        try:
-            inputs = self._current_audit_inputs(safe_id)
-            prompt_sha = hashlib.sha256(read_bytes_retrying(paths.prompt_path)).hexdigest()
-        except (ConfigError, OSError, UnicodeError):
-            return False
-        return (
-            event.get("prompt_file_sha256") == prompt_sha
-            and event.get("prompt_file")
-            == _relative_to(paths.prompt_path, self.run_dir(safe_id))
-            and event.get("guide_sha256") == inputs.guide_sha256
-            and event.get("profile_snapshot_file")
-            == _relative_to(inputs.profile_snapshot_path, self.run_dir(safe_id))
-            and event.get("profile_snapshot_file_sha256")
-            == inputs.profile_snapshot_sha256
-            and event.get("personalization_trace_file")
-            == _relative_to(inputs.trace_path, self.run_dir(safe_id))
-            and event.get("personalization_trace_file_sha256") == inputs.trace_sha256
-        )
 
     def require_provider_ready_prompt(self, topic_id: str, stage: str) -> Path:
         """Return a runnable prompt path, refusing missing/stale audit prompts."""
@@ -1580,311 +1349,6 @@ class RunStore(WaiversMixin, ReportsMixin):
             )
         return paths.prompt_path
 
-    def export_path(self, topic_id: str, format: str) -> Path:
-        """Path an export of ``format`` is (or would be) written to."""
-
-        if format not in EXPORT_FORMATS:
-            supported = ", ".join(EXPORT_FORMATS)
-            raise ConfigError(f"unsupported export format {format!r}; supported: {supported}")
-        name = "guide.bundle.md" if format == "markdown" else "guide.html"
-        return self.final_path(topic_id).with_name(name)
-
-    def export_run(
-        self,
-        topic_id: str,
-        *,
-        format: str = "html",
-        overwrite: bool = False,
-    ) -> Path:
-        """Export the finalized guide to a distributable format.
-
-        This is an optional deterministic step after ``finalize_run``. ``format``
-        is ``"html"`` (a self-contained document) or ``"markdown"`` (the guide
-        with a front-matter provenance block). Both are written into ``final/``.
-        """
-
-        safe_id = _artifact_id(topic_id, "topic id")
-        mode = self._mode(safe_id)
-        if format != "html" and not mode.supports_markdown_export:
-            raise ConfigError("guide-v1 runs support only HTML export")
-        return mode.export(self, safe_id, format=format, overwrite=overwrite)
-
-    def _export_guide_v1(self, topic_id: str, *, overwrite: bool) -> Path:
-        """Export only the finalized canonical guide through the packaged runtime."""
-
-        safe_id = _artifact_id(topic_id, "topic id")
-        with self._profile_generation_lock(safe_id):
-            with self._manifest_write_lock(safe_id):
-                return self._export_guide_v1_locked(safe_id, overwrite=overwrite)
-
-    def _export_guide_v1_locked(self, topic_id: str, *, overwrite: bool) -> Path:
-        """Build and persist one immutable export snapshot under the topic lock."""
-
-        final_json = self.final_guide_json_path(topic_id)
-        if not final_json.is_file() or not self.is_finalized(topic_id):
-            raise ConfigError(f"run {topic_id!r} is not currently finalized")
-        if self.report_state(topic_id, "final") != "current":
-            raise ConfigError("final validation is missing or stale; revalidate before export")
-        assets = load_runtime_assets()
-        source_text = final_json.read_text(encoding="utf-8")
-        profile_snapshot = self._read_attached_profile_snapshot(topic_id)
-        profile = profile_snapshot[0] if profile_snapshot else None
-        validation_inputs = (
-            profile_private_values(profile) if profile else (),
-            PersonalizationValidationContext(
-                profile_present=profile is not None,
-                authoritative_goal_ids=tuple(
-                    goal.goal_id for goal in authoritative_goals(profile)
-                ) if profile else (),
-            ),
-            self._calibration_context(topic_id, profile),
-        )
-        waiver_set = self._load_waiver_set(topic_id)
-        report, document, guide = self._validated_final(
-            topic_id,
-            source_text,
-            validation_inputs=validation_inputs,
-            assets=assets,
-        )
-        waiver_result = apply_waivers(report, waiver_set)
-        if not waiver_result.gate_open:
-            raise ConfigError(
-                f"cannot export {topic_id!r}: "
-                f"{waiver_result.effective_blocking} blocking finding(s) remain"
-            )
-        if document is None or guide is None:
-            # An open waiver gate guarantees no render_failed blocker, so the
-            # checked document and its guide are present. Guard defensively
-            # against a None write, keeping the failure on the 400-mapped
-            # ConfigError path (any mapped status is fine; the last-resort 500
-            # handler is not).
-            raise ConfigError(
-                f"cannot export {topic_id!r}: the checked guide document is unavailable"
-            )
-        trace_projection, trace_file_sha256 = self._safe_trace_projection_bytes(
-            topic_id, report, guide, profile_snapshot
-        )
-        audit_snapshot = self._public_audit_snapshot_locked(
-            topic_id,
-            current_bindings=(
-                guide_sha256(guide),
-                profile_snapshot[2],
-                trace_file_sha256,
-            )
-            if profile_snapshot is not None and trace_file_sha256 is not None
-            else None,
-        )
-        content = document
-        export_path = self.export_path(topic_id, "html")
-        if export_path.exists() and not overwrite:
-            raise ConfigError(f"refusing to overwrite existing file: {export_path}")
-        _write_text_atomic(export_path, content)
-
-        export_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        runtime_css_sha256 = hashlib.sha256(assets.css.encode("utf-8")).hexdigest()
-        runtime_js_sha256 = hashlib.sha256(assets.javascript.encode("utf-8")).hexdigest()
-        sidecar_bytes = self._quality_report_bytes(
-            topic_id,
-            report=report,
-            waiver_result=waiver_result,
-            waiver_set=waiver_set,
-            guide=guide,
-            export_sha256=export_sha256,
-            runtime_css_sha256=runtime_css_sha256,
-            runtime_js_sha256=runtime_js_sha256,
-            runtime_version=assets.version,
-            audit_snapshot=audit_snapshot,
-            trace_projection=trace_projection,
-        )
-        report_path = self.export_report_path(topic_id)
-        _write_bytes_atomic(report_path, sidecar_bytes)
-
-        # Build the event payload before entering the (non-reentrant) manifest
-        # lock; ``_model_stage_provenance`` reads the manifest.
-        model_stage_provenance = self._model_stage_provenance(topic_id)
-        self._append_event_locked(
-            topic_id,
-            stage="export",
-            action="exported",
-            files={
-                "export_file": export_path,
-                "source_file": final_json,
-                "report_file": self.final_report_path(topic_id),
-                "quality_report_file": report_path,
-            },
-            extra={
-                "guide_schema_version": guide.schema_version,
-                "runtime_version": assets.version,
-                "runtime_css_sha256": runtime_css_sha256,
-                "runtime_js_sha256": runtime_js_sha256,
-                "quality_report_sha256": hashlib.sha256(sidecar_bytes).hexdigest(),
-                "model_stage_provenance": model_stage_provenance,
-            },
-        )
-        return export_path
-
-    def _model_stage_provenance(self, topic_id: str) -> dict[str, dict[str, str | None]]:
-        """Return the latest non-sensitive provider/model aliases by stage."""
-
-        latest: dict[str, dict[str, str | None]] = {}
-        for event in self.read_manifest(topic_id).get("events", []):
-            stage = event.get("stage")
-            provider = event.get("provider")
-            if (
-                event.get("action") == "job"
-                and stage in SUPPORTED_STAGES
-                and isinstance(provider, str)
-            ):
-                model = event.get("model")
-                latest[stage] = {
-                    "provider": provider,
-                    "model": model if isinstance(model, str) else None,
-                }
-        return {stage: latest[stage] for stage in SUPPORTED_STAGES if stage in latest}
-
-    def _read_final_guide(self, topic_id: str) -> str:
-        path = self.final_path(topic_id)
-        try:
-            return path.read_text(encoding="utf-8")
-        except FileNotFoundError as exc:
-            raise ConfigError(
-                f"run {topic_id!r} is not finalized; run finalize_run first: {path}"
-            ) from exc
-
-    def _export_front_matter(self, topic_id: str, topic) -> dict[str, str]:
-        front_matter = {
-            "title": topic.title,
-            "topic_id": topic_id,
-            "source": "final/guide.md",
-            "generator": "education-pipeline",
-        }
-        events = self.read_manifest(topic_id).get("events", [])
-        finalized = next(
-            (event for event in reversed(events) if event.get("action") == "finalized"),
-            None,
-        )
-        if finalized is not None and finalized.get("recorded_at"):
-            front_matter["generated"] = finalized["recorded_at"]
-        return front_matter
-
-    def is_finalized(self, topic_id: str) -> bool:
-        """Whether the run's final guide has been assembled.
-
-        Legacy runs: file existence of ``final/guide.md``. Guide-v1 runs: hash-
-        derived — a finalized event must exist, both final artifacts must exist,
-        and the event's ``source_file_sha256`` must still match the current
-        approved repair bytes.
-        """
-
-        safe_id = _artifact_id(topic_id, "topic id")
-        return self._mode(safe_id).is_finalized(self, safe_id)
-
-    def _is_finalized_guide_v1(self, topic_id: str) -> bool:
-        """Hash-derived finalized check for an interactive-guide run.
-
-        A finalized event must exist, both final artifacts must exist, and the
-        event's ``source_file_sha256`` must still match the current approved
-        repair bytes.
-        """
-
-        final_json = self.final_guide_json_path(topic_id)
-        final_md = self.final_guide_md_path(topic_id)
-        if not final_json.is_file() or not final_md.is_file():
-            return False
-
-        try:
-            events = self.read_manifest(topic_id).get("events", [])
-        except ConfigError:
-            return False
-
-        finalized = next(
-            (event for event in reversed(events) if event.get("action") == "finalized"),
-            None,
-        )
-        if finalized is None:
-            return False
-
-        recorded = finalized.get("source_file_sha256")
-        if not isinstance(recorded, str):
-            return False
-        source = self.stage_paths(topic_id, _FINAL_SOURCE_STAGE).approved_path
-        if not source.is_file():
-            return False
-        return recorded == hashlib.sha256(source.read_bytes()).hexdigest()
-
-    def finalize_run(self, topic_id: str, *, overwrite: bool = False) -> Path:
-        """Assemble the approved final-stage draft into the run's ``final`` guide.
-
-        Legacy: copies the approved repair into ``final/guide.md``. Guide-v1:
-        requires a current final validation report with an open waiver gate, then
-        writes ``final/guide.json`` and ``final/guide.md`` atomically.
-        """
-
-        safe_id = _artifact_id(topic_id, "topic id")
-        return self._mode(safe_id).finalize(self, safe_id, overwrite=overwrite)
-
-    def _finalize_guide_v1(self, topic_id: str, *, overwrite: bool) -> Path:
-        source_text = self.read_approved(topic_id, _FINAL_SOURCE_STAGE)
-        if self.report_state(topic_id, "final") != "current":
-            raise ConfigError(
-                f"final validation is missing or stale for {topic_id!r}; "
-                "run final validation before finalizing"
-            )
-        self._require_current_personalization_trace(topic_id)
-
-        report, _, _ = self._validated_final(topic_id, source_text)
-        waiver_result = apply_waivers(report, self._load_waiver_set(topic_id))
-        if not waiver_result.gate_open:
-            parts = [
-                f"cannot finalize {topic_id!r}: "
-                f"{waiver_result.effective_blocking} blocking finding(s) remain"
-            ]
-            if waiver_result.stale:
-                parts.append("stale waivers were ignored")
-            if waiver_result.rejected_finding_ids:
-                parts.append(
-                    "non-waivable or empty-reason waivers were rejected: "
-                    + ", ".join(waiver_result.rejected_finding_ids)
-                )
-            raise ConfigError("; ".join(parts))
-
-        parsed = parse_guide(source_text)
-        if not parsed.ok:
-            raise ConfigError(
-                f"cannot finalize {topic_id!r}: approved repair is not valid guide JSON"
-            )
-        guide = normalize_guide(parsed)
-        guide_json = canonical_guide_bytes(guide)
-        guide_md = project_guide_markdown(guide)
-
-        final_json = self.final_guide_json_path(topic_id)
-        final_md = self.final_guide_md_path(topic_id)
-        if not overwrite:
-            if final_json.exists() or final_md.exists():
-                raise ConfigError(
-                    f"refusing to overwrite existing final guide artifacts for {topic_id!r}: "
-                    f"{final_json} / {final_md}"
-                )
-
-        self.create_run(topic_id)
-        _write_bytes_atomic(final_json, guide_json)
-        _write_bytes_atomic(final_md, guide_md.encode("utf-8"))
-        self._append_event(
-            topic_id,
-            stage="finalize",
-            action="finalized",
-            files={
-                "final_json_file": final_json,
-                "final_md_file": final_md,
-                "source_file": self.stage_paths(topic_id, _FINAL_SOURCE_STAGE).approved_path,
-                "report_file": self.final_report_path(topic_id),
-            },
-            extra={
-                "guide_sha256": guide_sha256(guide),
-                "schema_version": guide.schema_version,
-            },
-        )
-        return final_json
 
     def write_spec_prompt(
         self,
@@ -1922,7 +1386,8 @@ class RunStore(WaiversMixin, ReportsMixin):
 
         return compile_guide_v1_spec_prompt(
             spec_input,
-            guide_schema_version=self.content_contract(topic_id).schema_version or "1.0",
+            guide_schema_version=self.content_contract(topic_id).schema_version
+            or DEFAULT_GUIDE_SCHEMA_VERSION,
             blueprint=self.run_blueprint(topic_id),
         )
 
@@ -1962,7 +1427,8 @@ class RunStore(WaiversMixin, ReportsMixin):
                 topic_brief=topic.brief,
                 profile=profile,
             ),
-            guide_schema_version=self.content_contract(topic_id).schema_version or "1.0",
+            guide_schema_version=self.content_contract(topic_id).schema_version
+            or DEFAULT_GUIDE_SCHEMA_VERSION,
             blueprint=self.run_blueprint(topic_id),
         )
 
@@ -2002,7 +1468,8 @@ class RunStore(WaiversMixin, ReportsMixin):
             topic,
             approved_spec,
             profile,
-            guide_schema_version=self.content_contract(topic_id).schema_version or "1.0",
+            guide_schema_version=self.content_contract(topic_id).schema_version
+            or DEFAULT_GUIDE_SCHEMA_VERSION,
             blueprint=self.run_blueprint(topic_id),
         )
         extra_files = {
@@ -2203,6 +1670,47 @@ class RunStore(WaiversMixin, ReportsMixin):
             artifact, overwrite=overwrite, extra_event_files=extra_files
         )
 
+    def _require_repair_ready(
+        self, topic_id: str, approved_draft: str
+    ) -> tuple[str, str, Path]:
+        """Gate a guide-v1 repair prompt and return what both writers compile from.
+
+        The whole-guide and the module-scoped repair prompt have exactly the
+        same entry conditions -- both upstreams current, a current draft
+        report, an established guide contract, and an approved draft that
+        still parses -- so they ask for them here once instead of keeping two
+        copies of the same refusals in step. Returns the canonical draft guide
+        JSON, the draft report's findings JSON, and the guide contract's path.
+        """
+
+        self._require_current_upstream(topic_id, "repair", "qa")
+        self._require_current_upstream(topic_id, "repair", "factcheck")
+        state = self.report_state(topic_id, "draft")
+        if state != "current":
+            if state == "missing":
+                raise ConfigError(
+                    f"draft validation is required before repair for {topic_id!r}; "
+                    "run draft validation first"
+                )
+            raise ConfigError(
+                f"draft validation is stale for {topic_id!r}; "
+                "the draft changed and must be revalidated before repair"
+            )
+        contract_path = self._guide_contract_path(topic_id)
+        if not contract_path.is_file():
+            raise ConfigError(
+                f"guide contract not found for {topic_id!r}: {contract_path}"
+            )
+        parsed = parse_guide(approved_draft)
+        if not parsed.ok:
+            raise ConfigError(
+                f"approved draft for {topic_id!r} is too malformed for repair; "
+                "correct and reapprove the draft response"
+            )
+        draft_guide_json = canonical_guide_bytes(normalize_guide(parsed)).decode("utf-8")
+        draft_findings_json = self.draft_report_path(topic_id).read_text(encoding="utf-8")
+        return draft_guide_json, draft_findings_json, contract_path
+
     def write_repair_prompt(
         self,
         topic_id: str,
@@ -2245,32 +1753,9 @@ class RunStore(WaiversMixin, ReportsMixin):
         """Gate the guide-v1 repair inputs, then compile the whole-guide prompt."""
 
         approved_factcheck = self.read_approved(topic_id, "factcheck")
-        self._require_current_upstream(topic_id, "repair", "qa")
-        self._require_current_upstream(topic_id, "repair", "factcheck")
-        state = self.report_state(topic_id, "draft")
-        if state != "current":
-            if state == "missing":
-                raise ConfigError(
-                    f"draft validation is required before repair for {topic_id!r}; "
-                    "run draft validation first"
-                )
-            raise ConfigError(
-                f"draft validation is stale for {topic_id!r}; "
-                "the draft changed and must be revalidated before repair"
-            )
-        contract_path = self._guide_contract_path(topic_id)
-        if not contract_path.is_file():
-            raise ConfigError(
-                f"guide contract not found for {topic_id!r}: {contract_path}"
-            )
-        parsed = parse_guide(approved_draft)
-        if not parsed.ok:
-            raise ConfigError(
-                f"approved draft for {topic_id!r} is too malformed for repair; "
-                "correct and reapprove the draft response"
-            )
-        draft_guide_json = canonical_guide_bytes(normalize_guide(parsed)).decode("utf-8")
-        draft_findings_json = self.draft_report_path(topic_id).read_text(encoding="utf-8")
+        draft_guide_json, draft_findings_json, contract_path = self._require_repair_ready(
+            topic_id, approved_draft
+        )
         artifact = compile_guide_v1_repair_prompt(
             topic,
             draft_guide_json=draft_guide_json,
@@ -2322,33 +1807,10 @@ class RunStore(WaiversMixin, ReportsMixin):
         approved_draft = self.read_approved(safe_id, "draft")
         approved_qa = self.read_approved(safe_id, "qa")
         approved_factcheck = self.read_approved(safe_id, "factcheck")
-        self._require_current_upstream(safe_id, "repair", "qa")
-        self._require_current_upstream(safe_id, "repair", "factcheck")
         profile = self._load_attached_profile(safe_id)
-        state = self.report_state(safe_id, "draft")
-        if state != "current":
-            if state == "missing":
-                raise ConfigError(
-                    f"draft validation is required before repair for {safe_id!r}; "
-                    "run draft validation first"
-                )
-            raise ConfigError(
-                f"draft validation is stale for {safe_id!r}; "
-                "the draft changed and must be revalidated before repair"
-            )
-        contract_path = self._guide_contract_path(safe_id)
-        if not contract_path.is_file():
-            raise ConfigError(
-                f"guide contract not found for {safe_id!r}: {contract_path}"
-            )
-        parsed = parse_guide(approved_draft)
-        if not parsed.ok:
-            raise ConfigError(
-                f"approved draft for {safe_id!r} is too malformed for repair; "
-                "correct and reapprove the draft response"
-            )
-        draft_guide_json = canonical_guide_bytes(normalize_guide(parsed)).decode("utf-8")
-        draft_findings_json = self.draft_report_path(safe_id).read_text(encoding="utf-8")
+        draft_guide_json, draft_findings_json, contract_path = self._require_repair_ready(
+            safe_id, approved_draft
+        )
         artifact = compile_guide_v1_module_repair_prompt(
             topic,
             module_id=module_id,
@@ -2420,8 +1882,6 @@ class RunStore(WaiversMixin, ReportsMixin):
 
         return mode_for_kind(self.content_contract(topic_id).kind)
 
-    def _guide_contract_path(self, topic_id: str) -> Path:
-        return self.run_dir(topic_id) / "inputs" / _GUIDE_CONTRACT_FILENAME
 
     def _validate_guide_approval(self, topic_id: str, stage: str, response_text: str) -> None:
         """Raise ConfigError if a guide-v1 spec/outline response fails its contract gate."""
@@ -2447,202 +1907,6 @@ class RunStore(WaiversMixin, ReportsMixin):
                 f"cannot approve {stage} for guide run {topic_id!r}: {exc}"
             ) from exc
 
-    def _publishable_profile_summary(self, profile) -> str | None:
-        if profile is None:
-            return None
-        if not profile.privacy.include_in_published_output:
-            return None
-        summary = profile.privacy.publishable_summary
-        if not summary:
-            return None
-        return summary
-
-    def _write_guide_contract(self, topic_id: str, *, profile, overwrite: bool) -> bytes:
-        """Build and atomically write ``inputs/guide-contract.json`` for a guide-v1 draft.
-
-        Returns the bytes actually on disk after the write (or no-op when the
-        existing file already matches). Divergent bytes without ``overwrite``
-        raise: the guide contract is immutable once established.
-        """
-
-        try:
-            spec_contract = extract_spec_contract(self.read_approved(topic_id, "spec"))
-            outline_contract = extract_outline_contract(self.read_approved(topic_id, "outline"))
-        except ContractError as exc:
-            raise ConfigError(
-                f"cannot build guide contract for run {topic_id!r}: {exc}"
-            ) from exc
-
-        contract_bytes = build_guide_contract(
-            spec_contract,
-            outline_contract,
-            publishable_profile_summary=self._publishable_profile_summary(profile),
-        )
-        path = self._guide_contract_path(topic_id)
-        if path.exists():
-            existing = path.read_bytes()
-            if existing == contract_bytes:
-                return existing
-            if not overwrite:
-                raise ConfigError(
-                    f"guide contract is immutable and requires an explicit overwrite/rebuild: {path}"
-                )
-        _write_bytes_atomic(path, contract_bytes)
-        return contract_bytes
-
-    def _read_attached_profile_snapshot(
-        self,
-        topic_id: str,
-    ) -> tuple[LearnerProfile, Path, str] | None:
-        """Parse and hash one exact atomic snapshot read."""
-
-        snapshot_path = ProfileStore(self.root).topic_profile_snapshot_path(topic_id)
-        if not snapshot_path.exists():
-            return None
-        try:
-            source_bytes = snapshot_path.read_bytes()
-            source_text = source_bytes.decode("utf-8")
-            profile = parse_learner_profile(tomllib.loads(source_text))
-        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-            raise ConfigError(
-                f"invalid attached learner profile snapshot: {snapshot_path}"
-            ) from exc
-        return (
-            profile,
-            snapshot_path,
-            hashlib.sha256(source_bytes).hexdigest(),
-        )
-
-    def _current_audit_inputs(self, topic_id: str) -> _AuditInputs:
-        """Load one exact, eligible set of private audit inputs."""
-
-        safe_id = _artifact_id(topic_id, "topic id")
-        if not self._mode(safe_id).supports_audit:
-            raise ConfigError(
-                "personalization audit unavailable: run is not an interactive guide"
-            )
-        snapshot = self._read_attached_profile_snapshot(safe_id)
-        if snapshot is None:
-            raise ConfigError(
-                "personalization audit unavailable: no attached profile snapshot"
-            )
-        profile, snapshot_path, snapshot_sha = snapshot
-        if self.report_state(safe_id, "final") != "current":
-            raise ConfigError(
-                "personalization audit unavailable: final validation is not current"
-            )
-        if self.personalization_trace_state(safe_id, phase="final") != "current":
-            raise ConfigError(
-                "personalization audit unavailable: personalization trace is not current"
-            )
-
-        source_path = self.stage_paths(safe_id, _FINAL_SOURCE_STAGE).approved_path
-        try:
-            source = source_path.read_bytes()
-            trace_path = self.personalization_trace_path(safe_id)
-            trace_bytes = trace_path.read_bytes()
-        except OSError as exc:
-            raise ConfigError("personalization audit inputs are unavailable") from exc
-        parsed = parse_guide(source)
-        if not parsed.ok:
-            raise ConfigError(
-                "personalization audit unavailable: final candidate is invalid"
-            )
-        guide = normalize_guide(parsed)
-        guide_bytes = canonical_guide_bytes(guide)
-        return _AuditInputs(
-            guide=guide,
-            guide_bytes=guide_bytes,
-            guide_sha256=guide_sha256(guide),
-            profile=profile,
-            profile_snapshot_path=snapshot_path,
-            profile_snapshot_sha256=snapshot_sha,
-            trace_path=trace_path,
-            trace_bytes=trace_bytes,
-            trace_sha256=hashlib.sha256(trace_bytes).hexdigest(),
-        )
-
-    @staticmethod
-    def _audit_input_hashes(inputs: _AuditInputs) -> tuple[str, str, str]:
-        return (
-            inputs.guide_sha256,
-            inputs.profile_snapshot_sha256,
-            inputs.trace_sha256,
-        )
-
-    def _approve_personalization_audit(
-        self, topic_id: str, *, overwrite: bool
-    ) -> Path:
-        """Validate, project, and hash-bind one audit approval transaction."""
-
-        safe_id = _artifact_id(topic_id, "topic id")
-        paths = self.stage_paths(safe_id, "audit")
-        with self._profile_generation_lock(safe_id):
-            self.require_provider_ready_prompt(safe_id, "audit")
-            response_bytes = paths.response_path.read_bytes()
-            inputs = self._current_audit_inputs(safe_id)
-            try:
-                audit = parse_audit_response(
-                    response_bytes,
-                    guide=inputs.guide,
-                    trace=inputs.trace_bytes,
-                    private_values=profile_private_values(inputs.profile),
-                )
-            except AuditResponseError as exc:
-                raise ConfigError(str(exc)) from exc
-            projection_bytes = canonical_safe_audit_projection_bytes(
-                audit, guide=inputs.guide
-            )
-            projection_path = self.audit_projection_path(safe_id)
-
-            with self._manifest_write_lock(safe_id):
-                current = self._current_audit_inputs(safe_id)
-                if self._audit_input_hashes(current) != self._audit_input_hashes(inputs):
-                    raise StaleContentError(
-                        "personalization audit inputs changed during approval; retry"
-                    )
-                if paths.response_path.read_bytes() != response_bytes:
-                    raise StaleContentError(
-                        "the audit response changed on disk during approval; reload and retry"
-                    )
-                if not self.audit_prompt_is_current(safe_id):
-                    raise StaleContentError(
-                        "audit prompt is stale; rebuild it before approval"
-                    )
-                if paths.approved_path.exists() and not overwrite:
-                    raise ConfigError(
-                        f"refusing to overwrite existing file: {paths.approved_path}"
-                    )
-
-                bindings = {"guide_sha256": current.guide_sha256}
-                self._append_event_locked(
-                    safe_id,
-                    stage="audit",
-                    action="audit_approval_started",
-                    files={
-                        "prompt_file": paths.prompt_path,
-                        "response_file": paths.response_path,
-                        "profile_snapshot_file": current.profile_snapshot_path,
-                        "personalization_trace_file": current.trace_path,
-                    },
-                    extra=bindings,
-                )
-                _write_bytes_atomic(paths.approved_path, response_bytes)
-                _write_bytes_atomic(projection_path, projection_bytes)
-                self._append_event_locked(
-                    safe_id,
-                    stage="audit",
-                    action="response_approved",
-                    files={
-                        "prompt_file": paths.prompt_path,
-                        "approved_file": paths.approved_path,
-                        "profile_snapshot_file": current.profile_snapshot_path,
-                        "personalization_trace_file": current.trace_path,
-                        "audit_projection_file": projection_path,
-                    },
-                    extra=bindings,
-                )
-        return paths.approved_path
 
     def _manifest_events(self, topic_id: str) -> list[dict]:
         try:
@@ -2651,51 +1915,6 @@ class RunStore(WaiversMixin, ReportsMixin):
             return []
         return [event for event in events if isinstance(event, dict)]
 
-    @staticmethod
-    def _manifest_event_sha256(event: dict) -> str:
-        return hashlib.sha256(
-            json.dumps(
-                event,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-
-    def _prompt_preserves_approval(self, prompt_event: dict, approval: dict) -> bool:
-        if prompt_event.get("preserved_approval_event_sha256") != (
-            self._manifest_event_sha256(approval)
-        ):
-            return False
-        binding_fields = (
-            "prompt_file",
-            "prompt_file_sha256",
-            "guide_sha256",
-            "profile_snapshot_file",
-            "profile_snapshot_file_sha256",
-            "personalization_trace_file",
-            "personalization_trace_file_sha256",
-        )
-        return all(
-            prompt_event.get(field) == approval.get(field)
-            for field in binding_fields
-        )
-
-    def _audit_approval_incomplete(self, topic_id: str) -> bool:
-        latest_start = -1
-        latest_approval = -1
-        for index, event in enumerate(self._manifest_events(topic_id)):
-            if event.get("stage") != "audit":
-                continue
-            if event.get("action") == "audit_approval_started":
-                latest_start = index
-            elif event.get("action") == "response_approved":
-                latest_approval = index
-        return latest_start > latest_approval
-
-    def _load_attached_profile(self, topic_id: str):
-        snapshot = self._read_attached_profile_snapshot(topic_id)
-        return snapshot[0] if snapshot is not None else None
 
     def _latest_stage_event(
         self, topic_id: str, stage: str, action: str
@@ -2900,50 +2119,11 @@ def _recorded_source_shas(event: dict, stage: str) -> dict[str, str | None]:
     }
 
 
-def _stub_text(paths: StagePaths) -> str:
-    return (
-        f"# Response placeholder for the {paths.stage} stage\n"
-        "\n"
-        "No model response has been saved for this stage yet.\n"
-        "Save the response as a sibling file named:\n"
-        "\n"
-        f"    {paths.response_path.name}\n"
-        "\n"
-        "This placeholder is ignored by the pipeline and does not count as an\n"
-        "ingested response. Delete it once the real response is in place.\n"
-    )
-
-
-def _relative_to(path: Path, run: Path) -> str:
-    return path.relative_to(run).as_posix()
-
-
 def _write_manifest(path: Path, manifest: dict) -> None:
     _write_bytes_atomic(path, (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
     # Every manifest write funnels through here, so this one line is the whole
     # invalidation story for an open read scope.
     _manifest_scope_discard(path)
-
-
-def _write_text(path: Path, text: str, *, overwrite: bool) -> None:
-    # The refusal is checked before anything is created on disk, so a rejected
-    # write leaves the directory exactly as it found it -- no stray temp file.
-    if path.exists() and not overwrite:
-        raise ConfigError(f"refusing to overwrite existing file: {path}")
-    # atomic_write_text encodes UTF-8 and writes in binary mode, which is the
-    # byte-for-byte equivalent of write_text(encoding="utf-8", newline=""):
-    # artifacts are sha-keyed and byte-compared, so Windows text-mode
-    # \n -> \r\n translation must never rewrite them. Going through the temp
-    # file means a crash mid-rewrite leaves the previous content in place.
-    atomic_write_text(path, text)
-
-
-def _write_text_atomic(path: Path, text: str) -> None:
-    _write_bytes_atomic(path, text.encode("utf-8"))
-
-
-def _write_bytes_atomic(path: Path, data: bytes) -> None:
-    atomic_write_bytes(path, data)
 
 
 def _supported_stage(stage: str) -> str:

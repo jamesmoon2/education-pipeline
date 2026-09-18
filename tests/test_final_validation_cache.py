@@ -24,7 +24,7 @@ from pathlib import Path
 
 import test_runs
 
-from education_pipeline import runs as runs_module
+from education_pipeline import runs_reports as runs_module
 from education_pipeline.daemon import read_api
 from education_pipeline.runs import ContentContract, RunStore
 from education_pipeline.workspace import TopicStore
