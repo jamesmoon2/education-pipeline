@@ -13,6 +13,7 @@ import json
 import re
 from typing import Any, Mapping
 
+from .model import SUPPORTED_GUIDE_SCHEMA_VERSIONS
 from .parse import BLOCK_TYPES, ID_RE, RAW_HTML_RE
 
 SPEC_CONTRACT_INFO_STRING = "education-pipeline-contract+json"
@@ -141,7 +142,7 @@ def validate_spec_contract(data: Mapping[str, Any]) -> None:
         )
     if not isinstance(data["guide_schema_version"], str) or data[
         "guide_schema_version"
-    ] not in {"1.0", "1.1"}:
+    ] not in SUPPORTED_GUIDE_SCHEMA_VERSIONS:
         raise ContractError(
             "spec contract guide_schema_version must be one of ['1.0', '1.1'], "
             f"got {data['guide_schema_version']!r}"

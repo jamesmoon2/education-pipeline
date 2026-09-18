@@ -10,7 +10,11 @@ from .contract import (
     validate_outline_contract,
     validate_spec_contract,
 )
-from .model import Guide
+from .model import (
+    DEFAULT_GUIDE_SCHEMA_VERSION,
+    SUPPORTED_GUIDE_SCHEMA_VERSIONS,
+    Guide,
+)
 from .parse import (
     GuideParseError,
     ParseDiagnostic,
@@ -38,6 +42,8 @@ from .validation import MAX_GUIDE_SOURCE_BYTES, ValidationContext, validate_guid
 from .waivers import Waiver, WaiverResult, WaiverSet, apply_waivers
 
 __all__ = [
+    "DEFAULT_GUIDE_SCHEMA_VERSION",
+    "SUPPORTED_GUIDE_SCHEMA_VERSIONS",
     "Guide",
     "ContractError",
     "MAX_GUIDE_SOURCE_BYTES",

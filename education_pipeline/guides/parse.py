@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from .model import (
+    SUPPORTED_GUIDE_SCHEMA_VERSIONS,
     Callout,
     Choice,
     Course,
@@ -203,7 +204,10 @@ def parse_guide(text: str | bytes) -> ParseResult:
     if root is None:
         return ParseResult(None, tuple(checker.errors))
     schema_version = root.get("schema_version")
-    if not isinstance(schema_version, str) or schema_version not in {"1.0", "1.1"}:
+    if (
+        not isinstance(schema_version, str)
+        or schema_version not in SUPPORTED_GUIDE_SCHEMA_VERSIONS
+    ):
         checker.error(
             "schema.unsupported_version",
             "/schema_version",

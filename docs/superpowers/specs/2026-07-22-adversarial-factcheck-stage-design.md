@@ -145,6 +145,7 @@ STAGE_ORDER = ("profile",) + SUPPORTED_STAGES + ("finalize", "export")  # unchan
 | `PRESET_STAGES` / `STAGE_ORDER` | Formulas unchanged — they pick up `factcheck` automatically via `SUPPORTED_STAGES`; verify ordering tests still assert `factcheck` between `qa` and `repair` |
 | `DEFAULT_STAGE_RECOMMENDATIONS["factcheck"]` | New key, e.g. `strong_adversarial_check` — **not** `fast_cheap_check` (recommendations are free-form strings resolved per provider; no closed vocabulary to extend) |
 | `REASONING_STAGES` | Currently `frozenset({"spec", "outline", "repair"})` — `qa` is excluded, so excluding `factcheck` is consistent; leave unchanged unless product wants effort hints on factcheck |
+| `REASONING_STAGES` (resolved 2026-09-17, Phase 1 T11) | `factcheck` **is** now a reasoning stage and gets the weak-model warning; the whole stage table, including the reasoning flag, now lives in `education_pipeline/stage_graph.py` and `config.py` derives these constants from it |
 
 Call sites that currently assume `REQUIRED_STAGES` means “every run’s
 progress” must switch to a helper. Because `RunStore._is_guide_v1` is private
@@ -496,7 +497,7 @@ pattern, plus grandfathering and guide-aware completion counts.
 | # | Question | Default in this spec |
 | --- | --- | --- |
 | 1 | Should factcheck bind outline/spec hashes as well as draft+QA? | **No** for v1; draft content is what is checked; scope context is embedded in the prompt without hash-binding |
-| 2 | Should `REASONING_STAGES` include factcheck? | **Optional follow-up**; default leave unchanged |
+| 2 | Should `REASONING_STAGES` include factcheck? | **Resolved 2026-09-17 by Phase 1 T11: yes** — factcheck is a reasoning stage and gets the weak-model warning; the stage table lives in `stage_graph.py` |
 | 3 | Project findings into quality-report sidecar? | **No** for v1 |
 | 4 | Tool-using / web verification? | **No** for v1 |
 | 5 | Force retroactive factcheck on already-repaired runs? | **No** — grandfather (§7) |

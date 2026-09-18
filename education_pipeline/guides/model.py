@@ -5,6 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias
 
+#: Every Interactive Guide schema version this codebase reads and writes. One
+#: definition, so a new version is added in one place instead of in each
+#: parser, contract check, prompt compiler and run-content contract.
+SUPPORTED_GUIDE_SCHEMA_VERSIONS = frozenset({"1.0", "1.1"})
+
+#: The schema version assumed when a run, a prompt or an unparseable source
+#: does not name one.
+DEFAULT_GUIDE_SCHEMA_VERSION = "1.0"
+
 
 @dataclass(frozen=True)
 class GoalExclusion:
