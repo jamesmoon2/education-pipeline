@@ -315,6 +315,9 @@ def test_write_draft_prompt_stage_stub_mentions_the_unit_path(tmp_path: Path) ->
 
 
 def test_write_draft_prompt_on_legacy_run_creates_no_draft_unit_directory(tmp_path: Path) -> None:
+    # tr._create_legacy_run does not save the topic artifact, and the legacy
+    # outline/draft writers load it (test_runs' own legacy cases save it too).
+    tr.TopicStore(tmp_path).save_topic_toml(TID, tr.TOPIC_TOML)
     runs = tr._create_legacy_run(tmp_path, TID)
     tr._drive_spec_to_approved(runs, TID)
     tr._drive_outline_to_approved(runs, TID)

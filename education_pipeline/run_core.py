@@ -164,3 +164,93 @@ def _stub_text(paths: StagePaths) -> str:
         "This placeholder is ignored by the pipeline and does not count as an\n"
         "ingested response. Delete it once the real response is in place.\n"
     )
+
+
+@dataclass(frozen=True)
+class DraftUnitPaths:
+    """Filesystem locations for one draft *unit* of a guide-v1 run.
+
+    A unit is either the single ``skeleton`` (the whole guide with every
+    module reduced to a sectionless stub) or one ``module``. Nothing else
+    spells the ``<run>/draft/`` layout: every caller goes through
+    :meth:`~education_pipeline.runs.RunStore.draft_unit_paths`.
+    """
+
+    unit: str
+    module_id: str | None
+    prompt_path: Path
+    response_path: Path
+    stub_path: Path
+    previous_path: Path
+
+
+@dataclass(frozen=True)
+class DraftUnitStatus:
+    """The persisted state of one draft unit, derived from workspace files.
+
+    ``state`` is one of ``not_run``, ``prompt_written``, ``response_ingested``,
+    ``stale`` (the contract entry or skeleton stub the prompt embedded has
+    changed), ``orphaned`` (a unit whose module id left the contract; ignored
+    by assembly, never deleted) or ``superseded`` (the stage response file no
+    longer holds the last assembled bytes).
+    """
+
+    unit: str
+    state: str
+    module_id: str | None = None
+    title: str | None = None
+    response_sha256: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class AssembledStatus:
+    """The last recorded assembly attempt for a run's draft units."""
+
+    ok: bool
+    response_sha256: str | None = None
+    error: str | None = None
+    module_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DraftProgress:
+    """A resumable snapshot of a guide-v1 run's per-module drafting.
+
+    ``modules`` stays empty until a skeleton response exists: the module
+    units are the skeleton's stubs, and before it lands there is nothing to
+    report per module. The counts are derived, never stored, so they cannot
+    drift from the unit list they summarize.
+    """
+
+    skeleton: DraftUnitStatus
+    modules: tuple[DraftUnitStatus, ...] = ()
+    assembled: AssembledStatus | None = None
+    superseded: bool = False
+
+    @property
+    def total(self) -> int:
+        return len(self.modules)
+
+    @property
+    def saved(self) -> int:
+        return sum(1 for unit in self.modules if unit.state == "response_ingested")
+
+    @property
+    def stale(self) -> int:
+        return sum(1 for unit in self.modules if unit.state == "stale")
+
+
+@dataclass(frozen=True)
+class AssembleResult:
+    """The outcome of one deterministic draft assembly.
+
+    ``module_ids`` names the modules the caller would have to act on: the
+    outstanding ones when assembly was skipped, the implicated ones when it
+    failed, and every assembled module on success.
+    """
+
+    ok: bool
+    response_sha256: str | None = None
+    error: str | None = None
+    module_ids: tuple[str, ...] = ()
