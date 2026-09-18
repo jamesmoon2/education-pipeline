@@ -1412,11 +1412,30 @@ def test_repair_stage_content_carries_the_scope(server_with_context):
     status, body = _req(port, "GET", "/v1/runs/scoped-topic/stages/repair")
 
     assert status == 200
-    assert body["repair_scope"] == {"module_id": "loop-basics"}
+    assert body["repair_scope"] == {"module_id": "loop-basics", "section_id": None}
 
     status, body = _req(port, "GET", "/v1/runs/scoped-topic/stages/draft")
     assert status == 200
     assert "repair_scope" not in body
+
+
+def test_repair_stage_content_carries_the_section_scope(server_with_context):
+    port, context = server_with_context
+    _drive_guide_through_qa_http(context)
+    _req(
+        port,
+        "POST",
+        "/v1/runs/scoped-topic/advance",
+        body={"repair_module": "loop-basics", "repair_section": "feedback-foundations"},
+    )
+
+    status, body = _req(port, "GET", "/v1/runs/scoped-topic/stages/repair")
+
+    assert status == 200
+    assert body["repair_scope"] == {
+        "module_id": "loop-basics",
+        "section_id": "feedback-foundations",
+    }
 
 
 def _ready_audit_http_run(context, topic_id="audit-topic"):

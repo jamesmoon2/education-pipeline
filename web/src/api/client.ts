@@ -361,6 +361,7 @@ export const postAdvance = (
   apiPost<AdvanceResult>(`/v1/runs/${encodeURIComponent(topicId)}/advance`, {
     ...(options?.blueprint ? { blueprint: options.blueprint } : {}),
     ...(options?.repairModule ? { repair_module: options.repairModule } : {}),
+    ...(options?.repairSection ? { repair_section: options.repairSection } : {}),
   });
 export const prepareAudit = (topicId: string, rebuild = false) =>
   apiPost<AuditPreparationResult>(
