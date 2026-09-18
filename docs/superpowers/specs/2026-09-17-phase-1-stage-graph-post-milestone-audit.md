@@ -43,6 +43,16 @@ marked resolved. Effect: a below-`strong` model planned for factcheck now
 produces the same weak-model warning as spec, outline and repair. Nothing else
 in the plan changes.
 
+### T14: legacy Markdown stays, behind the strategy
+
+The plan left "retire in a later release or keep behind the strategy" open.
+Decision: keep. `LegacyMarkdownMode` in `run_modes.py` is the only place the
+legacy bodies live; nothing new can select it (`create_run` defaults to the
+guide contract and neither the CLI nor the daemon exposes the legacy kind),
+but workspaces created before the guide format still resume. Retiring it
+means a migration story for those workspaces, which is a release decision
+for the owner, not a refactor thread's.
+
 ## Accepted limitations
 
 - **T11:** `StageSpec.content == "guide"` reads as unconditional but means
@@ -53,3 +63,8 @@ in the plan changes.
 - **T11:** `docs/superpowers/specs/2026-07-11-next-milestone-proposal.md:69`
   still lists the warning as covering spec/outline/repair; left as a dated
   historical proposal.
+- **T14:** `run_modes.py` imports a few `runs.py` names lazily inside method
+  bodies (`NextAction`, `_FINAL_SOURCE_STAGE`, `_write_text`) because `runs`
+  imports `run_modes` at module scope. T15/T16 can move those names to a leaf
+  module and drop the lazy imports. `REQUIRED_STAGES` stays imported in
+  `runs.py` only as a re-export that two test files rely on.
