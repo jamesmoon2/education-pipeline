@@ -1238,7 +1238,9 @@ def test_advance_with_repair_module_writes_scoped_prompt(server_with_context):
 
     assert status == 200
     assert body["performed"] == "write_prompt"
-    assert runs.repair_scope("scoped-topic") == "loop-basics"
+    from education_pipeline.runs import RepairScope
+
+    assert runs.repair_scope("scoped-topic") == RepairScope("loop-basics", None)
 
 
 def test_advance_with_unknown_repair_module_is_400(server_with_context):
@@ -1279,7 +1281,7 @@ def test_repair_modules_payload_lists_candidates_with_finding_counts(
     )
     status, body = _req(port, "GET", "/v1/runs/scoped-topic/repair/modules")
     assert status == 200
-    assert body["repair_scope"] == {"module_id": "loop-basics"}
+    assert body["repair_scope"] == {"module_id": "loop-basics", "section_id": None}
 
 
 def test_repair_stage_content_carries_the_scope(server_with_context):
@@ -1295,7 +1297,7 @@ def test_repair_stage_content_carries_the_scope(server_with_context):
     status, body = _req(port, "GET", "/v1/runs/scoped-topic/stages/repair")
 
     assert status == 200
-    assert body["repair_scope"] == {"module_id": "loop-basics"}
+    assert body["repair_scope"] == {"module_id": "loop-basics", "section_id": None}
 
     status, body = _req(port, "GET", "/v1/runs/scoped-topic/stages/draft")
     assert status == 200
@@ -3709,3 +3711,113 @@ def test_workspace_first_run_true_with_zero_runs(tmp_path, monkeypatch):
 def test_workspace_requires_token(server):
     status, body = _req(server, "GET", "/v1/workspace", token="wrong")
     assert status == 401
+
+
+# --- T26: section-scoped repair over HTTP (spec D8) --------------------------
+
+
+def test_advance_with_repair_section_writes_section_scoped_prompt(
+    server_with_context,
+):
+    from education_pipeline.runs import RepairScope
+
+    port, context = server_with_context
+    runs = _drive_guide_through_qa_http(context)
+
+    status, body = _req(
+        port,
+        "POST",
+        "/v1/runs/scoped-topic/advance",
+        body={
+            "repair_module": "intervention-practice",
+            "repair_section": "garden-decision",
+        },
+    )
+
+    assert status == 200
+    assert body["performed"] == "write_prompt"
+    assert body["scope"] == {
+        "module_id": "intervention-practice",
+        "section_id": "garden-decision",
+    }
+    assert runs.repair_scope("scoped-topic") == RepairScope(
+        "intervention-practice", "garden-decision"
+    )
+
+
+def test_advance_with_repair_section_without_a_module_is_400(server_with_context):
+    port, context = server_with_context
+    _drive_guide_through_qa_http(context)
+
+    status, body = _req(
+        port,
+        "POST",
+        "/v1/runs/scoped-topic/advance",
+        body={"repair_section": "garden-decision"},
+    )
+
+    assert status == 400
+    assert "repair_module" in body["error"]["message"]
+
+
+def test_advance_rejects_a_blank_repair_section(server_with_context):
+    port, context = server_with_context
+    _drive_guide_through_qa_http(context)
+
+    status, body = _req(
+        port,
+        "POST",
+        "/v1/runs/scoped-topic/advance",
+        body={"repair_module": "intervention-practice", "repair_section": "   "},
+    )
+
+    assert status == 400
+    message = body["error"]["message"]
+    assert "repair_section" in message
+    assert "non-empty string" in message
+
+
+def test_repair_modules_payload_lists_sections_with_finding_counts(
+    server_with_context,
+):
+    port, context = server_with_context
+    _drive_guide_through_qa_http(context)
+
+    status, body = _req(port, "GET", "/v1/runs/scoped-topic/repair/modules")
+
+    assert status == 200
+    modules = {entry["id"]: entry for entry in body["modules"]}
+    sections = modules["intervention-practice"]["sections"]
+    assert [entry["id"] for entry in sections] == [
+        "delays-and-leverage",
+        "garden-decision",
+    ]
+    assert all(entry["title"] for entry in sections)
+    assert all(isinstance(entry["open_findings"], int) for entry in sections)
+    # A section finding also counts toward its module, as it does today.
+    assert modules["intervention-practice"]["open_findings"] >= sum(
+        entry["open_findings"] for entry in sections
+    )
+
+    _req(
+        port,
+        "POST",
+        "/v1/runs/scoped-topic/advance",
+        body={
+            "repair_module": "intervention-practice",
+            "repair_section": "garden-decision",
+        },
+    )
+    status, body = _req(port, "GET", "/v1/runs/scoped-topic/repair/modules")
+    assert status == 200
+    assert body["repair_scope"] == {
+        "module_id": "intervention-practice",
+        "section_id": "garden-decision",
+    }
+
+    status, body = _req(port, "GET", "/v1/runs/scoped-topic/stages/repair")
+    assert status == 200
+    assert body["repair_scope"] == {
+        "module_id": "intervention-practice",
+        "section_id": "garden-decision",
+    }

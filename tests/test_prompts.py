@@ -1711,3 +1711,191 @@ def test_module_draft_prompt_restricts_citations_to_the_frame() -> None:
     assert _line_containing(text, "source_ids", "frame")
     assert _line_containing(text, "glossary", "frame")
     assert "`modules`" in text
+
+
+# --- T26: section-scoped repair prompt (spec D8) -----------------------------
+
+_SECTION_REPAIR_QA = """\
+# QA Report: Thinking in Feedback Loops
+
+## Verdict
+revise - one weak section.
+
+## Findings
+1. major - feedback-foundations: the opener never names the loop parts.
+2. minor - loop-basics: the module summary oversells the scope.
+3. minor - intervention-practice: the scenario debrief is thin.
+
+## Repair Instructions
+Fix the findings above.
+"""
+
+_SECTION_REPAIR_DRAFT_FINDINGS = json.dumps(
+    {
+        "report_schema_version": 3,
+        "findings": [
+            {
+                "id": "content.placeholder:opener",
+                "rule_id": "content.placeholder",
+                "severity": "error",
+                "blocking": True,
+                "waivable": True,
+                "path": "/modules/0/sections/0/blocks/0/markdown",
+                "message": "Content contains placeholder language.",
+                "remediation": "Replace placeholder text.",
+                "stage": "draft",
+            },
+            {
+                "id": "worked_reveal.too_few_steps:sibling",
+                "rule_id": "worked_reveal.too_few_steps",
+                "severity": "error",
+                "blocking": True,
+                "waivable": True,
+                "path": "/modules/0/sections/1/blocks/1",
+                "message": "Worked reveal has fewer than two steps.",
+                "remediation": "Provide at least two reveal steps.",
+                "stage": "draft",
+            },
+            {
+                "id": "content.placeholder:other-module",
+                "rule_id": "content.placeholder",
+                "severity": "error",
+                "blocking": True,
+                "waivable": True,
+                "path": "/modules/1/sections/0/blocks/0",
+                "message": "Content contains placeholder language.",
+                "remediation": "Replace placeholder text.",
+                "stage": "draft",
+            },
+        ],
+    }
+)
+
+
+def _compile_section_repair(
+    module_id: str = "loop-basics",
+    section_id: str = "feedback-foundations",
+    **kwargs,
+):
+    from education_pipeline.guides import (
+        canonical_guide_bytes,
+        normalize_guide,
+        parse_guide,
+    )
+    from education_pipeline.prompts import compile_guide_v1_section_repair_prompt
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking", brief="A brief.")
+    base = canonical_guide_bytes(
+        normalize_guide(parse_guide(_MODULE_REPAIR_FIXTURE.read_text(encoding="utf-8")))
+    ).decode("utf-8")
+    return compile_guide_v1_section_repair_prompt(
+        topic,
+        module_id=module_id,
+        section_id=section_id,
+        base_guide_json=base,
+        qa_findings_markdown=_SECTION_REPAIR_QA,
+        factcheck_findings_markdown=APPROVED_FACTCHECK,
+        draft_findings_json=_SECTION_REPAIR_DRAFT_FINDINGS,
+        guide_contract=build_guide_contract(
+            dict(
+                GUIDE_SPEC_CONTRACT,
+                outcomes=[
+                    {"id": "identify-loop", "text": "Identify feedback."},
+                    {"id": "map-loop", "text": "Map a loop."},
+                    {"id": "choose-intervention", "text": "Choose an intervention."},
+                ],
+            ),
+            GUIDE_OUTLINE_CONTRACT,
+        ),
+        **kwargs,
+    )
+
+
+def test_section_repair_prompt_embeds_one_section_and_the_module_frame() -> None:
+    artifact = _compile_section_repair()
+    text = artifact.text
+
+    assert artifact.stage == "repair"
+    # The base to revise is the one section, not the module and not the guide.
+    assert "## Section To Regenerate" in text
+    assert '"id": "feedback-foundations"' in text
+    assert "loop-introduction" in text  # a block of the target section
+    assert "map-growth-loop" not in text  # a block of the sibling section
+
+    # The enclosing module's frame is context: id, title, summary, outcomes,
+    # and the sibling section ids and titles.
+    assert "loop-basics" in text
+    assert "How loops behave" in text
+    assert "Recognize the structures that amplify change" in text
+    assert "recognize-loop-types" in text
+    assert "Recognize loop behavior" in text
+
+    # The guide contract is embedded and binding.
+    assert "## Guide Contract" in text
+
+    # Output contract: exactly one section object with the same id.
+    assert "exactly one JSON object" in text
+    assert "same `id` (`feedback-foundations`)" in text
+    assert "Do not return the whole guide" in text
+
+
+def test_section_repair_prompt_filters_deterministic_findings_by_section_prefix() -> None:
+    text = _compile_section_repair().text
+
+    assert "content.placeholder:opener" in text
+    assert "worked_reveal.too_few_steps:sibling" not in text
+    assert "content.placeholder:other-module" not in text
+
+    sibling = _compile_section_repair(section_id="recognize-loop-types").text
+    assert "worked_reveal.too_few_steps:sibling" in sibling
+    assert "content.placeholder:opener" not in sibling
+
+
+def test_section_repair_prompt_scopes_qa_items_to_the_module_or_section() -> None:
+    text = _compile_section_repair().text
+
+    out_of_scope_heading = text.index("## Out-Of-Scope Findings")
+    in_scope = text[:out_of_scope_heading]
+    out_of_scope = text[out_of_scope_heading:]
+
+    # QA items naming the section, or the enclosing module, are in scope.
+    assert "feedback-foundations: the opener never names the loop parts" in in_scope
+    assert "loop-basics: the module summary oversells the scope" in in_scope
+    # Anything else is explicit context only.
+    assert "intervention-practice: the scenario debrief is thin" in out_of_scope
+
+
+def test_section_repair_prompt_embeds_the_whole_factcheck_report() -> None:
+    text = _compile_section_repair().text
+
+    assert "## Approved Fact-Check Findings" in text
+    assert "every feedback loop stabilizes a system is false" in text
+    assert "## Rest Of The Course" in text
+    assert "intervention-practice" in text
+
+
+def test_section_repair_prompt_keeps_the_modules_interactive_block() -> None:
+    text = _compile_section_repair(section_id="recognize-loop-types").text
+
+    assert "interactive" in text.lower()
+    assert "knowledge_check" in text
+
+
+def test_section_repair_prompt_rejects_unknown_module() -> None:
+    with pytest.raises(ConfigError, match="no-such-module"):
+        _compile_section_repair(module_id="no-such-module")
+
+
+def test_section_repair_prompt_rejects_unknown_section() -> None:
+    with pytest.raises(ConfigError, match="no-such-section"):
+        _compile_section_repair(section_id="no-such-section")
+
+
+def test_section_repair_prompt_composes_blueprint_lines() -> None:
+    from education_pipeline.guides.blueprints import get_blueprint
+
+    blueprint = get_blueprint("procedural-skill")
+    text = _compile_section_repair(blueprint=blueprint).text
+    assert "## Blueprint Contract" in text
+    for line in blueprint.repair_lines:
+        assert line in text
