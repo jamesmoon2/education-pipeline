@@ -245,6 +245,80 @@ describe("DraftProgressPanel paste", () => {
   });
 });
 
+describe("DraftProgressPanel paste over an existing response", () => {
+  // Review finding 2 (PR #39 automated review): pasting over a module that
+  // already carries a response (response_ingested/stale) must pass
+  // force=true, or the daemon answers already_exists and the paste never
+  // lands.
+  it("passes force=true when replacing a module response that already exists", async () => {
+    vi.mocked(postDraftUnitResponse).mockResolvedValue({
+      unit: "module",
+      module_id: "loop-basics",
+      response_path: "draft/modules/loop-basics/response.json",
+      response_sha256: "sha-new",
+      status: {} as never,
+    });
+    renderPanel(
+      makeProgress({
+        modules: [
+          {
+            id: "loop-basics",
+            title: "How loops behave",
+            state: "stale",
+            response_sha256: "sha-old",
+            error: null,
+            job_id: null,
+          },
+        ],
+        counts: { total: 1, saved: 0, stale: 1 },
+      }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Paste response for How loops behave" }),
+    );
+    await userEvent.type(
+      screen.getByLabelText("Response for How loops behave"),
+      '{{"id":"loop-basics"}',
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(postDraftUnitResponse).toHaveBeenCalledWith(
+      "t",
+      "module",
+      "loop-basics",
+      '{"id":"loop-basics"}',
+      true,
+    );
+  });
+
+  it("passes force=true when replacing a skeleton response that already exists", async () => {
+    vi.mocked(postDraftUnitResponse).mockResolvedValue({
+      unit: "skeleton",
+      module_id: null,
+      response_path: "draft/skeleton/response.json",
+      response_sha256: "sha-new",
+      status: {} as never,
+    });
+    renderPanel(
+      makeProgress({
+        skeleton: { state: "response_ingested", error: null, job_id: null },
+      }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Paste skeleton response" }));
+    await userEvent.type(
+      screen.getByLabelText("Response for skeleton"),
+      '{{"id":"course"}',
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(postDraftUnitResponse).toHaveBeenCalledWith(
+      "t",
+      "skeleton",
+      null,
+      '{"id":"course"}',
+      true,
+    );
+  });
+});
+
 describe("DraftProgressPanel assemble", () => {
   it("shows Assemble draft once every module is response_ingested and nothing is assembled yet", async () => {
     const progress = makeProgress({

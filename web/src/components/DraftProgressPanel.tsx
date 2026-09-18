@@ -26,15 +26,26 @@ const RUNNABLE_STATES = new Set<DraftModuleProgress["state"]>(["prompt_written",
  *  decision 6/9) -- pasting the *skeleton* specifically has to go through
  *  the skeleton unit route instead, so per-module drafting still fans out
  *  on the next Advance. */
+// Skeleton states whose unit already has a saved response -- pasting over
+// one of these must force-overwrite it (finding 2) rather than let the
+// daemon's already_exists conflict swallow the paste.
+const SKELETON_HAS_RESPONSE = new Set<DraftModuleProgress["state"]>([
+  "response_ingested",
+  "stale",
+]);
+
 function SkeletonPaste({
   topicId,
+  state,
   onChanged,
 }: {
   topicId: string;
+  state: DraftModuleProgress["state"];
   onChanged: () => void;
 }) {
   const [pasteOpen, setPasteOpen] = useState(false);
   const [text, setText] = useState("");
+  const hasResponse = SKELETON_HAS_RESPONSE.has(state);
   const save = useAction(() => {
     setPasteOpen(false);
     onChanged();
@@ -54,9 +65,13 @@ function SkeletonPaste({
           <button
             disabled={save.busy || !text.trim()}
             onClick={() =>
-              save.run(() => postDraftUnitResponse(topicId, "skeleton", null, text), {
-                successMessage: "Response saved.",
-              })
+              save.run(
+                () =>
+                  hasResponse
+                    ? postDraftUnitResponse(topicId, "skeleton", null, text, true)
+                    : postDraftUnitResponse(topicId, "skeleton", null, text),
+                { successMessage: "Response saved." },
+              )
             }
           >
             Save
@@ -125,9 +140,13 @@ function ModuleRow({
           <button
             disabled={save.busy || !text.trim()}
             onClick={() =>
-              save.run(() => postDraftUnitResponse(topicId, "module", module.id, text), {
-                successMessage: "Response saved.",
-              })
+              save.run(
+                () =>
+                  module.response_sha256 !== null
+                    ? postDraftUnitResponse(topicId, "module", module.id, text, true)
+                    : postDraftUnitResponse(topicId, "module", module.id, text),
+                { successMessage: "Response saved." },
+              )
             }
           >
             Save
@@ -214,7 +233,11 @@ export default function DraftProgressPanel({
           <span className="draft-progress-state">{progress.skeleton.state}</span>
           {progress.skeleton.error && <p className="error">{progress.skeleton.error}</p>}
           <div className="draft-progress-row-actions">
-            <SkeletonPaste topicId={topicId} onChanged={onChanged} />
+            <SkeletonPaste
+              topicId={topicId}
+              state={progress.skeleton.state}
+              onChanged={onChanged}
+            />
           </div>
         </li>
         {progress.modules.map((module) => (
