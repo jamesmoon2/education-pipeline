@@ -9,7 +9,18 @@
 
 ## Closeout disposition
 
-(Filled as threads land.)
+Seven threads, each merged into the phase branch only after the full pytest
+suite was green on the merged result. T10 wrote the net (88 characterization
+cases, no source changes) before any refactor; every later thread left those
+cases untouched and green, and three threads added observed-behaviour pins
+where mutation testing showed the net had a hole (T12: 2, T13: 2, T10 review:
+gap fill). Baseline at open was pytest 1642 passed / 1 skipped; at close 1775
+passed / 1 skipped on Python 3.11.
+
+Pure-move threads (T14, T15, T16) exceeded the plan's ~800-changed-line
+guideline by their nature (T15 alone deleted 1366 lines from `runs.py`); the
+guideline exists to keep a thread reviewable, and a verbatim move with the
+suite as the oracle is reviewable by diffstat, so they were not split.
 
 ### T10
 
@@ -76,3 +87,13 @@ for the owner, not a refactor thread's.
   `education_pipeline.runs`. The names stay bound in `runs.py` for that
   reason alone. Resolving this means repointing the patches at the mixin
   modules (test-only edits), which T16 is allowed to do.
+
+## Observations for other owners
+
+- **Python 3.12 timing budget (Phase 0 T01's test).** Under 3.12 the 20-topic
+  poll measures ~55 ms on `origin/main` and ~56 ms on this branch against the
+  50 ms local budget in `tests/test_final_validation_cache.py`; CI sets `CI`
+  and gets the 200 ms budget, so CI is green. Not a Phase 1 regression (the
+  delta between main and this branch is within run-to-run noise); the local
+  budget is simply tuned for 3.11. Either widen the local budget for 3.12 or
+  profile `pathlib` use on the poll path.

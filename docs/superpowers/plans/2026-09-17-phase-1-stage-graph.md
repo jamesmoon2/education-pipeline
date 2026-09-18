@@ -43,4 +43,6 @@
 
 ## Phase closeout
 
-(Filled at the end of the phase.)
+All seven threads merged into `claude/p1-engineering-manager-841omz`, one merge commit per thread. Final gate on the merged branch: pytest 1775 passed / 1 skipped on Python 3.11 (baseline 1642; +88 characterization, +33 stage graph, +7 run modes, +5 review pins), `education-pipeline --help` clean, `web/` untouched so no vitest/build run. Python 3.12 (a local venv, matching the CI matrix): 1774 passed, 1 failed, 1 skipped; the failure is the 20-topic poll timing test's 50 ms local budget (measured ~56 ms), which fails identically on `origin/main` under 3.12 (~55 ms) and passes under the 200 ms budget CI applies, so it predates this phase; see the ledger.
+
+Shape after the phase: `runs.py` 4321 → 2179 lines; `stage_graph.py` 200, `run_modes.py` 485, `run_core.py` 152, `runs_reports.py` 1174, `runs_personalization.py` 426, `runs_finalize.py` 364, `runs_waivers.py` 272. The draft → qa → factcheck → repair chain is stated once (`stage_graph.STAGES`); no stage tuple literal remains in a walk; `_is_guide_v1` is gone and `RunStore._mode` is the single mode dispatch. User-visible behaviour is unchanged except that factcheck now gets the weak-model warning (T11).
