@@ -88,6 +88,8 @@ from education_pipeline.runs_reports import (
     _guide_source_sha,
 )
 from education_pipeline.runs_waivers import WaiversMixin
+from education_pipeline.runs_modular import ModularDraftMixin, validate_draft_strategy
+from education_pipeline.draft_parts import FRAME
 from education_pipeline.runs_personalization import PersonalizationMixin
 from education_pipeline.runs_finalize import FinalizeMixin
 from education_pipeline.run_core import (
@@ -235,7 +237,9 @@ class _TopicWriteLock:
 
 
 @dataclass(frozen=True)
-class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
+class RunStore(
+    WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin, ModularDraftMixin
+):
     """Create run directories and write stage prompt/response artifacts."""
 
     root: Path
@@ -431,6 +435,7 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
         *,
         content_contract: ContentContract | None = None,
         blueprint: str | None = None,
+        draft_strategy: str | None = None,
     ) -> Path:
         """Create the run directory tree and initialize a manifest if needed.
 
@@ -454,6 +459,14 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
         also be recorded, once, on an existing guide manifest that has no
         record yet; a conflicting re-record raises. Legacy Markdown runs never
         record a blueprint.
+
+        ``draft_strategy`` (``"whole"``, the default, or ``"modular"``) is
+        recorded on a newly created manifest and is immutable afterwards,
+        exactly as ``content_contract`` is: omitting it leaves an existing
+        run alone, repeating the recorded value is a no-op, and a conflicting
+        value raises. Legacy Markdown runs refuse ``modular``. A manifest
+        without the key reads as ``whole``, so every existing workspace is
+        unchanged.
         """
 
         run = self.run_dir(topic_id)
@@ -479,6 +492,10 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
                     "events": [],
                     "content_contract": requested.to_manifest(),
                 }
+                if draft_strategy is not None:
+                    manifest["draft_strategy"] = _validated_draft_strategy(
+                        run.name, draft_strategy, requested
+                    )
                 if requested.kind == "interactive_guide":
                     record = self._resolve_blueprint_record(run.name, blueprint)
                     if record is not None:
@@ -496,6 +513,16 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
                         raise ConfigError(
                             f"run {run.name!r} already has immutable content contract "
                             f"{self.content_contract(run.name)!r}; requested {content_contract!r}"
+                        )
+                if draft_strategy is not None:
+                    _validated_draft_strategy(
+                        run.name, draft_strategy, self.content_contract(run.name)
+                    )
+                    recorded = self.draft_strategy(run.name)
+                    if recorded != draft_strategy:
+                        raise ConfigError(
+                            f"run {run.name!r} already has immutable draft strategy "
+                            f"{recorded!r}; requested {draft_strategy!r}"
                         )
                 if blueprint is not None:
                     self._record_blueprint_locked(run.name, blueprint)
@@ -610,10 +637,19 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
                 or self.audit_state(paths.topic_id) == "stale"
                 or self._audit_approval_incomplete(paths.topic_id)
             )
+        prompt_written = paths.prompt_path.exists()
+        response_ingested = paths.response_path.exists()
+        if paths.stage == "draft" and self.draft_strategy(paths.topic_id) == "modular":
+            # A modular draft's progress is its parts', not one prompt file's:
+            # the whole-stage prompt is never written and the whole-stage
+            # response only appears at assembly.
+            prompt_written, response_ingested = self._modular_draft_stage_flags(
+                paths.topic_id
+            )
         return StageStatus(
             stage=paths.stage,
-            prompt_written=paths.prompt_path.exists(),
-            response_ingested=paths.response_path.exists(),
+            prompt_written=prompt_written,
+            response_ingested=response_ingested,
             approved=approved,
             stale=stale,
         )
@@ -641,17 +677,29 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
     def advance(self, topic_id: str) -> AdvanceResult:
         """Perform the run's next machine step, pausing at human steps.
 
-        Machine steps (writing the next stage prompt, validation, or finalizing)
-        are done automatically. Human steps (saving a response, approving it,
-        resolving findings) and a completed run are left untouched, so this can
-        be called repeatedly to drive a run forward and resume it from wherever
-        it stopped.
+        Machine steps (writing the next stage prompt, assembling a modular
+        draft's parts, validation, or finalizing) are done automatically.
+        Human steps (saving a response, approving it, resolving findings) and
+        a completed run are left untouched, so this can be called repeatedly
+        to drive a run forward and resume it from wherever it stopped.
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
         action = self.run_status(safe_id).next_action
         performed: str | None = None
-        if action.action == "write_prompt" and action.stage is not None:
+        if action.action == "write_prompt" and action.wave is not None:
+            # A modular draft's wave writes the frame prompt, or every module
+            # prompt that is missing or stale, in one step.
+            overwrite = (
+                action.wave == "frame"
+                and self.draft_part_paths(safe_id, FRAME).prompt_path.exists()
+            )
+            self.write_draft_part_prompts(safe_id, overwrite=overwrite)
+            performed = "write_prompt"
+        elif action.action == "assemble":
+            self.assemble_draft(safe_id)
+            performed = "assemble"
+        elif action.action == "write_prompt" and action.stage is not None:
             overwrite = False
             if self._mode(safe_id).prompt_overwrite_on_advance:
                 paths = self.stage_paths(safe_id, action.stage)
@@ -725,7 +773,20 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
         by_stage = {status.stage: status for status in stages}
 
         for stage_name in _unbound_stages("interactive_guide"):
-            pending = self._pending_stage_action(topic_id, by_stage[stage_name])
+            status = by_stage[stage_name]
+            if (
+                stage_name == "draft"
+                and not status.approved
+                and self.draft_strategy(topic_id) == "modular"
+            ):
+                # Replaces the draft row *inside* the loop, so the whole-draft
+                # write_prompt is never advertised on a modular run. ``None``
+                # means the assembled response is present and current, which is
+                # where a whole draft is after ingest: fall through.
+                wave_action = self._modular_draft_next_action(topic_id)
+                if wave_action is not None:
+                    return wave_action
+            pending = self._pending_stage_action(topic_id, status)
             if pending is not None:
                 return pending
 
@@ -1492,6 +1553,12 @@ class RunStore(WaiversMixin, ReportsMixin, PersonalizationMixin, FinalizeMixin):
         """
 
         safe_id = _artifact_id(topic_id, "topic id")
+        if self.draft_strategy(safe_id) == "modular":
+            raise ConfigError(
+                f"run {safe_id!r} drafts per module; write its draft prompts with "
+                "write_draft_part_prompts (optionally with a parts filter) instead "
+                "of write_draft_prompt"
+            )
         topic = TopicStore(self.root).load_topic(safe_id)
         approved_outline = self.read_approved(safe_id, "outline")
         profile = self._load_attached_profile(safe_id)
@@ -2124,6 +2191,25 @@ def _write_manifest(path: Path, manifest: dict) -> None:
     # Every manifest write funnels through here, so this one line is the whole
     # invalidation story for an open read scope.
     _manifest_scope_discard(path)
+
+
+def _validated_draft_strategy(
+    topic_id: str, value: str, contract: ContentContract
+) -> str:
+    """Validate a requested draft strategy against the run's content mode.
+
+    The mode capability flag decides, rather than a second spelling of "is
+    this a guide run?" -- ``LegacyMarkdownMode`` has no frame prompt and no
+    module contract to fan out over, so it refuses ``modular`` outright.
+    """
+
+    validate_draft_strategy(value)
+    if value == "modular" and not mode_for_kind(contract.kind).supports_modular_draft:
+        raise ConfigError(
+            f"run {topic_id!r} is a legacy Markdown run; "
+            "legacy runs do not support modular drafting"
+        )
+    return value
 
 
 def _supported_stage(stage: str) -> str:

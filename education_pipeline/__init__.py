@@ -38,6 +38,12 @@ from education_pipeline.export import (
     render_html_body,
     render_markdown_to_html,
 )
+from education_pipeline.draft_parts import (
+    DraftPart,
+    DraftPartsStatus,
+    PartPaths,
+    PartStatus,
+)
 from education_pipeline.runs import (
     GUIDE_V1_CONTENT_TYPE,
     MANIFEST_SCHEMA_VERSION,
@@ -90,6 +96,8 @@ __all__ = [
     "AdvanceResult",
     "ContentContract",
     "ConfigError",
+    "DraftPart",
+    "DraftPartsStatus",
     "LearnerLocalization",
     "LearnerPreferences",
     "LearnerPrivacy",
@@ -98,6 +106,8 @@ __all__ = [
     "ModelOption",
     "ModelPlan",
     "NextAction",
+    "PartPaths",
+    "PartStatus",
     "PromptArtifact",
     "PromptFile",
     "ProfileAttachment",
