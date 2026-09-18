@@ -140,11 +140,16 @@ appropriate HTTP status.
 | Method & path              | Purpose |
 |----------------------------|---------|
 | `GET  /v1/health`          | liveness + `{version, started_at}` |
-| `POST /v1/jobs`            | enqueue: `{topic_id, stage?, force?}` → job record (or refusal) |
+| `POST /v1/jobs`            | enqueue: `{topic_id, stage?, force?, modules?}` → job record (or refusal). A draft fan-out answers with its primary job plus `batch_id` and `jobs` (every module job, in module order) |
 | `GET  /v1/jobs?topic=`     | list job records, newest first |
 | `GET  /v1/jobs/{id}`       | one job record |
 | `GET  /v1/jobs/{id}/log?offset=N` | log bytes from `offset`; returns next offset — clients tail by polling |
 | `POST /v1/jobs/{id}/cancel`| cancel a queued or running job |
+| `GET  /v1/jobs/batch/{id}` | one draft fan-out: `{batch_id, jobs}` |
+| `POST /v1/jobs/batch/{id}/cancel` | cancel every job of one fan-out |
+| `POST\|PUT /v1/runs/{id}/draft/skeleton/response` | save (POST) or edit (PUT) the draft skeleton response |
+| `POST\|PUT /v1/runs/{id}/draft/modules/{module_id}/response` | save (POST) or edit (PUT) one module's draft response |
+| `POST /v1/runs/{id}/draft/assemble` | assemble the saved units into the draft stage response (`{force?}`) |
 | `POST /v1/shutdown`        | graceful stop (used by `daemon stop`) |
 
 No server push in v1: clients poll (`GET /jobs/{id}`, log offsets). Simple,

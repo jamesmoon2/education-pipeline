@@ -283,6 +283,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stage", default=None, help="override the stage to run")
     p.add_argument("--wait", action="store_true", help="block until the job is terminal")
     p.add_argument("--force", action="store_true", help="override the no-clobber refusal")
+    p.add_argument(
+        "--modules",
+        default=None,
+        metavar="IDS",
+        help=(
+            "comma-separated module ids to draft (draft stage only); "
+            "default: every module still outstanding"
+        ),
+    )
     p.add_argument("--no-autostart", dest="autostart", action="store_false")
     p.set_defaults(func=_cmd_run, autostart=True)
 
@@ -300,7 +309,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_logs)
 
     p = sub.add_parser("cancel", help="cancel a queued or running job")
-    p.add_argument("job_id")
+    p.add_argument("job_id", nargs="?", default=None)
+    p.add_argument(
+        "--batch",
+        default=None,
+        metavar="BATCH_ID",
+        help="cancel every job of one draft fan-out instead of a single job",
+    )
     p.set_defaults(func=_cmd_cancel)
 
     p = sub.add_parser(
@@ -444,13 +459,35 @@ def _cmd_blueprints(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_draft_progress(runs: RunStore, topic_id: str) -> None:
+    """The draft stage's per-module detail, for runs that draft per module.
+
+    Silent for legacy Markdown runs (they have no draft units) and for a guide
+    run that has not started drafting: a bare "draft: 0 of 0 modules" would be
+    noise on every spec/outline-stage status.
+    """
+
+    from education_pipeline.run_modes import mode_for_kind
+
+    if not mode_for_kind(runs.content_contract(topic_id).kind).supports_draft_units:
+        return
+    progress = runs.draft_progress(topic_id)
+    if progress.skeleton.state == "not_run":
+        return
+    print(f"  skeleton: {progress.skeleton.state}")
+    if progress.total:
+        print(f"  draft: {progress.saved} of {progress.total} modules")
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     root = _root(args)
-    status = RunStore(root).run_status(args.topic_id)
+    runs = RunStore(root)
+    status = runs.run_status(args.topic_id)
     finalized = "yes" if status.finalized else "no"
     print(f"Run: {status.topic_id}   (finalized: {finalized})")
     for stage in status.stages:
         print(f"  {stage.stage:8s} {stage.state}")
+    _print_draft_progress(runs, args.topic_id)
     # Cost is reported only when some job actually recorded one: an unpriced
     # model or a run driven entirely by hand prints no line at all rather
     # than a $0.00 that would read as "this was free".
@@ -803,14 +840,41 @@ def _cmd_unwaive(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_modules(value: str | None) -> list[str] | None:
+    """``--modules a,b`` -> ``["a", "b"]``; absent -> None (every module)."""
+
+    if value is None:
+        return None
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     root = _root(args)
+    modules = _parse_modules(args.modules)
+    if modules is not None and args.stage not in (None, "draft"):
+        # Only the draft stage fans out per module, so naming modules for any
+        # other stage is a usage error (exit 2), not a run failure.
+        print("error: --modules requires --stage draft", file=sys.stderr)
+        return 2
     try:
         client = ensure_daemon(root, autostart=args.autostart)
-        job = client.enqueue(args.topic_id, stage=args.stage, force=args.force)
+        job = client.enqueue(
+            args.topic_id, stage=args.stage, force=args.force, modules=modules
+        )
     except DaemonError as exc:
         _print_daemon_error(exc)
         return 1
+    batch_id = job.get("batch_id")
+    if batch_id:
+        batch_jobs = job.get("jobs") or []
+        print(
+            f"enqueued batch {batch_id} ({job['stage']}, {len(batch_jobs)} modules)"
+        )
+        for entry in batch_jobs:
+            print(f"  {entry['module_id']}: {entry['id']}")
+        if not args.wait:
+            return 0
+        return _wait_for_batch(client, args, batch_id)
     print(f"enqueued job {job['id']} ({job['stage']})")
     if not args.wait:
         return 0
@@ -827,6 +891,37 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if job.get("error"):
         print(f"error: {job['error']}", file=sys.stderr)
     print(f"log: education-pipeline -C {args.workspace} logs {job['id']}", file=sys.stderr)
+    return 1
+
+
+def _wait_for_batch(client, args: argparse.Namespace, batch_id: str) -> int:
+    """Block until every module job of one fan-out is terminal, then report.
+
+    One line per module, so a partial failure names exactly which modules to
+    re-run (``run <topic> --modules <id> --force``) rather than costing the
+    whole draft again.
+    """
+
+    while True:
+        jobs = client.get_batch(batch_id).get("jobs", [])
+        if all(job["status"] in TERMINAL_STATUSES for job in jobs):
+            break
+        time.sleep(0.25)
+    failed = []
+    for job in jobs:
+        print(f"  {job['module_id']}: {job['status']}")
+        if job["status"] != "succeeded":
+            failed.append(job)
+    print(f"batch {batch_id}: {len(jobs) - len(failed)} of {len(jobs)} succeeded")
+    if not failed:
+        return 0
+    for job in failed:
+        if job.get("error"):
+            print(f"error: {job['module_id']}: {job['error']}", file=sys.stderr)
+        print(
+            f"log: education-pipeline -C {args.workspace} logs {job['id']}",
+            file=sys.stderr,
+        )
     return 1
 
 
@@ -865,7 +960,20 @@ def _cmd_logs(args: argparse.Namespace) -> int:
 
 
 def _cmd_cancel(args: argparse.Namespace) -> int:
+    if (args.job_id is None) == (args.batch is None):
+        print(
+            "error: cancel takes either a job id or --batch BATCH_ID",
+            file=sys.stderr,
+        )
+        return 2
     client = ensure_daemon(_root(args), autostart=False)
+    if args.batch is not None:
+        result = client.cancel_batch(args.batch)
+        jobs = result.get("jobs", [])
+        print(f"batch {result.get('batch_id', args.batch)}: {len(jobs)} job(s) canceled")
+        for job in jobs:
+            print(f"  {job['module_id']}: {job['status']}")
+        return 0
     job = client.cancel(args.job_id)
     print(f"job {job['id']} {job['status']}")
     return 0

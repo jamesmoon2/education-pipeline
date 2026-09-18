@@ -183,7 +183,14 @@ def _guide_outline_response(contract: dict | None = None) -> str:
 
 
 def _create_guide_run(tmp_path: Path, topic_id: str = "systems-thinking") -> RunStore:
-    TopicStore(tmp_path).save_topic_toml(topic_id, TOPIC_TOML)
+    # The topic file's own id must equal the artifact id it is saved under, so
+    # a caller asking for a second guide run in one workspace (a different
+    # topic id) gets a TOPIC_TOML re-stamped with that id rather than a
+    # mismatch refusal.
+    TopicStore(tmp_path).save_topic_toml(
+        topic_id,
+        TOPIC_TOML.replace('id = "systems-thinking"', f'id = "{topic_id}"', 1),
+    )
     runs = RunStore(tmp_path)
     runs.create_run(topic_id, content_contract=ContentContract.interactive_guide_v1())
     return runs

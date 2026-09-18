@@ -58,10 +58,25 @@ class DaemonClient:
     def health(self) -> dict:
         return self._call("GET", "/v1/health")
 
-    def enqueue(self, topic_id: str, stage: str | None = None, force: bool = False) -> dict:
-        body = {"topic_id": topic_id, "force": force}
+    def enqueue(
+        self,
+        topic_id: str,
+        stage: str | None = None,
+        force: bool = False,
+        modules: list[str] | None = None,
+    ) -> dict:
+        """Enqueue one stage execution; for a draft fan-out, one whole batch.
+
+        The response is the primary job's record. When the draft stage fanned
+        out it also carries ``batch_id`` and ``jobs`` (every module job, in
+        module order), so a caller can follow the batch without a second call.
+        """
+
+        body: dict = {"topic_id": topic_id, "force": force}
         if stage is not None:
             body["stage"] = stage
+        if modules is not None:
+            body["modules"] = list(modules)
         return self._call("POST", "/v1/jobs", body)
 
     def list_jobs(self, topic: str | None = None) -> list[dict]:
@@ -77,6 +92,64 @@ class DaemonClient:
 
     def cancel(self, job_id: str) -> dict:
         return self._call("POST", f"/v1/jobs/{quote(job_id)}/cancel")
+
+    def get_batch(self, batch_id: str) -> dict:
+        return self._call("GET", f"/v1/jobs/batch/{quote(batch_id)}")
+
+    def cancel_batch(self, batch_id: str) -> dict:
+        return self._call("POST", f"/v1/jobs/batch/{quote(batch_id)}/cancel")
+
+    def ingest_draft_unit(
+        self,
+        topic_id: str,
+        unit: str,
+        text: str,
+        *,
+        module_id: str | None = None,
+        force: bool = False,
+    ) -> dict:
+        """Save one draft unit's model response (skeleton, or one module)."""
+
+        return self._call(
+            "POST", self._draft_unit_path(topic_id, unit, module_id), {
+                "text": text,
+                "force": force,
+            }
+        )
+
+    def edit_draft_unit(
+        self,
+        topic_id: str,
+        unit: str,
+        text: str,
+        *,
+        module_id: str | None = None,
+        base_sha256: str,
+    ) -> dict:
+        """Replace one draft unit's response, guarded by its current hash."""
+
+        return self._call(
+            "PUT", self._draft_unit_path(topic_id, unit, module_id), {
+                "text": text,
+                "base_sha256": base_sha256,
+            }
+        )
+
+    @staticmethod
+    def _draft_unit_path(topic_id: str, unit: str, module_id: str | None) -> str:
+        base = f"/v1/runs/{quote(topic_id)}/draft"
+        if unit == "skeleton":
+            return f"{base}/skeleton/response"
+        if not module_id:
+            raise DaemonError("a module draft unit needs a module id")
+        return f"{base}/modules/{quote(module_id)}/response"
+
+    def assemble_draft(self, topic_id: str, *, force: bool = False) -> dict:
+        """Assemble the saved draft units into the draft stage response."""
+
+        return self._call(
+            "POST", f"/v1/runs/{quote(topic_id)}/draft/assemble", {"force": force}
+        )
 
     def shutdown(self) -> None:
         self._call("POST", "/v1/shutdown")

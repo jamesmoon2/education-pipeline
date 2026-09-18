@@ -434,6 +434,119 @@ def edit_response(
     }
 
 
+# ---------------------------------------------------------------------------
+# Per-module draft units (design 2026-09-18, decision 9 and section 4).
+#
+# The unit-level twins of ``ingest_response``/``edit_response``: same guard
+# order (run exists, not archived, no active job), same conflict codes, wired
+# to ``RunStore.ingest_draft_unit``/``edit_draft_unit``/``assemble_draft``
+# instead of the whole-stage response.
+# ---------------------------------------------------------------------------
+
+
+def _draft_unit_payload(
+    runs: RunStore, jobs: JobStore, topic_id: str, paths
+) -> dict:
+    return {
+        "unit": paths.unit,
+        "module_id": paths.module_id,
+        "response_path": _run_relative(runs, topic_id, paths.response_path),
+        "response_sha256": hashlib.sha256(
+            read_bytes_retrying(paths.response_path)
+        ).hexdigest(),
+        "status": read_api.run_status_payload(runs, topic_id, jobs=jobs),
+    }
+
+
+def ingest_draft_unit(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    unit: str,
+    text: str,
+    *,
+    module_id: str | None = None,
+    force: bool = False,
+) -> dict:
+    read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
+    _require_no_active_job(jobs, topic_id)
+    paths = runs.draft_unit_paths(topic_id, unit, module_id=module_id)
+    if paths.response_path.exists() and not force:
+        raise ConflictError(
+            "already_exists",
+            f"response already ingested for draft unit {_unit_label(paths)}; "
+            "retry with force to replace it",
+        )
+    saved = runs.ingest_draft_unit(
+        topic_id, unit, text, module_id=module_id, force=force
+    )
+    return _draft_unit_payload(runs, jobs, topic_id, saved)
+
+
+def edit_draft_unit(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    unit: str,
+    text: str,
+    *,
+    module_id: str | None = None,
+    base_sha256: str,
+) -> dict:
+    read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
+    _require_no_active_job(jobs, topic_id)
+    paths = runs.draft_unit_paths(topic_id, unit, module_id=module_id)
+    if not paths.response_path.exists():
+        raise ConflictError(
+            "stale_content",
+            f"the draft {_unit_label(paths)} response no longer exists on disk; "
+            "reload the current content",
+        )
+    try:
+        saved = runs.edit_draft_unit(
+            topic_id, unit, text, module_id=module_id, base_sha256=base_sha256
+        )
+    except StaleContentError as exc:
+        raise ConflictError("stale_content", str(exc)) from exc
+    return _draft_unit_payload(runs, jobs, topic_id, saved)
+
+
+def _unit_label(paths) -> str:
+    if paths.module_id is None:
+        return repr(paths.unit)
+    return f"{paths.unit!r} {paths.module_id!r}"
+
+
+def assemble_draft(
+    runs: RunStore, jobs: JobStore, topic_id: str, *, force: bool = False
+) -> dict:
+    """Deterministically assemble the draft units into the stage response.
+
+    No model call and no approval: this is the machine step that turns the
+    skeleton plus every module response into ``responses/draft.response.json``.
+    A stage response written outside the unit layer is never overwritten
+    without ``force`` (decision 6: the response file wins), which surfaces as
+    the same ``stale_content`` conflict an ``edit_response`` race does.
+    """
+
+    read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
+    _require_no_active_job(jobs, topic_id)
+    try:
+        result = runs.assemble_draft(topic_id, force=force)
+    except StaleContentError as exc:
+        raise ConflictError("stale_content", str(exc)) from exc
+    return {
+        "ok": result.ok,
+        "response_sha256": result.response_sha256,
+        "error": result.error,
+        "module_ids": list(result.module_ids),
+        "status": read_api.run_status_payload(runs, topic_id, jobs=jobs),
+    }
+
+
 def approve_stage(
     runs: RunStore,
     jobs: JobStore,
@@ -790,8 +903,16 @@ def update_global_plan(config, body: dict) -> dict:
             "stale_content", "the model plan changed on disk; reload settings"
         )
     catalog, _ = config.load()
+    raw_plan: dict = {
+        "provider": body.get("provider"),
+        "stages": body.get("stages", {}),
+    }
+    if "parallelism" in body:
+        # Decision 10: one workspace-wide worker-pool size, validated by the
+        # plan parser (an integer in 1..4) rather than re-checked here.
+        raw_plan["parallelism"] = body["parallelism"]
     plan = parse_model_plan(
-        {"provider": body.get("provider"), "stages": body.get("stages", {})},
+        raw_plan,
         catalog=catalog,
         # Strict at write, lenient on disk (owner's decision): reject an
         # unknown/misspelled stage key here rather than silently discarding
@@ -805,6 +926,14 @@ def update_global_plan(config, body: dict) -> dict:
 def update_run_plan(runs: RunStore, config, topic_id: str, body: dict) -> dict:
     read_api.require_run(runs, topic_id)
     _require_not_archived(runs, topic_id)
+    if "parallelism" in body:
+        # Decision 10: parallelism is a single workspace-wide setting, exposed
+        # only through ``PUT /v1/config/plan`` -- never as a per-run override,
+        # because one worker pool serves every run in the workspace.
+        raise ConfigError(
+            "'parallelism' is a workspace-wide setting; set it with "
+            "PUT /v1/config/plan, not as a per-run override"
+        )
     overrides_body = body.get("overrides")
     if not isinstance(overrides_body, dict):
         raise ConfigError("body field 'overrides' must be a table")
