@@ -97,3 +97,18 @@ for the owner, not a refactor thread's.
   delta between main and this branch is within run-to-run noise); the local
   budget is simply tuned for 3.11. Either widen the local budget for 3.12 or
   profile `pathlib` use on the poll path.
+- **Windows lock test is nondeterministic (Phase 0 T03's test).** On PR #38's
+  first CI run, `test (windows-latest, py3.12)` failed once in
+  `tests/test_cli_cross_process_guard.py::test_two_threads_racing_for_the_lock_share_one_hold`
+  with `depths == [1, 0]`; the rerun on the same commit passed, as did the
+  same job on `main` at `e7ea8ba` and on the Phase 0 branch. Phase 1 does not
+  touch `workspace_lock.py` or that test. Read from Linux, no path in
+  `_acquire`/`_release`/`workspace_lock_depth` yields a depth of 0 for a
+  thread that is inside `workspace_lock` while `_HELD` is keyed by a stable
+  string: the loser always sees the winner's holder under `_STATE_LOCK` and
+  joins it at depth 2. A 0 therefore points at the key itself
+  (`os.path.realpath` of a file being created and byte-locked by the other
+  thread on NTFS) or at `msvcrt.locking` admitting a second handle in the
+  same process. Neither can be checked without a Windows box; the T03 owner
+  should capture `key` alongside `depth` in that test so the next failure
+  says which.
