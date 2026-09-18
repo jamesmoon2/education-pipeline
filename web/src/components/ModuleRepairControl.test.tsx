@@ -246,6 +246,49 @@ describe("ModuleRepairControl", () => {
       expect(screen.queryByText(/module-level/i)).not.toBeInTheDocument();
     });
 
+    // Review finding 5 (PR #39 automated review): with module-level
+    // findings present, a section-scoped repair can never fix them, so the
+    // section select must not stay pickable -- and a manual selection must
+    // never make it onto the wire as repairSection.
+    it("disables the section select and never sends repairSection when module-level findings are present", async () => {
+      vi.mocked(getRepairModules).mockResolvedValue({
+        topic_id: "t",
+        modules: [
+          {
+            id: "loop-basics",
+            title: "How loops behave",
+            open_findings: 3,
+            module_level_findings: 2,
+            sections: [
+              { id: "intro", title: "Introduction", open_findings: 0 },
+              { id: "practice", title: "Practice", open_findings: 1 },
+            ],
+          },
+        ],
+        repair_scope: null,
+      });
+      vi.mocked(postAdvance).mockResolvedValue({
+        performed: "write_prompt",
+        status: {} as never,
+      });
+
+      render(<ModuleRepairControl topicId="t" onPrepared={() => {}} />);
+
+      await userEvent.selectOptions(
+        await screen.findByLabelText("Module"),
+        "loop-basics",
+      );
+
+      const sectionSelect = await screen.findByLabelText("Section");
+      expect(sectionSelect).toBeDisabled();
+
+      await userEvent.click(
+        screen.getByRole("button", { name: "Regenerate this module" }),
+      );
+
+      expect(postAdvance).toHaveBeenCalledWith("t", { repairModule: "loop-basics" });
+    });
+
     it("defaults to whole module and explains that module-level findings force it, even with a single qualifying section", async () => {
       vi.mocked(getRepairModules).mockResolvedValue({
         topic_id: "t",

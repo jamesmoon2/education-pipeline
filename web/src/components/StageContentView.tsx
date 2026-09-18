@@ -11,11 +11,16 @@ export default function StageContentView({
   label,
   text,
   contentType,
+  treeAnchorIdFor,
 }: {
   /** The artifact's name in empty/aria text: "prompt", "response", "approved". */
   label: string;
   text: string | null;
   contentType: string;
+  /** Forwarded to JsonTreeView's `anchorIdFor` in tree mode (e.g. so a
+   *  page-level module nav's #module-<id> anchors resolve to something);
+   *  has no effect in raw mode or for non-JSON content. */
+  treeAnchorIdFor?: (path: (string | number)[], value: unknown) => string | undefined;
 }) {
   const [raw, setRaw] = useState(false);
   const isJson = contentType.includes("json");
@@ -53,7 +58,7 @@ export default function StageContentView({
       ) : raw ? (
         <pre className="content">{text}</pre>
       ) : isJson ? (
-        <JsonTreeView value={parsed!.value} />
+        <JsonTreeView value={parsed!.value} anchorIdFor={treeAnchorIdFor} />
       ) : (
         <MarkdownView markdown={text} />
       )}

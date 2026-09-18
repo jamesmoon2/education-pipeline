@@ -245,6 +245,80 @@ describe("DraftProgressPanel paste", () => {
   });
 });
 
+describe("DraftProgressPanel paste over an existing response", () => {
+  // Review finding 2 (PR #39 automated review): pasting over a module that
+  // already carries a response (response_ingested/stale) must pass
+  // force=true, or the daemon answers already_exists and the paste never
+  // lands.
+  it("passes force=true when replacing a module response that already exists", async () => {
+    vi.mocked(postDraftUnitResponse).mockResolvedValue({
+      unit: "module",
+      module_id: "loop-basics",
+      response_path: "draft/modules/loop-basics/response.json",
+      response_sha256: "sha-new",
+      status: {} as never,
+    });
+    renderPanel(
+      makeProgress({
+        modules: [
+          {
+            id: "loop-basics",
+            title: "How loops behave",
+            state: "stale",
+            response_sha256: "sha-old",
+            error: null,
+            job_id: null,
+          },
+        ],
+        counts: { total: 1, saved: 0, stale: 1 },
+      }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Paste response for How loops behave" }),
+    );
+    await userEvent.type(
+      screen.getByLabelText("Response for How loops behave"),
+      '{{"id":"loop-basics"}',
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(postDraftUnitResponse).toHaveBeenCalledWith(
+      "t",
+      "module",
+      "loop-basics",
+      '{"id":"loop-basics"}',
+      true,
+    );
+  });
+
+  it("passes force=true when replacing a skeleton response that already exists", async () => {
+    vi.mocked(postDraftUnitResponse).mockResolvedValue({
+      unit: "skeleton",
+      module_id: null,
+      response_path: "draft/skeleton/response.json",
+      response_sha256: "sha-new",
+      status: {} as never,
+    });
+    renderPanel(
+      makeProgress({
+        skeleton: { state: "response_ingested", error: null, job_id: null },
+      }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Paste skeleton response" }));
+    await userEvent.type(
+      screen.getByLabelText("Response for skeleton"),
+      '{{"id":"course"}',
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(postDraftUnitResponse).toHaveBeenCalledWith(
+      "t",
+      "skeleton",
+      null,
+      '{"id":"course"}',
+      true,
+    );
+  });
+});
+
 describe("DraftProgressPanel assemble", () => {
   it("shows Assemble draft once every module is response_ingested and nothing is assembled yet", async () => {
     const progress = makeProgress({
@@ -269,10 +343,18 @@ describe("DraftProgressPanel assemble", () => {
       assembled: null,
       counts: { total: 2, saved: 2, stale: 0 },
     });
+    vi.mocked(postDraftAssemble).mockResolvedValue({
+      ok: true,
+      response_sha256: "sha-assembled",
+      error: null,
+      module_ids: ["loop-basics", "intervention-practice"],
+      status: {} as never,
+    });
     const onChanged = renderPanel(progress);
     await userEvent.click(screen.getByRole("button", { name: "Assemble draft" }));
     expect(postDraftAssemble).toHaveBeenCalledWith("t");
     expect(onChanged).toHaveBeenCalled();
+    expect(await screen.findByText("Draft assembled.")).toHaveClass("success");
   });
 
   it("hides Assemble draft once assembly already succeeded", () => {
@@ -297,6 +379,39 @@ describe("DraftProgressPanel assemble", () => {
   it("hides Assemble draft while any module is not yet response_ingested", () => {
     renderPanel();
     expect(screen.queryByRole("button", { name: "Assemble draft" })).not.toBeInTheDocument();
+  });
+
+  // Review finding 3 (PR #39 automated review): POST /draft/assemble
+  // returns 200 with {ok:false, error} on failure -- nothing throws -- but
+  // the action unconditionally reported "Draft assembled."
+  it("reports the assemble error instead of success when the response is ok:false", async () => {
+    const progress = makeProgress({
+      modules: [
+        {
+          id: "loop-basics",
+          title: "How loops behave",
+          state: "response_ingested",
+          response_sha256: "sha-a",
+          error: null,
+          job_id: null,
+        },
+      ],
+      assembled: null,
+      counts: { total: 1, saved: 1, stale: 0 },
+    });
+    vi.mocked(postDraftAssemble).mockResolvedValue({
+      ok: false,
+      response_sha256: null,
+      error: "assembly failed: dangling source id",
+      module_ids: [],
+      status: {} as never,
+    });
+    renderPanel(progress);
+    await userEvent.click(screen.getByRole("button", { name: "Assemble draft" }));
+    expect(
+      await screen.findByText("assembly failed: dangling source id"),
+    ).toHaveClass("error");
+    expect(screen.queryByText("Draft assembled.")).not.toBeInTheDocument();
   });
 });
 
@@ -331,5 +446,32 @@ describe("DraftProgressPanel active batch", () => {
     await userEvent.click(screen.getByRole("button", { name: "Cancel batch" }));
     expect(cancelBatch).toHaveBeenCalledWith("batch-1");
     expect(onChanged).toHaveBeenCalled();
+  });
+
+  // Review finding 1 (PR #39 automated review): activeJobs carries every
+  // draft-stage job, history included. Once every job of a batch has
+  // settled into a terminal status, that batch is done -- it must stop
+  // reading as "active" (which today hides run/rerun forever and offers a
+  // cancel button for a batch that no longer exists).
+  it("treats a batch whose jobs are all terminal as not active, not as still running", () => {
+    const jobs = [
+      makeJob({ id: "j1", module_id: "loop-basics", status: "succeeded", batch_id: "batch-1" }),
+      makeJob({
+        id: "j2",
+        module_id: "intervention-practice",
+        status: "failed",
+        batch_id: "batch-1",
+      }),
+    ];
+    renderPanel(makeProgress(), jobs);
+
+    expect(screen.queryByText(/running\/done/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel batch" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Run modules with provider" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Rerun How loops behave" }),
+    ).toBeInTheDocument();
   });
 });
