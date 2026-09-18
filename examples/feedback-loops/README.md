@@ -18,14 +18,23 @@ browser's `localStorage` and has a built-in reset control.
 | `profile.toml` | A synthetic learner profile ("Rowan Vale" is not a real person). Private by default — tailors the course without being published. |
 | `responses/spec.md` | The spec-stage model response, ending in the machine-readable contract block. |
 | `responses/outline.md` | The outline-stage response with the module contract. |
-| `responses/draft.guide.json` | The draft-stage response: the full course as canonical guide JSON (schema 1.1, personalized). |
+| `responses/draft.skeleton.json` | The draft skeleton response: the whole course (header, outcomes, glossary, sources) with every module reduced to a sectionless stub, in the outline's authored order. |
+| `responses/draft.modules/<module-id>.json` | One draft response per module — the full module object (sections and blocks) that replaces its stub. |
 | `responses/qa.md` | The QA-stage review. This run is clean, so it finds nothing blocking. |
-| `responses/repair.guide.json` | The repair-stage response — identical to the draft, since QA required no changes. |
+| `responses/repair.guide.json` | The repair-stage response — the assembled draft (skeleton + modules), unchanged, since QA required no changes. |
 | `export/guide.html` | The exported interactive course: one offline HTML file. |
 | `export/guide.report.json` | The export's sidecar quality report: gate open, zero findings. |
 
 ## What it demonstrates
 
+- **Per-module drafting.** The draft stage runs as one skeleton call plus
+  one call per module instead of a single whole-course call — see
+  `responses/draft.skeleton.json` and `responses/draft.modules/`.
+  `scripts/build_example.py` drives this the same way a real run does:
+  `write_draft_prompt` (which also writes the skeleton prompt),
+  `ingest_draft_unit` for the skeleton (which writes the module prompts),
+  then `ingest_draft_unit` per module — the engine assembles the two into
+  the stage's draft response automatically once every module is saved.
 - **All six interaction types** the runtime supports: rich text, callouts,
   knowledge checks, worked reveals, scenarios, and reflections.
 - **Personalization with privacy.** The guide serves two of the profile's
@@ -51,7 +60,9 @@ exports are deterministic by design.
 To walk the same run manually with the CLI (the workflow you would use for
 your own course), copy the sources into a fresh workspace and step through
 it; at each `advance`, save the matching file from `responses/` to the
-printed response path instead of calling a model:
+printed response path instead of calling a model. The draft stage takes
+several rounds of `advance` — one for the skeleton prompt, one per module
+prompt, then an automatic assembly — instead of a single response:
 
 ```bash
 mkdir -p /tmp/example-ws && cd /tmp/example-ws
@@ -61,7 +72,15 @@ education-pipeline profile attach example-learner feedback-loops
 education-pipeline advance feedback-loops     # writes the spec prompt
 # save responses/spec.md to the printed path, then:
 education-pipeline approve feedback-loops spec
-# ... repeat for outline, draft, qa, repair ...
+education-pipeline advance feedback-loops     # writes the outline prompt
+# save responses/outline.md, then approve outline
+education-pipeline advance feedback-loops     # writes draft/skeleton/prompt.md
+# save responses/draft.skeleton.json to the printed path, then:
+education-pipeline advance feedback-loops     # writes draft/modules/<id>/prompt.md for each module
+# save each responses/draft.modules/<id>.json to its printed path, then:
+education-pipeline advance feedback-loops     # assembles the draft response
+education-pipeline approve feedback-loops draft
+# ... repeat for qa, repair ...
 education-pipeline export feedback-loops --format html
 ```
 

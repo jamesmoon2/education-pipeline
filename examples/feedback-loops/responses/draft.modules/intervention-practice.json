@@ -1,0 +1,118 @@
+{
+  "id": "intervention-practice",
+  "title": "Intervene with the whole loop in view",
+  "summary": "Use a loop map to avoid treating symptoms and to anticipate delayed effects.",
+  "outcome_ids": [
+    "map-loop",
+    "choose-intervention"
+  ],
+  "serves_goals": [
+    "goal-002"
+  ],
+  "estimated_minutes": 8,
+  "sections": [
+    {
+      "id": "delays-and-leverage",
+      "title": "Delays change what you see",
+      "blocks": [
+        {
+          "id": "delay-explanation",
+          "type": "rich_text",
+          "outcome_ids": [
+            "map-loop",
+            "choose-intervention"
+          ],
+          "source_ids": [
+            "meadows-2008"
+          ],
+          "markdown": "A **delay** separates an action from its visible result. Teams may add work when progress looks slow, just as gardeners may water again before moisture reaches deeper roots. Mapping the delay helps prevent overcorrection."
+        },
+        {
+          "id": "delay-warning",
+          "type": "callout",
+          "kind": "warning",
+          "title": "Watch for overcorrection",
+          "outcome_ids": [
+            "choose-intervention"
+          ],
+          "markdown": "Before acting twice, ask whether the first action is still moving through the system."
+        },
+        {
+          "id": "check-delay-response",
+          "type": "knowledge_check",
+          "outcome_ids": [
+            "map-loop",
+            "choose-intervention"
+          ],
+          "mode": "multiple",
+          "prompt": "Which actions help when a delayed balancing loop appears unresponsive?",
+          "choices": [
+            {
+              "id": "delay-map",
+              "label": "Map when the intervention should affect the measured quantity",
+              "correct": true
+            },
+            {
+              "id": "delay-observe",
+              "label": "Observe a leading indicator while waiting",
+              "correct": true
+            },
+            {
+              "id": "delay-double",
+              "label": "Immediately double the intervention",
+              "correct": false
+            }
+          ],
+          "explanation": "Mapping the delay and watching a leading indicator distinguish slow response from failed response; immediately doubling can produce oscillation or overshoot.",
+          "retry": true
+        }
+      ]
+    },
+    {
+      "id": "garden-decision",
+      "title": "Practice a gardening decision",
+      "blocks": [
+        {
+          "id": "pest-density-scenario",
+          "type": "scenario",
+          "outcome_ids": [
+            "choose-intervention"
+          ],
+          "prompt": "Pest damage rises as garden beds become denser. What should you inspect first before choosing an intervention?",
+          "choices": [
+            {
+              "id": "pest-spray",
+              "label": "Immediately increase pesticide use",
+              "quality": "weak",
+              "feedback": "This treats visible damage before checking how density, pest reproduction, and predator populations interact."
+            },
+            {
+              "id": "pest-map",
+              "label": "Map plant density, pest pressure, predator response, and their delays",
+              "quality": "best",
+              "feedback": "This exposes both reinforcing pest pressure and a potentially delayed balancing response from predators."
+            },
+            {
+              "id": "pest-ignore",
+              "label": "Wait indefinitely because nature always balances itself",
+              "quality": "harmful",
+              "feedback": "A balancing response may be too weak or delayed to prevent serious damage; observation needs a decision threshold."
+            }
+          ],
+          "debrief": "A thoughtful intervention begins by locating the important loops, their relative strength, and the delay before each response becomes visible."
+        },
+        {
+          "id": "project-reflection",
+          "type": "reflection",
+          "outcome_ids": [
+            "map-loop",
+            "choose-intervention"
+          ],
+          "prompt": "Where might a delayed feedback loop be shaping a project you know?",
+          "guidance": "Name the changing quantity, trace how it eventually affects itself, and identify one delay before proposing an intervention.",
+          "placeholder": "Draft a private loop map in words…"
+        }
+      ]
+    }
+  ]
+}
