@@ -33,8 +33,23 @@ unreachable label filters in `_prompt_bound_source_hashes`.
 
 ## Decisions that departed from the plan text
 
-(None yet.)
+### T11: factcheck joins the reasoning stages
+
+The factcheck design doc (`2026-07-22-adversarial-factcheck-stage-design.md`,
+open question 2) had deferred this with "default leave unchanged". The
+opportunity map read the omission as drift and the Phase 1 plan made it T11's
+one behaviour change, so it was applied and the design doc's open question is
+marked resolved. Effect: a below-`strong` model planned for factcheck now
+produces the same weak-model warning as spec, outline and repair. Nothing else
+in the plan changes.
 
 ## Accepted limitations
 
-(None yet.)
+- **T11:** `StageSpec.content == "guide"` reads as unconditional but means
+  "guide JSON on interactive-guide runs, Markdown on legacy runs"; the mode
+  conditional stays in `RunStore.stage_paths`. T14 may fold it into the mode
+  strategy. `supported_stages()` selects every row today (its predicate only
+  matters once a row is neither required in a mode nor optional).
+- **T11:** `docs/superpowers/specs/2026-07-11-next-milestone-proposal.md:69`
+  still lists the warning as covering spec/outline/repair; left as a dated
+  historical proposal.

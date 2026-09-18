@@ -51,7 +51,7 @@ def test_factcheck_stage_topology_derivation_and_order() -> None:
         assert seq.index("qa") < seq.index("factcheck") < seq.index("repair")
     assert "factcheck" not in REQUIRED_STAGES
     assert "factcheck" not in OPTIONAL_STAGES
-    assert "factcheck" not in REASONING_STAGES
+    assert "factcheck" in REASONING_STAGES
     assert DEFAULT_STAGE_RECOMMENDATIONS["factcheck"] == "strong_adversarial_check"
     assert DEFAULT_STAGE_RECOMMENDATIONS["qa"] == "fast_cheap_check"
 
@@ -373,6 +373,15 @@ def _catalog_with_quality(quality):
 def test_weak_warning_fires_for_fast_model_on_reasoning_stage():
     catalog = _catalog_with_quality("fast")
     stage = StageModelPlan(stage="outline", recommendation="premium_reasoning", provider="p", model="m")
+    assert weak_stage_warning(catalog, stage) is not None
+
+
+def test_weak_warning_fires_for_fast_model_on_factcheck_stage():
+    """factcheck is adversarial and reasoning-heavy; a fast model there should warn too."""
+    catalog = _catalog_with_quality("fast")
+    stage = StageModelPlan(
+        stage="factcheck", recommendation="strong_adversarial_check", provider="p", model="m"
+    )
     assert weak_stage_warning(catalog, stage) is not None
 
 

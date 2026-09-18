@@ -11,18 +11,15 @@ import json
 import math
 import tomllib
 
+from education_pipeline import stage_graph
 
-REQUIRED_STAGES = ("spec", "outline", "draft", "qa", "repair")
-GUIDE_V1_REQUIRED_STAGES = (
-    "spec",
-    "outline",
-    "draft",
-    "qa",
-    "factcheck",
-    "repair",
-)
-OPTIONAL_STAGES = ("audit",)
-SUPPORTED_STAGES = GUIDE_V1_REQUIRED_STAGES + OPTIONAL_STAGES
+
+# Stage topology is declared once in stage_graph.STAGES; everything below is a
+# derivation of that table, never a second copy of it.
+REQUIRED_STAGES = stage_graph.required_stages("legacy_markdown")
+GUIDE_V1_REQUIRED_STAGES = stage_graph.required_stages("interactive_guide")
+OPTIONAL_STAGES = stage_graph.optional_stages()
+SUPPORTED_STAGES = stage_graph.supported_stages()
 
 PRESET_STAGES = ("profile",) + SUPPORTED_STAGES
 _EFFORT_VALUES = frozenset({"low", "medium", "high"})
@@ -386,7 +383,7 @@ def apply_overrides_lenient(
     return effective, errors
 
 
-REASONING_STAGES = frozenset({"spec", "outline", "repair"})
+REASONING_STAGES = stage_graph.reasoning_stages()
 _QUALITY_RANK = {"fast": 0, "strong": 1, "premium": 2}
 
 
