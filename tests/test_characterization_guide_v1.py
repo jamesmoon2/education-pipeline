@@ -813,6 +813,25 @@ def test_stale_flags_across_branch_states(tmp_path: Path, case: StaleCase) -> No
         assert by_stage[stage].stale is expected, f"stage {stage!r} stale mismatch"
 
 
+def test_an_absent_earlier_hash_hides_a_recorded_later_one(tmp_path: Path) -> None:
+    """The first absent recorded hash abandons the *whole* walk, so a hash
+    recorded for a later source is never compared at all.
+
+    ``planted_repair_without_qa_hash_ignores_a_qa_change`` above pins the
+    common shape (an absent hash with nothing recorded behind it); this pins
+    the ordering itself. The planted repair records qa but not draft -- the
+    draft hash is checked first, is absent, and the check returns "current"
+    before it ever reaches the recorded qa hash, even though the approved qa
+    has since changed underneath it.
+    """
+
+    runs = _create_guide_run(tmp_path, TID)
+    _drive_guide_through_qa(runs, TID)
+    _plant_repair_approval_event(runs, TID, source_labels=("qa",))
+    _reapprove_qa_with_new_bytes(runs, TID)
+    assert _stage_map(runs, TID)["repair"].stale is False
+
+
 # --------------------------------------------------------------------------
 # Part 4: approve-time and prompt-time source binding on the manifest.
 # --------------------------------------------------------------------------
@@ -894,6 +913,29 @@ def test_repair_response_approved_omits_factcheck_source_when_absent(tmp_path: P
     assert event is not None
     assert _source_keys(event) == {"source_draft_file_sha256", "source_qa_file_sha256"}
     assert "source_factcheck_file_sha256" not in event
+
+
+def test_repair_response_approved_omits_the_factcheck_path_key_too(tmp_path: Path) -> None:
+    """The absent-factcheck rule drops the entire binding, not just its hash.
+
+    ``_append_event`` writes a ``<label>`` path key for every bound file but a
+    ``<label>_sha256`` key only when the file exists, so binding an absent
+    factcheck would still leave a dangling ``source_factcheck_file`` path on
+    the event. It does not: neither key is written.
+    """
+
+    runs = _create_guide_run(tmp_path, TID)
+    _drive_guide_through_qa(runs, TID)
+    repair_paths = runs.stage_paths(TID, "repair")
+    repair_paths.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    repair_paths.prompt_path.write_text("# planted prompt\n", encoding="utf-8")
+    repair_paths.response_path.write_text(GUIDE_FIXTURE, encoding="utf-8")
+    runs.approve_stage(TID, "repair")
+    event = _latest_event(runs, TID, "repair", "response_approved")
+    assert event is not None
+    assert {
+        key for key in event if key.startswith("source_") and not key.endswith("_sha256")
+    } == {"source_draft_file", "source_qa_file"}
 
 
 def test_grandfathered_planted_repair_event_has_no_factcheck_source(tmp_path: Path) -> None:
