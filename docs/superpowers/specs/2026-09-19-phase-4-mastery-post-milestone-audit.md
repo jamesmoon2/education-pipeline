@@ -13,6 +13,19 @@
 
 ## Decisions that departed from the plan text
 
+### Decision 4 (refined at T40 review): counts read "correct of answered"
+
+The green implementation printed "{correct} of {total} correct", under which
+one right answer and one unanswered check read as one wrong answer. The
+plan's wording ("of answered") was restored and the open count is named
+separately ("1 of 1 correct, 1 not yet answered").
+
+### T42: the last-section ArrowRight guard
+
+Written against a runtime without a results page, the guard pinned "no-op".
+After the T40 merge, Next on the last section opens the results page, so the
+guard now pins that and the no-op on the results page itself.
+
 ### Decision 1: results, not mastery
 
 The opportunity map titles this phase "Mastery, not just completion". The
@@ -34,7 +47,16 @@ record is rewritten in place.
 
 ## Accepted limitations
 
-(Filled per thread as they land.)
+- **T40:** the `none` outcome status (no scorable block links to the outcome)
+  is implemented but no fixture exercises it; the header denominator excludes
+  such outcomes. A stored `lastSection` of `results` is dropped on restore.
+  The results-page print rule uses `!important` to beat the `.is-current`
+  display rule.
+- **T42:** `/` focuses the first navigation link at every viewport; the
+  fallback to the drawer toggle when the navigation is collapsed is not built.
+  The four keyboard guards that passed before any listener existed pin the
+  absence of behaviour rather than the listener, and the mutation pass is what
+  showed the listener is covered.
 
 ## Open for the owner
 
