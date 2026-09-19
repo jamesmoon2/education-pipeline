@@ -847,3 +847,184 @@ test.describe("mastery results storage (T40)", () => {
     expect(typeof interaction.firstCorrect).toBe("boolean");
   });
 });
+
+// ---------------------------------------------------------------------------
+// T43 (PR #41 review finding): a restored `correct`/`firstCorrect` is only
+// ever as good as the answer key it was computed against. `Restore
+// .usableInteraction` today adopts a knowledge-check or scenario entry's
+// stored `correct`/`firstCorrect` verbatim once the selection still matches
+// the block's current choices -- it never checks whether the choices'
+// `data-correct`/`data-quality` still say what they said when the record was
+// written. A course revision that flips a choice's correctness (or a hand
+// -edited/drifted progress file) then restores a result that contradicts
+// what the current DOM would score. The contract: recompute `correct` from
+// `selectedIds`/`selectedId` against the live DOM on every adoption, and
+// whenever the recomputed value disagrees with what was stored, the adopted
+// `firstCorrect` becomes `null` (unknowable) rather than keeping a first
+// attempt that can no longer be trusted; when they agree, `firstCorrect` is
+// kept as stored. This applies uniformly to both adoption paths that share
+// `Restore.filterToDocument`/`usableInteraction`: a progress-file restore and
+// the previous-export storage-key migration banner ("Resume that
+// progress").
+//
+// The fixture's "identify-loop" outcome is scored by exactly one block,
+// the single-mode knowledge check "check-loop-type" (choices:
+// "release-reinforcing" correct, "release-balancing"/"release-unrelated"
+// not), which makes its results-page count a direct readout of the
+// recomputed `correct`.
+// ---------------------------------------------------------------------------
+
+test.describe("restored results are recomputed against the current answer key (T43)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+  });
+
+  test("a restored file's selectedIds are actually correct, despite a stored correct:false: the outcome reads on_track and the adopted record is fixed up", async ({
+    page,
+  }) => {
+    const filePath = path.join(tempDir, "recompute-correct.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        format: "education-pipeline.guide-progress",
+        version: 2,
+        course_id: "feedback-loops",
+        schema_version: "1.0",
+        saved_at: "2026-01-01T00:00:00.000Z",
+        state: {
+          completedSections: [],
+          interactions: {
+            "check-loop-type": {
+              type: "knowledge_check",
+              completed: true,
+              submittedCount: 1,
+              selectedIds: ["release-reinforcing"],
+              correct: false,
+              firstCorrect: false,
+            },
+          },
+          lastSection: "feedback-foundations",
+          theme: "system",
+        },
+      }),
+      "utf8",
+    );
+
+    await page.locator('[data-role="progress-file-input"]').setInputFiles(filePath);
+
+    // Restoring reloads the page when storage is available (Restore.adopt);
+    // wait for a signal that the reload has finished and the record is live
+    // before navigating by hash, rather than racing it.
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "1 of 5 interactions complete",
+    );
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const item = page.locator('[data-outcome-id="identify-loop"]');
+    await expect(item).toHaveAttribute("data-status", "on_track");
+    await expect(item.locator('[data-role="results-outcome-count"]')).toHaveText(
+      "1 of 1 correct",
+    );
+
+    const records = await currentRecords(page, []);
+    const adopted = Object.values(records)[0] as Record<string, any>;
+    expect(adopted.interactions["check-loop-type"].correct).toBe(true);
+    expect(adopted.interactions["check-loop-type"].firstCorrect).toBeNull();
+  });
+
+  test("mirror: a restored file's selectedIds are actually wrong, despite a stored correct:true: the outcome reads review and the adopted record is fixed up", async ({
+    page,
+  }) => {
+    const filePath = path.join(tempDir, "recompute-incorrect.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        format: "education-pipeline.guide-progress",
+        version: 2,
+        course_id: "feedback-loops",
+        schema_version: "1.0",
+        saved_at: "2026-01-01T00:00:00.000Z",
+        state: {
+          completedSections: [],
+          interactions: {
+            "check-loop-type": {
+              type: "knowledge_check",
+              completed: true,
+              submittedCount: 1,
+              selectedIds: ["release-balancing"],
+              correct: true,
+              firstCorrect: true,
+            },
+          },
+          lastSection: "feedback-foundations",
+          theme: "system",
+        },
+      }),
+      "utf8",
+    );
+
+    await page.locator('[data-role="progress-file-input"]').setInputFiles(filePath);
+
+    // Same reload-race guard as the case above.
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "1 of 5 interactions complete",
+    );
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const item = page.locator('[data-outcome-id="identify-loop"]');
+    await expect(item).toHaveAttribute("data-status", "review");
+    await expect(item.locator('[data-role="results-outcome-count"]')).toHaveText(
+      "0 of 1 correct",
+    );
+
+    const records = await currentRecords(page, []);
+    const adopted = Object.values(records)[0] as Record<string, any>;
+    expect(adopted.interactions["check-loop-type"].correct).toBe(false);
+    expect(adopted.interactions["check-loop-type"].firstCorrect).toBeNull();
+  });
+
+  // The carry-over migration banner ("Resume that progress") adopts through
+  // the same `Restore.filterToDocument`/`usableInteraction` path as a
+  // progress-file restore, and this file's existing OLD_KEY/seed/currentRecords
+  // helpers make it just as easy to seed: a previous export's storage record
+  // whose stored result also disagrees with the current answer key.
+  test("progress adopted from a previous export's storage key is recomputed the same way", async ({
+    page,
+  }) => {
+    const mismatchedMigrationState = {
+      completedSections: ["feedback-foundations", "recognize-loop-types"],
+      interactions: {
+        "check-loop-type": {
+          type: "knowledge_check",
+          completed: true,
+          submittedCount: 1,
+          selectedIds: ["release-reinforcing"],
+          correct: false,
+          firstCorrect: false,
+        },
+      },
+      lastSection: "recognize-loop-types",
+      theme: "system",
+      updatedAt: 1_700_000_006_000,
+    };
+    await seed(page, { [OLD_KEY]: mismatchedMigrationState });
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+    await page.getByRole("button", { name: "Resume that progress" }).click();
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const item = page.locator('[data-outcome-id="identify-loop"]');
+    await expect(item).toHaveAttribute("data-status", "on_track");
+    await expect(item.locator('[data-role="results-outcome-count"]')).toHaveText(
+      "1 of 1 correct",
+    );
+
+    const records = await currentRecords(page, [OLD_KEY]);
+    const adopted = Object.values(records)[0] as Record<string, any>;
+    expect(adopted.interactions["check-loop-type"].correct).toBe(true);
+    expect(adopted.interactions["check-loop-type"].firstCorrect).toBeNull();
+  });
+});

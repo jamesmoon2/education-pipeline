@@ -3,7 +3,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -522,6 +522,36 @@ for (const transport of TRANSPORTS) {
       }
 
       await expect(page.locator('.course-controls fieldset[data-role="print-mode"]')).toBeHidden();
+    });
+
+    // T43 (PR #41 review finding): the worked-reveal conclusion is the same
+    // kind of "answer" as its steps, but only `.reveal-step` is hidden by the
+    // learner-copy print rule (`runtime.css`) -- `.conclusion` is not, so it
+    // leaks onto a printed learner copy.
+    test("learner-copy print hides the worked-reveal conclusion; answer-key print keeps it visible", async ({
+      page,
+    }) => {
+      await gotoSection(page, "recognize-loop-types");
+      const wr = page.locator("article.worked_reveal").first();
+      const conclusion = wr.locator('[data-role="wr-conclusion"]');
+
+      // Reveal every step on screen first, so the conclusion is showing
+      // before print is ever emulated.
+      await wr.locator('[data-role="wr-show-all"]').click();
+      await expect(conclusion).toBeVisible();
+
+      // Answer key is the default print mode: the conclusion is part of the
+      // worked answer and must stay visible when printed.
+      await page.emulateMedia({ media: "print" });
+      await expect(conclusion).toBeVisible();
+      await page.emulateMedia({ media: "screen" });
+
+      // Learner copy must hide it exactly like the reveal steps it concludes.
+      await page
+        .locator('.course-controls fieldset[data-role="print-mode"] input[value="learner-copy"]')
+        .check();
+      await page.emulateMedia({ media: "print" });
+      await expect(conclusion).toBeHidden();
     });
 
     test("has no serious or critical automated accessibility violations", async ({ page }) => {
@@ -1280,5 +1310,77 @@ test.describe("review queue (T41, http)", () => {
       (v) => v.impact === "serious" || v.impact === "critical",
     );
     expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T43 (PR #41 review finding): the results page is always created with
+// `page.id = "results"` and `installPage()` bails out whenever
+// `document.getElementById("results")` already exists -- so an authored
+// section whose id happens to be "results" both steals `#results` from the
+// runtime page *and* silently suppresses the results page outright (the
+// early return means it is never appended at all). A fixture where the first
+// section is renamed to "results" pins that the runtime must give its own
+// page a different, never-authorable id instead.
+// ---------------------------------------------------------------------------
+
+test.describe("results page never collides with an authored id (T43)", () => {
+  let collisionHtmlPath: string;
+
+  test.beforeAll(() => {
+    const guide = JSON.parse(
+      readFileSync(
+        path.join(ROOT, "tests/fixtures/guides/feedback-loops.guide.json"),
+        "utf8",
+      ),
+    );
+    // Section ids are the schema's only place-of-record for a section: no
+    // other field (blocks link to outcomes via outcome_ids, not section ids)
+    // has to be fixed up for this rename to stay a valid, resolvable guide.
+    guide.modules[0].sections[0].id = "results";
+    const guideJsonPath = path.join(tempDir, "results-collision.guide.json");
+    writeFileSync(guideJsonPath, JSON.stringify(guide), "utf8");
+    const html = assembleFixtureDocument(guideJsonPath);
+    collisionHtmlPath = path.join(tempDir, "results-collision.html");
+    writeFileSync(collisionHtmlPath, html, "utf8");
+  });
+
+  test("on the plain fixture the results page keeps the id 'results'", async ({ page }) => {
+    // Existing #results-fragment assertions elsewhere in this file rely on
+    // this id; pin it explicitly so a future change to the collision fix
+    // cannot quietly break their meaning.
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+    const id = await page.evaluate(
+      () => document.querySelector('[data-role="results-page"]')?.id,
+    );
+    expect(id).toBe("results");
+  });
+
+  test("an authored section named 'results' keeps #results; the runtime's results page still exists under a different id", async ({
+    page,
+  }) => {
+    await page.goto(`file://${collisionHtmlPath}`, { waitUntil: "load" });
+
+    // #results still opens the authored section, not the runtime's page.
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const authored = page.locator("#results");
+    await expect(authored).toHaveClass(/is-current/);
+    await expect(authored).toHaveAttribute("data-role", "guide-section");
+
+    // The runtime still builds its results page -- just not at #results, and
+    // not at any id an authored guide could ever declare (the schema's
+    // identifier pattern), so no future course can ever retake it.
+    const resultsPage = page.locator('[data-role="results-page"]');
+    await expect(resultsPage).toHaveCount(1);
+    const pageId = await resultsPage.evaluate((el) => el.id);
+    expect(pageId).not.toBe("results");
+    expect(pageId).not.toMatch(/^[a-z][a-z0-9-]{0,63}$/);
+
+    const link = page.locator('[data-role="results-summary"] a');
+    await expect(link).toHaveAttribute("href", `#${pageId}`);
+    await link.click();
+    await expect(resultsPage).toHaveClass(/is-current/);
   });
 });
