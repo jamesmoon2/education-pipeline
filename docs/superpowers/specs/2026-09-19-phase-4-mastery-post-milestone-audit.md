@@ -52,6 +52,14 @@ record is rewritten in place.
   such outcomes. A stored `lastSection` of `results` is dropped on restore.
   The results-page print rule uses `!important` to beat the `.is-current`
   display rule.
+- **T41:** the review panel recomputes on section entry only; a correct
+  answer given from a later section clears the results page at once but the
+  panel only on the next entry. No scenario is retryable today (`data-retry`
+  is emitted for knowledge checks only); the runtime's one `isRetryable`
+  rule would honour it without change. The panel is a complementary landmark
+  nested inside a section (axe: moderate, not blocking). The mutation
+  "render missed lists for on-track outcomes" is behaviourally equivalent to
+  the shipped code and therefore unpinnable; the stronger mutation is pinned.
 - **T42:** `/` focuses the first navigation link at every viewport; the
   fallback to the drawer toggle when the navigation is collapsed is not built.
   The four keyboard guards that passed before any listener existed pin the
