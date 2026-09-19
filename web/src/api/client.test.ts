@@ -34,6 +34,7 @@ import {
   postDraftUnitResponse,
   putDraftUnitResponse,
   postDraftAssemble,
+  postContinue,
 } from "./client";
 import { metadataNumber } from "./types";
 import type { LearnerProfile } from "./types";
@@ -202,6 +203,56 @@ describe("postAdvance", () => {
     const body = JSON.parse(init.body as string);
     expect(body).toEqual({ repair_module: "loop-basics" });
     expect(body).not.toHaveProperty("repair_section");
+  });
+});
+
+// T32: continueRun becomes a thin client over one daemon call.
+describe("postContinue", () => {
+  afterEach(() => {
+    resetSessionForTests();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("hits POST /v1/runs/{id}/continue with the token header the other write calls send", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/t/continue": {
+        status: 200,
+        body: { topic_id: "t", steps: [], stop: { kind: "done" }, status: null },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await postContinue("t");
+
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/runs/t/continue");
+    expect(call).toBeDefined();
+    const init = call![1] as RequestInit;
+    expect(init.method).toBe("POST");
+    expect(init.headers).toMatchObject({
+      "X-EP-Token": "tok",
+      "Content-Type": "application/json",
+    });
+    expect(result).toEqual({ topic_id: "t", steps: [], stop: { kind: "done" }, status: null });
+  });
+
+  it("encodes the topic id in the path", async () => {
+    const fetchMock = mockFetchWithInit({
+      "/v1/session": { status: 200, body: { token: "tok", version: "0.1.0" } },
+      "/v1/runs/topic%2Fa/continue": {
+        status: 200,
+        body: { topic_id: "topic/a", steps: [], stop: { kind: "done" }, status: null },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postContinue("topic/a");
+
+    const call = fetchMock.mock.calls.find(
+      ([u]) => String(u) === "/v1/runs/topic%2Fa/continue",
+    );
+    expect(call).toBeDefined();
   });
 });
 

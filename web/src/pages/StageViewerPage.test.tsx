@@ -23,10 +23,8 @@ vi.mock("../api/client", async () => {
     postResponse: vi.fn(),
     putResponse: vi.fn(),
     postPreview: vi.fn(),
-    // Read by the "Approve & continue" chain (lib/continueRun.ts).
-    postValidate: vi.fn(),
-    enqueueJob: vi.fn(),
-    getRunPlan: vi.fn(),
+    // Called by the "Approve & continue" client (lib/continueRun.ts).
+    postContinue: vi.fn(),
   };
 });
 
@@ -34,13 +32,12 @@ import {
   ApiRequestError,
   approveAudit,
   enqueueAuditJob,
-  enqueueJob,
   getRepairModules,
-  getRunPlan,
   getRunStatus,
   getStageContent,
   postAdvance,
   postApprove,
+  postContinue,
   postResponse,
   putResponse,
 } from "../api/client";
@@ -297,12 +294,12 @@ describe("StageViewerPage", () => {
       next = { action: "save_response", stage: "qa" };
       return {} as never;
     });
-    vi.mocked(getRunPlan).mockResolvedValue({
-      provider: "claude-code",
-      plan_sha256: "sha-plan",
-      stages: [],
+    vi.mocked(postContinue).mockResolvedValue({
+      topic_id: "t",
+      steps: [{ kind: "job", stage: "qa", provider: "claude-code" }],
+      stop: { kind: "started", stage: "qa", provider: "claude-code" },
+      status: null,
     });
-    vi.mocked(enqueueJob).mockResolvedValue({} as never);
     vi.mocked(getStageContent).mockResolvedValue({
       topic_id: "t",
       stage: "draft",
@@ -316,7 +313,7 @@ describe("StageViewerPage", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Approve & continue" }));
     expect(postApprove).toHaveBeenCalledWith("t", "draft");
-    expect(enqueueJob).toHaveBeenCalledWith("t");
+    expect(postContinue).toHaveBeenCalledWith("t");
     const feedback = await screen.findByRole("status");
     expect(feedback).toHaveTextContent("Approved draft — started qa with claude-code.");
     expect(feedback).toHaveClass("success");
@@ -329,9 +326,16 @@ describe("StageViewerPage", () => {
       next = { action: "write_prompt", stage: "qa" };
       return {} as never;
     });
-    vi.mocked(postAdvance).mockRejectedValue(
-      new ApiRequestError(409, "job_active", "job j1 is running for topic 't'"),
-    );
+    vi.mocked(postContinue).mockResolvedValue({
+      topic_id: "t",
+      steps: [{ kind: "advance", stage: "qa" }],
+      stop: {
+        kind: "failed",
+        action: "writing the qa prompt",
+        message: "job j1 is running for topic 't'",
+      },
+      status: null,
+    });
     vi.mocked(getStageContent).mockResolvedValue({
       topic_id: "t",
       stage: "draft",
