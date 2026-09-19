@@ -18,6 +18,7 @@ import ValidationFindingsPanel, { NO_FINDINGS } from "../components/ValidationFi
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 import RunCostLine from "../components/RunCostLine";
+import { useOptionalTour } from "../tour";
 
 // Blocking-or-error findings by stage, combined across the draft and final
 // validation reports, so a stage badges up if either phase flagged it.
@@ -122,7 +123,7 @@ function InteractiveGuidePanels({
           topicId={status.topic_id}
         />
       </section>
-      <section aria-labelledby="validation-heading">
+      <section aria-labelledby="validation-heading" data-tour="validation">
         <h3 id="validation-heading">Validation milestones</h3>
         <InfoTip
           label="Validation"
@@ -182,6 +183,7 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
     setContentGeneration((generation) => generation + 1);
   }, [refreshStatus]);
   const start = useAction(refresh);
+  const tour = useOptionalTour();
 
   if (error instanceof ApiRequestError && error.status === 404) {
     return (
@@ -216,15 +218,30 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
   const findingsByStage = combinedFindingsByStage(status);
 
   return (
-    <div>
-      <h2>{status.topic_id}</h2>
+    <div className="run-board">
+      <header className="page-heading">
+        <div>
+          <p className="eyebrow">Run board</p>
+          <h2>{status.topic_id}</h2>
+        </div>
+        {tour && (
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => tour.start("run-board")}
+            disabled={tour.active}
+          >
+            Explain this board
+          </button>
+        )}
+      </header>
       {status.blueprint && (
         <p className="blueprint-line">
           Blueprint: <strong>{status.blueprint.id}</strong> ({status.blueprint.source})
           {status.blueprint.rationale ? <> — {status.blueprint.rationale}</> : null}
         </p>
       )}
-      <p className="next-action">
+      <p className="next-action" data-tour="next-action">
         <strong>Next:</strong> {status.next_action.detail}
       </p>
       <RunCostLine
@@ -242,11 +259,13 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
           onChanged={refresh}
         />
       )}
-      <PipelineStepper
-        status={status}
-        activeJob={activeJob}
-        findingsByStage={findingsByStage}
-      />
+      <div data-tour="pipeline">
+        <PipelineStepper
+          status={status}
+          activeJob={activeJob}
+          findingsByStage={findingsByStage}
+        />
+      </div>
       <p>
         Finalized: {status.finalized ? "yes" : "no"}{" "}
         <InfoTip
@@ -261,8 +280,12 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
           onStatusChanged={refreshStatus}
         />
       )}
-      <RunPlanPanel topicId={status.topic_id} nextStage={status.next_action.stage} />
-      <JobsPanel data={jobsData} error={jobsError} onChanged={refreshJobs} />
+      <div data-tour="run-plan">
+        <RunPlanPanel topicId={status.topic_id} nextStage={status.next_action.stage} />
+      </div>
+      <div data-tour="jobs">
+        <JobsPanel data={jobsData} error={jobsError} onChanged={refreshJobs} />
+      </div>
     </div>
   );
 }

@@ -294,8 +294,13 @@ export default function NewRunPage() {
 
   return (
     <div className="new-run-page">
-      <h2>New course</h2>
-      <ol className="wizard-steps" aria-label="Wizard steps">
+      <header className="page-heading">
+        <div>
+          <p className="eyebrow">Guided setup</p>
+          <h2>New course</h2>
+        </div>
+      </header>
+      <ol className="wizard-steps" aria-label="Wizard steps" data-tour="wizard">
         {STEP_ORDER.map((name) => (
           <li key={name} aria-current={step === name ? "step" : undefined}>
             {STEP_LABELS[name]}

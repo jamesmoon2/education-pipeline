@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getConfigProviders, getWorkspace } from "../api/client";
 import type { ProviderAvailability, WorkspacePayload } from "../api/types";
+import { useOptionalTour } from "../tour";
 
 export const WELCOME_DISMISSED_KEY = "ep.welcome.dismissed";
 
@@ -32,6 +33,7 @@ export default function WelcomePanel() {
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [providers, setProviders] = useState<ProviderAvailability[]>([]);
   const [dismissed, setDismissed] = useState(isWelcomeDismissed());
+  const tour = useOptionalTour();
 
   useEffect(() => {
     let cancelled = false;
@@ -91,12 +93,15 @@ export default function WelcomePanel() {
         ))}
         <li>Manual copy/paste — always available, no setup needed.</li>
       </ul>
-      <p>
+      <p className="welcome-actions">
         <Link to="/new" className="primary-cta">
           Create your first course →
         </Link>
-      </p>
-      <p>
+        {tour && (
+          <button type="button" className="ghost-button" onClick={() => tour.start("workbench")}>
+            Take the two-minute tour
+          </button>
+        )}
         <button onClick={dismiss}>Dismiss</button>
       </p>
     </section>

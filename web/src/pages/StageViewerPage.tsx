@@ -166,13 +166,19 @@ function StageViewerForRoute({
   };
 
   return (
-    <div>
-      <p>
-        <Link to={`/topics/${topicId}`}>← back to {topicId}</Link>
-      </p>
-      <h2>
-        {topicId} / {data.stage}
-      </h2>
+    <div className="stage-page">
+      <header className="page-heading">
+        <div>
+          <p className="eyebrow">
+            <Link to={`/topics/${topicId}`} className="back-link">
+              ← back to {topicId}
+            </Link>
+          </p>
+          <h2>
+            {topicId} / {data.stage}
+          </h2>
+        </div>
+      </header>
       <RunCostLine
         usd={stageCost?.usd ?? null}
         source={stageCost?.source ?? null}

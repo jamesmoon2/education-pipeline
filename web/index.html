@@ -3,7 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4f3fb" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d0b1a" />
     <title>Education Pipeline</title>
+    <script>
+      // Apply the stored theme before first paint so a pinned dark or light
+      // theme never flashes the system default. Mirrors ThemeToggle's key.
+      try {
+        var t = localStorage.getItem("ep.theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

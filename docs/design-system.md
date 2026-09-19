@@ -1,9 +1,10 @@
 # Education Pipeline Design System
 
-**Status:** Proposed product-wide direction
+**Status:** Cockpit shipped on the "Threshold" revision (§4, §5, §6.7, §12); guide
+runtime still on the earlier mineral palette pending §13 Phase D
 **Applies to:** Local cockpit, interactive guide runtime, preview, export, and print
 **Product source:** [`product-requirements.md`](product-requirements.md)
-**Working name:** Learning Workbench
+**Working name:** Learning Workbench · visual revision: **Threshold (388 nm)**
 
 ## 1. Design thesis
 
@@ -89,25 +90,43 @@ action. Decoration that could be moved to an unrelated AI product does not belon
 
 ## 4. Visual direction
 
-### 4.1 Palette
+### 4.1 Palette — Threshold (388 nm)
 
-The palette is cool, mineral, and ink-like rather than warm editorial or neon
-technical. These six foundation colors produce the semantic tokens below.
+388 nm is the violet edge of visible light: the last wavelength the eye can see
+before ultraviolet. The cockpit borrows that threshold as its organizing idea. A
+brief nobody can read yet sits in the near-ultraviolet; an exported guide is warm,
+visible light. Everything in between is the spectrum the learning thread traces.
 
-| Foundation | Hex | Role |
-| --- | --- | --- |
-| Carbon | `#182033` | Primary text and dark-theme canvas |
-| Drafting paper | `#F7F8FA` | Main light-theme canvas |
-| Graphite | `#5D6678` | Secondary text and quiet controls |
-| Blueprint | `#3157A4` | Primary action, links, focus relationship |
-| Lichen | `#47705D` | Completion and sound/current state |
-| Ochre | `#A05410` | Attention, warnings, and review-needed state |
+The palette is therefore violet-ink rather than blue-mineral, with one cyan
+"signal" for live work and one amber for the warm end of the spectrum. The dark
+theme is a room under blacklight — what matters fluoresces, the rest recedes. The
+light theme is the same room with the shutters open.
 
-Error uses oxide red (`#B23A3A`) as a semantic exception. It is reserved for
+| Foundation | Light | Dark | Role |
+| --- | --- | --- | --- |
+| Ink | `#16132B` | `#EDEBF8` | Primary text (canvas in dark) |
+| Paper | `#F4F3FB` | `#0D0B1A` | Canvas |
+| Graphite | `#5B5876` | `#A9A5C6` | Secondary text and quiet controls |
+| Violet | `#5B3DF5` | `#A78BFA` | Primary action, links, focus, the tour |
+| Signal (cyan) | `#0E7490` | `#22D3EE` | A provider job is working right now |
+| Lichen | `#136247` | `#6EE7B7` | Completion and sound state |
+| Amber | `#7F430A` | `#FBBF24` | Attention, warnings, review-needed |
+
+Error uses oxide red (`#B83232` / `#FB7185`) as a semantic exception, reserved for
 failed or unsafe states and never used as a brand accent.
 
-The interface uses no gradients. Large color fields are rare. Blueprint appears
-primarily on actions, focus, links, and the active segment of the learning thread.
+The **spectrum** is the one gradient in the product: violet → cyan → amber. It is
+allowed on exactly four things — the learning thread's completed connectors, the
+brand mark, the dock's edge tube, and a completion meter — because in each place
+it encodes progress from unseen to visible. No other surface may use a gradient
+of more than one hue.
+
+The **dock** is always the dark strip, in both themes: a blacklight tube beside
+the page. Tokens for it are prefixed `--ep-color-rail-*`.
+
+Every light-theme text/surface pair clears WCAG AA with margin (≥ 5:1 for
+semantic text on its soft surface) so a half-second transform animation or a
+translucent surface can never pull it under 4.5:1.
 
 ### 4.2 Semantic color tokens
 
@@ -216,24 +235,38 @@ letter spacing; headings and body copy should not.
 --ep-space-12: 3rem;
 --ep-space-16: 4rem;
 
---ep-radius-control: 0.375rem;
---ep-radius-surface: 0.625rem;
---ep-radius-dialog: 0.875rem;
+--ep-radius-control: 0.55rem;
+--ep-radius-surface: 1rem;
+--ep-radius-dialog: 1.25rem;
 ```
 
 - Use a four-pixel base grid.
-- Do not use pill shapes except for a binary segmented control with a real grouped
-  relationship.
-- Prefer a border or tonal surface to a shadow. Use a single restrained shadow for
-  floating dialogs and menus only.
-- Do not wrap every section in a card. A card means a separable object or action.
+- Pill shapes are reserved for segmented controls (tabs, content mode, wizard
+  step track, theme toggle) and status chips.
+- Depth has three steps: `--ep-shadow-1` for resting controls and panels,
+  `--ep-shadow-2` for hover and the pipeline thread, `--ep-shadow-3` for floating
+  dialogs, toasts and the tour card.
+- **Glass** (`--ep-color-surface-glass` + `backdrop-filter: blur(14px)`) is for
+  panels that sit over the aurora backdrop: the library table, the pipeline
+  thread, wizard and settings sections, stat tiles. Solid `--ep-color-surface`
+  is for reading surfaces — rendered Markdown, code, diffs, the guide frame —
+  where nothing should show through the text.
+- The **aurora** backdrop is three slow light fields behind the shell (46–64 s
+  drift, `alternate`, stopped under `prefers-reduced-motion`) with a film-grain
+  veil. It is the one purely atmospheric element in the product and is kept at low
+  alpha so every foreground pair is measured against the canvas token.
+- A card still means a separable object or action; the shell's page sections are
+  glass panels, not cards, and carry no chrome beyond a border and a title.
 - Minimum interactive target is 44 by 44 CSS pixels in primary learning flows.
 
 ## 5. Signature: the learning thread
 
-The learning thread is a 3-pixel vertical rule with nodes at meaningful states.
-Its active segment is Blueprint; complete segments are Lichen; future segments are
-the strong border color. Labels, not color, communicate state.
+The learning thread is a 3-pixel rule with nodes at meaningful states. Completed
+connectors carry the spectrum (violet → cyan → amber); future connectors are the
+border color; a running node pulses cyan; a node awaiting review glows amber; the
+node the run is waiting on is enlarged with a violet halo. Labels, not color,
+communicate state — every node still says "Complete", "Needs review", "Ready to
+run" in words.
 
 ### In the workbench
 
@@ -254,11 +287,13 @@ the strong border color. Labels, not color, communicate state.
 
 ### Motion
 
-Use one orchestrated transition: when a stage or section becomes complete, the
-thread fills to the next node over 240ms and the next node receives focus when the
-user initiated the transition. Other state changes use 120–180ms opacity or color
-transitions. Respect `prefers-reduced-motion` and never animate reading content on
-scroll.
+Three durations (`140 / 260 / 520 ms`) and two curves (`--ep-ease-out`, a soft
+`--ep-ease-spring` for markers and the tour spotlight). Page entrances translate
+10px upward and **never fade**: an opacity fade blends text toward the canvas for
+half a second, which is exactly when an automated contrast check samples it. Live
+lamps (running job, jobs beacon) pulse; nothing else loops. Respect
+`prefers-reduced-motion` (all animation collapses to 1 ms) and never animate
+reading content on scroll.
 
 ## 6. Layout system
 
@@ -343,6 +378,28 @@ The right study-tools rail is optional and collapses before the module rail. On
 mobile, course progress stays visible, module navigation opens as a drawer, and
 study tools appear after the current section.
 
+### 6.7 Guided tour
+
+The tour is a blacklight passed over the workbench: a dimmed backdrop, a glowing
+cutout on the surface being explained, and a card beside it. It exists because the
+cockpit has real machinery (stages, jobs, model plans) and the first-run welcome
+panel can only say so much.
+
+- Two tours: **workbench** (eight steps, hops `/` → `/new` → `/settings`) and
+  **run board** (five steps over one run's thread, evidence, plan and jobs).
+- Never auto-launches. Entry points: the dock button, the welcome panel, Settings
+  → Appearance → "Replay the tour", the run board's "Explain this board", and a
+  `?tour=1` deep link (consumed once, then removed from the address bar).
+- Steps anchor to `data-tour="…"` hooks. The provider waits up to 1.5 s for an
+  anchor after a route hop; a missing anchor degrades to a centered card, never
+  an error.
+- Modal and keyboard-complete: `role="dialog" aria-modal`, focus moves to the card
+  on every step and returns to the launcher on exit, ←/→ step, Esc leaves, Tab
+  cycles inside the card.
+- Completion or skipping is remembered in `localStorage` (`ep.tour.completed`).
+- Copy stays in learner language (§3.4): what a surface is for and what is safe
+  to do there.
+
 ## 7. Component language
 
 ### 7.1 Actions
@@ -422,8 +479,11 @@ alternatives, and remain meaningful in print.
 
 ## 9. Iconography and illustration
 
-- Use a small, consistent outline icon set under an MIT-compatible license.
-- Default icon size is 18px with a 1.75px stroke.
+- Icons are a small inline SVG set in `web/src/components/icons.tsx`: one stroke
+  weight (1.6) on a 20-unit grid, `currentColor`, always `aria-hidden` beside a
+  text label. No icon font, no network.
+- The brand mark is a spectrum bar cut at 388 nm with three nodes — the three
+  artifacts every stage keeps (prompt, response, approved copy).
 - Icons accompany labels in primary navigation; they do not replace labels.
 - Status icons use the stable shapes described in the color section.
 - Do not use sparkles, robots, magic wands, brains, graduation caps, or floating
@@ -470,9 +530,13 @@ brand elements.
 ## 12. Anti-slop guardrails
 
 The following patterns are out of character unless a specific learning object
-requires them:
+requires them. The Threshold revision deliberately admits four effects — the
+spectrum gradient, glow, glass and the aurora — under the rules in §4.1 and §4.4:
+each must encode progress, live state, attention or layering, and each has a
+named token and a reduced-motion fallback. Outside those rules they remain slop:
 
-- gradient backgrounds, glowing borders, glassmorphism, and blurred color blobs;
+- multi-hue gradients on anything but the four spectrum surfaces; glow on a
+  resting element; glass over reading text; more than one aurora;
 - a giant marketing headline inside the working application;
 - a grid of identical rounded cards for unrelated content;
 - rainbow status chips or decorative tags;
@@ -498,15 +562,20 @@ Migrate without rewriting working behavior.
    primitives.
 4. Add visual regression fixtures for light, dark, mobile, and print.
 
-### Phase B — Workbench shell
+### Phase B — Workbench shell (done: Threshold revision)
 
-1. Replace the centered `64rem` application wrapper with the rail/workspace shell.
-2. Rename the visible header to “Education Pipeline.”
-3. Restyle the course library, New Course sequence, and run board around next
-   action and the learning thread.
+1. ~~Replace the centered `64rem` application wrapper with the rail/workspace shell.~~
+   Shipped as the dock + workspace shell with the aurora backdrop.
+2. ~~Rename the visible header to “Education Pipeline.”~~
+3. ~~Restyle the course library, New Course sequence, and run board around next
+   action and the learning thread.~~ Library gained stat tiles and completion
+   meters; the run board leads with the next action and the spectrum thread.
 4. Map existing `PrimaryAction`, `RunPlanPanel`, `PlanStageRow`, and
    `ValidationFindingsPanel` behaviors to shared components before changing their
-   interaction contracts.
+   interaction contracts. (Interaction contracts were left untouched in this
+   revision; every accessible name and role is unchanged.)
+5. Added: three-way theme control (system / light / dark, applied before first
+   paint), the guided tour (§6.7), a skip link, and page-enter motion.
 
 ### Phase C — Stage workspace
 

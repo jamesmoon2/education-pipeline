@@ -19,6 +19,8 @@ import type {
 } from "../api/types";
 import { useAction } from "../hooks/useAction";
 import { resetWelcomeDismissal } from "../components/WelcomePanel";
+import ThemeToggle from "../components/ThemeToggle";
+import { resetTourCompletion, useOptionalTour } from "../tour";
 
 // Mirrors PlanStageRow's LOCAL_ONLY_STAGES: these stages never carry a
 // model-plan override (the run engine drives them deterministically).
@@ -95,6 +97,7 @@ export default function SettingsPage() {
   // match the daemon's own default for a payload predating the field.
   const [parallelism, setParallelism] = useState<number>(2);
   const save = useAction();
+  const tour = useOptionalTour();
 
   const load = async () => {
     setLoadError(null);
@@ -230,7 +233,42 @@ export default function SettingsPage() {
 
   return (
     <div className="settings-page">
-      <h2>Settings</h2>
+      <header className="page-heading">
+        <div>
+          <p className="eyebrow">Workspace</p>
+          <h2>Settings</h2>
+        </div>
+      </header>
+      <section aria-labelledby="appearance-heading" className="settings-appearance">
+        <h3 id="appearance-heading">Appearance</h3>
+        <div className="settings-appearance-row">
+          <div>
+            <p className="settings-field-label">Theme</p>
+            <p className="field-help">
+              Follow the system, or pin light or dark. Remembered on this device only.
+            </p>
+          </div>
+          <ThemeToggle />
+        </div>
+        <div className="settings-appearance-row">
+          <div>
+            <p className="settings-field-label">Guided tour</p>
+            <p className="field-help">
+              A two-minute walk through the library, setup, activity and model plan.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              resetTourCompletion();
+              tour?.start("workbench");
+            }}
+            disabled={tour?.active ?? false}
+          >
+            Replay the tour
+          </button>
+        </div>
+      </section>
       <section aria-labelledby="providers-heading">
         <h3 id="providers-heading">Provider availability</h3>
         <p className="field-help">
@@ -270,7 +308,7 @@ export default function SettingsPage() {
         </p>
       </section>
 
-      <section aria-labelledby="plan-heading">
+      <section aria-labelledby="plan-heading" data-tour="model-plan">
         <h3 id="plan-heading">Default model plan</h3>
         {stale && (
           <p role="alert">

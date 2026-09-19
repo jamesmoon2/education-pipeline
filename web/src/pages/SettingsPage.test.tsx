@@ -127,6 +127,19 @@ function setup(plan: PlanPayload = makePlan(), topics: TopicsPayload = { topics:
 }
 
 describe("SettingsPage", () => {
+  it("offers an Appearance section with the theme control and a tour replay", async () => {
+    setup();
+    const section = await screen.findByRole("region", { name: "Appearance" });
+    expect(within(section).getByRole("radiogroup", { name: "Theme" })).toBeInTheDocument();
+    // Outside the app shell there is no tour to start, but the control stays
+    // discoverable so the page never depends on the shell to render.
+    expect(within(section).getByRole("button", { name: "Replay the tour" })).toBeEnabled();
+    expect(screen.getByRole("region", { name: "Default model plan" })).toHaveAttribute(
+      "data-tour",
+      "model-plan",
+    );
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
   });

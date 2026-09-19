@@ -131,8 +131,15 @@ export default function GlobalJobActivity({
   const readyShown = readyToReview.slice(0, 5);
   const readyOverflow = readyToReview.length - readyShown.length;
 
+  const quiet = active.length === 0 && readyToReview.length === 0;
+
   return (
     <>
+      {quiet && (
+        <p className="rail-quiet">
+          {error || topicsError ? "Activity unavailable" : "Nothing running right now"}
+        </p>
+      )}
       {active.length > 0 && (
         <nav className="rail-jobs" aria-label="Active jobs">
           <strong>

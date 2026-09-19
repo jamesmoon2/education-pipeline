@@ -19,6 +19,21 @@ import { nextActionLabel } from "../lib/labels";
 import { costCompletenessTitle, formatUsd } from "../lib/cost";
 import type { ProfileSummary, TopicSummary } from "../api/types";
 
+export function summarizeLibrary(topics: TopicSummary[]): {
+  courses: number;
+  inProgress: number;
+  readyToReview: number;
+  finalized: number;
+} {
+  const live = topics.filter((topic) => !topic.archived);
+  return {
+    courses: live.length,
+    inProgress: live.filter((topic) => topic.run && !topic.run.finalized).length,
+    readyToReview: live.filter((topic) => topic.run?.next_action.action === "approve").length,
+    finalized: live.filter((topic) => topic.run?.finalized).length,
+  };
+}
+
 type StatusFilter = "all" | "no_run" | "in_progress" | "finalized";
 type SortKey = "last_activity" | "title" | "completion";
 
@@ -148,9 +163,22 @@ export default function TopicListPage() {
   };
 
   const profiles: ProfileSummary[] = profileData?.profiles ?? [];
+  const summary = summarizeLibrary(topics);
 
   return (
-    <div>
+    <div className="library-page">
+      <header className="page-heading">
+        <div>
+          <p className="eyebrow">Workspace</p>
+          <h2>Course library</h2>
+          <p className="page-intro">
+            Every course, its next safe move, and what it has cost so far.
+          </p>
+        </div>
+        <Link className="primary-cta button-link" to="/new">
+          Start a new course
+        </Link>
+      </header>
       <WelcomePanel />
       {topics.length === 0 ? (
         <div className="empty-state">
@@ -177,6 +205,24 @@ export default function TopicListPage() {
         </div>
       ) : (
         <>
+          <ul className="stat-strip" aria-label="Library summary">
+            <li>
+              <strong>{summary.courses}</strong>
+              <span>Courses</span>
+            </li>
+            <li>
+              <strong>{summary.inProgress}</strong>
+              <span>In progress</span>
+            </li>
+            <li data-tone={summary.readyToReview > 0 ? "attention" : undefined}>
+              <strong>{summary.readyToReview}</strong>
+              <span>Ready to review</span>
+            </li>
+            <li data-tone={summary.finalized > 0 ? "complete" : undefined}>
+              <strong>{summary.finalized}</strong>
+              <span>Finalized</span>
+            </li>
+          </ul>
           <p className="toolbar">
             <button onClick={() => setImportKind(importKind === "topic" ? null : "topic")}>
               Import topic…
@@ -271,6 +317,7 @@ export default function TopicListPage() {
               )}
             </p>
           )}
+          <div className="library-table" data-tour="library">
           <table>
             <thead>
               <tr>
@@ -316,10 +363,34 @@ export default function TopicListPage() {
                   </td>
                   <td>{formatActivity(t.last_activity)}</td>
                   <td>
-                    {t.completion
-                      ? `${t.completion.stages_approved}/${t.completion.stages_total}` +
-                        (t.completion.exported ? " · exported" : "")
-                      : "—"}
+                    {t.completion ? (
+                      <span className="completion-cell">
+                        <span
+                          className="completion-meter"
+                          aria-hidden="true"
+                          data-exported={t.completion.exported ? "true" : undefined}
+                        >
+                          <i
+                            style={{
+                              width: `${
+                                t.completion.stages_total > 0
+                                  ? Math.round(
+                                      (100 * t.completion.stages_approved) /
+                                        t.completion.stages_total,
+                                    )
+                                  : 0
+                              }%`,
+                            }}
+                          />
+                        </span>
+                        <span>
+                          {`${t.completion.stages_approved}/${t.completion.stages_total}` +
+                            (t.completion.exported ? " · exported" : "")}
+                        </span>
+                      </span>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td>
                     {formatUsd(t.cost?.run_usd ?? null)}
@@ -380,6 +451,7 @@ export default function TopicListPage() {
               ))}
             </tbody>
           </table>
+          </div>
         </>
       )}
     </div>
