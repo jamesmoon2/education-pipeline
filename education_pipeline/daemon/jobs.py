@@ -33,6 +33,7 @@ from education_pipeline.config import (
     ModelCatalog,
     ModelPlan,
 )
+from education_pipeline.orchestrate import provider_for_stage
 from education_pipeline.providers import get_runner
 from education_pipeline.runs import RunStore, StaleContentError
 from education_pipeline.workspace_lock import workspace_lock
@@ -452,8 +453,10 @@ class JobRunner:
             # snapshot for display; overrides edited while the job sat queued
             # must govern what actually executes — and the record/manifest
             # must reflect what really ran.
+            # Decision 5: provider resolution has exactly one home, so the
+            # provider stamped here is the provider every other surface names.
             stage_plan = self.plan.stage(job.stage)
-            job.provider = stage_plan.provider or self.plan.provider
+            job.provider = provider_for_stage(self.plan, job.stage)
             job.model = stage_plan.model
             job.effort = stage_plan.effort
             self.store.save(job)
@@ -878,6 +881,13 @@ class Worker:
         # winner is whichever thread the OS schedules first and a later batch
         # job can start ahead of an ordinary job that has waited longer.
         self._waiting: deque[str] = deque()
+        # Job ids a loop thread has taken off the queue and not yet finished
+        # with. Claimed under ``_lock`` *before* the record is read, so it is
+        # the single arbiter of who makes a still-"queued" job terminal: a job
+        # parked in ``_acquire_slot`` stays "queued" on disk the whole time it
+        # waits, so without this both ``cancel`` and the loop would write the
+        # canceled record and both would call ``on_finished`` (F3).
+        self._claimed: set[str] = set()
         self._threads: list[threading.Thread] = []
         self._stopping = False
 
@@ -934,23 +944,45 @@ class Worker:
         job = self.store.find(job_id)
         if job is None or job.status in TERMINAL_STATUSES:
             return job
+        # Decide "queued -> canceled" against the loop's claim, under the
+        # worker lock, and write the record in the same critical section: an
+        # unclaimed queued job is this call's to finish, a claimed one belongs
+        # to the loop thread holding it (it may be parked in admission, still
+        # "queued" on disk) and gets only the cancel event. Exactly one of the
+        # two writes the terminal record, so ``on_finished`` fires once (F3).
         with self._lock:
             event = self._cancels.get(job_id)
-        if job.status == "queued":
-            job.status = "canceled"
-            job.ended_at = _utcnow().isoformat()
-            self.store.save(job)
-            if event is not None:
-                event.set()
-            self._forget_waiter(job_id)
-            # This call, not the worker loop, made the job terminal: the loop
-            # will dequeue it later, see a non-queued status and skip it.
-            self._notify_finished(job)
-            return job
+            fresh = self.store.find(job_id)
+            mine = (
+                fresh is not None
+                and fresh.status == "queued"
+                and job_id not in self._claimed
+            )
+            if mine:
+                fresh.status = "canceled"
+                fresh.ended_at = _utcnow().isoformat()
+                self.store.save(fresh)
         if event is not None:
             event.set()
         self._forget_waiter(job_id)
+        if mine:
+            # This call, not the worker loop, made the job terminal: the loop
+            # will dequeue it later, see a non-queued status and skip it.
+            self._notify_finished(fresh)
+            return fresh
         return self.store.find(job_id)
+
+    def _claim(self, job_id: str) -> None:
+        """Take responsibility for one dequeued job, before its record is read."""
+
+        with self._lock:
+            self._claimed.add(job_id)
+
+    def _release_claim(self, job_id: str) -> None:
+        """Give it back, once the job is terminal or the loop has skipped it."""
+
+        with self._lock:
+            self._claimed.discard(job_id)
 
     def _notify_finished(self, job: Job | None) -> None:
         """Announce one terminal job to the completion hook, if any.
@@ -1030,8 +1062,15 @@ class Worker:
             job_id = self._queue.get()
             if job_id is None:
                 return
+            # Claimed before the record is read: from here until the claim is
+            # released, this thread -- not ``cancel`` -- writes this job's
+            # terminal record and announces it.
+            self._claim(job_id)
             job = self.store.find(job_id)
             if job is None or job.status != "queued":
+                # Already terminal (``cancel`` got it before the claim): skip
+                # it silently, its completion was announced by whoever wrote it.
+                self._release_claim(job_id)
                 self._forget_waiter(job_id)
                 continue
             with self._lock:
@@ -1040,6 +1079,7 @@ class Worker:
                 job.status = "canceled"
                 job.ended_at = _utcnow().isoformat()
                 self.store.save(job)
+                self._release_claim(job_id)
                 self._forget_waiter(job_id)
                 self._notify_finished(job)
                 continue
@@ -1048,6 +1088,7 @@ class Worker:
                 job.status = "canceled"
                 job.ended_at = _utcnow().isoformat()
                 self.store.save(job)
+                self._release_claim(job_id)
                 self._forget_waiter(job_id)
                 self._notify_finished(job)
                 continue
@@ -1071,6 +1112,7 @@ class Worker:
                     self.store.save(fresh)
             finally:
                 self._release_slot(job)
+                self._release_claim(job_id)
             # Outside the try/finally and the slot: the hook runs with this
             # job's slot already released, so work it enqueues can start.
             self._notify_finished(self.store.find(job_id) or job)

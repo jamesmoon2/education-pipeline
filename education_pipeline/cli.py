@@ -18,12 +18,13 @@ import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 
 from education_pipeline.client import DaemonClient, DaemonError, daemon_status, ensure_daemon
 from education_pipeline import cost as cost_module
 from education_pipeline.config import ConfigError, ModelPlan, apply_overrides_lenient
 from education_pipeline.course_queue import (
+    CourseQueue,
     add_entry,
     load_queue,
     mark_running,
@@ -1036,12 +1037,20 @@ def _blocking_job_runner(client):
                 modules = ", ".join(str(job.get("module_id")) for job in failed)
                 message = f"{len(failed)} of {len(jobs)} module jobs failed: {modules}"
             return JobOutcome(
-                waited=True, ok=not failed, message=message, count=len(jobs)
+                waited=True,
+                ok=not failed,
+                message=message,
+                count=len(jobs),
+                # The terminal records carry the provider the worker resolved
+                # when it picked the batch up, which the plan may have changed
+                # since this runner enqueued it (F4). Every module of a batch
+                # runs the same stage, so the first one speaks for all.
+                provider=jobs[0].get("provider") if jobs else None,
             )
         job = _wait_for_job(client, record["id"])
         ok = job["status"] == "succeeded"
         message = None if ok else (job.get("error") or f"job {job['id']} {job['status']}")
-        return JobOutcome(waited=True, ok=ok, message=message)
+        return JobOutcome(waited=True, ok=ok, message=message, provider=job.get("provider"))
 
     return run_job
 
@@ -1170,6 +1179,33 @@ def _cmd_queue_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+def _queue_transition(
+    root: Path,
+    topic_id: str,
+    transition: Callable[[CourseQueue], CourseQueue],
+) -> bool:
+    """Apply one queue transition to the file's *current* contents.
+
+    Driving a course takes minutes, and `queue add`/`queue remove` (or another
+    `queue` client) may edit ``courses.json`` while it runs. Holding one
+    in-memory queue across the pass and writing it back after every transition
+    silently reverts those edits, so each transition re-reads the file and
+    applies itself to what it finds -- read, transform and write under the
+    workspace lock, so a concurrent edit lands either wholly before or wholly
+    after it.
+
+    Returns False when ``topic_id`` is no longer in the queue, which is not an
+    error: the entry was removed meanwhile and must stay removed.
+    """
+
+    with workspace_lock(root):
+        queue = load_queue(root)
+        if not any(entry.topic_id == topic_id for entry in queue.entries):
+            return False
+        save_queue(root, transition(queue))
+        return True
+
+
 def _cmd_queue_run(args: argparse.Namespace) -> int:
     """Drive every pending course to its next judgment point, in file order.
 
@@ -1178,7 +1214,9 @@ def _cmd_queue_run(args: argparse.Namespace) -> int:
     interrupted ``queue run`` leaves the course it was on marked ``running``
     on disk, and the next ``queue run`` picks that course up again
     (decision 7). The pending list is taken once, up front, so the rewrites
-    cannot change what this pass works through.
+    cannot change what this pass works through; each rewrite, though, is
+    applied to the file as it stands (``_queue_transition``), and a course
+    removed from the queue meanwhile is skipped rather than resurrected.
     """
 
     root = _root(args)
@@ -1189,11 +1227,16 @@ def _cmd_queue_run(args: argparse.Namespace) -> int:
         return 0
     failures = 0
     for topic_id in pending:
-        queue = mark_running(queue, topic_id, now=_now())
-        save_queue(root, queue)
+        if not _queue_transition(
+            root, topic_id, lambda q: mark_running(q, topic_id, now=_now())
+        ):
+            continue
         outcome = _run_to_judgment(root, topic_id, autostart=args.autostart)
-        queue = mark_stopped(queue, topic_id, stop_payload(outcome.stop), now=_now())
-        save_queue(root, queue)
+        _queue_transition(
+            root,
+            topic_id,
+            lambda q: mark_stopped(q, topic_id, stop_payload(outcome.stop), now=_now()),
+        )
         print(f"queue: {topic_id}: {describe_stop(outcome.stop)}")
         if _stopped_badly(outcome):
             failures += 1

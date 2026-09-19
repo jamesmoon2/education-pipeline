@@ -207,14 +207,38 @@ def test_validate_phase_is_final_for_a_non_draft_stage():
     assert outcome.stop == Stop(kind="finalize")
 
 
-def test_assemble_is_treated_as_an_advance_step():
+def test_assemble_is_its_own_step_kind():
+    """T35/F5: assembling a fanned-out draft is its own ``Step.kind``
+    ("assemble"), not "advance" -- "advance" is reserved for writing a
+    prompt. The loop still calls the same ``Steps.advance`` member for both
+    (the protocol keeps its five members unchanged); only the recorded step
+    kind differs by the action the loop dispatched on. Supersedes the old
+    "assemble is treated as an advance step" case."""
+
     steps = RecordingSteps(
         status=constant(_status("assemble", "draft")),
         advance=constant(_advance_result(_status("approve", "draft"))),
     )
     outcome = run_until_judgment("t", steps)
-    assert outcome.steps == (Step(kind="advance", stage="draft"),)
+    assert outcome.steps == (Step(kind="assemble", stage="draft"),)
     assert outcome.stop == Stop(kind="approve", stage="draft")
+    assert steps.count("advance") == 1
+
+
+def test_assemble_exception_reports_failed_assembling_the_draft():
+    """The assemble label reads "assembling the draft", not "assembling the
+    draft draft" or "writing the draft prompt" (the label an ``advance``
+    step for the same stage would use)."""
+
+    steps = RecordingSteps(
+        status=constant(_status("assemble", "draft")),
+        advance=constant(RuntimeError("disk full")),
+    )
+    outcome = run_until_judgment("t", steps)
+    assert outcome.steps == ()
+    assert outcome.stop == Stop(
+        kind="failed", action="assembling the draft", message="disk full"
+    )
 
 
 def test_save_response_started_with_no_count_when_the_job_is_not_batched():
@@ -390,6 +414,61 @@ def test_waited_job_that_fails_reports_failed_and_still_records_the_step():
     outcome = run_until_judgment("t", steps)
     assert outcome.steps == (Step(kind="job", stage="qa", provider="claude", count=None),)
     assert outcome.stop == Stop(kind="failed", action="running qa with claude", message="job crashed")
+
+
+def test_waited_job_that_succeeds_records_its_own_provider_on_the_step():
+    """F4 (Codex round 1): ``JobOutcome.provider``, when set, names the
+    provider that actually ran the job -- which can differ from the
+    plan-resolved provider handed to ``run_job`` (e.g. the plan changed
+    between enqueue and execution). It must win over the resolved provider
+    on the recorded ``Step``."""
+
+    steps = RecordingSteps(
+        status=scripted(_status("save_response", "qa"), _status("approve", "qa")),
+        provider_for=constant("claude"),
+        run_job=constant(JobOutcome(waited=True, ok=True, provider="other")),
+    )
+    outcome = run_until_judgment("t", steps)
+    assert outcome.steps == (Step(kind="job", stage="qa", provider="other", count=None),)
+    assert outcome.stop == Stop(kind="approve", stage="qa")
+
+
+def test_waited_job_that_fails_labels_the_stop_with_its_own_provider():
+    steps = RecordingSteps(
+        status=constant(_status("save_response", "qa")),
+        provider_for=constant("claude"),
+        run_job=constant(
+            JobOutcome(waited=True, ok=False, message="job crashed", provider="other")
+        ),
+    )
+    outcome = run_until_judgment("t", steps)
+    assert outcome.steps == (Step(kind="job", stage="qa", provider="other", count=None),)
+    assert outcome.stop == Stop(
+        kind="failed", action="running qa with other", message="job crashed"
+    )
+
+
+def test_not_waited_job_reports_its_own_provider_when_the_runner_names_one():
+    steps = RecordingSteps(
+        status=constant(_status("save_response", "qa")),
+        provider_for=constant("claude"),
+        run_job=constant(JobOutcome(waited=False, provider="other")),
+    )
+    outcome = run_until_judgment("t", steps)
+    assert outcome.steps == (Step(kind="job", stage="qa", provider="other", count=None),)
+    assert outcome.stop == Stop(
+        kind="started", stage="qa", provider="other", count=None
+    )
+
+
+def test_job_outcome_gains_a_provider_field_defaulting_to_none():
+    """A runner that doesn't know the actual provider (today's daemon
+    non-blocking runner, before this change) must still be constructible;
+    the field's mere existence (with a ``None`` default) is itself part of
+    the contract, since ``JobOutcome`` doesn't have it yet."""
+
+    outcome = JobOutcome(waited=False, provider=None)
+    assert outcome.provider is None
 
 
 def test_stall_guard_stops_without_calling_run_job_again():
@@ -722,6 +801,8 @@ def test_describe_stop_phrases(stop: Stop, phrase: str):
         (Step(kind="validate", stage="repair", phase="final"), "ran final validation"),
         (Step(kind="job", stage="qa", provider="claude", count=None), None),
         (Step(kind="job", stage="draft", provider="claude", count=3), None),
+        # F5 (Codex round 1): assemble is its own step kind with its own phrase.
+        (Step(kind="assemble", stage="draft"), "assembled the draft"),
     ],
 )
 def test_describe_step_phrases(step: Step, phrase: str | None):

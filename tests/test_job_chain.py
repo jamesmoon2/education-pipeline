@@ -268,6 +268,79 @@ def test_on_finished_runs_outside_the_lock_so_it_can_enqueue(tmp_path, monkeypat
         worker.stop()
 
 
+# ---------------------------------------------------------------------------
+# Codex round 1, F3: cancellation must claim the terminal transition exactly
+# once. ``cancel`` reads the record and decides "queued -> canceled" outside
+# the worker lock; the loop thread can meanwhile have already dequeued the
+# very same job and be parked in ``_acquire_slot`` waiting for an admission
+# slot -- its on-disk status stays "queued" the whole time it waits (a job is
+# only marked "running" once ``_acquire_slot`` returns True), so both paths
+# can independently decide they are the one making it terminal. Today both
+# write the terminal record and both call ``on_finished``.
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_while_the_loop_thread_holds_the_job_parked_in_admission_notifies_once(
+    tmp_path, monkeypatch
+):
+    """Job A (ordinary, no batch) occupies the pool's one ordinary-job slot.
+    Job B (ordinary, a different batch-less job) is enqueued once A is
+    already running, so the second worker thread dequeues B and parks it in
+    ``_acquire_slot`` -- admissible only once nothing is running. B is
+    canceled while parked there. ``on_finished`` must fire exactly once for
+    B (today it fires twice: once from ``cancel`` itself, once from the
+    loop's own "canceled while it waited for a slot" branch), and exactly
+    once for A, which must still run to completion undisturbed."""
+
+    monkeypatch.setenv("FAKE_STDOUT", "OK\n")
+    monkeypatch.setenv("FAKE_DELAY", "3")
+    store, runs, make = _factory(tmp_path)
+    recorder = _Recorder()
+    worker = Worker(store, make, parallelism=2, on_finished=recorder)
+    worker.start()
+    try:
+        a = store.create("t", "draft", "fake", "m", None)
+        store.save(a)
+        worker.enqueue(a)
+
+        # Wait for A to actually be admitted (running) so B is the only
+        # queued job left for the second thread to dequeue and park.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            current = store.find(a.id)
+            if current and current.status == "running":
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("job A never started running")
+
+        b = store.create("t", "qa", "fake", "m", None)
+        store.save(b)
+        worker.enqueue(b)
+        # Give the second thread time to dequeue B and park it in
+        # _acquire_slot -- its on-disk status stays "queued" while parked.
+        time.sleep(0.3)
+        assert store.find(b.id).status == "queued", "test setup: B must still be parked, not running"
+
+        canceled = worker.cancel(b.id)
+        assert canceled is not None
+
+        done_b = _wait_terminal(store, b.id)
+        assert done_b.status == "canceled"
+        done_a = _wait_terminal(store, a.id)
+        assert done_a.status == "succeeded"
+
+        recorder.wait_for(2)  # one call for A, one for B
+        # Give a buggy second notification for B a chance to land.
+        time.sleep(0.3)
+        a_calls = [job for job in recorder.calls if job.id == a.id]
+        b_calls = [job for job in recorder.calls if job.id == b.id]
+        assert len(a_calls) == 1, f"on_finished fired {len(a_calls)} times for job A"
+        assert len(b_calls) == 1, f"on_finished fired {len(b_calls)} times for job B"
+    finally:
+        worker.stop()
+
+
 def test_on_finished_that_raises_does_not_stop_the_worker(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_STDOUT", "OK\n")
     store, runs, make = _factory(tmp_path)

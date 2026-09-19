@@ -637,3 +637,52 @@ def test_worker_admits_waiting_jobs_in_enqueue_order(tmp_path):
     solo_start = tracker.spans[solo.id][0]
     assert all(solo_start < tracker.spans[job.id][0] for job in later)
     assert all(store.find(job.id).status == "succeeded" for job in order)
+
+
+# ---------------------------------------------------------------------------
+# Codex round 1, F4: JobRunner.execute must resolve the provider through
+# orchestrate.provider_for_stage (decision 5: one home for that rule),
+# instead of re-implementing "row.provider or plan.provider" inline. Pinned
+# by monkeypatching the name in the ``jobs`` module namespace, the same way
+# T32 pinned ``server.py``'s call to it (test_server_continue.py).
+# ---------------------------------------------------------------------------
+
+
+def test_job_runner_execute_resolves_provider_through_orchestrate_provider_for_stage(
+    tmp_path, monkeypatch
+):
+    """The catalog `_factory` builds only registers "fake", so a provider
+    pinned to "fake2" by the patched rule fails model resolution once it's
+    stamped -- that failure is fine, it happens *after* the provider stamp
+    we're pinning. What this test proves is that the stamp itself came from
+    ``orchestrate.provider_for_stage`` (called through ``jobs.py``'s own
+    module-level name for it) and not from the inline computation, which
+    would stamp "fake" (the plan's actual "draft" row) regardless."""
+
+    import education_pipeline.daemon.jobs as jobs_module
+
+    monkeypatch.setenv("FAKE_STDOUT", "OK\n")
+    store, runs, make = _factory(tmp_path)
+
+    calls = []
+
+    def fake_provider_for_stage(plan, stage):
+        calls.append((plan, stage))
+        return "fake2"
+
+    monkeypatch.setattr(
+        jobs_module, "provider_for_stage", fake_provider_for_stage, raising=False
+    )
+
+    job = store.create("t", "draft", "fake", "m", None)
+    store.save(job)
+    worker = Worker(store, make)
+    worker.start()
+    try:
+        worker.enqueue(job)
+        done = _wait_terminal(store, job.id)
+    finally:
+        worker.stop()
+
+    assert calls, "JobRunner.execute never called orchestrate.provider_for_stage"
+    assert done.provider == "fake2"

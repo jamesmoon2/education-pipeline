@@ -217,12 +217,21 @@ def validate_run(runs: RunStore, jobs: JobStore, topic_id: str, phase: str) -> d
 
 
 @contextmanager
-def _active_job_guard(jobs: JobStore, topic_id: str):
-    """The same up-front check ``advance_run``/``validate_run`` apply before
+def _active_job_guard(jobs: JobStore, topic_id: str, runs: RunStore | None = None):
+    """The same up-front checks ``advance_run``/``validate_run`` apply before
     mutating, reused (not reinvented) as ``StoreSteps``' ``mutation_guard`` so
-    a job started by another process mid-loop stops the step exactly as it
-    would stop a direct ``POST /v1/runs/{id}/advance`` or ``.../validate``."""
+    a job started -- or a course archived -- by another process mid-loop stops
+    the step exactly as it would stop a direct ``POST /v1/runs/{id}/advance``
+    or ``.../validate``.
 
+    *Both* checks, not just the active-job one (Codex round 1, F1): the loop
+    takes several mutating steps per call, and a course archived between two
+    of them must refuse the rest instead of being quietly written to. ``runs``
+    is the caller's store when it has one; otherwise the guard opens one over
+    the job store's workspace, since archive state lives on disk.
+    """
+
+    _require_not_archived(runs if runs is not None else RunStore(jobs.root), topic_id)
     _require_no_active_job(jobs, topic_id)
     yield
 
@@ -256,7 +265,7 @@ def continue_run(
     _require_no_active_job(jobs, topic_id)
 
     def _mutation_guard(_topic_id: str) -> ContextManager[object]:
-        return _active_job_guard(jobs, _topic_id)
+        return _active_job_guard(jobs, _topic_id, runs)
 
     engine = StoreSteps(
         runs, plan_for=plan_for, run_job=run_job, mutation_guard=_mutation_guard

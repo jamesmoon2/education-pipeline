@@ -279,6 +279,7 @@ export interface TopicsPayload {
  *  no mapping step. */
 export type ContinueStepPayload =
   | { kind: "advance"; stage: string | null }
+  | { kind: "assemble"; stage: string | null }
   | { kind: "validate"; stage: string | null; phase: "draft" | "final" }
   | { kind: "job"; stage: string; provider: string; count?: number };
 
