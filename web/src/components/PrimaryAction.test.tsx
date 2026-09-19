@@ -1,8 +1,9 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DraftProgress, NextAction, RunStatus } from "../api/types";
+import type { Continuation, ContinueStep, ContinueStop } from "../lib/continueRun";
 import PrimaryAction from "./PrimaryAction";
 
 vi.mock("../api/client", async () => {
@@ -107,6 +108,30 @@ function renderAction(status: RunStatus, onChanged = vi.fn(), activeJob: Job | n
     </MemoryRouter>,
   );
   return onChanged;
+}
+
+// T34: RunStatus.continuation (decision 9 addendum) -- the daemon's report
+// of the latest chained job it carried on its own, after the endpoint that
+// started it returned. Self-contained fixture, mirroring continueRun.test.ts.
+function makeContinuation(
+  stop: ContinueStop,
+  steps: ContinueStep[] = [],
+  overrides: Partial<Omit<Continuation, "stop" | "steps">> = {},
+): Continuation {
+  return {
+    job_id: "j1",
+    stage: "draft",
+    provider: "claude-code",
+    after: "job",
+    steps,
+    stop,
+    at: "2026-09-19T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function withContinuation(status: RunStatus, continuation: Continuation | null): RunStatus {
+  return { ...status, continuation };
 }
 
 function makeJob(status: Job["status"], overrides: Partial<Job> = {}): Job {
@@ -570,5 +595,197 @@ describe("PrimaryAction active job", () => {
     // ...but the live region's own announced text did not change, so a
     // screen reader has nothing to re-announce every second.
     expect(status.textContent).toBe(initialStatusText);
+  });
+});
+
+describe("PrimaryAction continuation feedback (T34, decision 9 addendum)", () => {
+  it("renders chainFeedback text with the success tone when status carries a continuation", () => {
+    const continuation = makeContinuation(
+      { kind: "approve", stage: "draft" },
+      [{ kind: "validate", stage: "draft", phase: "draft" }],
+      { stage: "draft" },
+    );
+    renderAction(withContinuation(makeStatus("write_prompt", "spec"), continuation));
+    expect(
+      screen.getByText(
+        "After the draft job ran: ran draft validation; draft needs your approval.",
+      ),
+    ).toHaveClass("success");
+  });
+
+  it("renders the error tone when the continuation's chain failed", () => {
+    const continuation = makeContinuation(
+      {
+        kind: "failed",
+        action: "starting qa with claude-code",
+        message: "provider unavailable",
+      },
+      [{ kind: "advance", stage: "qa" }],
+      { stage: "draft" },
+    );
+    renderAction(withContinuation(makeStatus("write_prompt", "spec"), continuation));
+    expect(
+      screen.getByText(
+        "After the draft job ran: wrote the qa prompt; starting qa with claude-code failed: provider unavailable.",
+      ),
+    ).toHaveClass("error");
+  });
+
+  it("uses the module-jobs phrasing for an after: batch continuation", () => {
+    const continuation = makeContinuation(
+      { kind: "started", stage: "qa", provider: "claude-code", count: 3 },
+      [],
+      { stage: "draft", after: "batch" },
+    );
+    renderAction(withContinuation(makeStatus("write_prompt", "spec"), continuation));
+    expect(
+      screen.getByText(
+        "After the draft module jobs ran: 3 module jobs started for qa with claude-code.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("renders nothing when status carries no continuation", () => {
+    renderAction(makeStatus("write_prompt", "spec"));
+    expect(screen.queryByText(/After the .* job ran/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/After the .* module jobs ran/)).not.toBeInTheDocument();
+  });
+
+  it("renders nothing when continuation is explicitly null", () => {
+    renderAction(withContinuation(makeStatus("write_prompt", "spec"), null));
+    expect(screen.queryByText(/After the .* job ran/)).not.toBeInTheDocument();
+  });
+});
+
+describe("PrimaryAction 'Continue to next approval' (T34, decision 9 addendum)", () => {
+  it("renders for next action write_prompt", () => {
+    renderAction(makeStatus("write_prompt", "spec"));
+    expect(
+      screen.getByRole("button", { name: "Continue to next approval" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders for next action assemble", () => {
+    renderAction(makeStatus("assemble", "draft"));
+    expect(
+      screen.getByRole("button", { name: "Continue to next approval" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders for next action validate", () => {
+    renderAction(makeStatus("validate", "repair"));
+    expect(
+      screen.getByRole("button", { name: "Continue to next approval" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders for next action save_response, alongside the unchanged 'Run with provider' button", () => {
+    renderAction(makeStatus("save_response", "draft"));
+    expect(screen.getByRole("button", { name: "Run with provider" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Continue to next approval" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders for a guide draft fan-out, alongside the unchanged 'Run modules with provider' button", () => {
+    renderAction(makeStatus("save_response", "draft", [], makeDraftProgress()));
+    expect(
+      screen.getByRole("button", { name: "Run modules with provider" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Continue to next approval" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not render for next action approve", () => {
+    renderAction(makeStatus("approve", "qa"));
+    expect(
+      screen.queryByRole("button", { name: "Continue to next approval" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not render for next action resolve_findings", () => {
+    renderAction(makeStatus("resolve_findings", "repair"));
+    expect(
+      screen.queryByRole("button", { name: "Continue to next approval" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not render for next action finalize", () => {
+    renderAction(makeStatus("finalize", null));
+    expect(
+      screen.queryByRole("button", { name: "Continue to next approval" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not render for next action done", () => {
+    renderAction(makeStatus("done", null));
+    expect(
+      screen.queryByRole("button", { name: "Continue to next approval" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("calls continueRun (postContinue) and shows continueOnlyFeedback, then refreshes status", async () => {
+    vi.mocked(postContinue).mockResolvedValue({
+      topic_id: "t",
+      steps: [{ kind: "validate", stage: "draft", phase: "draft" }],
+      stop: { kind: "resolve_findings" },
+      status: null,
+    });
+    const onChanged = renderAction(makeStatus("assemble", "draft"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Continue to next approval" }));
+
+    expect(postContinue).toHaveBeenCalledWith("t");
+    expect(postAdvance).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText("Continued — ran draft validation; findings need review."),
+    ).toHaveClass("success");
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("shows the error tone when the continue-to-next-approval chain fails", async () => {
+    vi.mocked(postContinue).mockResolvedValue({
+      topic_id: "t",
+      steps: [],
+      stop: {
+        kind: "failed",
+        action: "starting qa with claude-code",
+        message: "provider unavailable",
+      },
+      status: null,
+    });
+    renderAction(makeStatus("validate", "repair"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Continue to next approval" }));
+
+    expect(
+      await screen.findByText(
+        "Continuing failed: starting qa with claude-code failed: provider unavailable",
+      ),
+    ).toHaveClass("error");
+  });
+
+  it("disables the button while the call is in flight", async () => {
+    let resolvePromise!: (value: Awaited<ReturnType<typeof postContinue>>) => void;
+    vi.mocked(postContinue).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvePromise = resolve;
+        }),
+    );
+    renderAction(makeStatus("write_prompt", "spec"));
+
+    const button = screen.getByRole("button", { name: "Continue to next approval" });
+    void userEvent.click(button);
+
+    await waitFor(() => expect(button).toBeDisabled());
+
+    resolvePromise({
+      topic_id: "t",
+      steps: [],
+      stop: { kind: "done" },
+      status: null,
+    });
   });
 });
