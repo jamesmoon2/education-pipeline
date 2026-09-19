@@ -321,6 +321,22 @@ describe("continueFeedback", () => {
       "Approved draft — started qa with claude-code.",
     );
   });
+
+  // Codex round 1, F5: assembling a fanned-out draft is its own step kind
+  // ("assemble"), with its own phrase, and -- unlike an "advance" step --
+  // it is never deduped against the stop's stage: assembly is not a prompt
+  // write, so it is always worth naming even when the stop names the same
+  // stage.
+  it("describes an assemble step and never dedupes it against the stop's stage", () => {
+    const result: ContinueResult = {
+      steps: [{ kind: "assemble", stage: "draft" }],
+      stop: { kind: "approve", stage: "draft" },
+      status: null,
+    };
+    expect(continueFeedback("qa", result)).toBe(
+      "Approved qa — assembled the draft; draft needs your approval.",
+    );
+  });
 });
 
 /**
@@ -448,6 +464,19 @@ describe("chainFeedback", () => {
       "After the draft module jobs ran: 3 module jobs started for qa with claude-code.",
     );
   });
+
+  // Codex round 1, F5: same as continueFeedback -- an assemble step is
+  // always named, never deduped against the stop's stage.
+  it("describes a chained assemble step without deduping it against the stop's stage", () => {
+    const continuation = makeContinuation(
+      { kind: "approve", stage: "draft" },
+      [{ kind: "assemble", stage: "draft" }],
+      { stage: "draft" },
+    );
+    expect(chainFeedback(continuation)).toBe(
+      "After the draft job ran: assembled the draft; draft needs your approval.",
+    );
+  });
 });
 
 describe("chainFailed", () => {
@@ -510,6 +539,19 @@ describe("continueOnlyFeedback", () => {
     };
     expect(continueOnlyFeedback(result)).toBe(
       "Continuing failed: starting qa with claude-code failed: provider unavailable",
+    );
+  });
+
+  // Codex round 1, F5: same as continueFeedback -- an assemble step is
+  // always named, never deduped against the stop's stage.
+  it("describes an assemble step without deduping it against the stop's stage", () => {
+    const result: ContinueResult = {
+      steps: [{ kind: "assemble", stage: "draft" }],
+      stop: { kind: "approve", stage: "draft" },
+      status: null,
+    };
+    expect(continueOnlyFeedback(result)).toBe(
+      "Continued — assembled the draft; draft needs your approval.",
     );
   });
 });

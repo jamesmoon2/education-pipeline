@@ -24,9 +24,9 @@ import pytest
 import test_draft_units as tdu
 from test_server import FakeRunner, _req, _start_server, server_with_context  # noqa: F401 (fixture)
 
-from education_pipeline import ContentContract, parse_model_catalog, parse_model_plan
-from education_pipeline.daemon import StaticConfigSource
-from education_pipeline.daemon.jobs import Job, new_job_id
+from education_pipeline import ContentContract, RunStore, parse_model_catalog, parse_model_plan
+from education_pipeline.daemon import StaticConfigSource, write_api
+from education_pipeline.daemon.jobs import Job, JobStore, new_job_id
 
 
 def _continue(port: int, topic_id: str):
@@ -350,3 +350,104 @@ def test_route_table_doc_lists_continue_endpoint():
     )
     text = doc.read_text(encoding="utf-8")
     assert "POST /v1/runs/{id}/continue" in text
+
+
+# ---------------------------------------------------------------------------
+# 10. Codex round 1, F1: the per-step mutation guard must recheck archive
+#     state, not just active-job state (write_api.py:219-227,
+#     ``_active_job_guard`` reused as ``continue_run``'s ``mutation_guard``).
+# ---------------------------------------------------------------------------
+
+
+def _seed_fresh_topic(tmp_path: Path, topic_id: str) -> RunStore:
+    """A topic whose only run action taken so far is ``create_run`` -- next
+    action is ``write_prompt`` for the first stage, with nothing on disk yet
+    for it to write."""
+
+    from education_pipeline.topics import load_topic
+    from education_pipeline.workspace import TopicStore
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    topic_toml = tmp_path / f"_seed-{topic_id}.toml"
+    topic_toml.write_text(
+        "schema_version = 1\n"
+        f'id = "{topic_id}"\n'
+        f'title = "{topic_id}"\n'
+        'brief = "A public introduction to feedback loops."\n'
+        'goals = ["explain feedback loops"]\n',
+        encoding="utf-8",
+    )
+    topic = load_topic(topic_toml)
+    TopicStore(tmp_path).import_topic(topic.id, topic_toml, overwrite=True)
+
+    runs = RunStore(tmp_path)
+    runs.create_run(topic_id, content_contract=ContentContract.legacy_markdown())
+    return runs
+
+
+def test_active_job_guard_raises_archived_conflict_even_with_no_active_job(tmp_path):
+    """Today ``_active_job_guard`` only calls ``_require_no_active_job``; an
+    archived topic with no active job sails straight through it. It must
+    refuse exactly as ``advance``/``validate`` do outside the loop (the same
+    ``archived_course`` conflict ``_require_not_archived`` raises for every
+    other mutating route)."""
+
+    runs = _seed_fresh_topic(tmp_path, "systems-thinking")
+    jobs = JobStore(tmp_path)
+    runs.archive_run("systems-thinking")
+    assert jobs.any_active_for("systems-thinking") is None  # no active job either
+
+    body_ran = False
+    with pytest.raises(write_api.ConflictError) as excinfo:
+        with write_api._active_job_guard(jobs, "systems-thinking"):
+            body_ran = True
+    assert excinfo.value.code == "archived_course"
+    assert body_ran is False, "the guard must refuse before its body ever runs"
+
+
+def test_continue_run_recheck_blocks_the_step_after_a_mid_loop_archive(tmp_path):
+    """F1: a course archived *during* a ``continue_run`` pass (by another
+    client) must be blocked at the next mutating step, not left to finish it.
+
+    The seed leaves next_action at write_prompt(spec) under a manual-provider
+    plan. The archive is injected between ``continue_run``'s up-front checks
+    and the loop's very first mutating step by wrapping ``RunStore.
+    run_status`` (the loop's first call, read-only today) to archive the
+    course as a side effect before answering -- so if the per-step guard does
+    not recheck archived state, the loop finishes its normal, unguarded
+    course: it writes the spec prompt and stops "manual" (a clean-looking
+    success), silently mutating a course that was archived out from under it.
+    """
+
+    runs = _seed_fresh_topic(tmp_path, "systems-thinking")
+    jobs = JobStore(tmp_path)
+
+    before = runs.run_status("systems-thinking").next_action
+    assert before.action == "write_prompt" and before.stage == "spec"
+
+    real_run_status = runs.run_status
+    archived_once = {"done": False}
+
+    def _archiving_run_status(topic_id):
+        if not archived_once["done"]:
+            archived_once["done"] = True
+            runs.archive_run(topic_id)
+        return real_run_status(topic_id)
+
+    # RunStore is a frozen dataclass; install the instance attribute the way
+    # RunStore installs its own (see test_orchestrate.py's precedent).
+    object.__setattr__(runs, "run_status", _archiving_run_status)
+
+    def plan_for(topic_id):
+        return parse_model_plan({"provider": "manual", "stages": {}})
+
+    def run_job(topic_id, stage):  # pragma: no cover
+        raise AssertionError("run_job must not be called: archived before any job starts")
+
+    result = write_api.continue_run(
+        runs, jobs, "systems-thinking", plan_for=plan_for, run_job=run_job
+    )
+
+    assert result["stop"]["kind"] == "failed"
+    assert "archived" in result["stop"]["message"]
+    assert not runs.stage_paths("systems-thinking", "spec").prompt_path.exists()

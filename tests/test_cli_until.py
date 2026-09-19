@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -523,6 +524,110 @@ def test_queue_run_marks_the_entry_running_on_disk_before_driving_it(
 
 
 # ---------------------------------------------------------------------------
+# Codex round 1, F2: queue edits made during a pass survive it.
+#
+# ``_cmd_queue_run`` keeps one in-memory ``CourseQueue`` for the whole pass
+# and overwrites the file with it after each course's ``mark_running``/
+# ``mark_stopped``, so an edit another client makes to the file *during* the
+# course being driven is silently clobbered by that overwrite. Every
+# transition should instead reload the file first and apply the transition
+# to what it finds there. Observed the same way as the existing
+# mark-running test: from inside the provider job.
+# ---------------------------------------------------------------------------
+
+
+def test_queue_run_preserves_an_entry_added_by_another_process_mid_pass(
+    tmp_path: Path, live_daemon, capsys
+) -> None:
+    from education_pipeline.course_queue import add_entry, load_queue, save_queue
+
+    class _AddingRunner(_ScriptedRunner):
+        def build_invocation(self, model, plan, prompt_path):
+            save_queue(
+                tmp_path,
+                add_entry(load_queue(tmp_path), "topic-c", now="2026-09-19T00:00:00+00:00"),
+            )
+            return super().build_invocation(model, plan, prompt_path)
+
+    register_runner(_AddingRunner())
+    _write_fake_plan(tmp_path)
+    _seed_topic(tmp_path, "topic-a")
+    test_cli._run(tmp_path, "queue", "add", "topic-a")
+    capsys.readouterr()
+
+    ensure_daemon(tmp_path, autostart=True)
+    code = test_cli._run(tmp_path, "queue", "run")
+
+    assert code == 0
+    entries = {e.topic_id: e for e in load_queue(tmp_path).entries}
+    assert "topic-c" in entries, "an entry added while topic-a was driven must survive the pass"
+    assert entries["topic-c"].status == "queued"
+
+    test_cli._run(tmp_path, "daemon", "stop")
+
+
+def test_queue_run_leaves_a_concurrently_removed_running_entry_absent(
+    tmp_path: Path, live_daemon, capsys
+) -> None:
+    from education_pipeline.course_queue import load_queue, remove_entry, save_queue
+
+    class _RemovingRunner(_ScriptedRunner):
+        def build_invocation(self, model, plan, prompt_path):
+            save_queue(tmp_path, remove_entry(load_queue(tmp_path), "topic-a"))
+            return super().build_invocation(model, plan, prompt_path)
+
+    register_runner(_RemovingRunner())
+    _write_fake_plan(tmp_path)
+    _seed_topic(tmp_path, "topic-a")
+    test_cli._run(tmp_path, "queue", "add", "topic-a")
+    capsys.readouterr()
+
+    ensure_daemon(tmp_path, autostart=True)
+    code = test_cli._run(tmp_path, "queue", "run")
+
+    assert code == 0
+    entries = load_queue(tmp_path).entries
+    assert all(e.topic_id != "topic-a" for e in entries), (
+        "a course removed from the queue while it was running must not be "
+        "written back by the pass that was driving it"
+    )
+
+    test_cli._run(tmp_path, "daemon", "stop")
+
+
+def test_queue_run_skips_driving_a_concurrently_removed_next_entry(
+    tmp_path: Path, live_daemon, capsys
+) -> None:
+    from education_pipeline.course_queue import load_queue, remove_entry, save_queue
+
+    class _RemovingNextRunner(_ScriptedRunner):
+        def build_invocation(self, model, plan, prompt_path):
+            topic_id = Path(prompt_path).parent.parent.name
+            if topic_id == "topic-a":
+                save_queue(tmp_path, remove_entry(load_queue(tmp_path), "topic-b"))
+            return super().build_invocation(model, plan, prompt_path)
+
+    runner = _RemovingNextRunner()
+    register_runner(runner)
+    _write_fake_plan(tmp_path)
+    _seed_topic(tmp_path, "topic-a")
+    _seed_topic(tmp_path, "topic-b")
+    test_cli._run(tmp_path, "queue", "add", "topic-a")
+    test_cli._run(tmp_path, "queue", "add", "topic-b")
+    capsys.readouterr()
+
+    ensure_daemon(tmp_path, autostart=True)
+    code = test_cli._run(tmp_path, "queue", "run")
+
+    assert code == 0
+    assert runner.calls == ["topic-a"], "topic-b was removed before its turn; it must not be driven"
+    entries = load_queue(tmp_path).entries
+    assert all(e.topic_id != "topic-b" for e in entries)
+
+    test_cli._run(tmp_path, "daemon", "stop")
+
+
+# ---------------------------------------------------------------------------
 # 10. The blocking job runner on a draft fan-out
 # ---------------------------------------------------------------------------
 
@@ -570,3 +675,149 @@ def test_blocking_runner_fails_a_batch_with_one_failed_module() -> None:
     assert outcome.ok is False
     assert outcome.count == 2
     assert "m2" in (outcome.message or "")
+
+
+# ---------------------------------------------------------------------------
+# Codex round 1, F4: the CLI's blocking runner reports the *terminal* job's
+# provider, not the one it enqueued with -- a run override or the global
+# plan can change while the job sat queued, and ``JobRunner.execute`` already
+# re-stamps the job record with whatever actually ran (jobs.py:449-459); the
+# blocking runner just never reads that field back.
+# ---------------------------------------------------------------------------
+
+
+class _SingleJobClient:
+    """A ``DaemonClient`` stand-in whose terminal job names a different
+    provider than the one it was enqueued with."""
+
+    def __init__(self, enqueued_provider: str, terminal_provider: str) -> None:
+        self.enqueued_provider = enqueued_provider
+        self.terminal_provider = terminal_provider
+        self.get_job_calls = 0
+
+    def enqueue(self, topic_id, **kwargs):
+        return {"id": "j1", "stage": "draft", "provider": self.enqueued_provider}
+
+    def get_job(self, job_id):
+        self.get_job_calls += 1
+        return {"id": job_id, "status": "succeeded", "provider": self.terminal_provider}
+
+
+def test_blocking_runner_reports_the_terminal_jobs_provider_not_the_enqueued_one() -> None:
+    from education_pipeline import cli
+
+    client = _SingleJobClient(enqueued_provider="claude-code", terminal_provider="codex")
+    outcome = cli._blocking_job_runner(client)("topic-a", "draft")
+
+    assert outcome.ok is True
+    assert outcome.provider == "codex"
+
+
+class _BatchClientWithProvider(_BatchClient):
+    def __init__(self, statuses: list[str], provider: str) -> None:
+        super().__init__(statuses)
+        for job in self.jobs:
+            job["provider"] = provider
+
+
+def test_blocking_runner_batch_reports_the_modules_provider() -> None:
+    from education_pipeline import cli
+
+    client = _BatchClientWithProvider(["succeeded", "succeeded"], "codex")
+    outcome = cli._blocking_job_runner(client)("topic-a", "draft")
+
+    assert outcome.ok is True
+    assert outcome.provider == "codex"
+
+
+# ---------------------------------------------------------------------------
+# Codex round 1, F4 (end to end): a plan edited while a job sits queued
+# behind another one governs what actually runs (jobs.py's "re-stamp with
+# the effective stage plan" comment) -- but ``run --until`` still names the
+# provider it resolved before enqueueing. A second, ordinary job occupies
+# the worker's single slot for an ordinary (non-batch) job so "prov-a"'s job
+# is still queued when the plan is rewritten underneath it.
+# ---------------------------------------------------------------------------
+
+
+class _TimedRunner:
+    """Like ``_ScriptedRunner``, but a topic can be given its own
+    ``FAKE_DELAY`` so a test can hold the worker's one ordinary-job slot open
+    while it edits the plan file."""
+
+    executable = True
+
+    def __init__(self, provider_id: str, delays: dict[str, float] | None = None) -> None:
+        self.provider_id = provider_id
+        self.delays = delays or {}
+        self.calls: list[str] = []
+
+    def is_available(self) -> bool:
+        return True
+
+    def build_invocation(self, model, plan, prompt_path):
+        topic_id = Path(prompt_path).parent.parent.name
+        self.calls.append(topic_id)
+        fake = Path(__file__).parent / "fake_provider.py"
+        env = {"FAKE_STDOUT": "# Generated draft\n"}
+        delay = self.delays.get(topic_id)
+        if delay:
+            env["FAKE_DELAY"] = str(delay)
+        return Invocation(argv=[sys.executable, str(fake)], env=env)
+
+    def parse_response(self, stdout):
+        return ProviderResponse(text=stdout, metadata={})
+
+
+def _write_two_provider_plan(ws: Path) -> None:
+    cfg = ws / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "model-catalog.toml").write_text(
+        '[[providers]]\nid = "fake"\n[[providers.models]]\nid = "m"\n'
+        '[[providers]]\nid = "fake2"\n[[providers.models]]\nid = "m"\n',
+        encoding="utf-8",
+    )
+    (cfg / "model-plan.toml").write_text(
+        'provider = "fake"\n[stages.draft]\nprovider = "fake"\nmodel = "m"\n',
+        encoding="utf-8",
+    )
+
+
+def test_run_until_reports_the_terminal_jobs_provider_after_a_mid_flight_plan_edit(
+    tmp_path: Path, live_daemon, capsys
+) -> None:
+    register_runner(_TimedRunner("fake", delays={"blocker": 1.5}))
+    register_runner(_TimedRunner("fake2"))
+    _write_two_provider_plan(tmp_path)
+    _seed_topic(tmp_path, "blocker")
+    _seed_topic(tmp_path, "prov-a")
+
+    from education_pipeline.client import DaemonClient, ensure_daemon as _ensure
+
+    _ensure(tmp_path, autostart=True)
+    client: DaemonClient = _ensure(tmp_path, autostart=False)
+    # Occupy the worker's one ordinary-job slot so "prov-a"'s job stays
+    # queued while the plan is edited underneath it.
+    client.enqueue("blocker")
+
+    def _edit_plan_after_a_beat() -> None:
+        time.sleep(0.3)
+        (tmp_path / "config" / "model-plan.toml").write_text(
+            'provider = "fake"\n[stages.draft]\nprovider = "fake2"\nmodel = "m"\n',
+            encoding="utf-8",
+        )
+
+    editor = threading.Thread(target=_edit_plan_after_a_beat)
+    editor.start()
+    capsys.readouterr()
+    code = test_cli._run(tmp_path, "run", "prov-a", "--until", "approval")
+    editor.join()
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "with fake2" in out, (
+        f"expected the job's actual provider (fake2, resolved when the "
+        f"worker picked it up) in the output, got:\n{out}"
+    )
+
+    test_cli._run(tmp_path, "daemon", "stop")
