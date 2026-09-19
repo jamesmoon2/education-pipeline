@@ -122,7 +122,9 @@ test("Continue to next approval writes the spec prompt and stops at the manual l
   await page.getByRole("button", { name: "Continue to next approval", exact: true }).click();
 
   await expect(
-    page.getByText("Continued — wrote the spec prompt; the spec prompt is ready for you to run."),
+    // The advance step is not repeated when the stop names the same stage,
+    // exactly as the approve-and-continue phrase does.
+    page.getByText("Continued — the spec prompt is ready for you to run."),
   ).toBeVisible();
 
   expect(
