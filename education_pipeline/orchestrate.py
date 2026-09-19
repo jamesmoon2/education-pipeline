@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Callable, ContextManager, Protocol, TypeVar
 
 from .config import ModelPlan
-from .run_core import AdvanceResult, RunStatus
+from .run_core import AdvanceResult, NextAction, RunStatus
 from .runs import RunStore
 
 __all__ = [
@@ -52,9 +52,15 @@ MANUAL_PROVIDER = "manual"
 # clears the action the status keeps reporting.
 MAX_STEPS = 12
 
-# Stall guard (decision 3): a waited job that reports success must change the
-# next action. If the run still wants a response for the same stage right
-# after such a job, re-enqueueing would just burn the cap, so stop and say so.
+# Stall guard (decision 3, revised in T33): a waited job that reports success
+# must change the next action -- the *whole* next action, detail included. An
+# interactive-guide draft goes through several distinct ``save_response``
+# states for one stage (run the skeleton prompt; the skeleton response is
+# invalid; k of N module responses saved; assembly failed), so comparing only
+# ``(action, stage)`` reports a stall the moment the skeleton job's ingest
+# writes the module prompts and the run asks for the module batch. Only an
+# *identical* next action means the job changed nothing, and then
+# re-enqueueing would just burn the cap, so stop and say so.
 STALL_MESSAGE = "the job finished but no response was saved"
 
 #: Every reason the loop stops, in the order the cockpit's ``ContinueStop``
@@ -177,6 +183,22 @@ def _step(action: str, call: Callable[[], _T]) -> _T:
         raise _StepError(action, exc) from exc
 
 
+def _stalled(before: NextAction, after: NextAction) -> bool:
+    """Whether a job that succeeded left the run exactly where it was.
+
+    Compares the whole next action -- action, stage *and* detail -- because
+    one stage can legitimately ask for a response several times running (the
+    draft units, ``runs_draft_units.py:1095-1150``), each time with a different
+    detail. Progress always changes at least the detail.
+    """
+
+    return (
+        before.action == after.action
+        and before.stage == after.stage
+        and before.detail == after.detail
+    )
+
+
 def _validate_phase(stage: str | None) -> str:
     """Only the draft stage gates on the draft report; everything later gates
     on final -- the same mapping the run board and the cockpit use."""
@@ -185,12 +207,27 @@ def _validate_phase(stage: str | None) -> str:
 
 
 def run_until_judgment(
-    topic_id: str, steps: Steps, *, max_steps: int = MAX_STEPS
+    topic_id: str,
+    steps: Steps,
+    *,
+    max_steps: int = MAX_STEPS,
+    after_job: tuple[str, str, NextAction] | None = None,
 ) -> Outcome:
-    """Take mechanical steps for ``topic_id`` until one needs judgment."""
+    """Take mechanical steps for ``topic_id`` until one needs judgment.
+
+    ``after_job`` is for a caller resuming the chain *after* a job it waited
+    for elsewhere: ``(stage, provider, before)``, where ``before`` is the
+    ``NextAction`` that caller read before starting the job. The loop's own
+    stall guard cannot see that job, so the guard is applied to the loop's
+    first status read instead -- an identical next action means the job
+    changed nothing (decision 9; the daemon's completion hook passes the
+    action it enqueued against, ``server.py`` ``continue_after_job``).
+    """
 
     taken: list[Step] = []
     status: RunStatus | None = None
+    # Consumed by the first read only: later reads are ordinary loop reads.
+    pending_after_job = after_job
 
     def _stop(stop: Stop) -> Outcome:
         return Outcome(topic_id=topic_id, steps=tuple(taken), stop=stop, status=status)
@@ -199,6 +236,17 @@ def run_until_judgment(
         for _ in range(max_steps):
             if status is None:
                 status = _step("reading the run status", lambda: steps.status(topic_id))
+                if pending_after_job is not None:
+                    done_stage, done_provider, before = pending_after_job
+                    pending_after_job = None
+                    if _stalled(before, status.next_action):
+                        return _stop(
+                            Stop(
+                                kind="failed",
+                                action=f"running {done_stage} with {done_provider}",
+                                message=STALL_MESSAGE,
+                            )
+                        )
             # The step labels below name the stage, so they are read once here
             # rather than re-derived from a `status` the calls reassign.
             action = status.next_action.action
@@ -235,6 +283,7 @@ def run_until_judgment(
                     return _stop(Stop(kind="plan_unreadable", stage=stage))
                 if provider == MANUAL_PROVIDER:
                     return _stop(Stop(kind="manual", stage=stage))
+                before_job = status.next_action
                 job = _step(
                     f"starting {stage} with {provider}",
                     lambda: steps.run_job(topic_id, stage),
@@ -261,10 +310,7 @@ def run_until_judgment(
                         )
                     )
                 status = _step("reading the run status", lambda: steps.status(topic_id))
-                if (
-                    status.next_action.action == "save_response"
-                    and status.next_action.stage == stage
-                ):
+                if _stalled(before_job, status.next_action):
                     return _stop(
                         Stop(kind="failed", action=running, message=STALL_MESSAGE)
                     )

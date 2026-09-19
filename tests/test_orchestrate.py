@@ -49,6 +49,29 @@ def _status(action: str, stage: str | None = None, *, topic_id: str = "t") -> Ru
     return RunStatus(topic_id=topic_id, stages=(), finalized=(action == "done"), next_action=next_action)
 
 
+def _before(action: str, stage: str | None, detail: str | None = None) -> NextAction:
+    """The ``NextAction`` a caller read before starting a job it waited for
+    elsewhere -- the third member of ``after_job``. Defaults to the same detail
+    ``_status`` writes, so it compares equal to that status's next action."""
+
+    return NextAction(
+        topic_id="t",
+        stage=stage,
+        action=action,
+        detail=detail if detail is not None else f"detail for {action}",
+    )
+
+
+def _detailed_status(
+    action: str, stage: str | None, detail: str, *, topic_id: str = "t"
+) -> RunStatus:
+    """A RunStatus whose ``detail`` is spelled out: T33's stall guard compares
+    the whole next action, so tests about it must control the detail."""
+
+    next_action = NextAction(topic_id=topic_id, stage=stage, action=action, detail=detail)
+    return RunStatus(topic_id=topic_id, stages=(), finalized=False, next_action=next_action)
+
+
 def _advance_result(status: RunStatus, *, performed: str = "write_prompt") -> AdvanceResult:
     return AdvanceResult(topic_id=status.topic_id, performed=performed, status=status)
 
@@ -370,8 +393,14 @@ def test_waited_job_that_fails_reports_failed_and_still_records_the_step():
 
 
 def test_stall_guard_stops_without_calling_run_job_again():
+    """An *identical* next action after a successful waited job -- same
+    action, same stage, same detail -- is the stall (T33: the detail is part
+    of the comparison, so the two statuses here are deliberately equal)."""
+
+    stalled = _status("save_response", "draft")
+    assert stalled.next_action == _status("save_response", "draft").next_action
     steps = RecordingSteps(
-        status=scripted(_status("save_response", "draft"), _status("save_response", "draft")),
+        status=scripted(stalled, _status("save_response", "draft")),
         provider_for=constant("claude"),
         run_job=constant(_job(waited=True, ok=True)),
     )
@@ -384,12 +413,40 @@ def test_stall_guard_stops_without_calling_run_job_again():
     assert steps.count("run_job") == 1
 
 
+def test_same_action_and_stage_with_a_different_detail_is_progress_not_a_stall():
+    """T33's amendment to decision 3: one stage asks for a response several
+    times running (draft skeleton, then the module batch -- ``runs_draft_
+    units.py``'s four ``save_response`` arms), each with its own detail. A
+    changed detail is progress, so the loop drives the next job rather than
+    reporting a stall."""
+
+    steps = RecordingSteps(
+        status=scripted(
+            _detailed_status("save_response", "draft", "Run the draft skeleton prompt."),
+            _detailed_status(
+                "save_response", "draft", "draft: 0 of 2 module responses saved."
+            ),
+        ),
+        provider_for=constant("claude"),
+        run_job=scripted(_job(waited=True, ok=True), _job(waited=False, count=2)),
+    )
+    outcome = run_until_judgment("t", steps)
+    assert outcome.steps == (
+        Step(kind="job", stage="draft", provider="claude", count=None),
+        Step(kind="job", stage="draft", provider="claude", count=2),
+    )
+    assert outcome.stop == Stop(kind="started", stage="draft", provider="claude", count=2)
+    assert steps.count("run_job") == 2
+
+
 def test_after_job_status_read_failure_reports_failed_reading_status():
     """T33 contract (b): ``after_job``'s first status read still funnels
     through the ordinary ``_step`` failure path when it raises."""
 
     steps = RecordingSteps(status=constant(RuntimeError("workspace gone")))
-    outcome = run_until_judgment("t", steps, after_job=("draft", "fake"))
+    outcome = run_until_judgment(
+        "t", steps, after_job=("draft", "fake", _before("save_response", "draft"))
+    )
     assert outcome.steps == ()
     assert outcome.stop == Stop(
         kind="failed", action="reading the run status", message="workspace gone"
@@ -399,11 +456,13 @@ def test_after_job_status_read_failure_reports_failed_reading_status():
 
 def test_after_job_stalls_when_the_first_read_still_wants_that_stages_response():
     """T33 contract (a): a job the caller already knows finished elsewhere,
-    whose freshest status still asks for ``save_response`` on the same
-    stage, is a stall -- reported without ever calling ``run_job`` again."""
+    whose freshest status is *identical* to the next action that caller read
+    before starting it, is a stall -- reported without calling ``run_job``."""
 
     steps = RecordingSteps(status=constant(_status("save_response", "draft")))
-    outcome = run_until_judgment("t", steps, after_job=("draft", "fake"))
+    outcome = run_until_judgment(
+        "t", steps, after_job=("draft", "fake", _before("save_response", "draft"))
+    )
     assert outcome.steps == ()
     assert outcome.stop == Stop(
         kind="failed",
@@ -415,16 +474,19 @@ def test_after_job_stalls_when_the_first_read_still_wants_that_stages_response()
 
 
 def test_after_job_stall_check_is_scoped_to_the_named_stage():
-    """The stall only fires for the *same* stage as the finished job -- a
-    ``save_response`` for a different stage is real, unrelated work and the
-    loop must drive it normally (starting a job for that other stage)."""
+    """The stall only fires on the *same* next action as the one the finished
+    job was started against -- a ``save_response`` for a different stage is
+    real, unrelated work the loop must drive normally (starting a job for that
+    other stage)."""
 
     steps = RecordingSteps(
         status=constant(_status("save_response", "qa")),
         provider_for=constant("fake"),
         run_job=constant(_job(waited=False)),
     )
-    outcome = run_until_judgment("t", steps, after_job=("draft", "fake"))
+    outcome = run_until_judgment(
+        "t", steps, after_job=("draft", "fake", _before("save_response", "draft"))
+    )
     assert outcome.steps == (Step(kind="job", stage="qa", provider="fake", count=None),)
     assert outcome.stop == Stop(kind="started", stage="qa", provider="fake")
     assert steps.count("run_job") == 1
@@ -439,7 +501,9 @@ def test_after_job_proceeds_normally_once_the_first_read_moved_on():
         status=scripted(_status("validate", "draft"), _status("approve", "draft")),
         validate=constant(None),
     )
-    outcome = run_until_judgment("t", steps, after_job=("draft", "fake"))
+    outcome = run_until_judgment(
+        "t", steps, after_job=("draft", "fake", _before("save_response", "draft"))
+    )
     assert outcome.steps == (Step(kind="validate", stage="draft", phase="draft"),)
     assert outcome.stop == Stop(kind="approve", stage="draft")
     assert steps.count("status") == 2

@@ -15,28 +15,20 @@ for the guide-v1 fan-out seeds and canned skeleton/module response bodies,
 and ``tests/test_cli.py``'s ``_seed_topic_to_draft`` for a legacy run parked
 at "draft prompt written, no response yet".
 
-A note on "the real stop for the parity case" (item 4 of the brief): running
-the chain by hand (``education_pipeline.orchestrate.run_until_judgment``
-over a live ``RunStore``/``Worker``, from a *freshly seeded* guide-v1 run --
-see the session notes for the exact script) shows the skeleton job's own
-completion does **not** lead into the module batch the way the brief's prose
-sketches. Ingesting the skeleton response synchronously writes the missing
-module prompts (``runs_draft_units.py``'s decision 9), so the very next
-``RunStatus.next_action`` is already ``save_response``/``draft`` again -- for
-the module batch this time, not the skeleton. The existing (already-landed,
-unmodified) stall guard in ``orchestrate.run_until_judgment`` compares only
-``(action, stage)`` (``orchestrate.py:264-270``), so it cannot tell those two
-``save_response`` states apart and reports a stall. This is not a new bug:
-the *identical* result reproduces driving the same seed through a blocking
-runner (the CLI's own ``run --until approval`` shape), so it is genuine
-parity, not daemon-specific breakage -- T33's whole point. ``test_
-continue_chain_skeleton_job_stalls_before_the_module_batch`` below pins that
-real, observed result instead of the batch-reaching-approve narrative.  The
-narrative *does* hold starting one step later, from a skeleton that is
-already ingested (module prompts already on disk, module batch ready to go)
--- ``test_continue_chain_carries_a_ready_module_batch_to_approve`` pins that
-half, which is the part of decision 9 that a bare ``POST .../continue`` plus
-polling actually delivers end to end today.
+A note on "the real stop for the parity case" (item 4 of the brief). The red
+draft of this file pinned a stall here, because ingesting the skeleton
+response synchronously writes the missing module prompts
+(``runs_draft_units.py``'s decision 9), leaving the very next
+``RunStatus.next_action`` at ``save_response``/``draft`` again -- for the
+module batch this time, not the skeleton -- which the T30 stall guard could
+not tell from a genuine stall while it compared only ``(action, stage)``.
+That was a real bug in the guard (it broke the CLI's ``run --until approval``
+on every non-legacy course too), not a fact about the chain; T33 fixes it by
+comparing the whole ``NextAction``, detail included, against the action the
+finished job was started against. ``test_continue_chain_carries_a_fresh_
+guide_run_from_skeleton_to_approve`` below therefore pins the parity case
+proper, step by observed step: skeleton job -> module batch -> ``approve``,
+with the draft response assembled by the last module job's own ingest.
 """
 
 from __future__ import annotations
@@ -52,7 +44,6 @@ import test_draft_units as tdu
 from test_server import FakeRunner, _req, _start_server, server_with_context  # noqa: F401 (fixture)
 
 from education_pipeline import ContentContract, parse_model_catalog, parse_model_plan
-from education_pipeline.orchestrate import STALL_MESSAGE
 from education_pipeline.providers import Invocation, ProviderResponse, register_runner
 
 FAKE = Path(__file__).parent / "fake_provider.py"
@@ -306,15 +297,20 @@ def test_continue_chain_records_failed_continuation_for_a_canceled_job(tmp_path,
 # ---------------------------------------------------------------------------
 
 
-def test_continue_chain_skeleton_job_stalls_before_the_module_batch(
+def test_continue_chain_carries_a_fresh_guide_run_from_skeleton_to_approve(
     tmp_path, server_with_context
 ):
-    """The real observed stop for a guide-v1 run seeded with nothing drafted
-    (``tdu._run_with_skeleton_prompt`` -- the T24 skeleton-only-job seed):
-    the skeleton job succeeds (chain: true), but the *next* status is
-    already ``save_response``/``draft`` again (for the module batch this
-    time), which the existing (action, stage) stall guard cannot tell apart
-    from a genuine stall. See the module docstring."""
+    """The parity case: from a guide-v1 run with nothing drafted
+    (``tdu._run_with_skeleton_prompt``), one ``POST .../continue`` and then
+    nothing but polling carries the run through the skeleton job, the module
+    batch the skeleton's ingest unlocked, assembly and draft validation, to
+    the first judgment -- exactly what ``run --until approval`` does.
+
+    Every step below is the sequence actually observed, not a sketch: the
+    skeleton job's continuation *starts the batch* (it does not reach
+    approve), and the last module job's own ingest assembles the draft
+    response, so the batch's continuation finds the run already at ``approve``
+    and takes no mechanical step of its own."""
 
     port, context = server_with_context
     register_runner(ChainFakeRunner())
@@ -327,29 +323,89 @@ def test_continue_chain_skeleton_job_stalls_before_the_module_batch(
 
     jobs = context.store.list(tdu.TID)
     assert len(jobs) == 1
-    job_id = jobs[0].id
+    skeleton_id = jobs[0].id
 
-    landed = _wait_job_terminal(port, job_id)
+    landed = _wait_job_terminal(port, skeleton_id)
     assert landed["status"] == "succeeded"
     assert landed["unit"] == "skeleton"
 
-    chained = _wait_job_continuation(port, job_id)
+    # Step 1: the skeleton job's own completion hook. Its ingest already wrote
+    # the module prompts, so the next action is save_response/draft again --
+    # for the module batch, with a different detail. The whole-next-action
+    # stall guard lets that through, and the hook enqueues the batch.
+    chained = _wait_job_continuation(port, skeleton_id)
     assert chained["chain"] is True
-    continuation = chained["continuation"]
-    assert continuation["after"] == "job"
-    assert continuation["steps"] == []
-    assert continuation["stop"] == {
-        "kind": "failed",
-        "action": "running draft with fake",
-        "message": STALL_MESSAGE,
+    skeleton_continuation = chained["continuation"]
+    assert skeleton_continuation["after"] == "job"
+    assert skeleton_continuation["steps"] == [
+        {
+            "kind": "job",
+            "stage": "draft",
+            "provider": "fake",
+            "count": len(tdu.MODULE_ORDER),
+        }
+    ]
+    assert skeleton_continuation["stop"] == {
+        "kind": "started",
+        "stage": "draft",
+        "provider": "fake",
+        "count": len(tdu.MODULE_ORDER),
     }
 
+    # Step 2: the module batch itself -- every job chained, one batch id.
+    module_jobs = [job for job in context.store.list(tdu.TID) if job.unit == "module"]
+    assert len(module_jobs) == len(tdu.MODULE_ORDER)
+    batch_id = module_jobs[0].batch_id
+    assert batch_id is not None
+    assert all(job.batch_id == batch_id for job in module_jobs)
+    for job in module_jobs:
+        module_landed = _wait_job_terminal(port, job.id)
+        assert module_landed["status"] == "succeeded"
+        assert module_landed["chain"] is True
+
+    # Step 3: the batch's completion hook. Ingesting the last module response
+    # already assembled responses/draft.response.json (runs_draft_units), so
+    # the loop's first read is the run's first judgment and it takes no step.
+    deadline = time.time() + 20.0
+    batch_continuations: list[dict] = []
+    while time.time() < deadline and not batch_continuations:
+        status, jobs_body = _req(port, "GET", f"/v1/jobs?topic={tdu.TID}")
+        assert status == 200
+        batch_continuations = [
+            job
+            for job in jobs_body["jobs"]
+            if job.get("continuation") is not None and job["id"] != skeleton_id
+        ]
+        if not batch_continuations:
+            time.sleep(0.02)
+    assert len(batch_continuations) == 1  # exactly one job of the batch records it
+    batch_continuation = batch_continuations[0]["continuation"]
+    assert batch_continuation["after"] == "batch"
+    assert batch_continuation["steps"] == []
+    assert batch_continuation["stop"] == {"kind": "approve", "stage": "draft"}
+
+    # The run status names the batch's record (the latest), not the skeleton's.
     status, run_body = _req(port, "GET", f"/v1/runs/{tdu.TID}")
     assert status == 200
-    assert run_body["continuation"]["job_id"] == job_id
+    assert run_body["continuation"] == {
+        "job_id": batch_continuations[0]["id"],
+        "stage": "draft",
+        "provider": "fake",
+        **batch_continuation,
+    }
 
-    # No module batch was ever auto-enqueued by the (stalled) hook.
-    _no_new_job_appears(port, context, tdu.TID, before_count=1)
+    # Nothing was approved, and no further job was enqueued past the batch.
+    draft_status = next(s for s in run_body["stages"] if s["stage"] == "draft")
+    assert draft_status["approved"] is False
+    assert draft_status["response_ingested"] is True
+    assert run_body["next_action"]["action"] == "approve"
+    _no_new_job_appears(
+        port, context, tdu.TID, before_count=1 + len(tdu.MODULE_ORDER)
+    )
+
+    from education_pipeline import RunStore
+
+    assert RunStore(tmp_path).response_path(tdu.TID, "draft").exists()
 
 
 def test_continue_chain_carries_a_ready_module_batch_to_approve(tmp_path, server_with_context):

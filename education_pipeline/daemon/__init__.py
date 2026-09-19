@@ -163,7 +163,6 @@ def serve(
         # so an edit to the plan's ``parallelism`` takes effect on restart.
         worker = Worker(store, _runner_for, parallelism=worker_parallelism(root))
         worker.reconcile()
-        worker.start()
 
         token = secrets.token_urlsafe(32)
         shutdown = threading.Event()
@@ -180,6 +179,12 @@ def serve(
             on_shutdown=shutdown.set,
             web_dist=default_web_dist(),
         )
+        # Decision 9: a job the continue route started carries the chain on
+        # when it finishes. The hook needs the context, which needs the worker,
+        # so it is wired here rather than passed to the constructor -- and the
+        # pool starts only afterwards, so no job can finish unhooked.
+        worker.on_finished = context.continue_after_job
+        worker.start()
         server = build_server(context)
         lifecycle.write_discovery(root, pid=os.getpid(), port=server.server_port, token=token,
                                   version=__version__)
