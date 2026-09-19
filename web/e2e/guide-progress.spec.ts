@@ -466,7 +466,7 @@ test.describe("progress files", () => {
     expect(saved).toBeTruthy();
     const payload = JSON.parse(readFileSync(saved as string, "utf8"));
     expect(payload.format).toBe("education-pipeline.guide-progress");
-    expect(payload.version).toBe(1);
+    expect(payload.version).toBe(2);
     expect(payload.course_id).toBe("feedback-loops");
     expect(payload.schema_version).toBe("1.0");
     expect(Number.isNaN(Date.parse(payload.saved_at))).toBe(false);

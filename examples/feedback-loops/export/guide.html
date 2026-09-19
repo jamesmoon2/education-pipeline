@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.1" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-zyXDSXq8fDtPSJWuKcxWlAKe28XFST62HaMqtsY2caE='; script-src 'sha256-Z/Eo2yFhwqwtiD3vKgxgx3v79Jl2szzrNVwqLW/Pg5E='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
+<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.1" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-zyXDSXq8fDtPSJWuKcxWlAKe28XFST62HaMqtsY2caE='; script-src 'sha256-JlWwWTsFDsQDWZEv8NZ96QvRJL8OUewMnhsWmMnqwK0='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
  * Derives from the product token system in docs/design-system.md (§4.2):
  * the guide surface reads with Literata on a white surface, interface
  * chrome uses the Plex Sans stack, and status is never color alone.
@@ -511,7 +511,13 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
     function countText(result) {
       if (result.status === "none") return "No checks for this outcome";
       if (result.status === "not_started") return "Not started";
-      return `${result.correct} of ${result.total} correct`;
+      // "correct of answered", so an unanswered check never reads as a wrong one;
+      // what is still open is named separately.
+      const open = result.total - result.answered;
+      return (
+        `${result.correct} of ${result.answered} correct` +
+        (open > 0 ? `, ${open} not yet answered` : "")
+      );
     }
 
     function summaryText(results) {

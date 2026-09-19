@@ -84,7 +84,7 @@ test.describe("guide schema compatibility", () => {
 
     await expect(page.locator("[data-guide-shell]")).toBeHidden();
     await expect(page.locator("[data-guide-status]")).toContainText(
-      "schema 2.0, runtime 1.0",
+      "schema 2.0, runtime 1.1",
     );
   });
 });
@@ -760,6 +760,27 @@ test.describe("mastery results (T40, http)", () => {
     await expect(chooseIntervention).toHaveAttribute("data-status", "review");
     await expect(chooseIntervention.locator('[data-role="results-outcome-count"]')).toHaveText(
       "1 of 2 correct",
+    );
+  });
+
+  test("an outcome with one of two checks answered counts only the answered one and names the open one", async ({
+    page,
+  }) => {
+    await page.goto(httpBaseUrl);
+    await gotoSection(page, "delays-and-leverage");
+    const kc = page.locator("#delays-and-leverage article.knowledge_check");
+    const correctChoices = kc.locator('[data-role="kc-choice"][data-correct="true"]');
+    const correctCount = await correctChoices.count();
+    for (let i = 0; i < correctCount; i++) await correctChoices.nth(i).check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const chooseIntervention = page.locator('[data-outcome-id="choose-intervention"]');
+    await expect(chooseIntervention).toHaveAttribute("data-status", "on_track");
+    await expect(chooseIntervention.locator('[data-role="results-outcome-count"]')).toHaveText(
+      "1 of 1 correct, 1 not yet answered",
     );
   });
 

@@ -372,7 +372,13 @@
     function countText(result) {
       if (result.status === "none") return "No checks for this outcome";
       if (result.status === "not_started") return "Not started";
-      return `${result.correct} of ${result.total} correct`;
+      // "correct of answered", so an unanswered check never reads as a wrong one;
+      // what is still open is named separately.
+      const open = result.total - result.answered;
+      return (
+        `${result.correct} of ${result.answered} correct` +
+        (open > 0 ? `, ${open} not yet answered` : "")
+      );
     }
 
     function summaryText(results) {
