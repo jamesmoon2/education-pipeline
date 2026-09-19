@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.0" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-g8aO0jiwJl6gNe3EJ3rIpsomad2nyXsL+124/0cOo2E='; script-src 'sha256-IBmdIM9l7eeen0/mgEVtUEK9gKnNPIOJf9cNRIuntIM='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
+<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.1" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-zyXDSXq8fDtPSJWuKcxWlAKe28XFST62HaMqtsY2caE='; script-src 'sha256-Z/Eo2yFhwqwtiD3vKgxgx3v79Jl2szzrNVwqLW/Pg5E='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
  * Derives from the product token system in docs/design-system.md (§4.2):
  * the guide surface reads with Literata on a white surface, interface
  * chrome uses the Plex Sans stack, and status is never color alone.
@@ -57,6 +57,15 @@ main section{scroll-margin-top:1rem;margin-bottom:3rem}
 .section-complete-controls{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;margin-top:.75rem;font-family:var(--ep-font-interface)}
 .section-complete-controls button{font:inherit;font-weight:600;min-height:2.25rem;padding:.4rem .9rem;border:1px solid var(--ep-color-accent);border-radius:.375rem;background:transparent;color:var(--ep-color-accent);cursor:pointer}
 .section-status{color:var(--ep-color-text-muted);margin:0;font-family:var(--ep-font-interface);font-size:.9rem}
+.results-summary{font-family:var(--ep-font-interface);margin:.35rem 0 0}
+.results-outcomes{list-style:none;padding-left:0}
+.results-outcomes li{display:flex;flex-wrap:wrap;justify-content:space-between;gap:.75rem;margin:.6rem 0;padding:.6rem .8rem;border:1px solid var(--ep-color-border);border-left-width:3px;border-radius:.375rem;background:var(--ep-color-surface)}
+.results-outcome-count{font-family:var(--ep-font-interface);font-size:.9rem;font-weight:600}
+.results-outcomes li[data-status="on_track"]{border-left-color:var(--ep-color-success)}
+.results-outcomes li[data-status="review"]{border-left-color:var(--ep-color-danger)}
+/* Status is carried by the count text; the glyph and border only reinforce it. */
+.results-outcomes li[data-status="on_track"] .results-outcome-count::before{content:"✓ "}
+.results-outcomes li[data-status="review"] .results-outcome-count::before{content:"◔ "}
 pre,code{font-family:var(--ep-font-technical)}
 pre{overflow:auto;background:var(--ep-color-canvas);border:1px solid var(--ep-color-border);border-radius:.375rem;padding:1rem;font-size:.875rem}
 table{border-collapse:collapse;width:100%}
@@ -77,6 +86,10 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
    Everything remains visible for no-JS and print contexts. */
 .js-enhanced main section[data-role="guide-section"]{display:none}
 .js-enhanced main section[data-role="guide-section"].is-current{display:block}
+/* The results page is appended by the runtime, so it only ever exists once
+   the guide is enhanced; it pages like a section without being one. */
+.js-enhanced main section[data-role="results-page"]{display:none}
+.js-enhanced main section[data-role="results-page"].is-current{display:block}
 
 .js-enhanced .block.knowledge_check .choice-feedback,
 .js-enhanced .block.knowledge_check .explanation{display:none}
@@ -110,11 +123,12 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
 @media print{
   .guide-nav,.skip-link,.course-controls,.progress-migration,.section-nav-controls,.section-complete-controls,
   .kc-controls,.wr-controls,.sc-controls,.rf-controls,.reflection-input,.nav-toggle,
-  .live-region,.progress-summary{display:none!important}
+  .live-region,.progress-summary,.results-summary{display:none!important}
   .layout{display:block;max-width:none}
   .block{break-inside:avoid}
   .course-header{padding:0;border:0;background:none}
   .js-enhanced main section[data-role="guide-section"]{display:block!important}
+  [data-role="results-page"]{display:none!important}
   .js-enhanced .block.knowledge_check .choice-feedback,
   .js-enhanced .block.knowledge_check .explanation,
   .js-enhanced .block.worked_reveal .reveal-step,
@@ -159,7 +173,12 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
 
   const STORAGE_NS = "education-pipeline";
   const PROGRESS_FILE_FORMAT = "education-pipeline.guide-progress";
-  const PROGRESS_FILE_VERSION = 1;
+  const PROGRESS_FILE_VERSION = 2;
+  // Version 2 only adds per-block result fields to the same state shape, so a
+  // version-1 file still restores in full -- its answered blocks simply carry
+  // no recorded result. Anything newer may hold progress in a shape this
+  // runtime would read as "empty", so it stays refused.
+  const READABLE_PROGRESS_FILE_VERSIONS = [1, 2];
 
   function schemaMajor(schemaVersion) {
     return String(schemaVersion).split(".")[0];
@@ -171,6 +190,17 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
 
   function emptyState() {
     return { completedSections: [], interactions: {}, lastSection: null, theme: "system" };
+  }
+
+  // Per-block result, recorded from runtime 1.1 on. `correct` follows the
+  // latest attempt; `firstCorrect` is written once, on the first submit. Both
+  // are null when the record predates the fields (or came from a version-1
+  // progress file): "answered, result unknown" must stay distinguishable from
+  // "answered wrong", so absent is kept as null rather than coerced to false.
+  function readResultFields(entry, value) {
+    entry.correct = typeof value.correct === "boolean" ? value.correct : null;
+    entry.firstCorrect = typeof value.firstCorrect === "boolean" ? value.firstCorrect : null;
+    return entry;
   }
 
   function validateState(raw) {
@@ -188,10 +218,12 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
           entry.selectedIds = Array.isArray(value.selectedIds)
             ? value.selectedIds.filter((x) => typeof x === "string")
             : [];
+          readResultFields(entry, value);
         } else if (value.type === "worked_reveal") {
           entry.revealedCount = Number.isFinite(value.revealedCount) ? value.revealedCount : 0;
         } else if (value.type === "scenario") {
           entry.selectedId = typeof value.selectedId === "string" ? value.selectedId : null;
+          readResultFields(entry, value);
         } else if (value.type === "reflection") {
           entry.text = typeof value.text === "string" ? value.text : "";
           entry.skipped = Boolean(value.skipped);
@@ -397,31 +429,251 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
           el.textContent =
             `${completedSections} of ${totalSections} section${totalSections === 1 ? "" : "s"} complete · ` +
             `${doneInteractions} of ${totalInteractions} interaction${totalInteractions === 1 ? "" : "s"} complete. ` +
-            "This tracks progress only, not mastery.";
+            "Progress and results are stored only in this browser. They are not a grade.";
         }
       } catch (_error) {
         /* progress display is informational; never let it break the guide */
       }
+      // Results read the same record, so they refresh wherever progress does.
+      Results.update();
     }
     return { update };
+  })();
+
+  // ---------------------------------------------------------------------
+  // Results: the learner's own answers, rolled up per learning outcome
+  // ---------------------------------------------------------------------
+
+  // Only these two block types have a right answer. Worked reveals and
+  // reflections complete but never score.
+  const SCORABLE_TYPES = new Set(["knowledge_check", "scenario"]);
+
+  const Results = (() => {
+    // [{ id, text, blockIds, itemEl, countEl }] in the guide's outcome order.
+    let outcomes = [];
+    let summaryTextEl = null;
+
+    // Blocks link to outcomes through `outcome_ids` in the embedded guide
+    // JSON, so no attribute has to be added to the document markup. A block
+    // serving several outcomes is counted once under each of them.
+    function readOutcomes(guide) {
+      const byId = new Map();
+      const ordered = [];
+      (Array.isArray(guide.outcomes) ? guide.outcomes : []).forEach((outcome) => {
+        if (!isPlainObject(outcome) || typeof outcome.id !== "string") return;
+        const entry = {
+          id: outcome.id,
+          text: typeof outcome.text === "string" ? outcome.text : "",
+          blockIds: [],
+          itemEl: null,
+          countEl: null,
+        };
+        byId.set(outcome.id, entry);
+        ordered.push(entry);
+      });
+      (Array.isArray(guide.modules) ? guide.modules : []).forEach((module) => {
+        if (!isPlainObject(module)) return;
+        (Array.isArray(module.sections) ? module.sections : []).forEach((section) => {
+          if (!isPlainObject(section)) return;
+          (Array.isArray(section.blocks) ? section.blocks : []).forEach((block) => {
+            if (!isPlainObject(block) || typeof block.id !== "string") return;
+            if (!SCORABLE_TYPES.has(block.type)) return;
+            (Array.isArray(block.outcome_ids) ? block.outcome_ids : []).forEach((outcomeId) => {
+              const owner = byId.get(outcomeId);
+              if (owner && owner.blockIds.indexOf(block.id) === -1) owner.blockIds.push(block.id);
+            });
+          });
+        });
+      });
+      return ordered;
+    }
+
+    // A block counts as answered only once a result was recorded for it: one
+    // answered under a pre-1.1 store stays complete for progress and reads as
+    // "not yet answered" here rather than as a wrong answer.
+    function statusOf(outcome) {
+      let answered = 0;
+      let correct = 0;
+      outcome.blockIds.forEach((blockId) => {
+        const entry = State.interaction(blockId);
+        if (!entry || !entry.completed || typeof entry.correct !== "boolean") return;
+        answered += 1;
+        if (entry.correct) correct += 1;
+      });
+      const total = outcome.blockIds.length;
+      let status = "on_track";
+      if (total === 0) status = "none";
+      else if (answered === 0) status = "not_started";
+      else if (correct < answered) status = "review";
+      return { status, answered, correct, total };
+    }
+
+    function countText(result) {
+      if (result.status === "none") return "No checks for this outcome";
+      if (result.status === "not_started") return "Not started";
+      return `${result.correct} of ${result.total} correct`;
+    }
+
+    function summaryText(results) {
+      // An outcome no check touches can never be on track, so it stays out of
+      // the denominator rather than making it unreachable.
+      const scored = results.filter((r) => r.status !== "none");
+      const onTrack = scored.filter((r) => r.status === "on_track").length;
+      const review = scored.filter((r) => r.status === "review").length;
+      if (onTrack === 0 && review === 0) return "Results: no checks answered yet";
+      return (
+        `Results: ${onTrack} of ${scored.length} outcomes on track` +
+        (review > 0 ? `, ${review} to review` : "")
+      );
+    }
+
+    function buildItem(outcome) {
+      const item = document.createElement("li");
+      item.dataset.outcomeId = outcome.id;
+      const text = document.createElement("span");
+      text.className = "results-outcome-text";
+      text.textContent = outcome.text;
+      const count = document.createElement("span");
+      count.className = "results-outcome-count";
+      count.dataset.role = "results-outcome-count";
+      item.appendChild(text);
+      item.appendChild(count);
+      outcome.itemEl = item;
+      outcome.countEl = count;
+      return item;
+    }
+
+    // One final page after the last section, inside the same main column. It
+    // is deliberately not a guide section: it is not counted, not marked
+    // complete, and carries no Next.
+    function installPage() {
+      const main = qs("main");
+      if (!main || document.getElementById("results")) return false;
+      if (qsa('main section[data-role="guide-section"]').length === 0) return false;
+
+      const page = document.createElement("section");
+      page.id = "results";
+      page.className = "guide-section results-page";
+      page.dataset.role = "results-page";
+
+      const heading = document.createElement("h2");
+      heading.setAttribute("tabindex", "-1");
+      heading.textContent = "Your results";
+      page.appendChild(heading);
+
+      const intro = document.createElement("p");
+      intro.textContent =
+        "These results come from your own answers to the checks in this course. They are " +
+        "stored only in this browser and are not a grade.";
+      page.appendChild(intro);
+
+      const list = document.createElement("ol");
+      list.className = "results-outcomes";
+      list.dataset.role = "results-outcomes";
+      outcomes.forEach((outcome) => list.appendChild(buildItem(outcome)));
+      page.appendChild(list);
+
+      const controls = document.createElement("div");
+      controls.className = "section-nav-controls";
+      controls.dataset.role = "section-nav-controls";
+      const prevBtn = document.createElement("button");
+      prevBtn.type = "button";
+      prevBtn.dataset.role = "prev-section";
+      prevBtn.textContent = "Previous section";
+      const position = document.createElement("span");
+      position.className = "section-position";
+      position.dataset.role = "section-position";
+      position.textContent = "Results";
+      controls.appendChild(prevBtn);
+      controls.appendChild(position);
+      page.appendChild(controls);
+
+      main.appendChild(page);
+      return true;
+    }
+
+    function installSummary() {
+      const header = qs(".course-header");
+      if (!header || qs('[data-role="results-summary"]')) return;
+      const el = document.createElement("p");
+      el.className = "results-summary";
+      el.dataset.role = "results-summary";
+      el.setAttribute("role", "status");
+      el.setAttribute("aria-live", "polite");
+      summaryTextEl = document.createElement("span");
+      summaryTextEl.dataset.role = "results-summary-text";
+      const link = document.createElement("a");
+      link.href = "#results";
+      link.textContent = "See your results";
+      el.appendChild(summaryTextEl);
+      el.appendChild(document.createTextNode(" "));
+      el.appendChild(link);
+      const progressEl = qs('[data-role="progress-summary"]', header);
+      if (progressEl && progressEl.parentNode === header) {
+        header.insertBefore(el, progressEl.nextSibling);
+      } else {
+        header.appendChild(el);
+      }
+    }
+
+    function install(guide) {
+      try {
+        outcomes = readOutcomes(guide);
+        // The header indicator links to the page, so it is only offered once
+        // the page itself exists.
+        if (installPage()) installSummary();
+        update();
+      } catch (_error) {
+        /* a guide that cannot show results is still a whole guide */
+      }
+    }
+
+    function update() {
+      try {
+        const results = outcomes.map((outcome) => {
+          const result = statusOf(outcome);
+          if (outcome.itemEl) outcome.itemEl.dataset.status = result.status;
+          if (outcome.countEl) outcome.countEl.textContent = countText(result);
+          return result;
+        });
+        if (summaryTextEl) summaryTextEl.textContent = summaryText(results);
+      } catch (_error) {
+        /* results are informational; never let them break the guide */
+      }
+    }
+
+    return { install, update };
   })();
 
   // ---------------------------------------------------------------------
   // Navigation: single-section-at-a-time display, fragment routing
   // ---------------------------------------------------------------------
 
+  // Everything Next/Previous can land on, including the results page. Only
+  // `section[data-role="guide-section"]` is a counted guide section.
+  const PAGE_SELECTOR = 'section[data-role="guide-section"],section[data-role="results-page"]';
+  const MAIN_PAGE_SELECTOR =
+    'main section[data-role="guide-section"],main section[data-role="results-page"]';
+
   const Nav = (() => {
     let sections = [];
+    let pages = [];
     let current = null;
 
     function collect() {
       sections = qsa('main section[data-role="guide-section"]').map((el) => ({ id: el.id, el }));
+      // Navigation order = the sections plus the results page appended after
+      // them; section counts and position text never include it.
+      pages = qsa(MAIN_PAGE_SELECTOR).map((el) => ({ id: el.id, el }));
     }
     function indexOf(id) {
+      return pages.findIndex((s) => s.id === id);
+    }
+    function sectionIndexOf(id) {
       return sections.findIndex((s) => s.id === id);
     }
     function first() {
-      return sections.length ? sections[0].id : null;
+      return pages.length ? pages[0].id : null;
     }
     function announce(message) {
       const el = qs('[data-role="nav-announcement"]');
@@ -431,10 +683,14 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       sections.forEach((s, i) => {
         const posEl = qs('[data-role="section-position"]', s.el);
         if (posEl) posEl.textContent = `Section ${i + 1} of ${sections.length}`;
-        const prevBtn = qs('[data-role="prev-section"]', s.el);
-        const nextBtn = qs('[data-role="next-section"]', s.el);
+      });
+      // Previous/Next run over every destination, so Next on the last guide
+      // section leads to the results page instead of being disabled there.
+      pages.forEach((p, i) => {
+        const prevBtn = qs('[data-role="prev-section"]', p.el);
+        const nextBtn = qs('[data-role="next-section"]', p.el);
         if (prevBtn) prevBtn.disabled = i === 0;
-        if (nextBtn) nextBtn.disabled = i === sections.length - 1;
+        if (nextBtn) nextBtn.disabled = i === pages.length - 1;
       });
     }
     function updateNavLinks() {
@@ -444,7 +700,9 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       });
     }
     function maybeAutoCompleteLeaving(id) {
-      const entry = sections[indexOf(id)];
+      // Only a real guide section can auto-complete; the results page has no
+      // interactive blocks and is never marked complete.
+      const entry = sections[sectionIndexOf(id)];
       if (!entry) return;
       const interactive = qsa('[data-interactive="true"]', entry.el);
       if (interactive.length === 0) return;
@@ -459,7 +717,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       const idx = indexOf(id);
       if (idx === -1) return false;
       if (current && current !== id) maybeAutoCompleteLeaving(current);
-      sections.forEach((s) => s.el.classList.toggle("is-current", s.id === id));
+      pages.forEach((s) => s.el.classList.toggle("is-current", s.id === id));
       current = id;
       State.setLastSection(id);
       updateNavLinks();
@@ -474,7 +732,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
         }
       }
       if (opts.focus) {
-        const heading = qs("h2", sections[idx].el);
+        const heading = qs("h2", pages[idx].el);
         if (heading) {
           if (!heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
           heading.focus({ preventScroll: false });
@@ -485,20 +743,20 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
     }
     function next() {
       const i = indexOf(current);
-      if (i > -1 && i < sections.length - 1) show(sections[i + 1].id, { focus: true });
+      if (i > -1 && i < pages.length - 1) show(pages[i + 1].id, { focus: true });
     }
     function prev() {
       const i = indexOf(current);
-      if (i > 0) show(sections[i - 1].id, { focus: true });
+      if (i > 0) show(pages[i - 1].id, { focus: true });
     }
-    // Resolves any known guide ID (a section, or a block/choice/step nested
-    // inside one) to the section that owns it. Returns null for IDs that do
-    // not exist anywhere in the document.
+    // Resolves any known guide ID (a section, the results page, or a
+    // block/choice/step nested inside one) to the page that owns it. Returns
+    // null for IDs that do not exist anywhere in the document.
     function resolveOwningSectionId(targetId) {
       const el = document.getElementById(targetId);
       if (!el) return null;
-      if (el.matches('section[data-role="guide-section"]')) return el.id;
-      const owning = el.closest('section[data-role="guide-section"]');
+      if (el.matches(PAGE_SELECTOR)) return el.id;
+      const owning = el.closest(PAGE_SELECTOR);
       return owning ? owning.id : null;
     }
     function goToTarget(targetId) {
@@ -553,7 +811,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       collect();
       if (sections.length === 0) return;
       updatePositionText();
-      sections.forEach((s) => {
+      pages.forEach((s) => {
         const prevBtn = qs('[data-role="prev-section"]', s.el);
         const nextBtn = qs('[data-role="next-section"]', s.el);
         const markBtn = qs('[data-role="mark-complete"]', s.el);
@@ -679,12 +937,15 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
     function updateSubmitEnabled() {
       submitBtn.disabled = selectedIds().length === 0;
     }
-    function applySubmittedView(selected) {
+    // A check is correct when the selected set equals the correct set.
+    function isCorrectAnswer(selected) {
       const correctIds = inputs.filter((i) => i.dataset.correct === "true").map((i) => i.dataset.choiceId);
-      const isCorrect =
-        mode === "single"
-          ? selected.length === 1 && correctIds.includes(selected[0])
-          : selected.length === correctIds.length && correctIds.every((c) => selected.includes(c));
+      return mode === "single"
+        ? selected.length === 1 && correctIds.includes(selected[0])
+        : selected.length === correctIds.length && correctIds.every((c) => selected.includes(c));
+    }
+    function applySubmittedView(selected) {
+      const isCorrect = isCorrectAnswer(selected);
       items.forEach((li) => {
         const input = qs("input", li);
         const isSelected = selected.includes(input.dataset.choiceId);
@@ -722,11 +983,16 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       applySubmittedView(selected);
       lock();
       const prior = State.interaction(id);
+      const correct = isCorrectAnswer(selected);
       State.setInteraction(id, {
         type: "knowledge_check",
         completed: true,
         submittedCount: (prior && prior.submittedCount ? prior.submittedCount : 0) + 1,
         selectedIds: selected,
+        // `correct` follows the latest attempt; `firstCorrect` is written
+        // once, on the first submit, and no retry ever changes it.
+        correct,
+        firstCorrect: prior && typeof prior.firstCorrect === "boolean" ? prior.firstCorrect : correct,
       });
       Progress.update();
     });
@@ -833,6 +1099,12 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       const i = inputs.find((x) => x.checked);
       return i ? i.dataset.choiceId : null;
     }
+    // The schema guarantees exactly one "best" choice, so that is the one
+    // this scenario counts as correct.
+    function isCorrectAnswer(choiceId) {
+      const input = inputs.find((i) => i.dataset.choiceId === choiceId);
+      return Boolean(input) && input.dataset.quality === "best";
+    }
     function updateSubmitEnabled() {
       submitBtn.disabled = !selectedId();
     }
@@ -875,7 +1147,17 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       if (!choiceId) return;
       applySubmittedView(choiceId);
       lock();
-      State.setInteraction(id, { type: "scenario", completed: true, selectedId: choiceId });
+      const prior = State.interaction(id);
+      const correct = isCorrectAnswer(choiceId);
+      State.setInteraction(id, {
+        type: "scenario",
+        completed: true,
+        selectedId: choiceId,
+        // As for knowledge checks: the latest attempt, plus the first one,
+        // which a retry never rewrites.
+        correct,
+        firstCorrect: prior && typeof prior.firstCorrect === "boolean" ? prior.firstCorrect : correct,
+      });
       Progress.update();
     });
     if (retryBtn) retryBtn.addEventListener("click", clear);
@@ -1195,7 +1477,8 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       // A later format version may hold progress in a shape this runtime
       // would read as "empty" -- applying it would quietly wipe real
       // progress -- so an unknown version is refused rather than degraded.
-      if (payload.version !== PROGRESS_FILE_VERSION) {
+      // Every version this runtime does understand restores in full.
+      if (!READABLE_PROGRESS_FILE_VERSIONS.includes(payload.version)) {
         const named = Number.isInteger(payload.version)
           ? `format version ${payload.version}`
           : "an unknown format version";
@@ -1451,7 +1734,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       if (
         !supportedSchemas.has(guide.schema_version) ||
         guide.schema_version !== expectedSchema ||
-        expectedRuntime !== "1.0"
+        expectedRuntime !== "1.1"
       ) {
         throw new Error("unsupported guide schema/runtime version");
       }
@@ -1466,6 +1749,8 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
       document.documentElement.classList.add("js-enhanced");
       enhanceCourseControls(guide);
       enhanceBlocks();
+      // Appends the results page before navigation collects its destinations.
+      Results.install(guide);
       Nav.boot();
       installPreviewEvidenceBridge(guide);
       Progress.update();

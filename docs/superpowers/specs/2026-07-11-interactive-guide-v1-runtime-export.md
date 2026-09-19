@@ -85,6 +85,7 @@ The default layout has:
 - a main reading column;
 - previous/next section controls;
 - section position and module context;
+- a final results page, after the last section, reporting per-outcome results;
 - glossary and course-info panels; and
 - a course controls menu for theme, progress reset, and local-data explanation.
 
@@ -146,8 +147,18 @@ An interaction is complete when:
 - a scenario choice has been submitted; or
 - a reflection has non-whitespace text or is explicitly skipped.
 
-The runtime shows both section completion and interaction completion. It does not
-claim mastery.
+The runtime shows section completion, interaction completion, and per-outcome
+results. A knowledge check is correct when the selected set equals the correct
+set; a scenario is correct when the chosen choice is the “best” one. Worked
+reveals and reflections complete but never score.
+
+Results roll up per learning outcome, through the `outcome_ids` the blocks
+already carry. An outcome is *on track* when every block answered for it was
+correct on its latest attempt, and *to review* when any was wrong; a block
+answered before results were recorded counts as complete for progress and as
+unanswered here. A header indicator and the final results page report the
+roll-up. These are the learner's own answers read back to them, stored only in
+their browser: not a score, not a grade, and not a credential.
 
 ## 8. Local persistence
 
@@ -163,6 +174,7 @@ Stored state includes only:
 
 - completed section IDs;
 - interaction attempt/completion state;
+- per-check results (the latest attempt and the first one);
 - revealed-step counts;
 - reflection text;
 - last-open section; and
@@ -175,6 +187,12 @@ Storage reads are schema-checked and exception-safe. If browser policy disables
 storage for local files, the guide remains fully usable for the current session
 and displays a one-time non-blocking notice. A content-hash change starts a new
 progress record rather than applying stale block IDs to a rebuilt course.
+
+A downloaded progress file carries a format version. Version 2 adds the
+per-check result fields to the same state shape, so a version-1 file still
+restores in full — its answered blocks simply carry no recorded result. A
+version this runtime does not know is refused rather than degraded, because a
+newer shape could read as empty and quietly replace real progress.
 
 ## 9. Safe Markdown renderer
 

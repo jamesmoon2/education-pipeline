@@ -56,6 +56,15 @@ main section{scroll-margin-top:1rem;margin-bottom:3rem}
 .section-complete-controls{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;margin-top:.75rem;font-family:var(--ep-font-interface)}
 .section-complete-controls button{font:inherit;font-weight:600;min-height:2.25rem;padding:.4rem .9rem;border:1px solid var(--ep-color-accent);border-radius:.375rem;background:transparent;color:var(--ep-color-accent);cursor:pointer}
 .section-status{color:var(--ep-color-text-muted);margin:0;font-family:var(--ep-font-interface);font-size:.9rem}
+.results-summary{font-family:var(--ep-font-interface);margin:.35rem 0 0}
+.results-outcomes{list-style:none;padding-left:0}
+.results-outcomes li{display:flex;flex-wrap:wrap;justify-content:space-between;gap:.75rem;margin:.6rem 0;padding:.6rem .8rem;border:1px solid var(--ep-color-border);border-left-width:3px;border-radius:.375rem;background:var(--ep-color-surface)}
+.results-outcome-count{font-family:var(--ep-font-interface);font-size:.9rem;font-weight:600}
+.results-outcomes li[data-status="on_track"]{border-left-color:var(--ep-color-success)}
+.results-outcomes li[data-status="review"]{border-left-color:var(--ep-color-danger)}
+/* Status is carried by the count text; the glyph and border only reinforce it. */
+.results-outcomes li[data-status="on_track"] .results-outcome-count::before{content:"✓ "}
+.results-outcomes li[data-status="review"] .results-outcome-count::before{content:"◔ "}
 pre,code{font-family:var(--ep-font-technical)}
 pre{overflow:auto;background:var(--ep-color-canvas);border:1px solid var(--ep-color-border);border-radius:.375rem;padding:1rem;font-size:.875rem}
 table{border-collapse:collapse;width:100%}
@@ -76,6 +85,10 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
    Everything remains visible for no-JS and print contexts. */
 .js-enhanced main section[data-role="guide-section"]{display:none}
 .js-enhanced main section[data-role="guide-section"].is-current{display:block}
+/* The results page is appended by the runtime, so it only ever exists once
+   the guide is enhanced; it pages like a section without being one. */
+.js-enhanced main section[data-role="results-page"]{display:none}
+.js-enhanced main section[data-role="results-page"].is-current{display:block}
 
 .js-enhanced .block.knowledge_check .choice-feedback,
 .js-enhanced .block.knowledge_check .explanation{display:none}
@@ -109,11 +122,12 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
 @media print{
   .guide-nav,.skip-link,.course-controls,.progress-migration,.section-nav-controls,.section-complete-controls,
   .kc-controls,.wr-controls,.sc-controls,.rf-controls,.reflection-input,.nav-toggle,
-  .live-region,.progress-summary{display:none!important}
+  .live-region,.progress-summary,.results-summary{display:none!important}
   .layout{display:block;max-width:none}
   .block{break-inside:avoid}
   .course-header{padding:0;border:0;background:none}
   .js-enhanced main section[data-role="guide-section"]{display:block!important}
+  [data-role="results-page"]{display:none!important}
   .js-enhanced .block.knowledge_check .choice-feedback,
   .js-enhanced .block.knowledge_check .explanation,
   .js-enhanced .block.worked_reveal .reveal-step,
