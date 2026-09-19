@@ -2,10 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import type { NextAction, RunStatus } from "../api/types";
 import type { ContinuePayload } from "../api/types";
 import {
+  chainFailed,
+  chainFeedback,
   continueFailed,
   continueFeedback,
+  continueOnlyFeedback,
   continueRun,
   type ContinueApi,
+  type Continuation,
   type ContinueResult,
   type ContinueStep,
   type ContinueStop,
@@ -315,6 +319,197 @@ describe("continueFeedback", () => {
     };
     expect(continueFeedback("draft", result)).toBe(
       "Approved draft — started qa with claude-code.",
+    );
+  });
+});
+
+/**
+ * T34: the daemon now carries the chain across job completions (decision 9
+ * addendum). `RunStatus.continuation` reports the latest chained job's
+ * outcome; these two functions turn it into the same kind of feedback line
+ * `continueFeedback` produces for an approval, but headed by what the job
+ * itself did rather than by an approval.
+ */
+function makeContinuation(
+  stop: ContinueStop,
+  steps: ContinueStep[] = [],
+  overrides: Partial<Omit<Continuation, "stop" | "steps">> = {},
+): Continuation {
+  return {
+    job_id: "j1",
+    stage: "draft",
+    provider: "claude-code",
+    after: "job",
+    steps,
+    stop,
+    at: "2026-09-19T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("chainFeedback", () => {
+  // One entry per STOP_KINDS value, mirroring the continueFeedback table
+  // above -- the daemon can report any of the nine back on `continuation`.
+  it.each([
+    {
+      name: "started (no describable steps)",
+      continuation: makeContinuation(
+        { kind: "started", stage: "outline", provider: "claude-code" },
+        [{ kind: "job", stage: "outline", provider: "claude-code" }],
+        { stage: "spec" },
+      ),
+      expected: "After the spec job ran: started outline with claude-code.",
+    },
+    {
+      name: "manual",
+      continuation: makeContinuation(
+        { kind: "manual", stage: "outline" },
+        [{ kind: "advance", stage: "outline" }],
+        { stage: "spec" },
+      ),
+      expected: "After the spec job ran: wrote the outline prompt; the outline prompt is ready for you to run.",
+    },
+    {
+      name: "plan_unreadable",
+      continuation: makeContinuation(
+        { kind: "plan_unreadable", stage: "outline" },
+        [{ kind: "advance", stage: "outline" }],
+        { stage: "spec" },
+      ),
+      expected:
+        "After the spec job ran: wrote the outline prompt; the outline prompt is ready, but the model plan could not be read, so start the stage yourself.",
+    },
+    {
+      name: "approve",
+      continuation: makeContinuation(
+        { kind: "approve", stage: "draft" },
+        [{ kind: "validate", stage: "draft", phase: "draft" }],
+        { stage: "draft" },
+      ),
+      expected: "After the draft job ran: ran draft validation; draft needs your approval.",
+    },
+    {
+      name: "resolve_findings",
+      continuation: makeContinuation(
+        { kind: "resolve_findings" },
+        [{ kind: "validate", stage: "draft", phase: "draft" }],
+        { stage: "draft" },
+      ),
+      expected: "After the draft job ran: ran draft validation; findings need review.",
+    },
+    {
+      name: "finalize",
+      continuation: makeContinuation(
+        { kind: "finalize" },
+        [{ kind: "validate", stage: "repair", phase: "final" }],
+        { stage: "repair" },
+      ),
+      expected: "After the repair job ran: ran final validation; the run is ready to finalize.",
+    },
+    {
+      name: "done (no describable steps)",
+      continuation: makeContinuation({ kind: "done" }, [], { stage: "repair" }),
+      expected: "After the repair job ran: the run is ready to export.",
+    },
+    {
+      name: "unfinished",
+      continuation: makeContinuation(
+        { kind: "unfinished" },
+        [{ kind: "advance", stage: "outline" }],
+        { stage: "spec" },
+      ),
+      expected: "After the spec job ran: wrote the outline prompt; more steps are waiting.",
+    },
+    {
+      name: "failed",
+      continuation: makeContinuation(
+        {
+          kind: "failed",
+          action: "starting qa with claude-code",
+          message: "provider unavailable",
+        },
+        [{ kind: "advance", stage: "qa" }],
+        { stage: "draft" },
+      ),
+      expected:
+        "After the draft job ran: wrote the qa prompt; starting qa with claude-code failed: provider unavailable.",
+    },
+  ])("$name", ({ continuation, expected }) => {
+    expect(chainFeedback(continuation)).toBe(expected);
+  });
+
+  it("uses the module-jobs prefix for a batch continuation", () => {
+    const continuation = makeContinuation(
+      { kind: "started", stage: "qa", provider: "claude-code", count: 3 },
+      [],
+      { stage: "draft", after: "batch" },
+    );
+    expect(chainFeedback(continuation)).toBe(
+      "After the draft module jobs ran: 3 module jobs started for qa with claude-code.",
+    );
+  });
+});
+
+describe("chainFailed", () => {
+  it("is true only when the continuation's stop kind is failed", () => {
+    const failed = makeContinuation({
+      kind: "failed",
+      action: "starting qa with claude-code",
+      message: "provider unavailable",
+    });
+    const notFailed = makeContinuation({ kind: "approve", stage: "qa" });
+    expect(chainFailed(failed)).toBe(true);
+    expect(chainFailed(notFailed)).toBe(false);
+  });
+});
+
+describe("continueOnlyFeedback", () => {
+  it("names the provider the run started with, headed by 'Continued'", () => {
+    const result: ContinueResult = {
+      steps: [
+        { kind: "advance", stage: "qa" },
+        { kind: "job", stage: "qa", provider: "claude-code" },
+      ],
+      stop: { kind: "started", stage: "qa", provider: "claude-code" },
+      status: null,
+    };
+    expect(continueOnlyFeedback(result)).toBe("Continued — started qa with claude-code.");
+  });
+
+  it("joins the steps it took with where the run now stands", () => {
+    const result: ContinueResult = {
+      steps: [{ kind: "validate", stage: "draft", phase: "draft" }],
+      stop: { kind: "resolve_findings" },
+      status: null,
+    };
+    expect(continueOnlyFeedback(result)).toBe(
+      "Continued — ran draft validation; findings need review.",
+    );
+  });
+
+  it("hands the manual loop back to the user without double-naming the stage", () => {
+    const result: ContinueResult = {
+      steps: [{ kind: "advance", stage: "qa" }],
+      stop: { kind: "manual", stage: "qa" },
+      status: null,
+    };
+    expect(continueOnlyFeedback(result)).toBe(
+      "Continued — the qa prompt is ready for you to run.",
+    );
+  });
+
+  it("reports a failure in the same shape continueFeedback uses, headed by 'Continuing failed'", () => {
+    const result: ContinueResult = {
+      steps: [{ kind: "advance", stage: "qa" }],
+      stop: {
+        kind: "failed",
+        action: "starting qa with claude-code",
+        message: "provider unavailable",
+      },
+      status: null,
+    };
+    expect(continueOnlyFeedback(result)).toBe(
+      "Continuing failed: starting qa with claude-code failed: provider unavailable",
     );
   });
 });

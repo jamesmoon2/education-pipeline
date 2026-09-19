@@ -234,6 +234,10 @@ export interface RunStatus {
   // Present only for guide-v1 runs (the daemon omits the key for legacy
   // Markdown runs and for payload fixtures predating per-module drafting).
   draft_progress?: DraftProgress;
+  // T34 (decision 9 addendum): the latest chained job's outcome, or null
+  // once nothing is left to report. Optional so payload/fixtures predating
+  // the addendum stay valid.
+  continuation?: Continuation | null;
 }
 
 export interface WorkspacePayload {
@@ -297,6 +301,27 @@ export interface ContinuePayload {
   steps: ContinueStepPayload[];
   stop: ContinueStopPayload;
   status: RunStatus | null;
+}
+
+/** ``RunStatus.continuation`` (decision 9 addendum): the outcome of the
+ *  latest job the daemon carried on its own after a ``POST .../continue``
+ *  (or ``POST /v1/jobs``) request returned -- the worker's completion hook
+ *  ran the same ``run_until_judgment`` loop once that job (or its whole
+ *  draft module batch) reached a terminal status. Reported back on the next
+ *  status read so the cockpit can say where the chain landed even though
+ *  the request that started the job returned before the chain ran.
+ *  ``job_id``/``stage``/``provider`` name the job that finished; ``after``
+ *  is ``"batch"`` only when that job was part of a draft module batch and
+ *  the hook waited for the whole batch, else ``"job"``. ``steps``/``stop``
+ *  are the same shapes ``ContinuePayload`` carries. */
+export interface Continuation {
+  job_id: string;
+  stage: string;
+  provider: string;
+  after: "job" | "batch";
+  steps: ContinueStepPayload[];
+  stop: ContinueStopPayload;
+  at: string;
 }
 
 export interface ArchiveResult {

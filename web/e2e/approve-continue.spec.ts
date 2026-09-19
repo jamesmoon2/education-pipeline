@@ -14,7 +14,7 @@ import { bootDaemon, type DaemonHandle } from "./helpers/daemon";
 
 let handle: DaemonHandle;
 
-const TOPICS = ["ac-chain", "ac-link"] as const;
+const TOPICS = ["ac-chain", "ac-link", "ac-continue"] as const;
 
 test.beforeAll(async () => {
   handle = await bootDaemon("ep-e2e-approve-continue-", {
@@ -105,4 +105,32 @@ test("the library's next action links a pending approval to the response tab", a
   await expect(
     page.getByRole("button", { name: "Approve & continue", exact: true }),
   ).toBeVisible();
+});
+
+// T34 (decision 9 addendum): the daemon now carries the chain across job
+// completions, so the cockpit gets its own run-to-next-judgment action —
+// "Continue to next approval" — independent of an approval. Manual plan, so
+// the chain writes the spec prompt and stops at the manual loop without
+// enqueueing a provider job this machine does not have. T33's Python tests
+// own the chained-job (fake-provider) case; this pins only the manual, single
+// -step chain, since the daemon endpoint under it is not yet implemented.
+test("Continue to next approval writes the spec prompt and stops at the manual loop, approving nothing", async ({
+  page,
+}) => {
+  await page.goto(`${handle.baseURL}/topics/ac-continue`);
+
+  await page.getByRole("button", { name: "Continue to next approval", exact: true }).click();
+
+  await expect(
+    // The advance step is not repeated when the stop names the same stage,
+    // exactly as the approve-and-continue phrase does.
+    page.getByText("Continued — the spec prompt is ready for you to run."),
+  ).toBeVisible();
+
+  expect(
+    existsSync(join(handle.ws, "runs", "ac-continue", "prompts", "spec.prompt.md")),
+  ).toBe(true);
+
+  // Nothing was approved: no approval control for spec (or any stage) exists.
+  await expect(page.getByRole("button", { name: /^Approve/ })).toHaveCount(0);
 });
