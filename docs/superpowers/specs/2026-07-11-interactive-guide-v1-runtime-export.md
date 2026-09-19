@@ -85,8 +85,14 @@ The default layout has:
 - a main reading column;
 - previous/next section controls;
 - section position and module context;
+- a final results page, after the last section, reporting per-outcome results;
+- a review queue: entering a section two or more sections past a check the
+  learner answered wrong opens a dismissible "Review what you missed" panel
+  below that section's heading, naming each missed prompt with a link back to
+  it; the results page lists the same missed prompts under their outcome;
 - glossary and course-info panels; and
-- a course controls menu for theme, progress reset, and local-data explanation.
+- a course controls menu for theme, print mode, keyboard shortcuts, progress
+  reset, and local-data explanation.
 
 Small screens use a single reading column and drawer navigation. Large screens
 may show persistent module navigation, but the reading measure remains
@@ -146,8 +152,23 @@ An interaction is complete when:
 - a scenario choice has been submitted; or
 - a reflection has non-whitespace text or is explicitly skipped.
 
-The runtime shows both section completion and interaction completion. It does not
-claim mastery.
+The runtime shows section completion, interaction completion, and per-outcome
+results. A knowledge check is correct when the selected set equals the correct
+set; a scenario is correct when the chosen choice is the “best” one. Worked
+reveals and reflections complete but never score.
+
+Checks answered wrong on the latest attempt are offered back for review, both
+in a later section and on the results page; following one of those links opens
+the block and, where the block allows retries, returns it to its unanswered
+view without changing what is stored until the learner answers again.
+
+Results roll up per learning outcome, through the `outcome_ids` the blocks
+already carry. An outcome is *on track* when every block answered for it was
+correct on its latest attempt, and *to review* when any was wrong; a block
+answered before results were recorded counts as complete for progress and as
+unanswered here. A header indicator and the final results page report the
+roll-up. These are the learner's own answers read back to them, stored only in
+their browser: not a score, not a grade, and not a credential.
 
 ## 8. Local persistence
 
@@ -163,10 +184,12 @@ Stored state includes only:
 
 - completed section IDs;
 - interaction attempt/completion state;
+- per-check results (the latest attempt and the first one);
 - revealed-step counts;
 - reflection text;
-- last-open section; and
-- theme preference.
+- last-open section;
+- theme preference; and
+- print mode.
 
 It does not include learner profile data, source prompts, model provenance, or
 run artifacts.
@@ -175,6 +198,19 @@ Storage reads are schema-checked and exception-safe. If browser policy disables
 storage for local files, the guide remains fully usable for the current session
 and displays a one-time non-blocking notice. A content-hash change starts a new
 progress record rather than applying stale block IDs to a rebuilt course.
+
+A downloaded progress file carries a format version. Version 2 adds the
+per-check result fields to the same state shape, so a version-1 file still
+restores in full — its answered blocks simply carry no recorded result. A
+version this runtime does not know is refused rather than degraded, because a
+newer shape could read as empty and quietly replace real progress.
+
+Progress adopted from anywhere but this document's own record — a restored
+progress file, or a previous export's storage key — has each answered check
+and scenario rescored from its stored selection against the current answer
+key, and where the rescore contradicts the stored result the first-attempt
+field becomes null rather than carrying a verdict this course would no longer
+produce.
 
 ## 9. Safe Markdown renderer
 
@@ -268,14 +304,23 @@ date only if the canonical final metadata supplies one deterministically.
 
 ## 12. Print behavior
 
-Print output includes all educational content in a comprehensible expanded form:
+A course-controls print-mode control offers two modes, answer key (the
+default) and learner copy:
 
-- navigation and controls are hidden;
-- all reveal steps and scenario feedback are visible;
-- knowledge-check choices and explanations are visible;
-- reflection prompts are visible but saved learner notes are not;
-- link destinations are legible where practical; and
-- modules and sections avoid pathological page breaks.
+- **Answer key** includes all educational content in a comprehensible
+  expanded form: navigation and controls are hidden; all reveal steps and
+  scenario feedback are visible; knowledge-check choices and explanations
+  are visible; reflection prompts are visible but saved learner notes are
+  not; link destinations are legible where practical; and modules and
+  sections avoid pathological page breaks.
+- **Learner copy** additionally hides knowledge-check correctness marks,
+  explanations, and results; worked-reveal step bodies and the conclusion
+  those steps build to; and scenario feedback and debriefs, while keeping
+  every prompt, choice, and reflection prompt visible. The results page
+  and review panels never print, in either mode.
+
+The chosen mode is a display preference, not progress: it is stored
+alongside theme preference and survives a progress reset.
 
 ## 13. Accessibility requirements
 
@@ -285,6 +330,9 @@ The fixture guide must pass automated checks plus manual keyboard review for:
 - visible focus;
 - skip link;
 - complete keyboard operation;
+- keyboard shortcuts for paging sections (`ArrowLeft`/`ArrowRight`) and
+  jumping to the course navigation (`/`), inert with a modifier held or
+  while an editable control has focus, named in the course controls;
 - labels and instructions for every control;
 - live announcements that do not steal focus;
 - 4.5:1 normal-text contrast and 3:1 large-text/UI contrast;

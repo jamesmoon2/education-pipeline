@@ -3,7 +3,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -84,7 +84,7 @@ test.describe("guide schema compatibility", () => {
 
     await expect(page.locator("[data-guide-shell]")).toBeHidden();
     await expect(page.locator("[data-guide-status]")).toContainText(
-      "schema 2.0, runtime 1.0",
+      "schema 2.0, runtime 1.1",
     );
   });
 });
@@ -456,6 +456,104 @@ for (const transport of TRANSPORTS) {
       await expect(page.locator(".reflection-input").first()).toBeHidden();
     });
 
+    test("print controls: a Print fieldset defaults to answer key and toggling updates the dataset and persists across reload", async ({
+      page,
+    }) => {
+      const fieldset = page.locator('.course-controls fieldset[data-role="print-mode"]');
+      await expect(fieldset).toBeVisible();
+      await expect(fieldset.locator("legend")).toHaveText("Print");
+
+      const answerKeyRadio = fieldset.locator('input[name="print-mode"][value="answer-key"]');
+      const learnerCopyRadio = fieldset.locator('input[name="print-mode"][value="learner-copy"]');
+      await expect(answerKeyRadio).toBeChecked();
+      await expect(learnerCopyRadio).not.toBeChecked();
+
+      // Default state: no explicit opt-in has happened yet, so the dataset
+      // attribute is either unset or already "answer-key" (both mean the
+      // same thing to the print stylesheet); assert the dataset, not the
+      // store, per the contract.
+      const defaultPrintMode = await page.evaluate(
+        () => document.documentElement.dataset.printMode,
+      );
+      expect(defaultPrintMode === undefined || defaultPrintMode === "answer-key").toBe(true);
+
+      await learnerCopyRadio.check();
+      await expect(page.locator("html")).toHaveAttribute("data-print-mode", "learner-copy");
+
+      await page.reload({ waitUntil: "load" });
+      const reloadedFieldset = page.locator('.course-controls fieldset[data-role="print-mode"]');
+      await expect(
+        reloadedFieldset.locator('input[name="print-mode"][value="learner-copy"]'),
+      ).toBeChecked();
+      await expect(page.locator("html")).toHaveAttribute("data-print-mode", "learner-copy");
+    });
+
+    test("print media in learner-copy mode hides answers but keeps prompts, choices, and reflection prompts", async ({
+      page,
+    }) => {
+      await page
+        .locator('.course-controls fieldset[data-role="print-mode"] input[value="learner-copy"]')
+        .check();
+      await page.emulateMedia({ media: "print" });
+
+      const kc = page.locator("article.knowledge_check").first();
+      const wr = page.locator("article.worked_reveal").first();
+      const sc = page.locator("article.scenario").first();
+      const rf = page.locator("article.reflection").first();
+
+      await expect(kc.locator('[data-role="kc-explanation"]').first()).toBeHidden();
+      await expect(page.locator('[data-role="answer-marker"]').first()).toBeHidden();
+      await expect(kc.locator('[data-role="kc-result"]').first()).toBeHidden();
+      await expect(wr.locator('[data-role="reveal-step"]').first()).toBeHidden();
+      await expect(page.locator('[data-role="sc-feedback"]').first()).toBeHidden();
+      await expect(sc.locator('[data-role="sc-debrief"]').first()).toBeHidden();
+
+      await expect(kc.locator("h3").first()).toBeVisible();
+      await expect(kc.locator(".choice-label").first()).toBeVisible();
+      await expect(sc.locator("h3").first()).toBeVisible();
+      await expect(sc.locator(".choice-label").first()).toBeVisible();
+      await expect(rf.locator("h3").first()).toBeVisible();
+
+      const resultsPage = page.locator('[data-role="results-page"]');
+      if ((await resultsPage.count()) > 0) {
+        await expect(resultsPage).toBeHidden();
+      } else {
+        expect(await resultsPage.count()).toBe(0);
+      }
+
+      await expect(page.locator('.course-controls fieldset[data-role="print-mode"]')).toBeHidden();
+    });
+
+    // T43 (PR #41 review finding): the worked-reveal conclusion is the same
+    // kind of "answer" as its steps, but only `.reveal-step` is hidden by the
+    // learner-copy print rule (`runtime.css`) -- `.conclusion` is not, so it
+    // leaks onto a printed learner copy.
+    test("learner-copy print hides the worked-reveal conclusion; answer-key print keeps it visible", async ({
+      page,
+    }) => {
+      await gotoSection(page, "recognize-loop-types");
+      const wr = page.locator("article.worked_reveal").first();
+      const conclusion = wr.locator('[data-role="wr-conclusion"]');
+
+      // Reveal every step on screen first, so the conclusion is showing
+      // before print is ever emulated.
+      await wr.locator('[data-role="wr-show-all"]').click();
+      await expect(conclusion).toBeVisible();
+
+      // Answer key is the default print mode: the conclusion is part of the
+      // worked answer and must stay visible when printed.
+      await page.emulateMedia({ media: "print" });
+      await expect(conclusion).toBeVisible();
+      await page.emulateMedia({ media: "screen" });
+
+      // Learner copy must hide it exactly like the reveal steps it concludes.
+      await page
+        .locator('.course-controls fieldset[data-role="print-mode"] input[value="learner-copy"]')
+        .check();
+      await page.emulateMedia({ media: "print" });
+      await expect(conclusion).toBeHidden();
+    });
+
     test("has no serious or critical automated accessibility violations", async ({ page }) => {
       const results = await new AxeBuilder({ page }).analyze();
       const serious = results.violations.filter(
@@ -580,5 +678,709 @@ test.describe("guide runtime keyboard-only operation (http)", () => {
     await page.keyboard.press("Enter");
     await expect(firstSection).toHaveClass(/is-current/);
     await expect(page).toHaveURL(/#feedback-foundations$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Print modes and document-level keyboard paging (http only; these exercise
+// a document-wide keydown listener and a course-controls fieldset, neither
+// of which vary by transport in a way the existing per-transport loop above
+// doesn't already cover for print).
+// ---------------------------------------------------------------------------
+
+test.describe("guide runtime print modes and keyboard paging (http)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+  });
+
+  test("ArrowRight/ArrowLeft page sections when focus is on the body", async ({ page }) => {
+    const position = page.locator('section[data-role="guide-section"].is-current [data-role="section-position"]');
+    await expect(page.locator("#feedback-foundations")).toHaveClass(/is-current/);
+    await expect(position).toHaveText("Section 1 of 4");
+
+    await page.locator("body").click({ position: { x: 2, y: 2 } });
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#recognize-loop-types")).toHaveClass(/is-current/);
+    await expect(
+      page.locator('section[data-role="guide-section"].is-current [data-role="section-position"]'),
+    ).toHaveText("Section 2 of 4");
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.locator("#feedback-foundations")).toHaveClass(/is-current/);
+    await expect(
+      page.locator('section[data-role="guide-section"].is-current [data-role="section-position"]'),
+    ).toHaveText("Section 1 of 4");
+  });
+
+  test("ArrowRight at the last section opens the results page and is a no-op there", async ({ page }) => {
+    await gotoSection(page, "garden-decision");
+    await page.locator("body").click({ position: { x: 2, y: 2 } });
+    await page.keyboard.press("ArrowRight");
+
+    await expect(page.locator("#results")).toHaveClass(/is-current/);
+    await expect(page.locator('#results [data-role="section-position"]')).toHaveText("Results");
+
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#results")).toHaveClass(/is-current/);
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.locator("#garden-decision")).toHaveClass(/is-current/);
+    await expect(
+      page.locator('section[data-role="guide-section"].is-current [data-role="section-position"]'),
+    ).toHaveText("Section 4 of 4");
+  });
+
+  test("arrow keys are inert inside the reflection textarea and \"/\" types a literal slash", async ({
+    page,
+  }) => {
+    await gotoSection(page, "garden-decision");
+    const textarea = page.locator("article.reflection").first().locator('[data-role="reflection-input"]');
+    await textarea.focus();
+
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#garden-decision")).toHaveClass(/is-current/);
+
+    await page.keyboard.press("/");
+    await expect(textarea).toHaveValue("/");
+    await expect(textarea).toBeFocused();
+  });
+
+  test("\"/\" focuses the first section link in the course navigation", async ({ page }) => {
+    await page.locator("body").click({ position: { x: 2, y: 2 } });
+    await page.keyboard.press("/");
+    await expect(page.locator('nav.guide-nav a[data-role="nav-link"]').first()).toBeFocused();
+  });
+
+  test("modifier combinations such as Control+ArrowRight do not page sections", async ({ page }) => {
+    await page.locator("body").click({ position: { x: 2, y: 2 } });
+    await page.keyboard.press("Control+ArrowRight");
+
+    await expect(page.locator("#feedback-foundations")).toHaveClass(/is-current/);
+    await expect(
+      page.locator('section[data-role="guide-section"].is-current [data-role="section-position"]'),
+    ).toHaveText("Section 1 of 4");
+  });
+
+  test("course controls name the keyboard shortcuts", async ({ page }) => {
+    const help = page.locator('.course-controls [data-role="keyboard-help"]');
+    await expect(help).toContainText("←");
+    await expect(help).toContainText("→");
+    await expect(help).toContainText("/");
+  });
+
+  test("every focusable control is a native interactive element (Enter/Space parity guard)", async ({
+    page,
+  }) => {
+    const result = await page.evaluate(() => {
+      const allowed = new Set(["BUTTON", "A", "INPUT", "TEXTAREA", "SELECT"]);
+      const focusable = Array.from(
+        document.querySelectorAll('button, a[href], input, textarea, select, [tabindex]:not([tabindex="-1"])'),
+      );
+      const nonNativeFocusable = focusable
+        .map((el) => el.tagName)
+        .filter((tag) => !allowed.has(tag));
+      const fakeButtons = Array.from(document.querySelectorAll('[role="button"]')).filter(
+        (el) => el.tagName !== "BUTTON",
+      ).length;
+      return { count: focusable.length, nonNativeFocusable, fakeButtons };
+    });
+    expect(result.count).toBeGreaterThan(0);
+    expect(result.nonNativeFocusable).toEqual([]);
+    expect(result.fakeButtons).toBe(0);
+  });
+
+  test("has no serious or critical accessibility violations with learner-copy print mode selected", async ({
+    page,
+  }) => {
+    await page
+      .locator('.course-controls fieldset[data-role="print-mode"] input[value="learner-copy"]')
+      .check();
+    const results = await new AxeBuilder({ page }).analyze();
+    const serious = results.violations.filter(
+      (v) => v.impact === "serious" || v.impact === "critical",
+    );
+    expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T40: per-outcome mastery results (header indicator + "Your results" page).
+// The fixture has three outcomes: "identify-loop" (scored only by the
+// knowledge check "check-loop-type"), "map-loop" (scored only by the
+// knowledge check "check-delay-response"), and "choose-intervention" (scored
+// by both "check-delay-response" and the scenario "pest-density-scenario").
+// http-only: these assertions are about text/DOM contract, not transport.
+// ---------------------------------------------------------------------------
+
+test.describe("mastery results (T40, http)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+  });
+
+  test("header reports no checks answered yet and drops the old 'not mastery' copy", async ({
+    page,
+  }) => {
+    const progress = page.locator('[data-role="progress-summary"]');
+    await expect(progress).toContainText(
+      "Progress and results are stored only in this browser. They are not a grade.",
+    );
+    const progressText = await progress.textContent();
+    expect(progressText).not.toContain("not mastery");
+
+    const resultsSummary = page.locator('[data-role="results-summary"]');
+    await expect(resultsSummary).toContainText("Results: no checks answered yet");
+    await expect(resultsSummary.locator('a[href="#results"]')).toBeVisible();
+  });
+
+  test("the results page lists every outcome, in guide order, as not started before any answers", async ({
+    page,
+  }) => {
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    await expect(page.locator("#results")).toHaveClass(/is-current/);
+
+    const items = page.locator('[data-role="results-outcomes"] li');
+    await expect(items).toHaveCount(3);
+    await expect(items.nth(0)).toHaveAttribute("data-outcome-id", "identify-loop");
+    await expect(items.nth(1)).toHaveAttribute("data-outcome-id", "map-loop");
+    await expect(items.nth(2)).toHaveAttribute("data-outcome-id", "choose-intervention");
+    for (let i = 0; i < 3; i++) {
+      await expect(items.nth(i)).toHaveAttribute("data-status", "not_started");
+      await expect(items.nth(i).locator('[data-role="results-outcome-count"]')).toHaveText(
+        "Not started",
+      );
+    }
+    await expect(items.nth(0)).toContainText(
+      "Identify reinforcing and balancing feedback in a familiar system.",
+    );
+  });
+
+  test("the results page is not a guide section and carries only a previous control", async ({
+    page,
+  }) => {
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const results = page.locator("#results");
+    await expect(results).toHaveAttribute("data-role", "results-page");
+    await expect(results.locator("h2").first()).toHaveText("Your results");
+    await expect(results.locator('[data-role="section-position"]')).toHaveText("Results");
+    await expect(results.locator('[data-role="prev-section"]')).toBeVisible();
+    await expect(results.locator('[data-role="next-section"]')).toHaveCount(0);
+    // A results page is not itself a counted guide section.
+    await expect(page.locator('section[data-role="guide-section"]')).toHaveCount(4);
+  });
+
+  test("existing section-position and progress-count text are unchanged by the results page", async ({
+    page,
+  }) => {
+    await expect(page.locator('#feedback-foundations [data-role="section-position"]')).toHaveText(
+      "Section 1 of 4",
+    );
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "0 of 4 sections complete",
+    );
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "0 of 5 interactions complete",
+    );
+  });
+
+  test("a correct knowledge-check answer puts its outcome on track and updates the header", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="true"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await expect(page.locator('[data-role="results-summary"]')).toContainText(
+      "Results: 1 of 3 outcomes on track",
+    );
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const item = page.locator('[data-outcome-id="identify-loop"]');
+    await expect(item).toHaveAttribute("data-status", "on_track");
+    await expect(item.locator('[data-role="results-outcome-count"]')).toHaveText(
+      "1 of 1 correct",
+    );
+  });
+
+  test("a wrong knowledge-check answer puts its outcome up for review and the header appends a review count", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await expect(page.locator('[data-role="results-summary"]')).toContainText(
+      "Results: 0 of 3 outcomes on track, 1 to review",
+    );
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const item = page.locator('[data-outcome-id="identify-loop"]');
+    await expect(item).toHaveAttribute("data-status", "review");
+    await expect(item.locator('[data-role="results-outcome-count"]')).toHaveText(
+      "0 of 1 correct",
+    );
+  });
+
+  test("a retry that lands correct flips an outcome from review back to on track", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+    await expect(page.locator('[data-role="results-summary"]')).toContainText("1 to review");
+
+    await kc.locator('[data-role="kc-retry"]').click();
+    await kc.locator('[data-role="kc-choice"][data-correct="true"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    const resultsSummary = page.locator('[data-role="results-summary"]');
+    await expect(resultsSummary).toContainText("Results: 1 of 3 outcomes on track");
+    const summaryText = await resultsSummary.textContent();
+    expect(summaryText).not.toContain("to review");
+  });
+
+  test("an outcome linked to two scorable blocks aggregates both into its results count", async ({
+    page,
+  }) => {
+    await gotoSection(page, "delays-and-leverage");
+    const kc = page.locator("#delays-and-leverage article.knowledge_check");
+    const correctChoices = kc.locator('[data-role="kc-choice"][data-correct="true"]');
+    const correctCount = await correctChoices.count();
+    for (let i = 0; i < correctCount; i++) await correctChoices.nth(i).check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await gotoSection(page, "garden-decision");
+    const sc = page.locator("article.scenario").first();
+    await sc.locator('[data-role="sc-choice"][data-quality="weak"]').check();
+    await sc.locator('[data-role="sc-submit"]').click();
+
+    await expect(page.locator('[data-role="results-summary"]')).toContainText(
+      "Results: 1 of 3 outcomes on track, 1 to review",
+    );
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const mapLoop = page.locator('[data-outcome-id="map-loop"]');
+    await expect(mapLoop).toHaveAttribute("data-status", "on_track");
+    await expect(mapLoop.locator('[data-role="results-outcome-count"]')).toHaveText(
+      "1 of 1 correct",
+    );
+    const chooseIntervention = page.locator('[data-outcome-id="choose-intervention"]');
+    await expect(chooseIntervention).toHaveAttribute("data-status", "review");
+    await expect(chooseIntervention.locator('[data-role="results-outcome-count"]')).toHaveText(
+      "1 of 2 correct",
+    );
+  });
+
+  test("an outcome with one of two checks answered counts only the answered one and names the open one", async ({
+    page,
+  }) => {
+    await page.goto(httpBaseUrl);
+    await gotoSection(page, "delays-and-leverage");
+    const kc = page.locator("#delays-and-leverage article.knowledge_check");
+    const correctChoices = kc.locator('[data-role="kc-choice"][data-correct="true"]');
+    const correctCount = await correctChoices.count();
+    for (let i = 0; i < correctCount; i++) await correctChoices.nth(i).check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const chooseIntervention = page.locator('[data-outcome-id="choose-intervention"]');
+    await expect(chooseIntervention).toHaveAttribute("data-status", "on_track");
+    await expect(chooseIntervention.locator('[data-role="results-outcome-count"]')).toHaveText(
+      "1 of 1 correct, 1 not yet answered",
+    );
+  });
+
+  test("Next from the last guide section and a direct #results fragment both open the results page", async ({
+    page,
+  }) => {
+    await gotoSection(page, "garden-decision");
+    const current = page.locator("section[data-role=\"guide-section\"].is-current");
+    const next = current.locator('[data-role="next-section"]');
+    // On the last guide section, Next must lead on to the results page
+    // instead of staying disabled the way it does today.
+    await expect(next).toBeEnabled();
+    await next.click();
+    await expect(page.locator("#results")).toHaveClass(/is-current/);
+    await expect(page).toHaveURL(/#results$/);
+
+    await page.reload({ waitUntil: "load" });
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    await expect(page.locator("#results")).toHaveClass(/is-current/);
+    await expect(page.locator('#results [data-role="section-position"]')).toHaveText("Results");
+  });
+
+  test("the results page has no serious or critical accessibility violations after answering everything", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc1 = page.locator("article.knowledge_check").first();
+    await kc1.locator('[data-role="kc-choice"][data-correct="true"]').first().check();
+    await kc1.locator('[data-role="kc-submit"]').click();
+
+    await gotoSection(page, "delays-and-leverage");
+    const kc2 = page.locator("#delays-and-leverage article.knowledge_check");
+    const correctChoices = kc2.locator('[data-role="kc-choice"][data-correct="true"]');
+    const correctCount = await correctChoices.count();
+    for (let i = 0; i < correctCount; i++) await correctChoices.nth(i).check();
+    await kc2.locator('[data-role="kc-submit"]').click();
+
+    await gotoSection(page, "garden-decision");
+    const sc = page.locator("article.scenario").first();
+    await sc.locator('[data-role="sc-choice"][data-quality="best"]').check();
+    await sc.locator('[data-role="sc-submit"]').click();
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    await expect(page.locator("#results")).toHaveClass(/is-current/);
+
+    const results = await new AxeBuilder({ page }).analyze();
+    const serious = results.violations.filter(
+      (v) => v.impact === "serious" || v.impact === "critical",
+    );
+    expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T41: the review queue. "Missed" = a knowledge_check or scenario whose
+// stored `correct === false` on the latest attempt. `check-loop-type` (in
+// "recognize-loop-types", guide section index 1) sits exactly two sections
+// before "garden-decision" (index 3), which is what makes the distance rule
+// testable in both directions: no panel one section later
+// ("delays-and-leverage", index 2) and a panel two sections later. The
+// scenario block `pest-density-scenario` carries no `retry` flag, so it is
+// used to pin the non-retryable "See the explanation" link text; everything
+// else uses the retryable knowledge check `check-loop-type`.
+// ---------------------------------------------------------------------------
+
+test.describe("review queue (T41, http)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+  });
+
+  test("entering a section two or more sections after a missed check shows a review panel naming it", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await gotoSection(page, "garden-decision");
+
+    const panel = page.locator('#garden-decision [data-role="review-panel"]');
+    await expect(panel).toBeVisible();
+    await expect(panel).toHaveClass(/review-panel/);
+    await expect(panel.locator("h3")).toHaveText("Review what you missed");
+
+    const labelledBy = await panel.getAttribute("aria-labelledby");
+    expect(labelledBy).toBeTruthy();
+    await expect(page.locator(`#${labelledBy}`)).toHaveText("Review what you missed");
+
+    const items = panel.locator('[data-role="review-items"] li');
+    await expect(items).toHaveCount(1);
+    const item = items.first();
+    await expect(item).toHaveAttribute("data-block-id", "check-loop-type");
+    await expect(item).toContainText(
+      "A project team learns from each successful release, making later releases smoother and creating more opportunities to learn. What kind of loop dominates?",
+    );
+    const link = item.locator('[data-role="practice-again"]');
+    await expect(link).toHaveText("Practice again");
+    await expect(link).toHaveAttribute("href", "#check-loop-type");
+
+    const dismissBtn = panel.locator('[data-role="review-dismiss"]');
+    await expect(dismissBtn).toHaveText("Dismiss");
+
+    const positionedRightAfterHeading = await page
+      .locator("#garden-decision")
+      .evaluate((section) => {
+        const heading = section.querySelector("h2");
+        return Boolean(
+          heading &&
+            heading.nextElementSibling &&
+            heading.nextElementSibling.matches('[data-role="review-panel"]'),
+        );
+      });
+    expect(positionedRightAfterHeading).toBe(true);
+  });
+
+  test("no review panel appears in the section holding the missed block, or the one right after it", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    // Same section as the missed block: distance 0.
+    await expect(page.locator('#recognize-loop-types [data-role="review-panel"]')).toHaveCount(0);
+
+    // The very next section: distance 1.
+    await gotoSection(page, "delays-and-leverage");
+    await expect(page.locator('#delays-and-leverage [data-role="review-panel"]')).toHaveCount(0);
+  });
+
+  test("no review panel appears anywhere when nothing has been answered wrong", async ({ page }) => {
+    await gotoSection(page, "garden-decision");
+    await expect(page.locator('[data-role="review-panel"]')).toHaveCount(0);
+  });
+
+  test("dismissing the review panel hides it for this visit; leaving and returning shows it again while still missed", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await gotoSection(page, "garden-decision");
+    const panel = page.locator('#garden-decision [data-role="review-panel"]');
+    await expect(panel).toBeVisible();
+    await panel.locator('[data-role="review-dismiss"]').click();
+    await expect(panel).toHaveCount(0);
+
+    await gotoSection(page, "delays-and-leverage");
+    await gotoSection(page, "garden-decision");
+    await expect(page.locator('#garden-decision [data-role="review-panel"]')).toBeVisible();
+  });
+
+  test("practice again on a retryable block opens its section, focuses the block, and returns it to an answerable state", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+    await expect(kc).toHaveClass(/is-submitted/);
+
+    await gotoSection(page, "garden-decision");
+    const panel = page.locator('#garden-decision [data-role="review-panel"]');
+    await panel.locator('[data-role="practice-again"]').click();
+
+    await expect(page.locator("#recognize-loop-types")).toHaveClass(/is-current/);
+    await expect(page.locator("article#check-loop-type")).toBeFocused();
+    await expect(kc).not.toHaveClass(/is-submitted/);
+    await expect(kc.locator('[data-role="kc-submit"]')).toBeVisible();
+    await expect(kc.locator('[data-role="kc-choice"]').first()).toBeEnabled();
+    await expect(kc.locator('[data-role="kc-result"]')).toHaveText("");
+  });
+
+  test("the results page lists missed blocks only under outcomes up for review", async ({ page }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+
+    const identifyLoop = page.locator('[data-outcome-id="identify-loop"]');
+    await expect(identifyLoop).toHaveAttribute("data-status", "review");
+    const missedList = identifyLoop.locator('[data-role="results-missed"]');
+    await expect(missedList).toBeVisible();
+    const missedItems = missedList.locator("li");
+    await expect(missedItems).toHaveCount(1);
+    await expect(missedItems.first()).toHaveAttribute("data-block-id", "check-loop-type");
+    await expect(missedItems.first().locator('[data-role="practice-again"]')).toHaveText(
+      "Practice again",
+    );
+
+    const mapLoop = page.locator('[data-outcome-id="map-loop"]');
+    await expect(mapLoop).toHaveAttribute("data-status", "not_started");
+    await expect(mapLoop.locator('[data-role="results-missed"]')).toHaveCount(0);
+
+    const chooseIntervention = page.locator('[data-outcome-id="choose-intervention"]');
+    await expect(chooseIntervention).toHaveAttribute("data-status", "not_started");
+    await expect(chooseIntervention.locator('[data-role="results-missed"]')).toHaveCount(0);
+  });
+
+  test("practice again for a non-retryable scenario keeps its answered view and reads 'See the explanation'", async ({
+    page,
+  }) => {
+    await gotoSection(page, "garden-decision");
+    const sc = page.locator("article.scenario").first();
+    await sc.locator('[data-role="sc-choice"][data-quality="weak"]').check();
+    await sc.locator('[data-role="sc-submit"]').click();
+    await expect(sc).toHaveClass(/is-submitted/);
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const chooseIntervention = page.locator('[data-outcome-id="choose-intervention"]');
+    await expect(chooseIntervention).toHaveAttribute("data-status", "review");
+    const item = chooseIntervention.locator(
+      '[data-role="results-missed"] li[data-block-id="pest-density-scenario"]',
+    );
+    const link = item.locator('[data-role="practice-again"]');
+    await expect(link).toHaveText("See the explanation");
+    await expect(link).toHaveAttribute("href", "#pest-density-scenario");
+
+    await link.click();
+    await expect(page.locator("#garden-decision")).toHaveClass(/is-current/);
+    await expect(page.locator("article#pest-density-scenario")).toBeFocused();
+    await expect(sc).toHaveClass(/is-submitted/);
+    await expect(sc.locator('[data-role="sc-submit"]')).toBeHidden();
+  });
+
+  test("a retry that lands correct removes the block from the results-page missed list", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const identifyLoopBeforeFix = page.locator('[data-outcome-id="identify-loop"]');
+    await expect(identifyLoopBeforeFix).toHaveAttribute("data-status", "review");
+    await expect(
+      identifyLoopBeforeFix.locator('[data-role="results-missed"] li[data-block-id="check-loop-type"]'),
+    ).toHaveCount(1);
+
+    await gotoSection(page, "recognize-loop-types");
+    await kc.locator('[data-role="kc-retry"]').click();
+    await kc.locator('[data-role="kc-choice"][data-correct="true"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const identifyLoop = page.locator('[data-outcome-id="identify-loop"]');
+    await expect(identifyLoop).toHaveAttribute("data-status", "on_track");
+    await expect(identifyLoop.locator('[data-role="results-missed"]')).toHaveCount(0);
+  });
+
+  test("keyboard: Tab reaches the practice-again link and the dismiss button; Enter dismisses", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await gotoSection(page, "garden-decision");
+    const panel = page.locator('#garden-decision [data-role="review-panel"]');
+    const link = panel.locator('[data-role="practice-again"]');
+    const dismissBtn = panel.locator('[data-role="review-dismiss"]');
+
+    await link.focus();
+    await expect(link).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(dismissBtn).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(panel).toHaveCount(0);
+  });
+
+  test("the review panel has no animation and stays accessible", async ({ page }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await gotoSection(page, "garden-decision");
+    const panel = page.locator('#garden-decision [data-role="review-panel"]');
+    await expect(panel).toBeVisible();
+
+    const styleAttr = (await panel.getAttribute("style")) || "";
+    expect(styleAttr).not.toMatch(/transition|animation/i);
+
+    const results = await new AxeBuilder({ page }).analyze();
+    const serious = results.violations.filter(
+      (v) => v.impact === "serious" || v.impact === "critical",
+    );
+    expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T43 (PR #41 review finding): the results page is always created with
+// `page.id = "results"` and `installPage()` bails out whenever
+// `document.getElementById("results")` already exists -- so an authored
+// section whose id happens to be "results" both steals `#results` from the
+// runtime page *and* silently suppresses the results page outright (the
+// early return means it is never appended at all). A fixture where the first
+// section is renamed to "results" pins that the runtime must give its own
+// page a different, never-authorable id instead.
+// ---------------------------------------------------------------------------
+
+test.describe("results page never collides with an authored id (T43)", () => {
+  let collisionHtmlPath: string;
+
+  test.beforeAll(() => {
+    const guide = JSON.parse(
+      readFileSync(
+        path.join(ROOT, "tests/fixtures/guides/feedback-loops.guide.json"),
+        "utf8",
+      ),
+    );
+    // Section ids are the schema's only place-of-record for a section: no
+    // other field (blocks link to outcomes via outcome_ids, not section ids)
+    // has to be fixed up for this rename to stay a valid, resolvable guide.
+    guide.modules[0].sections[0].id = "results";
+    const guideJsonPath = path.join(tempDir, "results-collision.guide.json");
+    writeFileSync(guideJsonPath, JSON.stringify(guide), "utf8");
+    const html = assembleFixtureDocument(guideJsonPath);
+    collisionHtmlPath = path.join(tempDir, "results-collision.html");
+    writeFileSync(collisionHtmlPath, html, "utf8");
+  });
+
+  test("on the plain fixture the results page keeps the id 'results'", async ({ page }) => {
+    // Existing #results-fragment assertions elsewhere in this file rely on
+    // this id; pin it explicitly so a future change to the collision fix
+    // cannot quietly break their meaning.
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+    const id = await page.evaluate(
+      () => document.querySelector('[data-role="results-page"]')?.id,
+    );
+    expect(id).toBe("results");
+  });
+
+  test("an authored section named 'results' keeps #results; the runtime's results page still exists under a different id", async ({
+    page,
+  }) => {
+    await page.goto(`file://${collisionHtmlPath}`, { waitUntil: "load" });
+
+    // #results still opens the authored section, not the runtime's page.
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const authored = page.locator("#results");
+    await expect(authored).toHaveClass(/is-current/);
+    await expect(authored).toHaveAttribute("data-role", "guide-section");
+
+    // The runtime still builds its results page -- just not at #results, and
+    // not at any id an authored guide could ever declare (the schema's
+    // identifier pattern), so no future course can ever retake it.
+    const resultsPage = page.locator('[data-role="results-page"]');
+    await expect(resultsPage).toHaveCount(1);
+    const pageId = await resultsPage.evaluate((el) => el.id);
+    expect(pageId).not.toBe("results");
+    expect(pageId).not.toMatch(/^[a-z][a-z0-9-]{0,63}$/);
+
+    const link = page.locator('[data-role="results-summary"] a');
+    await expect(link).toHaveAttribute("href", `#${pageId}`);
+    await link.click();
+    await expect(resultsPage).toHaveClass(/is-current/);
   });
 });

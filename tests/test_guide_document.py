@@ -209,3 +209,10 @@ def test_document_accepts_1_1_but_embeds_only_the_public_projection() -> None:
     assert "serves_goals" not in payload_text
     assert "goal_exclusions" not in payload_text
     assert "Synthetic deferred objective." not in document
+
+
+def test_runtime_version_is_1_1_for_phase_4_mastery() -> None:
+    assets = load_runtime_assets()
+    assert assets.version == "1.1"
+    document = assemble_guide_document(guide(), assets)
+    assert 'data-guide-runtime="1.1"' in document
