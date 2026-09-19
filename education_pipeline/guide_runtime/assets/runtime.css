@@ -68,6 +68,14 @@ main section{scroll-margin-top:1rem;margin-bottom:3rem}
 /* Status is carried by the count text; the glyph and border only reinforce it. */
 .results-outcomes li[data-status="on_track"] .results-outcome-count::before{content:"✓ "}
 .results-outcomes li[data-status="review"] .results-outcome-count::before{content:"◔ "}
+/* The review queue: missed checks offered back, in the section the learner
+ * has reached and under the outcome they belong to. Nothing here animates. */
+.review-panel{margin:0 0 1.5rem;padding:.6rem 1rem 1rem;border-left:3px solid var(--ep-color-accent);border-radius:.375rem;background:var(--ep-color-accent-soft);font-family:var(--ep-font-interface);font-size:.95rem}
+.review-panel h3{margin:.5rem 0}
+.review-panel button{font:inherit;font-weight:600;min-height:2.25rem;padding:.4rem .9rem;border:1px solid var(--ep-color-accent);border-radius:.375rem;background:transparent;color:var(--ep-color-accent);cursor:pointer}
+.review-items,.results-missed{list-style:none;padding-left:0;margin:.5rem 0}
+.review-items li,.results-missed li{margin:.4rem 0}
+.results-missed{flex-basis:100%;font-family:var(--ep-font-interface);font-size:.9rem}
 pre,code{font-family:var(--ep-font-technical)}
 pre{overflow:auto;background:var(--ep-color-canvas);border:1px solid var(--ep-color-border);border-radius:.375rem;padding:1rem;font-size:.875rem}
 table{border-collapse:collapse;width:100%}

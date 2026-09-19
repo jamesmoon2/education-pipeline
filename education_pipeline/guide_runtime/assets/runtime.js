@@ -511,12 +511,27 @@
       }
     }
 
+    // Only an outcome that is up for review names the blocks behind that:
+    // the list is rebuilt from the record every time, so a retry that lands
+    // correct takes its entry away on the spot.
+    function renderMissed(outcome, result) {
+      const item = outcome.itemEl;
+      if (!item) return;
+      const existing = qs('[data-role="results-missed"]', item);
+      if (existing) existing.remove();
+      if (result.status !== "review") return;
+      const missed = Review.missedIn(outcome.blockIds);
+      if (missed.length === 0) return;
+      item.appendChild(Review.buildList(missed, "results-missed"));
+    }
+
     function update() {
       try {
         const results = outcomes.map((outcome) => {
           const result = statusOf(outcome);
           if (outcome.itemEl) outcome.itemEl.dataset.status = result.status;
           if (outcome.countEl) outcome.countEl.textContent = countText(result);
+          renderMissed(outcome, result);
           return result;
         });
         if (summaryTextEl) summaryTextEl.textContent = summaryText(results);
@@ -526,6 +541,179 @@
     }
 
     return { install, update };
+  })();
+
+  // ---------------------------------------------------------------------
+  // Review queue: checks answered wrong resurface further along
+  // ---------------------------------------------------------------------
+
+  // How many guide sections have to pass before a missed block is offered
+  // back: the section it sits in, and the one straight after it, are close
+  // enough that the panel would be a re-read rather than a second look.
+  const REVIEW_DISTANCE = 2;
+
+  const Review = (() => {
+    // [{ id, prompt, sectionId, sectionIndex }] over the scorable blocks, in
+    // guide order, read from the document rather than from the JSON so a
+    // block that failed to enhance is simply absent.
+    let blocks = [];
+    // The section whose panel the learner dismissed. Dismissal lasts for that
+    // visit only: entering any other section forgets it.
+    let dismissedFor = null;
+
+    // The document's own rule: only a block marked retryable can be handed
+    // back unanswered, which is also what decides the link's wording.
+    function isRetryable(article) {
+      return Boolean(article) && article.dataset.retry === "true";
+    }
+
+    function promptOf(article) {
+      const heading = qs("h3", article);
+      return heading ? heading.textContent.trim() : article.id;
+    }
+
+    function collect() {
+      blocks = [];
+      qsa('main section[data-role="guide-section"]').forEach((section, index) => {
+        qsa('[data-interactive="true"]', section).forEach((article) => {
+          const type = interactionTypeOf(article);
+          if (!type || !SCORABLE_TYPES.has(type) || !article.id) return;
+          blocks.push({
+            id: article.id,
+            prompt: promptOf(article),
+            sectionId: section.id,
+            sectionIndex: index,
+          });
+        });
+      });
+    }
+
+    // Missed = answered, with the latest attempt wrong. A record with no
+    // result at all (pre-1.1, or a version-1 progress file) is not a wrong
+    // answer and never resurfaces.
+    function isMissed(blockId) {
+      const entry = State.interaction(blockId);
+      return Boolean(entry) && entry.completed === true && entry.correct === false;
+    }
+
+    function missedBefore(sectionIndex) {
+      return blocks.filter(
+        (b) => isMissed(b.id) && b.sectionIndex <= sectionIndex - REVIEW_DISTANCE
+      );
+    }
+
+    // The missed blocks among a given set of ids, still in guide order: the
+    // results page asks this one outcome at a time.
+    function missedIn(blockIds) {
+      const wanted = new Set(Array.isArray(blockIds) ? blockIds : []);
+      return blocks.filter((b) => wanted.has(b.id) && isMissed(b.id));
+    }
+
+    // One entry: the prompt that was missed, and the way back to it -- a
+    // fresh attempt where the block allows one, the explanation where it
+    // does not.
+    function buildItem(block) {
+      const item = document.createElement("li");
+      item.dataset.blockId = block.id;
+      const prompt = document.createElement("span");
+      prompt.className = "review-item-prompt";
+      prompt.textContent = block.prompt;
+      const link = document.createElement("a");
+      link.dataset.role = "practice-again";
+      link.href = `#${block.id}`;
+      link.textContent = isRetryable(document.getElementById(block.id))
+        ? "Practice again"
+        : "See the explanation";
+      item.appendChild(prompt);
+      item.appendChild(document.createTextNode(" "));
+      item.appendChild(link);
+      return item;
+    }
+
+    // Shared by the in-section panel and the results page, so both lists read
+    // and behave the same way.
+    function buildList(entries, role) {
+      const list = document.createElement("ul");
+      list.className = role;
+      list.dataset.role = role;
+      entries.forEach((block) => list.appendChild(buildItem(block)));
+      return list;
+    }
+
+    function removePanels() {
+      qsa('[data-role="review-panel"]').forEach((el) => el.remove());
+    }
+
+    function buildPanel(section, entries) {
+      const panel = document.createElement("aside");
+      panel.className = "review-panel";
+      panel.dataset.role = "review-panel";
+      const headingId = `${section.id}-review-heading`;
+      panel.setAttribute("aria-labelledby", headingId);
+      const heading = document.createElement("h3");
+      heading.id = headingId;
+      heading.textContent = "Review what you missed";
+      panel.appendChild(heading);
+      panel.appendChild(buildList(entries, "review-items"));
+      const dismiss = document.createElement("button");
+      dismiss.type = "button";
+      dismiss.dataset.role = "review-dismiss";
+      dismiss.textContent = "Dismiss";
+      dismiss.addEventListener("click", () => {
+        dismissedFor = section.id;
+        removePanels();
+      });
+      panel.appendChild(dismiss);
+      return panel;
+    }
+
+    // Rebuilt on every section entry, so a block answered correctly since the
+    // last visit is simply gone from it. The results page is not a guide
+    // section and never receives one.
+    function refresh(sectionId) {
+      try {
+        removePanels();
+        if (dismissedFor !== sectionId) dismissedFor = null;
+        else return;
+        const section = document.getElementById(sectionId);
+        if (!section || !section.matches('section[data-role="guide-section"]')) return;
+        const index = qsa('main section[data-role="guide-section"]').indexOf(section);
+        if (index === -1) return;
+        const entries = missedBefore(index);
+        if (entries.length === 0) return;
+        const heading = qs("h2", section);
+        if (!heading) return;
+        section.insertBefore(buildPanel(section, entries), heading.nextSibling);
+      } catch (_error) {
+        /* the review panel is an offer; never let it break navigation */
+      }
+    }
+
+    // "Practice again" reuses the block's own retry path rather than a second
+    // implementation of it, and leaves the stored record alone: what the
+    // learner answered stands until they answer again.
+    function restoreBlock(blockId) {
+      try {
+        if (!isRetryable(document.getElementById(blockId))) return false;
+        const reset = blockReset(blockId);
+        if (!reset) return false;
+        reset();
+        return true;
+      } catch (_error) {
+        return false;
+      }
+    }
+
+    function install() {
+      try {
+        collect();
+        dismissedFor = null;
+      } catch (_error) {
+        blocks = [];
+      }
+    }
+
+    return { install, refresh, restoreBlock, missedIn, buildList };
   })();
 
   // ---------------------------------------------------------------------
@@ -621,6 +809,9 @@
           heading.focus({ preventScroll: false });
         }
       }
+      // Recomputed on entry, which is the only moment the panel's own rule
+      // (how far back the missed block sits) can change.
+      Review.refresh(id);
       Progress.update();
       return true;
     }
@@ -715,6 +906,9 @@
         const targetId = anchor.getAttribute("href").slice(1);
         if (!targetId) return;
         event.preventDefault();
+        // Only the review queue's own link hands a block back unanswered; an
+        // ordinary cross-reference to the same block just shows it.
+        if (anchor.dataset.role === "practice-again") Review.restoreBlock(targetId);
         goToTarget(targetId);
       });
       window.addEventListener("hashchange", () => {
@@ -858,6 +1052,8 @@
       if (retryBtn) retryBtn.hidden = true;
       updateSubmitEnabled();
     }
+
+    registerBlockReset(id, clear);
 
     inputs.forEach((i) => i.addEventListener("change", updateSubmitEnabled));
     submitBtn.addEventListener("click", () => {
@@ -1024,6 +1220,8 @@
       updateSubmitEnabled();
     }
 
+    registerBlockReset(id, clear);
+
     inputs.forEach((i) => i.addEventListener("change", updateSubmitEnabled));
     submitBtn.addEventListener("click", () => {
       const choiceId = selectedId();
@@ -1154,8 +1352,23 @@
   // without re-running the enhancers (which would bind every listener twice).
   const HYDRATORS = [];
 
+  // The same enhancers register the function that returns their block to its
+  // pristine, unanswered view -- the one the block's own "Try again" control
+  // runs. The review queue reuses it so "Practice again" and "Try again" are
+  // one code path, not two that have to be kept in step.
+  const BLOCK_RESETS = new Map();
+
+  function registerBlockReset(id, reset) {
+    if (id && typeof reset === "function") BLOCK_RESETS.set(id, reset);
+  }
+
+  function blockReset(id) {
+    return BLOCK_RESETS.get(id) || null;
+  }
+
   function enhanceBlocks() {
     HYDRATORS.length = 0;
+    BLOCK_RESETS.clear();
     qsa('[data-interactive="true"]').forEach((article) => {
       const type = interactionTypeOf(article);
       const fn = type && ENHANCERS[type];
@@ -1690,6 +1903,9 @@
       document.documentElement.classList.add("js-enhanced");
       enhanceCourseControls(guide);
       enhanceBlocks();
+      // Both read the enhanced blocks, and the first section shown asks the
+      // review queue for a panel, so both are ready before Nav boots.
+      Review.install();
       // Appends the results page before navigation collects its destinations.
       Results.install(guide);
       Nav.boot();

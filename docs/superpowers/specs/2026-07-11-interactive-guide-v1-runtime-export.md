@@ -86,6 +86,10 @@ The default layout has:
 - previous/next section controls;
 - section position and module context;
 - a final results page, after the last section, reporting per-outcome results;
+- a review queue: entering a section two or more sections past a check the
+  learner answered wrong opens a dismissible "Review what you missed" panel
+  below that section's heading, naming each missed prompt with a link back to
+  it; the results page lists the same missed prompts under their outcome;
 - glossary and course-info panels; and
 - a course controls menu for theme, print mode, keyboard shortcuts, progress
   reset, and local-data explanation.
@@ -152,6 +156,11 @@ The runtime shows section completion, interaction completion, and per-outcome
 results. A knowledge check is correct when the selected set equals the correct
 set; a scenario is correct when the chosen choice is the “best” one. Worked
 reveals and reflections complete but never score.
+
+Checks answered wrong on the latest attempt are offered back for review, both
+in a later section and on the results page; following one of those links opens
+the block and, where the block allows retries, returns it to its unanswered
+view without changing what is stored until the learner answers again.
 
 Results roll up per learning outcome, through the `outcome_ids` the blocks
 already carry. An outcome is *on track* when every block answered for it was
