@@ -1,6 +1,6 @@
 # Phase 4 Mastery in the Runtime — Post-Milestone Audit Ledger
 
-- **Recorded:** 2026-09-19 (opened with the phase)
+- **Recorded:** 2026-09-19 (opened and closed with the phase)
 - **Source of truth:** thread closeout log in
   [`docs/superpowers/plans/2026-09-19-phase-4-mastery.md`](../plans/2026-09-19-phase-4-mastery.md)
 - **Purpose:** preserve the decisions and accepted limitations from the
@@ -9,7 +9,23 @@
 
 ## Closeout disposition
 
-(Filled at phase close.)
+Three threads (T40–T42 from the opportunity map), each merged into the phase
+branch only after the full pytest suite and the guide Playwright specs were
+green on the result; T40 and T42 ran in parallel worktrees, T41 after T40.
+Every thread was strict TDD with a Sonnet test writer and a separate
+implementer (Opus for T40 and T41, Sonnet for T42; the manager reviewed every
+runtime diff). Nine mutations were tried: eight were caught by the red sets
+and one (T41: listing missed blocks under on-track outcomes) is behaviourally
+equivalent to the shipped code, so its stronger form was tried and caught
+instead. Baseline at open was pytest 2200 / 1 skipped, vitest 627, Playwright
+89 counted with the guide specs at 59; at close 2201 / 1, 627, 126 counted
+with the guide specs at 96, on Python 3.11.
+
+Manager corrections to red sets: two stale version pins T40's writer missed
+(the download file version and the boot error string), the T40 count text
+(below), and T42's last-section ArrowRight guard after the merge (below).
+No thread exceeded the ~800-changed-line guideline once tests and the
+regenerated example export are set aside (T40 is +321 in `runtime.js`).
 
 ## Decisions that departed from the plan text
 
