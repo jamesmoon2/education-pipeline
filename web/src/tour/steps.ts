@@ -73,7 +73,7 @@ export const WORKBENCH_TOUR: TourStep[] = [
     target: '[data-tour="theme"]',
     title: "Light, dark, or follow the system",
     body:
-      "The dark theme is tuned like a room under blacklight: what matters fluoresces, the rest recedes. Your choice is remembered on this device.",
+      "Pin light or dark, or keep following the system. Your choice is remembered on this device and never leaves it.",
   },
   {
     id: "done",

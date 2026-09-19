@@ -20,14 +20,14 @@ intermediate artifact that produced it committed alongside in
 ## What it looks like
 
 All screenshots show a demo workspace with synthetic courses and learners.
-The cockpit ships a light theme and a dark theme (shown mixed below) and
-follows your system preference until you pin one.
+The cockpit ships a light theme and a dark theme and follows your system
+preference until you pin one.
 
 The **course library** is home base: every course with its next action,
 completion, and attached learner. Everything lives in plain files on your
 machine.
 
-![Course library with three courses in different states, dark theme](docs/screenshots/course-library.png)
+![Course library with three courses in different states](docs/screenshots/course-library.png)
 
 A built-in **guided tour** walks new users through the library, course
 setup, live activity and the model plan in about two minutes; every run
@@ -36,7 +36,7 @@ from Settings, or by opening any page with `?tour=1`.
 
 ![Guided tour opening card over the course library](docs/screenshots/tour-welcome.png)
 
-![Run board tour spotlighting the pipeline thread](docs/screenshots/tour-run-board.png)
+![Run board tour spotlighting the pipeline thread, dark theme](docs/screenshots/tour-run-board.png)
 
 **New course** is a short guided sequence — learner, topic, pedagogical
 blueprint, model plan, review. The blueprint step shapes what kind of
@@ -52,7 +52,7 @@ move is always the highlighted action. Nothing advances without your
 approval, and provider jobs stay visible from every page with a
 notification when one finishes.
 
-![Run board mid-run with spec and outline complete and the draft stage ready to run, dark theme](docs/screenshots/run-board.png)
+![Run board mid-run with spec and outline complete and the draft stage ready to run](docs/screenshots/run-board.png)
 
 Once a run completes, the run board becomes the quality record: validation
 milestones, personalization fit against the attached learner profile, a

@@ -41,13 +41,13 @@ const OVERLAY = `
   const css = \`
     #demo-cursor { position: fixed; z-index: 100000; width: 28px; height: 28px; pointer-events: none; left: -100px; top: -100px; filter: drop-shadow(0 2px 4px rgba(0,0,0,.45)); transition: transform 120ms ease; }
     #demo-cursor.down { transform: scale(.85); }
-    .demo-ripple { position: fixed; z-index: 99999; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; border: 3px solid #c4b5fd; pointer-events: none; animation: demo-ripple 520ms ease-out forwards; }
+    .demo-ripple { position: fixed; z-index: 99999; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; border: 3px solid #5277c5; pointer-events: none; animation: demo-ripple 520ms ease-out forwards; }
     @keyframes demo-ripple { from { transform: scale(1); opacity: .9 } to { transform: scale(5); opacity: 0 } }
-    #demo-caption { position: fixed; z-index: 90000; left: 50%; bottom: 44px; transform: translate(-50%, 24px); opacity: 0; max-width: 1280px; padding: 20px 30px 20px 26px; border-radius: 20px; background: rgba(13,11,26,.82); color: #edebf8; border: 1px solid rgba(179,157,255,.28); box-shadow: 0 30px 80px -20px rgba(0,0,0,.8), 0 0 0 1px rgba(124,58,237,.15); backdrop-filter: blur(16px); font-family: "Inter","Segoe UI",system-ui,sans-serif; font-size: 30px; line-height: 1.32; letter-spacing: -0.01em; text-wrap: balance; text-align: center; transition: opacity 320ms ease, transform 420ms cubic-bezier(.22,1,.36,1); pointer-events: none; }
+    #demo-caption { position: fixed; z-index: 90000; left: 50%; bottom: 44px; transform: translate(-50%, 24px); opacity: 0; max-width: 1280px; padding: 20px 30px 20px 26px; border-radius: 20px; background: rgba(24,32,51,.94); color: #eef1f6; border: 1px solid #344057; box-shadow: 0 24px 60px -20px rgba(0,0,0,.6); font-family: "Inter","Segoe UI",system-ui,sans-serif; font-size: 30px; line-height: 1.32; letter-spacing: -0.01em; text-wrap: balance; text-align: center; transition: opacity 320ms ease, transform 420ms cubic-bezier(.22,1,.36,1); pointer-events: none; }
     #demo-caption.on { opacity: 1; transform: translate(-50%, 0); }
-    #demo-caption::before { content: ""; position: absolute; left: 26px; right: 26px; top: 0; height: 3px; border-radius: 0 0 3px 3px; background: linear-gradient(90deg,#a78bfa,#22d3ee 55%,#fbbf24); }
-    #demo-caption .k { display: block; font-size: 15px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; color: #a78bfa; margin-bottom: 6px; }
-    #demo-cover { position: fixed; inset: 0; z-index: 200000; background: #0d0b1a; pointer-events: none; opacity: 0; transition: opacity 380ms ease; }
+    #demo-caption::before { content: ""; position: absolute; left: 26px; right: 26px; top: 0; height: 3px; border-radius: 0 0 3px 3px; background: #91ace8; }
+    #demo-caption .k { display: block; font-size: 15px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; color: #91ace8; margin-bottom: 6px; font-family: ui-monospace, Menlo, monospace; }
+    #demo-cover { position: fixed; inset: 0; z-index: 200000; background: #182033; pointer-events: none; opacity: 0; transition: opacity 380ms ease; }
     #demo-cover.on { opacity: 1; }
   \`;
   const install = () => {
@@ -80,7 +80,7 @@ const context = await browser.newContext({
   // injected stylesheet; the recording is not a security context.
   bypassCSP: true,
   deviceScaleFactor: 1,
-  colorScheme: "dark",
+  colorScheme: "light",
   recordVideo: { dir: OUT, size: { width: W, height: H } },
 });
 await context.addInitScript(OVERLAY);
@@ -154,7 +154,7 @@ await pause(3600);
 
 // 1. Library
 await page.goto(`${base}/`); // set storage on the right origin first
-await setTheme("dark");
+await setTheme("light");
 await scene(`${base}/`, { kicker: "The workbench", text: "Every course, its next safe move, and what it has cost. All of it plain files on this computer." });
 mark("library");
 await pause(900);
@@ -260,9 +260,7 @@ await pause(700);
 await scene("file://" + join(WS, "runs/feedback-loops/final/guide.html"), { kicker: "The payoff", text: "The learner gets one offline HTML file: knowledge checks, worked reveals, scenarios, reflections — progress stays in their browser." });
 mark("guide");
 await pause(900);
-const themeSelect = page.getByLabel(/theme/i).first();
-if (await themeSelect.count()) { await click(themeSelect, { settle: 250 }); await themeSelect.selectOption({ label: "Dark" }).catch(() => {}); }
-await pause(1400);
+await pause(900);
 await scrollTo(700, 1400);
 await pause(1200);
 const nextSection = page.getByRole("button", { name: "Next section" }).first();
@@ -281,9 +279,9 @@ await pause(1800);
 await page.keyboard.press("Escape");
 await pause(600);
 await caption("Your call", "Light or dark. It follows your system until you choose.");
-await click(page.getByRole("radio", { name: "Light" }));
-await pause(1700);
 await click(page.getByRole("radio", { name: "Dark" }));
+await pause(1700);
+await click(page.getByRole("radio", { name: "Light" }));
 await pause(1200);
 await caption("", "");
 await pause(400);

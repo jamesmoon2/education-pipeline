@@ -69,25 +69,18 @@ export function ArrowIcon() {
 }
 
 /**
- * Brand mark: a spectrum bar cut at 388 nm — the violet edge of what the eye
- * can see — with three nodes for the three artifacts every stage keeps
- * (prompt, response, approved). Drawn once, colored by tokens.
+ * Brand mark: the learning thread — a rule with three nodes for the three
+ * artifacts every stage keeps (prompt, response, approved copy). One color,
+ * the rail accent; the tile is the rail's active tone.
  */
 export function BrandMark() {
   return (
     <svg className="brand-mark" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
-      <defs>
-        <linearGradient id="ep-spectrum" x1="0" y1="1" x2="0" y2="0">
-          <stop offset="0" stopColor="var(--ep-spectrum-start)" />
-          <stop offset="0.55" stopColor="var(--ep-spectrum-mid)" />
-          <stop offset="1" stopColor="var(--ep-spectrum-end)" />
-        </linearGradient>
-      </defs>
-      <rect x="2" y="2" width="24" height="24" rx="7" fill="var(--ep-brand-tile)" />
-      <path d="M14 6.5v15" stroke="url(#ep-spectrum)" strokeWidth="2.4" strokeLinecap="round" />
-      <circle cx="14" cy="8" r="2.1" fill="var(--ep-spectrum-end)" />
-      <circle cx="14" cy="14" r="2.1" fill="var(--ep-spectrum-mid)" />
-      <circle cx="14" cy="20" r="2.1" fill="var(--ep-spectrum-start)" />
+      <rect x="2" y="2" width="24" height="24" rx="6" fill="var(--ep-color-rail-active)" />
+      <path d="M14 6.5v15" stroke="var(--ep-color-rail-accent)" strokeWidth="2.2" strokeLinecap="round" />
+      <circle cx="14" cy="8" r="2.2" fill="var(--ep-color-rail-accent)" />
+      <circle cx="14" cy="14" r="2.2" fill="var(--ep-color-rail)" stroke="var(--ep-color-rail-accent)" strokeWidth="2" />
+      <circle cx="14" cy="20" r="2.2" fill="var(--ep-color-rail)" stroke="var(--ep-color-rail-accent)" strokeWidth="2" />
     </svg>
   );
 }
