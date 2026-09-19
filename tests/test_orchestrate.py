@@ -19,6 +19,7 @@ from education_pipeline import AdvanceResult, NextAction, RunStatus, RunStore
 from education_pipeline.config import ModelPlan, StageModelPlan, load_model_plan, parse_model_plan
 from education_pipeline.orchestrate import (
     MAX_STEPS,
+    STALL_MESSAGE,
     STOP_KINDS,
     JobOutcome,
     Outcome,
@@ -381,6 +382,92 @@ def test_stall_guard_stops_without_calling_run_job_again():
         message="the job finished but no response was saved",
     )
     assert steps.count("run_job") == 1
+
+
+def test_after_job_status_read_failure_reports_failed_reading_status():
+    """T33 contract (b): ``after_job``'s first status read still funnels
+    through the ordinary ``_step`` failure path when it raises."""
+
+    steps = RecordingSteps(status=constant(RuntimeError("workspace gone")))
+    outcome = run_until_judgment("t", steps, after_job=("draft", "fake"))
+    assert outcome.steps == ()
+    assert outcome.stop == Stop(
+        kind="failed", action="reading the run status", message="workspace gone"
+    )
+    assert outcome.status is None
+
+
+def test_after_job_stalls_when_the_first_read_still_wants_that_stages_response():
+    """T33 contract (a): a job the caller already knows finished elsewhere,
+    whose freshest status still asks for ``save_response`` on the same
+    stage, is a stall -- reported without ever calling ``run_job`` again."""
+
+    steps = RecordingSteps(status=constant(_status("save_response", "draft")))
+    outcome = run_until_judgment("t", steps, after_job=("draft", "fake"))
+    assert outcome.steps == ()
+    assert outcome.stop == Stop(
+        kind="failed",
+        action="running draft with fake",
+        message=STALL_MESSAGE,
+    )
+    assert steps.count("status") == 1
+    assert steps.count("run_job") == 0
+
+
+def test_after_job_stall_check_is_scoped_to_the_named_stage():
+    """The stall only fires for the *same* stage as the finished job -- a
+    ``save_response`` for a different stage is real, unrelated work and the
+    loop must drive it normally (starting a job for that other stage)."""
+
+    steps = RecordingSteps(
+        status=constant(_status("save_response", "qa")),
+        provider_for=constant("fake"),
+        run_job=constant(_job(waited=False)),
+    )
+    outcome = run_until_judgment("t", steps, after_job=("draft", "fake"))
+    assert outcome.steps == (Step(kind="job", stage="qa", provider="fake", count=None),)
+    assert outcome.stop == Stop(kind="started", stage="qa", provider="fake")
+    assert steps.count("run_job") == 1
+
+
+def test_after_job_proceeds_normally_once_the_first_read_moved_on():
+    """T33 contract (c): once the first read shows real progress (here:
+    validation is now due), the rest of the loop is unmodified -- validate,
+    then stop at approve, exactly as a plain call would from that status."""
+
+    steps = RecordingSteps(
+        status=scripted(_status("validate", "draft"), _status("approve", "draft")),
+        validate=constant(None),
+    )
+    outcome = run_until_judgment("t", steps, after_job=("draft", "fake"))
+    assert outcome.steps == (Step(kind="validate", stage="draft", phase="draft"),)
+    assert outcome.stop == Stop(kind="approve", stage="draft")
+    assert steps.count("status") == 2
+
+
+def test_after_job_none_is_the_default_and_behaves_exactly_as_omitting_it():
+    """T33 contract (d): ``after_job=None`` -- the default -- must not turn
+    on the first-read stall check at all; a fresh ``save_response`` for the
+    same stage the loop is about to look at is ordinary work, not a stall."""
+
+    steps_a = RecordingSteps(
+        status=constant(_status("save_response", "draft")),
+        provider_for=constant("fake"),
+        run_job=constant(_job(waited=False)),
+    )
+    steps_b = RecordingSteps(
+        status=constant(_status("save_response", "draft")),
+        provider_for=constant("fake"),
+        run_job=constant(_job(waited=False)),
+    )
+    omitted = run_until_judgment("t", steps_a)
+    explicit_none = run_until_judgment("t", steps_b, after_job=None)
+    assert omitted.steps == explicit_none.steps == (
+        Step(kind="job", stage="draft", provider="fake", count=None),
+    )
+    assert omitted.stop == explicit_none.stop == Stop(
+        kind="started", stage="draft", provider="fake"
+    )
 
 
 def test_realistic_chain_advance_job_validate_then_approve():
