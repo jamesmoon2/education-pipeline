@@ -17,9 +17,8 @@ vi.mock("../api/client", async () => {
     postExport: vi.fn(),
     enqueueJob: vi.fn(),
     getStageContent: vi.fn(),
-    // Read by the "Approve & continue" chain (lib/continueRun.ts).
-    getRunStatus: vi.fn(),
-    getRunPlan: vi.fn(),
+    // Called by the "Approve & continue" client (lib/continueRun.ts).
+    postContinue: vi.fn(),
     downloadFinal: vi.fn(),
     downloadExport: vi.fn(),
     // Read by JobLogView's tail, mounted for a running activeJob.
@@ -31,16 +30,15 @@ import {
   ApiRequestError,
   enqueueJob,
   getJobLog,
-  getRunPlan,
-  getRunStatus,
   getStageContent,
   postAdvance,
   postApprove,
+  postContinue,
   postFinalize,
   postValidate,
   postResponse,
 } from "../api/client";
-import type { Job, PlanPayload, StageContent } from "../api/types";
+import type { Job, StageContent } from "../api/types";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -100,10 +98,6 @@ function makeDraftProgress(overrides: Partial<DraftProgress> = {}): DraftProgres
     counts: { total: 1, saved: 0, stale: 0 },
     ...overrides,
   };
-}
-
-function makePlan(provider: string): PlanPayload {
-  return { provider, plan_sha256: "sha-plan", stages: [] };
 }
 
 function renderAction(status: RunStatus, onChanged = vi.fn(), activeJob: Job | null = null) {
@@ -238,7 +232,12 @@ describe("PrimaryAction", () => {
 
   it("approve renders both approval buttons with a review link to the pending response", async () => {
     vi.mocked(postApprove).mockResolvedValue({} as never);
-    vi.mocked(getRunStatus).mockResolvedValue(makeStatus("finalize", null));
+    vi.mocked(postContinue).mockResolvedValue({
+      topic_id: "t",
+      steps: [],
+      stop: { kind: "finalize" },
+      status: null,
+    });
     renderAction(makeStatus("approve", "qa"));
     expect(screen.getByRole("link", { name: "review first" })).toHaveAttribute(
       "href",
@@ -253,7 +252,7 @@ describe("PrimaryAction", () => {
     renderAction(makeStatus("approve", "qa"));
     await userEvent.click(screen.getByRole("button", { name: "Approve qa only" }));
     expect(postApprove).toHaveBeenCalledWith("t", "qa");
-    expect(getRunStatus).not.toHaveBeenCalled();
+    expect(postContinue).not.toHaveBeenCalled();
     expect(postAdvance).not.toHaveBeenCalled();
     expect(enqueueJob).not.toHaveBeenCalled();
     expect(await screen.findByText("Approved qa.")).toBeInTheDocument();
@@ -261,19 +260,20 @@ describe("PrimaryAction", () => {
 
   it("Approve & continue writes the next prompt and starts the configured provider", async () => {
     vi.mocked(postApprove).mockResolvedValue({} as never);
-    vi.mocked(getRunStatus).mockResolvedValue(makeStatus("write_prompt", "qa"));
-    vi.mocked(postAdvance).mockResolvedValue({
-      performed: "write_prompt",
-      status: makeStatus("save_response", "qa"),
+    vi.mocked(postContinue).mockResolvedValue({
+      topic_id: "t",
+      steps: [
+        { kind: "advance", stage: "qa" },
+        { kind: "job", stage: "qa", provider: "claude-code" },
+      ],
+      stop: { kind: "started", stage: "qa", provider: "claude-code" },
+      status: null,
     });
-    vi.mocked(getRunPlan).mockResolvedValue(makePlan("claude-code"));
-    vi.mocked(enqueueJob).mockResolvedValue({} as never);
     const onChanged = renderAction(makeStatus("approve", "draft"));
 
     await userEvent.click(screen.getByRole("button", { name: "Approve draft & continue" }));
     expect(postApprove).toHaveBeenCalledWith("t", "draft");
-    expect(postAdvance).toHaveBeenCalledWith("t");
-    expect(enqueueJob).toHaveBeenCalledWith("t");
+    expect(postContinue).toHaveBeenCalledWith("t");
     expect(await screen.findByText("Approved draft — started qa with claude-code.")).toHaveClass(
       "success",
     );
@@ -282,8 +282,12 @@ describe("PrimaryAction", () => {
 
   it("Approve & continue hands a manual stage back to the copy/paste loop", async () => {
     vi.mocked(postApprove).mockResolvedValue({} as never);
-    vi.mocked(getRunStatus).mockResolvedValue(makeStatus("save_response", "qa"));
-    vi.mocked(getRunPlan).mockResolvedValue(makePlan("manual"));
+    vi.mocked(postContinue).mockResolvedValue({
+      topic_id: "t",
+      steps: [{ kind: "advance", stage: "qa" }],
+      stop: { kind: "manual", stage: "qa" },
+      status: null,
+    });
     renderAction(makeStatus("approve", "draft"));
 
     await userEvent.click(screen.getByRole("button", { name: "Approve draft & continue" }));
@@ -295,14 +299,16 @@ describe("PrimaryAction", () => {
 
   it("Approve & continue stops at the next gate that needs judgment", async () => {
     vi.mocked(postApprove).mockResolvedValue({} as never);
-    vi.mocked(getRunStatus)
-      .mockResolvedValueOnce(makeStatus("validate", "draft"))
-      .mockResolvedValueOnce(makeStatus("resolve_findings", "draft"));
-    vi.mocked(postValidate).mockResolvedValue({} as never);
+    vi.mocked(postContinue).mockResolvedValue({
+      topic_id: "t",
+      steps: [{ kind: "validate", stage: "draft", phase: "draft" }],
+      stop: { kind: "resolve_findings" },
+      status: null,
+    });
     renderAction(makeStatus("approve", "qa"));
 
     await userEvent.click(screen.getByRole("button", { name: "Approve qa & continue" }));
-    expect(postValidate).toHaveBeenCalledWith("t", "draft");
+    expect(postContinue).toHaveBeenCalledWith("t");
     expect(
       await screen.findByText("Approved qa — ran draft validation; findings need review."),
     ).toBeInTheDocument();
@@ -310,10 +316,16 @@ describe("PrimaryAction", () => {
 
   it("Approve & continue still reports the approval when a follow-up fails", async () => {
     vi.mocked(postApprove).mockResolvedValue({} as never);
-    vi.mocked(getRunStatus).mockResolvedValue(makeStatus("write_prompt", "qa"));
-    vi.mocked(postAdvance).mockRejectedValue(
-      new ApiRequestError(409, "job_active", "job j1 is running for topic 't'"),
-    );
+    vi.mocked(postContinue).mockResolvedValue({
+      topic_id: "t",
+      steps: [{ kind: "advance", stage: "qa" }],
+      stop: {
+        kind: "failed",
+        action: "writing the qa prompt",
+        message: "job j1 is running for topic 't'",
+      },
+      status: null,
+    });
     renderAction(makeStatus("approve", "draft"));
 
     await userEvent.click(screen.getByRole("button", { name: "Approve draft & continue" }));
@@ -328,8 +340,12 @@ describe("PrimaryAction", () => {
 
   it("keeps the success tone for a stage left to the manual loop", async () => {
     vi.mocked(postApprove).mockResolvedValue({} as never);
-    vi.mocked(getRunStatus).mockResolvedValue(makeStatus("save_response", "qa"));
-    vi.mocked(getRunPlan).mockRejectedValue(new Error("plan unreadable"));
+    vi.mocked(postContinue).mockResolvedValue({
+      topic_id: "t",
+      steps: [{ kind: "advance", stage: "qa" }],
+      stop: { kind: "plan_unreadable", stage: "qa" },
+      status: null,
+    });
     renderAction(makeStatus("approve", "draft"));
 
     await userEvent.click(screen.getByRole("button", { name: "Approve draft & continue" }));
@@ -397,14 +413,19 @@ describe("PrimaryAction", () => {
     vi.mocked(postApprove)
       .mockRejectedValueOnce(new ApiRequestError(409, "already_exists", "already approved"))
       .mockResolvedValueOnce({} as never);
-    vi.mocked(getRunStatus).mockResolvedValue(makeStatus("finalize", null));
+    vi.mocked(postContinue).mockResolvedValue({
+      topic_id: "t",
+      steps: [],
+      stop: { kind: "finalize" },
+      status: null,
+    });
     renderAction(makeStatus("approve", "qa"));
 
     await userEvent.click(screen.getByRole("button", { name: "Approve qa & continue" }));
     expect(postApprove).toHaveBeenNthCalledWith(1, "t", "qa");
     expect(postApprove).toHaveBeenNthCalledWith(2, "t", "qa", true);
     // The chain runs once, after the retried approval succeeded.
-    expect(getRunStatus).toHaveBeenCalledTimes(1);
+    expect(postContinue).toHaveBeenCalledTimes(1);
     expect(
       await screen.findByText("Approved qa — the run is ready to finalize."),
     ).toBeInTheDocument();
@@ -412,7 +433,12 @@ describe("PrimaryAction", () => {
 
   it("never finalizes from the continue chain", async () => {
     vi.mocked(postApprove).mockResolvedValue({} as never);
-    vi.mocked(getRunStatus).mockResolvedValue(makeStatus("finalize", null));
+    vi.mocked(postContinue).mockResolvedValue({
+      topic_id: "t",
+      steps: [],
+      stop: { kind: "finalize" },
+      status: null,
+    });
     renderAction(makeStatus("approve", "repair"));
 
     await userEvent.click(screen.getByRole("button", { name: "Approve repair & continue" }));

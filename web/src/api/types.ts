@@ -265,6 +265,40 @@ export interface TopicsPayload {
   cost?: WorkspaceCost;
 }
 
+/** ``POST /v1/runs/{id}/continue`` wire shape
+ *  (``education_pipeline.orchestrate`` ``step_payload``/``stop_payload``):
+ *  one mechanical step the daemon performed, or the reason it stopped. Kept
+ *  structurally identical to ``ContinueStep``/``ContinueStop`` in
+ *  ``lib/continueRun.ts`` -- the wire contract and the client's own domain
+ *  types are declared separately so this file stays the one place the wire
+ *  shape is pinned, but a payload assigns straight into the client type with
+ *  no mapping step. */
+export type ContinueStepPayload =
+  | { kind: "advance"; stage: string | null }
+  | { kind: "validate"; stage: string | null; phase: "draft" | "final" }
+  | { kind: "job"; stage: string; provider: string; count?: number };
+
+export type ContinueStopPayload =
+  | { kind: "started"; stage: string; provider: string; count?: number }
+  | { kind: "manual"; stage: string }
+  | { kind: "plan_unreadable"; stage: string }
+  | { kind: "approve"; stage: string | null }
+  | { kind: "resolve_findings" }
+  | { kind: "finalize" }
+  | { kind: "done" }
+  | { kind: "unfinished" }
+  | { kind: "failed"; action: string; message: string };
+
+/** ``POST /v1/runs/{id}/continue``: the whole daemon response. ``status`` is
+ *  the freshest run status the loop read, or null only when the very first
+ *  status read failed. */
+export interface ContinuePayload {
+  topic_id: string;
+  steps: ContinueStepPayload[];
+  stop: ContinueStopPayload;
+  status: RunStatus | null;
+}
+
 export interface ArchiveResult {
   topic_id: string;
   archived: boolean;

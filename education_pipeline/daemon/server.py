@@ -41,6 +41,7 @@ from education_pipeline.guides import (
     parse_guide,
     validate_guide,
 )
+from education_pipeline.orchestrate import JobOutcome, provider_for_stage
 from education_pipeline.runs import RunStore, StaleContentError, SUPPORTED_STAGES
 from education_pipeline.workspace import ProfileStore, TopicStore
 from education_pipeline.workspace_lock import WorkspaceLockedError, workspace_lock
@@ -159,6 +160,25 @@ class DaemonContext:
         with workspace_lock(self.root, timeout_seconds=self.store.lock_timeout_seconds):
             return self._enqueue_stage_locked(topic_id, stage, force, modules)
 
+    def effective_plan(self, topic_id: str) -> ModelPlan:
+        """This run's plan with its stage overrides applied -- the same
+        computation ``read_api.run_plan_payload`` serializes (decision 5's
+        "both callers load the run's effective plan the way run_plan_payload
+        does"), used as ``StoreSteps``' ``plan_for`` by the continue route."""
+
+        catalog, plan = self.config.load()
+        overrides = self.runs.read_plan_overrides(topic_id)
+        effective, _errors = apply_overrides_lenient(plan, overrides, catalog)
+        return effective
+
+    def run_continue_job(self, topic_id: str, stage: str) -> JobOutcome:
+        """The continue route's non-blocking job runner (decision 1): enqueue
+        and report back immediately, so the loop stops with ``started``."""
+
+        job = self.enqueue_stage(topic_id, stage)
+        count = len(self.store.batch(job.batch_id)) if job.batch_id else None
+        return JobOutcome(waited=False, count=count)
+
     def _enqueue_stage_locked(
         self,
         topic_id: str,
@@ -212,7 +232,7 @@ class DaemonContext:
                 f"a job is already active for {topic_id}/{target_stage}"
             )
         stage_plan = plan.stage(target_stage)
-        provider = stage_plan.provider or plan.provider
+        provider = provider_for_stage(plan, target_stage)
         plan_source = (
             "override" if target_stage in overrides.get("stages", {}) else "default"
         )
@@ -927,6 +947,20 @@ def _make_handler(context: DaemonContext):
                         blueprint=body.get("blueprint"),
                         repair_module=body.get("repair_module"),
                         repair_section=body.get("repair_section"),
+                    ),
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/continue$", self.path)
+            if m:
+                self._read_body()  # enforce the JSON/size rules even when empty
+                topic_id = m.group(1)
+                return self._send(
+                    200,
+                    write_api.continue_run(
+                        context.runs,
+                        context.store,
+                        topic_id,
+                        plan_for=context.effective_plan,
+                        run_job=context.run_continue_job,
                     ),
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/audit$", self.path)

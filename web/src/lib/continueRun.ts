@@ -1,11 +1,5 @@
-import {
-  enqueueJob,
-  getRunPlan,
-  getRunStatus,
-  postAdvance,
-  postValidate,
-} from "../api/client";
-import type { AdvanceResult, NextAction, PlanPayload, RunStatus } from "../api/types";
+import { postContinue } from "../api/client";
+import type { ContinuePayload, RunStatus } from "../api/types";
 
 /**
  * "Approve & continue": after a human approval succeeds, run the mechanical
@@ -13,34 +7,31 @@ import type { AdvanceResult, NextAction, PlanPayload, RunStatus } from "../api/t
  * validation, and starting the configured provider — and stop at the first
  * step that does need judgment.
  *
- * The product rule this file exists to keep: nothing here approves,
- * finalizes, or exports. Those actions have no adapter in ContinueApi at
- * all, so the chain cannot perform them even by mistake; it stops and says
- * where the run stands instead.
+ * T32: the loop itself now lives in ``education_pipeline/orchestrate.py``
+ * (``run_until_judgment``), behind ``POST /v1/runs/{id}/continue``. This
+ * file is a thin client over that one call: it sends the request and maps
+ * the daemon's payload onto ``ContinueResult``, nothing more.
+ *
+ * The product rule this file used to enforce by hand — nothing here
+ * approves, finalizes, or exports — is now enforced in the engine instead:
+ * the daemon's ``Steps`` protocol has no approve/finalize/export member at
+ * all, so the loop behind this call cannot perform them even by mistake.
  */
 
-const MANUAL_PROVIDER = "manual";
-
-/** Loop bound: guarantees termination even if the daemon keeps reporting an
- *  action the chain's own step never clears. Six is twice the longest real
- *  chain (validate → advance → start). */
-export const MAX_CONTINUE_STEPS = 6;
-
-/** Mechanical follow-ups the chain performed, in the order it took them. */
+/** Mechanical follow-ups the daemon performed, in the order it took them. */
 export type ContinueStep =
   | { kind: "advance"; stage: string | null }
-  | { kind: "validate"; phase: "draft" | "final" }
-  | { kind: "enqueue"; stage: string; provider: string };
+  | { kind: "validate"; stage: string | null; phase: "draft" | "final" }
+  | { kind: "job"; stage: string; provider: string; count?: number };
 
-/** Where the chain stopped, and why. */
+/** Where the run stopped, and why. */
 export type ContinueStop =
   | {
       kind: "started";
       stage: string;
       provider: string;
-      // Set when the enqueue response was a module batch (§5: the daemon
-      // hands back the first job's dict plus `batch_id`/`jobs`); equals
-      // `jobs.length`. Absent for a single-job enqueue.
+      // Set when the job was a draft module batch; equals the batch size.
+      // Absent for a single-job start.
       count?: number;
     }
   | { kind: "manual"; stage: string }
@@ -55,154 +46,40 @@ export type ContinueStop =
 export interface ContinueResult {
   readonly steps: readonly ContinueStep[];
   readonly stop: ContinueStop;
-  /** Freshest status the chain read; null when the first read failed. */
+  /** Freshest status the daemon sent; null when the first read failed. */
   readonly status: RunStatus | null;
 }
 
-/** The api surface the chain is allowed to touch. Injected so tests drive
- *  every branch without a module mock — and so the absent approve/finalize/
- *  export adapters are visible in one place. */
+/** The api surface this client is allowed to touch. Injected so tests drive
+ *  every branch without a network mock. */
 export interface ContinueApi {
-  getRunStatus: (topicId: string) => Promise<RunStatus>;
-  postAdvance: (topicId: string) => Promise<AdvanceResult>;
-  postValidate: (topicId: string, phase: "draft" | "final") => Promise<unknown>;
-  /** The queued job payload is mostly unused -- the board's job poll picks
-   *  up the run -- except a batch enqueue's `jobs` array, whose length
-   *  becomes the "started" stop's `count` (§5/§8: a module-batch enqueue
-   *  answers job-shaped at the top level plus `batch_id`/`jobs`). */
-  enqueueJob: (topicId: string) => Promise<{ jobs?: readonly unknown[] } | unknown>;
-  /** This run's effective plan (GET /v1/runs/{id}/plan) — the workspace plan
-   *  with this run's stage overrides already applied. The workspace-wide
-   *  plan (GET /v1/config/plan) is the wrong source: it misses overrides. */
-  getRunPlan: (topicId: string) => Promise<PlanPayload>;
+  postContinue: (topicId: string) => Promise<ContinuePayload>;
 }
 
 // Wrapped rather than passed by reference so each call resolves through the
 // live client module (module mocks in component tests still apply).
 const PRODUCTION_API: ContinueApi = {
-  getRunStatus: (topicId) => getRunStatus(topicId),
-  postAdvance: (topicId) => postAdvance(topicId),
-  postValidate: (topicId, phase) => postValidate(topicId, phase),
-  enqueueJob: (topicId) => enqueueJob(topicId),
-  getRunPlan: (topicId) => getRunPlan(topicId),
+  postContinue: (topicId) => postContinue(topicId),
 };
-
-/** Carries the plain-language name of the step that threw, so the caller can
- *  say which follow-up failed while still reporting the approval as done. */
-class StepError extends Error {
-  constructor(readonly action: string, cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause));
-    this.name = "StepError";
-  }
-}
-
-async function step<T>(action: string, call: () => Promise<T>): Promise<T> {
-  try {
-    return await call();
-  } catch (err) {
-    throw new StepError(action, err);
-  }
-}
 
 export async function continueRun(
   topicId: string,
   api: ContinueApi = PRODUCTION_API,
-  maxSteps: number = MAX_CONTINUE_STEPS,
 ): Promise<ContinueResult> {
-  const steps: ContinueStep[] = [];
-  let status: RunStatus | null = null;
-  const stopAt = (stop: ContinueStop): ContinueResult => ({ steps, stop, status });
-
   try {
-    for (let taken = 0; taken < maxSteps; taken += 1) {
-      if (status === null) {
-        status = await step("reading the run status", () => api.getRunStatus(topicId));
-      }
-      // Annotated: the step labels below name the stage, so inferring these
-      // from `status` would circle back through the calls that reassign it.
-      const next: NextAction = status.next_action;
-      const stage: string | null = next.stage;
-      switch (next.action) {
-        case "write_prompt":
-        case "assemble": {
-          // Only ever from a freshly read write_prompt: advance performs
-          // whatever step the run is on, and that includes finalize.
-          // "assemble" (per-module drafting) is likewise a deterministic
-          // step `advance` performs with no model call -- same treatment.
-          const advanced = await step(
-            `writing the ${stage ?? "next"} prompt`,
-            () => api.postAdvance(topicId),
-          );
-          steps.push({ kind: "advance", stage });
-          // advance hands back a fresh status; no need to re-read it.
-          status = advanced.status;
-          break;
-        }
-        case "validate": {
-          // Same phase mapping the run board uses: only the draft stage
-          // gates on the draft report; every later stage gates on final.
-          const phase = stage === "draft" ? "draft" : "final";
-          await step(`${phase} validation`, () => api.postValidate(topicId, phase));
-          steps.push({ kind: "validate", phase });
-          // The validate payload is a report, not a status: re-read.
-          status = null;
-          break;
-        }
-        case "save_response": {
-          // The daemon always names a stage for save_response; without one
-          // there is no plan row to consult, so stop rather than guess.
-          if (stage === null) return stopAt({ kind: "unfinished" });
-          let plan: PlanPayload;
-          try {
-            plan = await api.getRunPlan(topicId);
-          } catch {
-            // A plan we cannot read is not a failed approval: the prompt is
-            // on disk either way, so hand the stage back to the user.
-            return stopAt({ kind: "plan_unreadable", stage });
-          }
-          // INVARIANT: this must resolve the provider exactly as the enqueue
-          // endpoint does, or the chain starts a job the daemon runs with a
-          // different provider than reported — or refuses to start one it
-          // would have run. DaemonContext.enqueue_stage (daemon/server.py)
-          // applies this run's overrides to the workspace plan and then takes
-          // `stage_plan.provider or plan.provider`; GET /v1/runs/{id}/plan
-          // serializes that same overridden plan, so the rule here is the
-          // matching row's provider, falling back to the plan default. A row
-          // with no provider of its own is NOT manual — the run-plan panel
-          // shows null as "manual", but that is a display fallback only.
-          const provider =
-            plan.stages.find((entry) => entry.stage === stage)?.provider ?? plan.provider;
-          if (provider === MANUAL_PROVIDER) return stopAt({ kind: "manual", stage });
-          const enqueued = await step(
-            `starting ${stage} with ${provider}`,
-            () => api.enqueueJob(topicId),
-          );
-          steps.push({ kind: "enqueue", stage, provider });
-          const jobs = (enqueued as { jobs?: readonly unknown[] } | null)?.jobs;
-          return stopAt(
-            jobs
-              ? { kind: "started", stage, provider, count: jobs.length }
-              : { kind: "started", stage, provider },
-          );
-        }
-        case "approve":
-          return stopAt({ kind: "approve", stage });
-        case "resolve_findings":
-          return stopAt({ kind: "resolve_findings" });
-        case "finalize":
-          return stopAt({ kind: "finalize" });
-        case "done":
-          return stopAt({ kind: "done" });
-        default:
-          // An action from a newer daemon than this build knows about.
-          return stopAt({ kind: "unfinished" });
-      }
-    }
+    const payload = await api.postContinue(topicId);
+    return { steps: payload.steps, stop: payload.stop, status: payload.status };
   } catch (err) {
-    if (!(err instanceof StepError)) throw err;
-    return stopAt({ kind: "failed", action: err.action, message: err.message });
+    return {
+      steps: [],
+      stop: {
+        kind: "failed",
+        action: "continuing the run",
+        message: err instanceof Error ? err.message : String(err),
+      },
+      status: null,
+    };
   }
-  return stopAt({ kind: "unfinished" });
 }
 
 function describeStep(step: ContinueStep): string | null {
@@ -211,7 +88,7 @@ function describeStep(step: ContinueStep): string | null {
       return `wrote the ${step.stage ?? "next"} prompt`;
     case "validate":
       return `ran ${step.phase} validation`;
-    case "enqueue":
+    case "job":
       // The "started …" stop phrase already reports this one.
       return null;
   }
@@ -234,8 +111,8 @@ function stopStage(stop: ContinueStop): string | null {
 function describeStop(stop: ContinueStop): string {
   switch (stop.kind) {
     case "started":
-      // A module-batch enqueue (§5/§8) carries a job count; name it so the
-      // feedback doesn't read as if only one provider call started.
+      // A module-batch job carries a job count; name it so the feedback
+      // doesn't read as if only one provider call started.
       return stop.count
         ? `${stop.count} module jobs started for ${stop.stage} with ${stop.provider}`
         : `started ${stop.stage} with ${stop.provider}`;
