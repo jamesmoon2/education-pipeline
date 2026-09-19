@@ -1,0 +1,47 @@
+# Phase 4 — Mastery in the runtime
+
+**Goal:** Make the exported guide report results, not only completion. Today the runtime computes whether every knowledge check and scenario was answered well and then throws the answer away; the header says "This tracks progress only, not mastery." After this phase the guide keeps each check's result in the same local progress store, rolls results up per learning outcome into a results page and a header indicator, resurfaces missed checks for review, prints as a learner copy or an answer key, and pages sections from the keyboard. Runtime and CSS only: no engine, schema or document-assembly change, and nothing here is a grade or credential.
+
+**Source:** the 2026-09-17 opportunity map (reviewed at `d85be72`), "Build plan · Phase 4". Threads are numbered as there. Line anchors are as of `15c2f0a` (post Phase 3).
+
+**Method:** strict TDD; one subagent writes the failing tests and a different one makes them pass; the manager reviews diffs, never transcripts. Every thread ends on the full pytest suite green, `npm run build`, `npm run test`, and Playwright `guide-runtime.spec.ts` + `guide-progress.spec.ts` (every thread here changes the runtime). The shipped example export is byte-pinned (`tests/test_example_project.py`), so every thread that touches `runtime.js` or `runtime.css` rebuilds it with `python3 scripts/build_example.py`. A thread that grows past ~800 changed lines or 12 files is split.
+
+**Baseline at open:** pytest 2200 passed / 1 skipped (84 s, Python 3.11). `runtime.js` 1360 lines, `runtime.css` 124. vitest 627, `npm run build` clean, Playwright 89 counted; `guide-runtime.spec.ts` + `guide-progress.spec.ts` 59/59.
+
+**Audit ledger:** [`../specs/2026-09-19-phase-4-mastery-post-milestone-audit.md`](../specs/2026-09-19-phase-4-mastery-post-milestone-audit.md)
+
+## Threads
+
+| ID | Thread | Exit criteria | Status |
+| --- | --- | --- | --- |
+| T40 | Per-outcome mastery | Knowledge-check and scenario results persisted per block (`correct`, `firstCorrect`); results rolled up per outcome from the embedded guide JSON; a final "Your results" page and a header indicator; progress-file version 2 with version-1 files still accepted; `RUNTIME_VERSION` 1.1; Playwright cases in `guide-runtime.spec.ts` and `guide-progress.spec.ts`; download/restore round-trips the new fields; axe clean on the results page. | - [ ] |
+| T41 | Review queue | "Review what you missed": checks answered wrong on the latest attempt resurface at the top of a section two or more sections later and on the results page; per-outcome "practice again" links go to the block (retry in place where the block allows it); e2e; reduced motion respected. | - [ ] |
+| T42 | Print without answers and keyboard nav | Print mode control (learner copy vs answer key, default answer key); ←/→ page sections, `/` focuses navigation, both inert inside editable controls; Enter/Space parity on every control pinned by an e2e keyboard walk; print CSS pinned under emulated print media for both modes. | - [ ] |
+
+## Order and parallelism between threads
+
+T40 and T42 touch disjoint regions of the runtime (progress store, results page, header vs print CSS, course controls, a keydown handler), so they run in parallel worktrees; T40 merges first and T42 rebases its example-export rebuild on the merge. T41 needs T40's stored results and results page, so it starts after T40 merges.
+
+## Decisions settled at open
+
+1. **Results, not a credential.** Spec §7 says the runtime "does not claim mastery". This phase changes that sentence, not its intent: the runtime reports per-outcome *results* from the learner's own answers, stored only in their browser. Copy uses "results" and "on track" / "to review", never "mastered", "passed" or "score", and the header line becomes "Progress and results are stored only in this browser. They are not a grade." Spec §7 and §8 are updated in T40.
+2. **What is scorable.** A knowledge check is correct when the selected set equals the correct set (the runtime's existing `isCorrect`, `runtime.js:559-562`); a scenario is correct when the chosen choice's quality is `best` (the schema guarantees exactly one, `parse.py:636-641`). Worked reveals and reflections complete but never score. A retry that lands correct updates `correct`; `firstCorrect` is set once, on the first submit, and never changes.
+3. **Per-outcome roll-up.** Blocks link to outcomes through `outcome_ids` in the embedded guide JSON (`canonical.py`, `model.py:72-125`); no DOM attribute is added, so `document.py` is untouched. An outcome's status is `none` (no scorable block links to it), `not_started` (none answered), `on_track` (every answered block correct on its latest attempt) or `review` (any answered block wrong on its latest attempt), with `correct / answered / total` counts. A block answered under a pre-1.1 store (fields absent) is "not yet answered" for results and still complete for progress.
+4. **Where results live.** The runtime appends one final page, "Your results" (`data-role="results-page"`), reached by Next from the last section and from the header indicator. It is not a guide section: the position text and the progress counts exclude it, and it carries only Previous. The header indicator (`[data-role="results-summary"]`) reads "Results: 2 of 3 outcomes on track" (or "Results: no checks answered yet") and links to the page.
+5. **Store versions.** The `localStorage` record stays keyed as today (`STORAGE_NS:guide:course:hash:vMajor`) and grows additively (`correct`, `firstCorrect` on `knowledge_check` and `scenario`; `printMode` in T42). `PROGRESS_FILE_VERSION` goes 1 → 2; a version-1 file is accepted and its answered blocks load with `correct: null`; a version above 2 is refused, as today. `RUNTIME_VERSION` goes 1.0 → 1.1 in T40 (`guide_runtime/__init__.py:8`, `runtime.js:1329`) and stays there for T41/T42.
+6. **Review queue shape (T41).** "Missed" means a scorable block whose latest attempt is wrong. Entering section *k* shows a "Review what you missed" panel at its top listing missed blocks from sections ≤ *k − 2*, dismissible for that visit (not persisted); the results page lists every missed block under its outcome. "Practice again" navigates to the block's section and focuses the block; where `data-retry="true"` it also restores the block to its unanswered view (the existing retry path); otherwise the link reads "See the explanation". No animation is added, so reduced motion needs nothing beyond `runtime.css:105-107`.
+7. **Print modes (T42).** A "Print" group in the course controls with two radios: "Answer key" (today's print stylesheet, the default, so the existing print test is unchanged) and "Learner copy", which hides knowledge-check correctness marks, results and explanations, worked-reveal step bodies, and scenario feedback and debriefs while keeping every prompt, choice and reflection prompt. The choice is `data-print-mode` on `<html>` and `printMode` in the store; the results page and the review panels never print.
+8. **Keyboard (T42).** One `keydown` listener on `document`: `ArrowLeft`/`ArrowRight` call `Nav.prev()`/`Nav.next()`, `/` focuses the navigation (the first section link, or the toggle when the nav is collapsed). All three are ignored when the event target is editable (`input`, `textarea`, `select`, `contenteditable`) or a modifier is held, and never `preventDefault` otherwise. Every control stays a native `button`, `a`, `input` or `textarea`, which is what gives Enter/Space parity; the e2e walk pins it rather than a custom handler. The course-controls menu gains one line naming the three shortcuts.
+
+## Anchors at open
+
+- Runtime: `runtime.js:22-49` (`contentHash`, `STORAGE_NS`, `PROGRESS_FILE_VERSION`, `storageKey`, `emptyState`), `:51-92` (`validateState`), `:188-191` (`save`), `:258-282` (`Progress.update`, copy at 275), `:288-478` (`Nav`: `collect` 292, `show` 332, `next`/`prev` 361-368, `updatePositionText` 305), `:432-436` (section controls wiring), `:557-569` (`applySubmittedView`, `isCorrect` 559-562), `:599-605` (`setInteraction` for knowledge checks), `:714-726` (scenario quality), `:753` (scenario interaction), `:847-854` (`ENHANCERS`), `:904-992` (`Restore`), `:998-1148` (`ProgressFile`), `:1159-1271` (`Migration`), `:1319-1329` (boot, expected runtime "1.0").
+- CSS: `runtime.css:77-78` (single-section display), `:105-107` (reduced motion), `:109-124` (print).
+- Assembly and checks: `guides/document.py:232` (`_INTERACTIVE_TYPES`), `:235-249` (`_block`), `:285` (CSP hashes), `:318-325` (header), `:332` (`guide-data`); `guide_runtime/__init__.py:8-9`; `guides/static_checks.py:19,36-96,110-114`.
+- Model: `guides/model.py:67-135` (blocks, `outcome_ids`), `:150` (`Module.outcome_ids`); `guides/parse.py:636-641` (scenario quality).
+- Tests: `web/e2e/guide-runtime.spec.ts:12-27` (fixture assembly), `:63` (transports), `:443-465` (print, axe), `:476-584` (keyboard-only block); `web/e2e/guide-progress.spec.ts:18-27`, `:423-433`; `tests/fixtures/guides/feedback-loops.guide.json` (3 outcomes, 2 modules, 4 sections, 2 knowledge checks, 1 scenario); `tests/test_example_project.py:84`; `scripts/build_example.py`.
+- Docs: `docs/superpowers/specs/2026-07-11-interactive-guide-v1-runtime-export.md` §7 (132-150), §8 (152-177), §12 (269-278), §13 (280-298), §16 (324-337).
+
+## Closeout log
+
+(One line per thread as it lands: what changed, test counts, accepted limitations.)
