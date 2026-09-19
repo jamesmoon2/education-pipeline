@@ -175,7 +175,11 @@ class DaemonContext:
         """The continue route's non-blocking job runner (decision 1): enqueue
         and report back immediately, so the loop stops with ``started``."""
 
-        job = self.enqueue_stage(topic_id, stage)
+        # No stage is passed, as the CLI's runner does: the daemon derives it
+        # from the same next action the loop just read and keeps its own
+        # "next action must be save_response" check in force.
+        del stage
+        job = self.enqueue_stage(topic_id)
         count = len(self.store.batch(job.batch_id)) if job.batch_id else None
         return JobOutcome(waited=False, count=count)
 
