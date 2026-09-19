@@ -456,6 +456,74 @@ for (const transport of TRANSPORTS) {
       await expect(page.locator(".reflection-input").first()).toBeHidden();
     });
 
+    test("print controls: a Print fieldset defaults to answer key and toggling updates the dataset and persists across reload", async ({
+      page,
+    }) => {
+      const fieldset = page.locator('.course-controls fieldset[data-role="print-mode"]');
+      await expect(fieldset).toBeVisible();
+      await expect(fieldset.locator("legend")).toHaveText("Print");
+
+      const answerKeyRadio = fieldset.locator('input[name="print-mode"][value="answer-key"]');
+      const learnerCopyRadio = fieldset.locator('input[name="print-mode"][value="learner-copy"]');
+      await expect(answerKeyRadio).toBeChecked();
+      await expect(learnerCopyRadio).not.toBeChecked();
+
+      // Default state: no explicit opt-in has happened yet, so the dataset
+      // attribute is either unset or already "answer-key" (both mean the
+      // same thing to the print stylesheet); assert the dataset, not the
+      // store, per the contract.
+      const defaultPrintMode = await page.evaluate(
+        () => document.documentElement.dataset.printMode,
+      );
+      expect(defaultPrintMode === undefined || defaultPrintMode === "answer-key").toBe(true);
+
+      await learnerCopyRadio.check();
+      await expect(page.locator("html")).toHaveAttribute("data-print-mode", "learner-copy");
+
+      await page.reload({ waitUntil: "load" });
+      const reloadedFieldset = page.locator('.course-controls fieldset[data-role="print-mode"]');
+      await expect(
+        reloadedFieldset.locator('input[name="print-mode"][value="learner-copy"]'),
+      ).toBeChecked();
+      await expect(page.locator("html")).toHaveAttribute("data-print-mode", "learner-copy");
+    });
+
+    test("print media in learner-copy mode hides answers but keeps prompts, choices, and reflection prompts", async ({
+      page,
+    }) => {
+      await page
+        .locator('.course-controls fieldset[data-role="print-mode"] input[value="learner-copy"]')
+        .check();
+      await page.emulateMedia({ media: "print" });
+
+      const kc = page.locator("article.knowledge_check").first();
+      const wr = page.locator("article.worked_reveal").first();
+      const sc = page.locator("article.scenario").first();
+      const rf = page.locator("article.reflection").first();
+
+      await expect(kc.locator('[data-role="kc-explanation"]').first()).toBeHidden();
+      await expect(page.locator('[data-role="answer-marker"]').first()).toBeHidden();
+      await expect(kc.locator('[data-role="kc-result"]').first()).toBeHidden();
+      await expect(wr.locator('[data-role="reveal-step"]').first()).toBeHidden();
+      await expect(page.locator('[data-role="sc-feedback"]').first()).toBeHidden();
+      await expect(sc.locator('[data-role="sc-debrief"]').first()).toBeHidden();
+
+      await expect(kc.locator("h3").first()).toBeVisible();
+      await expect(kc.locator(".choice-label").first()).toBeVisible();
+      await expect(sc.locator("h3").first()).toBeVisible();
+      await expect(sc.locator(".choice-label").first()).toBeVisible();
+      await expect(rf.locator("h3").first()).toBeVisible();
+
+      const resultsPage = page.locator('[data-role="results-page"]');
+      if ((await resultsPage.count()) > 0) {
+        await expect(resultsPage).toBeHidden();
+      } else {
+        expect(await resultsPage.count()).toBe(0);
+      }
+
+      await expect(page.locator('.course-controls fieldset[data-role="print-mode"]')).toBeHidden();
+    });
+
     test("has no serious or critical automated accessibility violations", async ({ page }) => {
       const results = await new AxeBuilder({ page }).analyze();
       const serious = results.violations.filter(
@@ -580,6 +648,129 @@ test.describe("guide runtime keyboard-only operation (http)", () => {
     await page.keyboard.press("Enter");
     await expect(firstSection).toHaveClass(/is-current/);
     await expect(page).toHaveURL(/#feedback-foundations$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Print modes and document-level keyboard paging (http only; these exercise
+// a document-wide keydown listener and a course-controls fieldset, neither
+// of which vary by transport in a way the existing per-transport loop above
+// doesn't already cover for print).
+// ---------------------------------------------------------------------------
+
+test.describe("guide runtime print modes and keyboard paging (http)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+  });
+
+  test("ArrowRight/ArrowLeft page sections when focus is on the body", async ({ page }) => {
+    const position = page.locator('section[data-role="guide-section"].is-current [data-role="section-position"]');
+    await expect(page.locator("#feedback-foundations")).toHaveClass(/is-current/);
+    await expect(position).toHaveText("Section 1 of 4");
+
+    await page.locator("body").click({ position: { x: 2, y: 2 } });
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#recognize-loop-types")).toHaveClass(/is-current/);
+    await expect(
+      page.locator('section[data-role="guide-section"].is-current [data-role="section-position"]'),
+    ).toHaveText("Section 2 of 4");
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.locator("#feedback-foundations")).toHaveClass(/is-current/);
+    await expect(
+      page.locator('section[data-role="guide-section"].is-current [data-role="section-position"]'),
+    ).toHaveText("Section 1 of 4");
+  });
+
+  test("ArrowRight at the last section opens the results page and is a no-op there", async ({ page }) => {
+    await gotoSection(page, "garden-decision");
+    await page.locator("body").click({ position: { x: 2, y: 2 } });
+    await page.keyboard.press("ArrowRight");
+
+    await expect(page.locator("#results")).toHaveClass(/is-current/);
+    await expect(page.locator('#results [data-role="section-position"]')).toHaveText("Results");
+
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#results")).toHaveClass(/is-current/);
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.locator("#garden-decision")).toHaveClass(/is-current/);
+    await expect(
+      page.locator('section[data-role="guide-section"].is-current [data-role="section-position"]'),
+    ).toHaveText("Section 4 of 4");
+  });
+
+  test("arrow keys are inert inside the reflection textarea and \"/\" types a literal slash", async ({
+    page,
+  }) => {
+    await gotoSection(page, "garden-decision");
+    const textarea = page.locator("article.reflection").first().locator('[data-role="reflection-input"]');
+    await textarea.focus();
+
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#garden-decision")).toHaveClass(/is-current/);
+
+    await page.keyboard.press("/");
+    await expect(textarea).toHaveValue("/");
+    await expect(textarea).toBeFocused();
+  });
+
+  test("\"/\" focuses the first section link in the course navigation", async ({ page }) => {
+    await page.locator("body").click({ position: { x: 2, y: 2 } });
+    await page.keyboard.press("/");
+    await expect(page.locator('nav.guide-nav a[data-role="nav-link"]').first()).toBeFocused();
+  });
+
+  test("modifier combinations such as Control+ArrowRight do not page sections", async ({ page }) => {
+    await page.locator("body").click({ position: { x: 2, y: 2 } });
+    await page.keyboard.press("Control+ArrowRight");
+
+    await expect(page.locator("#feedback-foundations")).toHaveClass(/is-current/);
+    await expect(
+      page.locator('section[data-role="guide-section"].is-current [data-role="section-position"]'),
+    ).toHaveText("Section 1 of 4");
+  });
+
+  test("course controls name the keyboard shortcuts", async ({ page }) => {
+    const help = page.locator('.course-controls [data-role="keyboard-help"]');
+    await expect(help).toContainText("←");
+    await expect(help).toContainText("→");
+    await expect(help).toContainText("/");
+  });
+
+  test("every focusable control is a native interactive element (Enter/Space parity guard)", async ({
+    page,
+  }) => {
+    const result = await page.evaluate(() => {
+      const allowed = new Set(["BUTTON", "A", "INPUT", "TEXTAREA", "SELECT"]);
+      const focusable = Array.from(
+        document.querySelectorAll('button, a[href], input, textarea, select, [tabindex]:not([tabindex="-1"])'),
+      );
+      const nonNativeFocusable = focusable
+        .map((el) => el.tagName)
+        .filter((tag) => !allowed.has(tag));
+      const fakeButtons = Array.from(document.querySelectorAll('[role="button"]')).filter(
+        (el) => el.tagName !== "BUTTON",
+      ).length;
+      return { count: focusable.length, nonNativeFocusable, fakeButtons };
+    });
+    expect(result.count).toBeGreaterThan(0);
+    expect(result.nonNativeFocusable).toEqual([]);
+    expect(result.fakeButtons).toBe(0);
+  });
+
+  test("has no serious or critical accessibility violations with learner-copy print mode selected", async ({
+    page,
+  }) => {
+    await page
+      .locator('.course-controls fieldset[data-role="print-mode"] input[value="learner-copy"]')
+      .check();
+    const results = await new AxeBuilder({ page }).analyze();
+    const serious = results.violations.filter(
+      (v) => v.impact === "serious" || v.impact === "critical",
+    );
+    expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
   });
 });
 

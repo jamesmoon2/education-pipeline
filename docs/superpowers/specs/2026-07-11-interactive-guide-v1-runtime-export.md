@@ -87,7 +87,8 @@ The default layout has:
 - section position and module context;
 - a final results page, after the last section, reporting per-outcome results;
 - glossary and course-info panels; and
-- a course controls menu for theme, progress reset, and local-data explanation.
+- a course controls menu for theme, print mode, keyboard shortcuts, progress
+  reset, and local-data explanation.
 
 Small screens use a single reading column and drawer navigation. Large screens
 may show persistent module navigation, but the reading measure remains
@@ -177,8 +178,9 @@ Stored state includes only:
 - per-check results (the latest attempt and the first one);
 - revealed-step counts;
 - reflection text;
-- last-open section; and
-- theme preference.
+- last-open section;
+- theme preference; and
+- print mode.
 
 It does not include learner profile data, source prompts, model provenance, or
 run artifacts.
@@ -286,14 +288,23 @@ date only if the canonical final metadata supplies one deterministically.
 
 ## 12. Print behavior
 
-Print output includes all educational content in a comprehensible expanded form:
+A course-controls print-mode control offers two modes, answer key (the
+default) and learner copy:
 
-- navigation and controls are hidden;
-- all reveal steps and scenario feedback are visible;
-- knowledge-check choices and explanations are visible;
-- reflection prompts are visible but saved learner notes are not;
-- link destinations are legible where practical; and
-- modules and sections avoid pathological page breaks.
+- **Answer key** includes all educational content in a comprehensible
+  expanded form: navigation and controls are hidden; all reveal steps and
+  scenario feedback are visible; knowledge-check choices and explanations
+  are visible; reflection prompts are visible but saved learner notes are
+  not; link destinations are legible where practical; and modules and
+  sections avoid pathological page breaks.
+- **Learner copy** additionally hides knowledge-check correctness marks,
+  explanations, and results; worked-reveal step bodies; and scenario
+  feedback and debriefs, while keeping every prompt, choice, and
+  reflection prompt visible. The results page and review panels never
+  print, in either mode.
+
+The chosen mode is a display preference, not progress: it is stored
+alongside theme preference and survives a progress reset.
 
 ## 13. Accessibility requirements
 
@@ -303,6 +314,9 @@ The fixture guide must pass automated checks plus manual keyboard review for:
 - visible focus;
 - skip link;
 - complete keyboard operation;
+- keyboard shortcuts for paging sections (`ArrowLeft`/`ArrowRight`) and
+  jumping to the course navigation (`/`), inert with a modifier held or
+  while an editable control has focus, named in the course controls;
 - labels and instructions for every control;
 - live announcements that do not steal focus;
 - 4.5:1 normal-text contrast and 3:1 large-text/UI contrast;
