@@ -559,7 +559,7 @@ test.describe("progress files", () => {
       future,
       JSON.stringify({
         format: "education-pipeline.guide-progress",
-        version: 2,
+        version: 3,
         course_id: "feedback-loops",
         schema_version: "1.0",
         saved_at: "2026-01-01T00:00:00.000Z",
@@ -582,7 +582,7 @@ test.describe("progress files", () => {
     const input = page.locator('[data-role="progress-file-input"]');
 
     await input.setInputFiles(future);
-    await expect(status).toContainText("format version 2");
+    await expect(status).toContainText("format version 3");
     await input.setInputFiles(missing);
     await expect(status).toContainText("cannot read");
 
@@ -718,5 +718,132 @@ test.describe("progress files without local storage", () => {
     await expect(page.locator('[data-role="reflection-input"]').first()).toHaveValue(
       "A note that must survive the restore.",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T40: per-block mastery fields (`correct`, `firstCorrect`) in the stored
+// interaction record, and the progress-file version bump that carries them.
+// ---------------------------------------------------------------------------
+
+test.describe("mastery results storage (T40)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+  });
+
+  test("a knowledge-check submit records correct and firstCorrect; a retry updates correct but never firstCorrect", async ({
+    page,
+  }) => {
+    await page.evaluate(() => {
+      location.hash = "#recognize-loop-types";
+    });
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="true"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    let records = await currentRecords(page, []);
+    let interactions = (Object.values(records)[0] as Record<string, any>).interactions;
+    expect(interactions["check-loop-type"].correct).toBe(true);
+    expect(interactions["check-loop-type"].firstCorrect).toBe(true);
+
+    await kc.locator('[data-role="kc-retry"]').click();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    records = await currentRecords(page, []);
+    interactions = (Object.values(records)[0] as Record<string, any>).interactions;
+    expect(interactions["check-loop-type"].correct).toBe(false);
+    // The retry landed wrong, but firstCorrect records only the first submit.
+    expect(interactions["check-loop-type"].firstCorrect).toBe(true);
+  });
+
+  test("a scenario submit records correct and firstCorrect from the choice quality; a retry updates correct but never firstCorrect", async ({
+    page,
+  }) => {
+    await page.evaluate(() => {
+      location.hash = "#garden-decision";
+    });
+    const sc = page.locator("article.scenario").first();
+    await sc.locator('[data-role="sc-choice"][data-quality="weak"]').check();
+    await sc.locator('[data-role="sc-submit"]').click();
+
+    let records = await currentRecords(page, []);
+    let interactions = (Object.values(records)[0] as Record<string, any>).interactions;
+    expect(interactions["pest-density-scenario"].correct).toBe(false);
+    expect(interactions["pest-density-scenario"].firstCorrect).toBe(false);
+
+    await sc.locator('[data-role="sc-retry"]').click();
+    await sc.locator('[data-role="sc-choice"][data-quality="best"]').check();
+    await sc.locator('[data-role="sc-submit"]').click();
+
+    records = await currentRecords(page, []);
+    interactions = (Object.values(records)[0] as Record<string, any>).interactions;
+    expect(interactions["pest-density-scenario"].correct).toBe(true);
+    expect(interactions["pest-density-scenario"].firstCorrect).toBe(false);
+  });
+
+  test("restoring a version-1 file with an old-shape interaction still completes it for progress but shows Not started on results", async ({
+    page,
+  }) => {
+    const filePath = path.join(tempDir, "old-shape.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        format: "education-pipeline.guide-progress",
+        version: 1,
+        course_id: "feedback-loops",
+        schema_version: "1.0",
+        saved_at: "2026-01-01T00:00:00.000Z",
+        state: {
+          completedSections: [],
+          interactions: {
+            "check-loop-type": {
+              type: "knowledge_check",
+              completed: true,
+              submittedCount: 1,
+              selectedIds: ["release-reinforcing"],
+            },
+          },
+          lastSection: "feedback-foundations",
+          theme: "system",
+        },
+      }),
+      "utf8",
+    );
+
+    await page.locator('[data-role="progress-file-input"]').setInputFiles(filePath);
+
+    await expect(page.locator('[data-role="progress-summary"]')).toContainText(
+      "1 of 5 interactions complete",
+    );
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const item = page.locator('[data-outcome-id="identify-loop"]');
+    await expect(item).toHaveAttribute("data-status", "not_started");
+    await expect(item.locator('[data-role="results-outcome-count"]')).toHaveText("Not started");
+  });
+
+  test("downloading progress produces a version 2 file whose state includes correct and firstCorrect", async ({
+    page,
+  }) => {
+    await page.evaluate(() => {
+      location.hash = "#recognize-loop-types";
+    });
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="true"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByRole("button", { name: "Download progress" }).click(),
+    ]);
+    const saved = await download.path();
+    const payload = JSON.parse(readFileSync(saved as string, "utf8"));
+    expect(payload.version).toBe(2);
+    const interaction = payload.state.interactions["check-loop-type"];
+    expect(typeof interaction.correct).toBe("boolean");
+    expect(typeof interaction.firstCorrect).toBe("boolean");
   });
 });
