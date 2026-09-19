@@ -1,5 +1,7 @@
 import { postContinue } from "../api/client";
-import type { ContinuePayload, RunStatus } from "../api/types";
+import type { Continuation, ContinuePayload, RunStatus } from "../api/types";
+
+export type { Continuation };
 
 /**
  * "Approve & continue": after a human approval succeeds, run the mechanical
@@ -155,4 +157,39 @@ export function continueFeedback(stage: string, result: ContinueResult): string 
     .map(describeStep)
     .filter((phrase): phrase is string => phrase !== null);
   return `Approved ${stage} — ${[...taken, describeStop(result.stop)].join("; ")}.`;
+}
+
+/** One plain-language line for the "Continue to next approval" button --
+ *  the same run-to-judgment loop as "Approve & continue", but with no
+ *  approval headline (nothing was approved by this click). */
+export function continueOnlyFeedback(result: ContinueResult): string {
+  if (result.stop.kind === "failed") {
+    return `Continuing failed: ${describeStop(result.stop)}`;
+  }
+  const named = stopStage(result.stop);
+  const taken = result.steps
+    .filter((item) => !(item.kind === "advance" && item.stage === named))
+    .map(describeStep)
+    .filter((phrase): phrase is string => phrase !== null);
+  return `Continued — ${[...taken, describeStop(result.stop)].join("; ")}.`;
+}
+
+/** True when the latest chained job (``RunStatus.continuation``) ended in a
+ *  failed stop, so the cockpit can show it in the error tone. */
+export function chainFailed(continuation: Continuation): boolean {
+  return continuation.stop.kind === "failed";
+}
+
+/** One plain-language line reporting a chained job's outcome
+ *  (``RunStatus.continuation``): headed by the job that ran rather than by
+ *  an approval, since nothing here was triggered by this page load. Unlike
+ *  ``continueFeedback``/``continueOnlyFeedback``, every step the daemon
+ *  reports is named -- there is no approval or "Continue" headline to make
+ *  a same-stage prompt-write step redundant here. */
+export function chainFeedback(continuation: Continuation): string {
+  const ran = continuation.after === "batch" ? "module jobs ran" : "job ran";
+  const taken = continuation.steps
+    .map((step) => describeStep(step))
+    .filter((phrase): phrase is string => phrase !== null);
+  return `After the ${continuation.stage} ${ran}: ${[...taken, describeStop(continuation.stop)].join("; ")}.`;
 }

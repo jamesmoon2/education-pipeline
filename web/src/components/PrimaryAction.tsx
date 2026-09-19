@@ -11,7 +11,14 @@ import {
 import type { Job, RunStatus } from "../api/types";
 import { useAction } from "../hooks/useAction";
 import { useNow } from "../hooks/useNow";
-import { continueFailed, continueFeedback, continueRun } from "../lib/continueRun";
+import {
+  chainFailed,
+  chainFeedback,
+  continueFailed,
+  continueFeedback,
+  continueOnlyFeedback,
+  continueRun,
+} from "../lib/continueRun";
 import { formatDurationMs, jobElapsedMs } from "../lib/time";
 import CopyPromptButton from "./CopyPromptButton";
 import ExportControls from "./ExportControls";
@@ -69,6 +76,11 @@ export default function PrimaryAction({
   onChanged: () => void;
 }) {
   const { busy, feedback, isError, run } = useAction(onChanged);
+  // Separate action state for "Continue to next approval" so it doesn't
+  // share busy/feedback with the provider-run or approve buttons it renders
+  // alongside (save_response's "Run with provider", for one).
+  const { busy: chainBusy, feedback: chainOnlyFeedback, isError: chainOnlyIsError, run: runChain } =
+    useAction(onChanged);
   const [pasteOpen, setPasteOpen] = useState(false);
   const { topic_id: topicId, next_action: next } = status;
   const stage = next.stage;
@@ -83,6 +95,15 @@ export default function PrimaryAction({
   // status carries no draft_progress at all.
   const moduleDrafting =
     stage === "draft" && (status.draft_progress?.modules.length ?? 0) > 0;
+  // "Continue to next approval" (decision 9 addendum): run-to-judgment from
+  // wherever the run currently sits, offered only for the mechanical next
+  // actions -- not for approve/resolve_findings/finalize/done, which all
+  // need a human decision this click must not make.
+  const canRunChain =
+    next.action === "write_prompt" ||
+    next.action === "assemble" ||
+    next.action === "validate" ||
+    next.action === "save_response";
 
   if (activeJob) {
     return <ActiveJobStatus job={activeJob} />;
@@ -90,6 +111,11 @@ export default function PrimaryAction({
 
   return (
     <div className="primary-action">
+      {status.continuation && (
+        <p className={chainFailed(status.continuation) ? "error" : "success"}>
+          {chainFeedback(status.continuation)}
+        </p>
+      )}
       {next.action === "write_prompt" && (
         <button
           disabled={busy}
@@ -243,7 +269,29 @@ export default function PrimaryAction({
           guideV1={status.content_contract.kind === "interactive_guide"}
         />
       )}
+      {canRunChain && (
+        <p className="chain-action">
+          <button
+            disabled={chainBusy}
+            onClick={() =>
+              runChain(() => continueRun(topicId), {
+                successMessage: (result) => continueOnlyFeedback(result),
+                errorTone: continueFailed,
+              })
+            }
+          >
+            Continue to next approval
+          </button>{" "}
+          <span className="chain-action-hint">
+            Runs the mechanical next steps on their own and stops at the next
+            approval.
+          </span>
+        </p>
+      )}
       {feedback && <p className={isError ? "error" : "success"}>{feedback}</p>}
+      {chainOnlyFeedback && (
+        <p className={chainOnlyIsError ? "error" : "success"}>{chainOnlyFeedback}</p>
+      )}
     </div>
   );
 }
