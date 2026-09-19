@@ -106,6 +106,11 @@ provider lookup.
 - **T34:** no chained Playwright case (T33's live-server tests own the
   chain); the continuation line stays until the next job replaces it.
 
+- **T35 (Codex round 1):** a two-argument `_active_job_guard` opens a
+  throwaway `RunStore` per step; the blocking runner reports a batch's
+  provider from its first module; `queue run` takes its pending list once up
+  front and only the transitions reload the file.
+
 ## Open for the owner
 
 - Whether `run --until` should grow a second target (for example `--until
