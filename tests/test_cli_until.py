@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 
 import test_cli
+import test_draft_units as tdu
+import test_server_chain
 from education_pipeline import ContentContract, RunStore
 from education_pipeline.client import ensure_daemon
 from education_pipeline.daemon import serve
@@ -201,6 +203,46 @@ def test_run_until_approval_lands_draft_and_stops_at_approve(
         == "# Generated draft\n"
     )
     next_action = RunStore(tmp_path).run_status("systems-thinking").next_action
+    assert next_action.action == "approve"
+    assert next_action.stage == "draft"
+
+    test_cli._run(tmp_path, "daemon", "stop")
+
+
+def test_run_until_approval_drives_a_guide_run_from_skeleton_to_approve(
+    tmp_path: Path, live_daemon, capsys
+) -> None:
+    """Decision 6 left the CLI untested on a guide-v1 course; T33's stall-guard
+    fix is what makes this work. From nothing drafted, one ``run --until
+    approval`` runs the skeleton job, then the module batch the skeleton's
+    ingest unlocks, and stops at the draft approval gate with the draft
+    assembled -- the same chain the daemon now carries for the cockpit.
+
+    Before the fix (a stall guard comparing only ``(action, stage)``) this
+    stopped after the skeleton job with "the job finished but no response was
+    saved", because the module batch's next action is ``save_response``/
+    ``draft`` again with a different detail.
+    """
+
+    register_runner(test_server_chain.ChainFakeRunner())
+    _write_fake_plan(tmp_path)
+    tdu._run_with_skeleton_prompt(tmp_path)
+    ensure_daemon(tmp_path, autostart=True)
+
+    code = test_cli._run(tmp_path, "run", tdu.TID, "--until", "approval")
+    lines = _nonblank(capsys.readouterr().out)
+
+    # One skeleton job, then the whole module batch, from a single command.
+    assert code == 0
+    assert lines == [
+        "  - ran draft with fake",
+        f"  - ran {len(tdu.MODULE_ORDER)} module jobs for draft with fake",
+        "run: draft needs your approval",
+    ]
+
+    runs = RunStore(tmp_path)
+    assert runs.response_path(tdu.TID, "draft").exists()
+    next_action = runs.run_status(tdu.TID).next_action
     assert next_action.action == "approve"
     assert next_action.stage == "draft"
 

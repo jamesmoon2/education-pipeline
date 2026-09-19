@@ -94,6 +94,9 @@ def _start_server(tmp_path, monkeypatch, web_dist=None, catalog=None, plan=None)
         on_shutdown=lambda: None,
         web_dist=web_dist,
     )
+    # As ``daemon.serve`` wires it: a job the continue route chained carries
+    # the chain on when it finishes (Phase 3, decision 9).
+    worker.on_finished = context.continue_after_job
     srv = build_server(context)
     import threading
 

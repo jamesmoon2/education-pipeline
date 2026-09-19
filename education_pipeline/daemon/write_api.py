@@ -43,6 +43,7 @@ from education_pipeline.orchestrate import (
     step_payload,
     stop_payload,
 )
+from education_pipeline.run_core import NextAction
 from education_pipeline.runs import RepairScope, RunStore, StaleContentError
 from education_pipeline.topics import TIME_BUDGET_MINUTES_RANGE, Topic, emit_topic_toml
 from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
@@ -233,6 +234,7 @@ def continue_run(
     *,
     plan_for: Callable[[str], ModelPlan],
     run_job: Callable[[str, str], JobOutcome],
+    after_job: tuple[str, str, NextAction] | None = None,
 ) -> dict:
     """``POST /v1/runs/{id}/continue``: drive ``run_until_judgment`` once.
 
@@ -242,6 +244,11 @@ def continue_run(
     engine loop over ``StoreSteps``; a guard refusal mid-loop (another
     process starting a job between steps) surfaces as a ``failed`` stop
     instead of an HTTP error, exactly as it does from the cockpit today.
+
+    ``after_job`` is passed straight to the loop by the worker's completion
+    hook (``server.DaemonContext.continue_after_job``): the job it names
+    finished outside this call, so the loop applies its stall guard to the
+    first status read instead of to a job it started itself.
     """
 
     read_api.require_run(runs, topic_id)
@@ -254,7 +261,7 @@ def continue_run(
     engine = StoreSteps(
         runs, plan_for=plan_for, run_job=run_job, mutation_guard=_mutation_guard
     )
-    outcome = run_until_judgment(topic_id, engine)
+    outcome = run_until_judgment(topic_id, engine, after_job=after_job)
     return {
         "topic_id": outcome.topic_id,
         "steps": [step_payload(step) for step in outcome.steps],

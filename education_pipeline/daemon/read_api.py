@@ -485,6 +485,7 @@ def _run_status_payload_scoped(
             "detail": status.next_action.detail,
         },
     }
+    payload["continuation"] = _latest_continuation(jobs, topic_id)
     if mode_for_kind(contract.kind).supports_draft_units:
         payload["draft_progress"] = draft_progress_payload(runs, topic_id, jobs=jobs)
     if jobs is not None:
@@ -492,6 +493,35 @@ def _run_status_payload_scoped(
             jobs.list(topic_id), SUPPORTED_STAGES
         )
     return payload
+
+
+def _latest_continuation(jobs: "JobStore | None", topic_id: str) -> dict | None:
+    """Where the daemon's chain last left this run, or ``None``.
+
+    The most recently recorded continuation of the topic, with the job it came
+    from named: the cockpit shows this after a chained job finishes, since the
+    ``POST .../continue`` response was sent long before. Jobs the chain never
+    touched carry no record, so a plain "Run with provider" job leaves this
+    ``None``.
+
+    Ordered by the record's own ``at`` stamp, not by job id: a skeleton job and
+    the batch it starts are created within the same second, and job ids are
+    tie-broken at random inside one second (``new_job_id``), so ids cannot say
+    which record is newer. The id is the tiebreak only.
+    """
+
+    if jobs is None:
+        return None
+    recorded = [job for job in jobs.list(topic_id) if job.continuation is not None]
+    if not recorded:
+        return None
+    latest = max(recorded, key=lambda j: (str(j.continuation.get("at") or ""), j.id))
+    return {
+        "job_id": latest.id,
+        "stage": latest.stage,
+        "provider": latest.provider,
+        **latest.continuation,
+    }
 
 
 def _unit_job_ids(jobs: "JobStore | None", topic_id: str) -> dict[str | None, str]:

@@ -8,6 +8,7 @@ a fresh client can read past runs without the daemon running.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import secrets
@@ -37,6 +38,8 @@ from education_pipeline.runs import RunStore, StaleContentError
 from education_pipeline.workspace_lock import workspace_lock
 
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled", "interrupted"})
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -85,6 +88,14 @@ class Job:
     unit: str | None = None
     module_id: str | None = None
     batch_id: str | None = None
+    # Headless chain (Phase 3, decision 9). ``chain`` marks a job the
+    # run-to-judgment loop started, so the worker's completion hook knows to
+    # carry the chain on; ``continuation`` is what that hook recorded when this
+    # job (or its whole batch) finished: ``{"after", "steps", "stop", "at"}``.
+    # ``chain`` is a real bool, not a tri-state: records written before this
+    # phase load as False (see ``from_dict``), never None.
+    chain: bool = False
+    continuation: dict | None = None
     metadata: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -94,6 +105,7 @@ class Job:
     def from_dict(cls, data: dict) -> "Job":
         fields = {f: data.get(f) for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         fields["metadata"] = data.get("metadata") or {}
+        fields["chain"] = bool(data.get("chain", False))
         return cls(**fields)
 
 
@@ -841,10 +853,16 @@ class Worker:
         runner_factory: Callable[[Job], JobRunner],
         *,
         parallelism: int = DEFAULT_PARALLELISM,
+        on_finished: Callable[[Job], None] | None = None,
     ) -> None:
         self.store = store
         self.runner_factory = runner_factory
         self.parallelism = _validate_parallelism(parallelism)
+        # Completion hook: called exactly once per job that reaches a terminal
+        # status, after its record is saved and outside ``_lock`` (so the hook
+        # may enqueue follow-up work). Anything it raises is logged, never
+        # propagated: a broken hook must not wedge the pool.
+        self.on_finished = on_finished
         self._queue: "queue.Queue[str | None]" = queue.Queue()
         self._cancels: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
@@ -925,11 +943,29 @@ class Worker:
             if event is not None:
                 event.set()
             self._forget_waiter(job_id)
+            # This call, not the worker loop, made the job terminal: the loop
+            # will dequeue it later, see a non-queued status and skip it.
+            self._notify_finished(job)
             return job
         if event is not None:
             event.set()
         self._forget_waiter(job_id)
         return self.store.find(job_id)
+
+    def _notify_finished(self, job: Job | None) -> None:
+        """Announce one terminal job to the completion hook, if any.
+
+        Always called with the terminal record already saved and no worker
+        lock held, so the hook sees the job as the store sees it and may
+        enqueue further work from inside the callback.
+        """
+
+        if self.on_finished is None or job is None:
+            return
+        try:
+            self.on_finished(job)
+        except Exception:  # noqa: BLE001 - a hook must never kill the pool
+            logger.exception("job completion hook failed for job %s", job.id)
 
     def _wake_waiters(self) -> None:
         with self._admit:
@@ -1005,6 +1041,7 @@ class Worker:
                 job.ended_at = _utcnow().isoformat()
                 self.store.save(job)
                 self._forget_waiter(job_id)
+                self._notify_finished(job)
                 continue
             if not self._acquire_slot(job, cancel):
                 # Canceled while it waited for a slot; it never started.
@@ -1012,6 +1049,7 @@ class Worker:
                 job.ended_at = _utcnow().isoformat()
                 self.store.save(job)
                 self._forget_waiter(job_id)
+                self._notify_finished(job)
                 continue
             try:
                 # runner_factory is inside the try so a factory that raises
@@ -1033,6 +1071,9 @@ class Worker:
                     self.store.save(fresh)
             finally:
                 self._release_slot(job)
+            # Outside the try/finally and the slot: the hook runs with this
+            # job's slot already released, so work it enqueues can start.
+            self._notify_finished(self.store.find(job_id) or job)
 
     def _admissible(self, job: Job) -> bool:
         """The whole pool rule; caller holds ``_lock``.
