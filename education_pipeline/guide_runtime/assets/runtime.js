@@ -45,7 +45,7 @@
   }
 
   function emptyState() {
-    return { completedSections: [], interactions: {}, lastSection: null, theme: "system" };
+    return { completedSections: [], interactions: {}, lastSection: null, theme: "system", printMode: "answer-key" };
   }
 
   function validateState(raw) {
@@ -78,6 +78,10 @@
     }
     if (typeof raw.lastSection === "string") out.lastSection = raw.lastSection;
     if (raw.theme === "light" || raw.theme === "dark" || raw.theme === "system") out.theme = raw.theme;
+    // Optional, additive: absent (every pre-T42 record) means the default,
+    // answer-key, which is also what the print stylesheet assumes when no
+    // mode has been chosen at all.
+    if (raw.printMode === "answer-key" || raw.printMode === "learner-copy") out.printMode = raw.printMode;
     // Optional: exports before this field existed stored no timestamp, and a
     // state without one stays valid -- it only sorts last when choosing which
     // earlier version's progress to offer. Anything non-finite is dropped
@@ -209,6 +213,10 @@
       data.theme = theme;
       save();
     }
+    function setPrintMode(mode) {
+      data.printMode = mode;
+      save();
+    }
     function markSectionComplete(id) {
       if (!data.completedSections.includes(id)) {
         data.completedSections.push(id);
@@ -227,10 +235,17 @@
       save();
     }
     function resetProgress() {
-      // Theme is a display preference and the carry-over decision is an
-      // answer the learner already gave; neither is progress, so a reset
-      // keeps both rather than resurrecting a banner they dismissed.
-      const next = { completedSections: [], interactions: {}, lastSection: null, theme: data.theme };
+      // Theme and print mode are display preferences and the carry-over
+      // decision is an answer the learner already gave; none of those is
+      // progress, so a reset keeps them rather than resurrecting a banner
+      // they dismissed or reverting a print choice they made.
+      const next = {
+        completedSections: [],
+        interactions: {},
+        lastSection: null,
+        theme: data.theme,
+        printMode: data.printMode,
+      };
       if (data.migrationDecided === true) next.migrationDecided = true;
       data = next;
       save();
@@ -242,6 +257,7 @@
       adopt,
       markMigrationDecided,
       setTheme,
+      setPrintMode,
       markSectionComplete,
       setLastSection,
       interaction,
@@ -474,7 +490,7 @@
     function showSection(id) {
       return Boolean(id) && show(id, { focus: false });
     }
-    return { boot, toggleDrawer, revealEvidenceTarget, showSection };
+    return { boot, toggleDrawer, revealEvidenceTarget, showSection, next, prev };
   })();
 
   // ---------------------------------------------------------------------
@@ -946,6 +962,7 @@
       const sectionIds = new Set(qsa('main section[data-role="guide-section"]').map((el) => el.id));
       const out = emptyState();
       out.theme = state.theme;
+      out.printMode = state.printMode;
       out.completedSections = state.completedSections.filter((id) => sectionIds.has(id));
       Object.keys(state.interactions).forEach((id) => {
         const entry = usableInteraction(id, state.interactions[id]);
@@ -982,6 +999,7 @@
       // so restored answers, revealed steps and notes are actually on screen
       // and each block's own counters match what is stored.
       refreshTheme(filtered.theme);
+      refreshPrintMode(filtered.printMode);
       rehydrateBlocks();
       Nav.showSection(filtered.lastSection);
       Progress.update();
@@ -1280,6 +1298,23 @@
     else delete root.dataset.theme;
   }
 
+  // Answer-key is the default the print stylesheet assumes when the
+  // attribute is absent entirely, so only the non-default mode is recorded
+  // on the document element.
+  function applyPrintMode(mode) {
+    const root = document.documentElement;
+    if (mode === "learner-copy") root.dataset.printMode = mode;
+    else delete root.dataset.printMode;
+  }
+
+  function refreshPrintMode(mode) {
+    const value = mode === "learner-copy" ? "learner-copy" : "answer-key";
+    applyPrintMode(value);
+    qsa('input[name="print-mode"]').forEach((radio) => {
+      radio.checked = radio.value === value;
+    });
+  }
+
   function enhanceCourseControls(guide) {
     const select = qs('[data-role="theme-select"]');
     if (select) {
@@ -1290,6 +1325,14 @@
         State.setTheme(select.value);
       });
     }
+    refreshPrintMode(State.get().printMode);
+    qsa('input[name="print-mode"]').forEach((radio) => {
+      radio.addEventListener("change", () => {
+        if (!radio.checked) return;
+        applyPrintMode(radio.value);
+        State.setPrintMode(radio.value);
+      });
+    });
     const resetBtn = qs('[data-role="reset-progress"]');
     if (resetBtn) {
       resetBtn.addEventListener("click", () => {
@@ -1307,6 +1350,37 @@
     ProgressFile.init(guide.course.id, guide.schema_version);
     const navToggle = qs('[data-role="nav-toggle"]');
     if (navToggle) navToggle.addEventListener("click", () => Nav.toggleDrawer());
+  }
+
+  // ---------------------------------------------------------------------
+  // Keyboard paging: ArrowLeft/ArrowRight page sections, "/" jumps to the
+  // course navigation. Inert with a modifier held or over an editable
+  // control, so typing (including a literal "/") is never intercepted.
+  // ---------------------------------------------------------------------
+
+  function isEditableTarget(el) {
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    const tag = el.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  }
+
+  function installKeyboardPaging() {
+    document.addEventListener("keydown", (event) => {
+      if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+      if (isEditableTarget(event.target)) return;
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        Nav.next();
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        Nav.prev();
+      } else if (event.key === "/") {
+        event.preventDefault();
+        const link = qs('nav.guide-nav a[data-role="nav-link"]');
+        if (link) link.focus();
+      }
+    });
   }
 
   // ---------------------------------------------------------------------
@@ -1342,6 +1416,7 @@
       enhanceCourseControls(guide);
       enhanceBlocks();
       Nav.boot();
+      installKeyboardPaging();
       installPreviewEvidenceBridge(guide);
       Progress.update();
       // Stands on every load until the learner answers it or genuinely starts
