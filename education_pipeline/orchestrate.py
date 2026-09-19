@@ -87,9 +87,13 @@ STOP_KINDS = (
 class Step:
     """One mechanical step the loop performed.
 
-    ``kind`` is ``advance`` (a prompt written or a draft assembled),
-    ``validate`` (a phase report computed and gated), or ``job`` (a provider
-    job started, and possibly waited for).
+    ``kind`` is ``advance`` (a stage prompt written), ``assemble`` (a
+    fanned-out draft assembled), ``validate`` (a phase report computed and
+    gated), or ``job`` (a provider job started, and possibly waited for).
+
+    ``advance`` and ``assemble`` both go through ``Steps.advance`` -- the
+    protocol keeps its five members -- but they are different work and read
+    differently, so they are different kinds (Codex round 1, F5).
     """
 
     kind: str
@@ -120,12 +124,19 @@ class JobOutcome:
     that blocks until the job reaches a terminal status reports ``waited=True``
     and the loop carries on (or stops with ``failed`` when ``ok`` is false).
     ``count`` is the module-batch size, when the stage fanned out.
+
+    ``provider`` is the provider the job *actually* ran with, when the runner
+    knows it (Codex round 1, F4). The plan can be edited while a job sits
+    queued, and the worker re-resolves it when it picks the job up, so the
+    provider resolved before enqueueing is only a prediction. ``None`` means
+    "the runner does not know", and the loop keeps the resolved one.
     """
 
     waited: bool
     ok: bool = True
     message: str | None = None
     count: int | None = None
+    provider: str | None = None
 
 
 @dataclass(frozen=True)
@@ -256,11 +267,18 @@ def run_until_judgment(
                 # `advance` performs whatever machine step the run is on --
                 # writing a prompt or assembling a fanned-out draft. Only ever
                 # reached from a freshly read status, so it cannot finalize.
-                advanced = _step(
-                    f"writing the {stage or 'next'} prompt",
-                    lambda: steps.advance(topic_id),
+                # The two are one call but two kinds of work, so they carry
+                # their own label and their own step kind (F5).
+                assembling = action == "assemble"
+                label = (
+                    "assembling the draft"
+                    if assembling
+                    else f"writing the {stage or 'next'} prompt"
                 )
-                taken.append(Step(kind="advance", stage=stage))
+                advanced = _step(label, lambda: steps.advance(topic_id))
+                taken.append(
+                    Step(kind="assemble" if assembling else "advance", stage=stage)
+                )
                 # advance hands back a fresh status; no need to re-read it.
                 status = advanced.status
             elif action == "validate":
@@ -288,16 +306,20 @@ def run_until_judgment(
                     f"starting {stage} with {provider}",
                     lambda: steps.run_job(topic_id, stage),
                 )
+                # The runner's own provider wins when it names one: it knows
+                # what the job really ran with, `provider` was only the plan's
+                # prediction from before the job was enqueued (F4).
+                ran_with = job.provider or provider
                 taken.append(
-                    Step(kind="job", stage=stage, provider=provider, count=job.count)
+                    Step(kind="job", stage=stage, provider=ran_with, count=job.count)
                 )
-                running = f"running {stage} with {provider}"
+                running = f"running {stage} with {ran_with}"
                 if not job.waited:
                     return _stop(
                         Stop(
                             kind="started",
                             stage=stage,
-                            provider=provider,
+                            provider=ran_with,
                             count=job.count,
                         )
                     )
@@ -363,6 +385,8 @@ def describe_step(step: Step) -> str | None:
 
     if step.kind == "advance":
         return f"wrote the {step.stage or 'next'} prompt"
+    if step.kind == "assemble":
+        return "assembled the draft"
     if step.kind == "validate":
         return f"ran {step.phase} validation"
     return None

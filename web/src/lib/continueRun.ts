@@ -23,6 +23,10 @@ export type { Continuation };
 /** Mechanical follow-ups the daemon performed, in the order it took them. */
 export type ContinueStep =
   | { kind: "advance"; stage: string | null }
+  // Assembling a fanned-out draft is its own step, not a prompt write: it is
+  // always worth naming, so -- unlike "advance" -- it is never deduped
+  // against a stop that names the same stage.
+  | { kind: "assemble"; stage: string | null }
   | { kind: "validate"; stage: string | null; phase: "draft" | "final" }
   | { kind: "job"; stage: string; provider: string; count?: number };
 
@@ -88,6 +92,8 @@ function describeStep(step: ContinueStep): string | null {
   switch (step.kind) {
     case "advance":
       return `wrote the ${step.stage ?? "next"} prompt`;
+    case "assemble":
+      return "assembled the draft";
     case "validate":
       return `ran ${step.phase} validation`;
     case "job":

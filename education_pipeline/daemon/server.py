@@ -224,7 +224,10 @@ class DaemonContext:
         del stage
         job = self.enqueue_stage(topic_id, chain=True)
         count = len(self.store.batch(job.batch_id)) if job.batch_id else None
-        return JobOutcome(waited=False, count=count)
+        # Nothing has run yet, so the enqueued record's provider is all this
+        # runner can know; the worker may re-resolve it when it picks the job
+        # up, and the chain's completion hook reports that one (F4).
+        return JobOutcome(waited=False, count=count, provider=job.provider)
 
     def continue_after_job(self, job: Job) -> None:
         """``Worker``'s completion hook: carry a chained run past a finished job.
