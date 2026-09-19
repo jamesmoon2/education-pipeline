@@ -234,6 +234,10 @@ export interface RunStatus {
   // Present only for guide-v1 runs (the daemon omits the key for legacy
   // Markdown runs and for payload fixtures predating per-module drafting).
   draft_progress?: DraftProgress;
+  // T34 (decision 9 addendum): the latest chained job's outcome, or null
+  // once nothing is left to report. Optional so payload/fixtures predating
+  // the addendum stay valid.
+  continuation?: Continuation | null;
 }
 
 export interface WorkspacePayload {
@@ -263,6 +267,62 @@ export interface TopicSummary {
 export interface TopicsPayload {
   topics: TopicSummary[];
   cost?: WorkspaceCost;
+}
+
+/** ``POST /v1/runs/{id}/continue`` wire shape
+ *  (``education_pipeline.orchestrate`` ``step_payload``/``stop_payload``):
+ *  one mechanical step the daemon performed, or the reason it stopped. Kept
+ *  structurally identical to ``ContinueStep``/``ContinueStop`` in
+ *  ``lib/continueRun.ts`` -- the wire contract and the client's own domain
+ *  types are declared separately so this file stays the one place the wire
+ *  shape is pinned, but a payload assigns straight into the client type with
+ *  no mapping step. */
+export type ContinueStepPayload =
+  | { kind: "advance"; stage: string | null }
+  | { kind: "assemble"; stage: string | null }
+  | { kind: "validate"; stage: string | null; phase: "draft" | "final" }
+  | { kind: "job"; stage: string; provider: string; count?: number };
+
+export type ContinueStopPayload =
+  | { kind: "started"; stage: string; provider: string; count?: number }
+  | { kind: "manual"; stage: string }
+  | { kind: "plan_unreadable"; stage: string }
+  | { kind: "approve"; stage: string | null }
+  | { kind: "resolve_findings" }
+  | { kind: "finalize" }
+  | { kind: "done" }
+  | { kind: "unfinished" }
+  | { kind: "failed"; action: string; message: string };
+
+/** ``POST /v1/runs/{id}/continue``: the whole daemon response. ``status`` is
+ *  the freshest run status the loop read, or null only when the very first
+ *  status read failed. */
+export interface ContinuePayload {
+  topic_id: string;
+  steps: ContinueStepPayload[];
+  stop: ContinueStopPayload;
+  status: RunStatus | null;
+}
+
+/** ``RunStatus.continuation`` (decision 9 addendum): the outcome of the
+ *  latest job the daemon carried on its own after a ``POST .../continue``
+ *  (or ``POST /v1/jobs``) request returned -- the worker's completion hook
+ *  ran the same ``run_until_judgment`` loop once that job (or its whole
+ *  draft module batch) reached a terminal status. Reported back on the next
+ *  status read so the cockpit can say where the chain landed even though
+ *  the request that started the job returned before the chain ran.
+ *  ``job_id``/``stage``/``provider`` name the job that finished; ``after``
+ *  is ``"batch"`` only when that job was part of a draft module batch and
+ *  the hook waited for the whole batch, else ``"job"``. ``steps``/``stop``
+ *  are the same shapes ``ContinuePayload`` carries. */
+export interface Continuation {
+  job_id: string;
+  stage: string;
+  provider: string;
+  after: "job" | "batch";
+  steps: ContinueStepPayload[];
+  stop: ContinueStopPayload;
+  at: string;
 }
 
 export interface ArchiveResult {

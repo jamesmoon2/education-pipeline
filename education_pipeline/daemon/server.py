@@ -12,7 +12,9 @@ import re
 import secrets
 import socketserver
 import sys
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Protocol
@@ -25,7 +27,13 @@ from education_pipeline.config import (
     apply_overrides_lenient,
 )
 from education_pipeline.daemon import read_api, reveal, write_api
-from education_pipeline.daemon.jobs import Job, JobStore, Worker, new_job_id
+from education_pipeline.daemon.jobs import (
+    TERMINAL_STATUSES,
+    Job,
+    JobStore,
+    Worker,
+    new_job_id,
+)
 from education_pipeline.daemon.static import (
     cockpit_build_report,
     inject_cockpit_build_warning,
@@ -41,6 +49,8 @@ from education_pipeline.guides import (
     parse_guide,
     validate_guide,
 )
+from education_pipeline.orchestrate import JobOutcome, provider_for_stage
+from education_pipeline.run_core import NextAction
 from education_pipeline.runs import RunStore, StaleContentError, SUPPORTED_STAGES
 from education_pipeline.workspace import ProfileStore, TopicStore
 from education_pipeline.workspace_lock import WorkspaceLockedError, workspace_lock
@@ -122,6 +132,34 @@ def _require_str(body: dict, key: str) -> str:
     return value
 
 
+def _job_failure(job: Job) -> str | None:
+    """Why this job did not succeed, worded as the CLI's blocking runner words
+    it (``cli._blocking_job_runner``), or ``None`` when it did succeed."""
+
+    if job.status == "succeeded":
+        return None
+    return job.error or f"job {job.id} {job.status}"
+
+
+def _batch_failure(jobs: list[Job]) -> str | None:
+    """The same, for a whole draft fan-out: which modules failed, of how many."""
+
+    failed = [job for job in jobs if job.status != "succeeded"]
+    if not failed:
+        return None
+    modules = ", ".join(str(job.module_id) for job in failed)
+    return f"{len(failed)} of {len(jobs)} module jobs failed: {modules}"
+
+
+def _continuation(after: str, steps: list, stop: dict) -> dict:
+    return {
+        "after": after,
+        "steps": steps,
+        "stop": stop,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @dataclass
 class DaemonContext:
     root: Path
@@ -135,6 +173,11 @@ class DaemonContext:
     profiles: ProfileStore
     on_shutdown: Callable[[], None]
     web_dist: Path | None = None
+    # Serializes the completion hook across worker threads: one batch's jobs
+    # finish concurrently and must produce exactly one continuation.
+    _chain_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
 
     def enqueue_stage(
         self,
@@ -143,6 +186,7 @@ class DaemonContext:
         force: bool = False,
         *,
         modules: list[str] | None = None,
+        chain: bool = False,
     ) -> Job:
         """Admit one stage execution, atomically with its own guards.
 
@@ -157,7 +201,112 @@ class DaemonContext:
         """
 
         with workspace_lock(self.root, timeout_seconds=self.store.lock_timeout_seconds):
-            return self._enqueue_stage_locked(topic_id, stage, force, modules)
+            return self._enqueue_stage_locked(topic_id, stage, force, modules, chain)
+
+    def effective_plan(self, topic_id: str) -> ModelPlan:
+        """This run's plan with its stage overrides applied -- the same
+        computation ``read_api.run_plan_payload`` serializes (decision 5's
+        "both callers load the run's effective plan the way run_plan_payload
+        does"), used as ``StoreSteps``' ``plan_for`` by the continue route."""
+
+        catalog, plan = self.config.load()
+        overrides = self.runs.read_plan_overrides(topic_id)
+        effective, _errors = apply_overrides_lenient(plan, overrides, catalog)
+        return effective
+
+    def run_continue_job(self, topic_id: str, stage: str) -> JobOutcome:
+        """The continue route's non-blocking job runner (decision 1): enqueue
+        and report back immediately, so the loop stops with ``started``."""
+
+        # No stage is passed, as the CLI's runner does: the daemon derives it
+        # from the same next action the loop just read and keeps its own
+        # "next action must be save_response" check in force.
+        del stage
+        job = self.enqueue_stage(topic_id, chain=True)
+        count = len(self.store.batch(job.batch_id)) if job.batch_id else None
+        # Nothing has run yet, so the enqueued record's provider is all this
+        # runner can know; the worker may re-resolve it when it picks the job
+        # up, and the chain's completion hook reports that one (F4).
+        return JobOutcome(waited=False, count=count, provider=job.provider)
+
+    def continue_after_job(self, job: Job) -> None:
+        """``Worker``'s completion hook: carry a chained run past a finished job.
+
+        Decision 9: the continue route answers as soon as the job starts, so
+        the chain would end there. This hook takes it up again from the
+        worker, running exactly the same loop over the same five-member
+        protocol -- it cannot approve, finalize or export -- and records where
+        the run now stands on the job that finished.
+
+        A job the route did not chain is none of this hook's business. A batch
+        fires once, from whichever module job finishes last: every job of the
+        batch must be terminal, and the whole check-and-record runs under the
+        context lock so two threads finishing at once cannot both continue.
+        """
+
+        if not job.chain:
+            return
+        with self._chain_lock:
+            if job.batch_id:
+                batch = self.store.batch(job.batch_id)
+                if any(member.status not in TERMINAL_STATUSES for member in batch):
+                    return  # still running: a later completion fires the hook
+                if any(member.continuation is not None for member in batch):
+                    return  # another member of this batch already continued
+                after, failure = "batch", _batch_failure(batch)
+            else:
+                fresh = self.store.find(job.id) or job
+                if fresh.continuation is not None:
+                    return
+                after, failure = "job", _job_failure(fresh)
+            self._record_continuation(job, self._continue_record(job, after, failure))
+
+    def _continue_record(self, job: Job, after: str, failure: str | None) -> dict:
+        """What the finished job (or batch) led to: steps taken and where it stopped."""
+
+        if failure is not None:
+            # The job did not succeed, so there is nothing mechanical left to
+            # do: report it exactly as the CLI's blocking runner would.
+            return _continuation(
+                after,
+                [],
+                {
+                    "kind": "failed",
+                    "action": f"running {job.stage} with {job.provider}",
+                    "message": failure,
+                },
+            )
+        meta = job.metadata.get("next_action") or {}
+        before = NextAction(
+            topic_id=job.topic_id,
+            stage=meta.get("stage"),
+            action=meta.get("action") or "",
+            detail=meta.get("detail") or "",
+        )
+        try:
+            payload = write_api.continue_run(
+                self.runs,
+                self.store,
+                job.topic_id,
+                plan_for=self.effective_plan,
+                run_job=self.run_continue_job,
+                after_job=(job.stage, job.provider, before),
+            )
+        except (write_api.ConflictError, ConfigError) as exc:
+            # The route's own up-front guards (archived course, a job started
+            # for this topic meanwhile). From a request those are HTTP errors;
+            # here there is no request to answer, so they are the stop.
+            return _continuation(
+                after,
+                [],
+                {"kind": "failed", "action": "continuing the run", "message": str(exc)},
+            )
+        return _continuation(after, payload["steps"], payload["stop"])
+
+    def _record_continuation(self, job: Job, record: dict) -> None:
+        fresh = self.store.find(job.id) or job
+        fresh.continuation = record
+        self.store.save(fresh)
 
     def _enqueue_stage_locked(
         self,
@@ -165,6 +314,7 @@ class DaemonContext:
         stage: str | None,
         force: bool,
         modules: list[str] | None = None,
+        chain: bool = False,
     ) -> Job:
         if self.runs.is_archived(topic_id):
             raise write_api.ConflictError(
@@ -212,7 +362,7 @@ class DaemonContext:
                 f"a job is already active for {topic_id}/{target_stage}"
             )
         stage_plan = plan.stage(target_stage)
-        provider = stage_plan.provider or plan.provider
+        provider = provider_for_stage(plan, target_stage)
         plan_source = (
             "override" if target_stage in overrides.get("stages", {}) else "default"
         )
@@ -224,6 +374,8 @@ class DaemonContext:
                 plan_source,
                 force=force,
                 modules=modules,
+                chain=chain,
+                next_action=action,
             )
         if modules is not None:
             raise ConfigError(
@@ -233,11 +385,29 @@ class DaemonContext:
         job = self.store.create(topic_id, target_stage, provider, stage_plan.model, stage_plan.effort)
         job.metadata["force"] = force
         job.metadata["plan_source"] = plan_source
+        self._mark_chain(job, chain, action)
         # Do not pre-save here: Worker.enqueue performs the duplicate-active
         # check, durable save, and queue insertion as one atomic operation
         # under its lock, so a rejected job never gets a job.json written.
         self.worker.enqueue(job)
         return job
+
+    @staticmethod
+    def _mark_chain(job: Job, chain: bool, next_action: NextAction) -> None:
+        """Stamp a job with its chain flag and the action it was enqueued against.
+
+        Every job this context creates records the next action the run reported
+        when it was admitted, because that -- not the status read after the job
+        -- is what the completion hook must compare against to tell progress
+        from a stall (the loop's own ``before``, decision 3 as revised in T33).
+        """
+
+        job.chain = chain
+        job.metadata["next_action"] = {
+            "action": next_action.action,
+            "stage": next_action.stage,
+            "detail": next_action.detail,
+        }
 
     def _draft_units_apply(self, topic_id: str) -> bool:
         """Whether this run's draft stage fans out into skeleton/module units.
@@ -264,6 +434,8 @@ class DaemonContext:
         *,
         force: bool,
         modules: list[str] | None,
+        chain: bool = False,
+        next_action: NextAction,
     ) -> Job:
         """Fan the draft stage out into unit jobs; return the primary one.
 
@@ -292,6 +464,7 @@ class DaemonContext:
             )
             job.metadata["force"] = force
             job.metadata["plan_source"] = plan_source
+            self._mark_chain(job, chain, next_action)
             self.worker.enqueue(job)
             return job
 
@@ -370,6 +543,7 @@ class DaemonContext:
             # they do not order a same-second fan-out. The index does, and it
             # is what every batch view sorts on.
             job.metadata["batch_index"] = index
+            self._mark_chain(job, chain, next_action)
             self.worker.enqueue(job)
             jobs.append(job)
         return jobs[0]
@@ -927,6 +1101,20 @@ def _make_handler(context: DaemonContext):
                         blueprint=body.get("blueprint"),
                         repair_module=body.get("repair_module"),
                         repair_section=body.get("repair_section"),
+                    ),
+                )
+            m = re.match(r"^/v1/runs/([^/?]+)/continue$", self.path)
+            if m:
+                self._read_body()  # enforce the JSON/size rules even when empty
+                topic_id = m.group(1)
+                return self._send(
+                    200,
+                    write_api.continue_run(
+                        context.runs,
+                        context.store,
+                        topic_id,
+                        plan_for=context.effective_plan,
+                        run_job=context.run_continue_job,
                     ),
                 )
             m = re.match(r"^/v1/runs/([^/?]+)/audit$", self.path)

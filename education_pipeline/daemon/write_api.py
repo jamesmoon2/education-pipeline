@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import tomllib
+from contextlib import contextmanager
 from pathlib import Path
 from dataclasses import replace
+from typing import Callable, ContextManager
 
 from education_pipeline.profile_draft import (
     PROFILE_DRAFT_TIMEOUT_SECONDS,
@@ -25,6 +27,7 @@ from education_pipeline.profile_draft import (
 
 from education_pipeline.config import (
     ConfigError,
+    ModelPlan,
     apply_overrides_lenient,
     emit_model_plan_toml,
     parse_model_plan,
@@ -33,6 +36,14 @@ from education_pipeline.atomic_io import atomic_write_bytes, read_bytes_retrying
 from education_pipeline.daemon import read_api
 from education_pipeline.daemon.jobs import JobStore
 from education_pipeline.daemon.read_api import NotFoundError
+from education_pipeline.orchestrate import (
+    JobOutcome,
+    StoreSteps,
+    run_until_judgment,
+    step_payload,
+    stop_payload,
+)
+from education_pipeline.run_core import NextAction
 from education_pipeline.runs import RepairScope, RunStore, StaleContentError
 from education_pipeline.topics import TIME_BUDGET_MINUTES_RANGE, Topic, emit_topic_toml
 from education_pipeline.workspace import ProfileStore, ProfileWriteConflict, TopicStore
@@ -202,6 +213,73 @@ def validate_run(runs: RunStore, jobs: JobStore, topic_id: str, phase: str) -> d
     return {
         **read_api.validation_payload(runs, topic_id, phase),
         "status": read_api.run_status_payload(runs, topic_id, jobs=jobs),
+    }
+
+
+@contextmanager
+def _active_job_guard(jobs: JobStore, topic_id: str, runs: RunStore | None = None):
+    """The same up-front checks ``advance_run``/``validate_run`` apply before
+    mutating, reused (not reinvented) as ``StoreSteps``' ``mutation_guard`` so
+    a job started -- or a course archived -- by another process mid-loop stops
+    the step exactly as it would stop a direct ``POST /v1/runs/{id}/advance``
+    or ``.../validate``.
+
+    *Both* checks, not just the active-job one (Codex round 1, F1): the loop
+    takes several mutating steps per call, and a course archived between two
+    of them must refuse the rest instead of being quietly written to. ``runs``
+    is the caller's store when it has one; otherwise the guard opens one over
+    the job store's workspace, since archive state lives on disk.
+    """
+
+    _require_not_archived(runs if runs is not None else RunStore(jobs.root), topic_id)
+    _require_no_active_job(jobs, topic_id)
+    yield
+
+
+def continue_run(
+    runs: RunStore,
+    jobs: JobStore,
+    topic_id: str,
+    *,
+    plan_for: Callable[[str], ModelPlan],
+    run_job: Callable[[str, str], JobOutcome],
+    after_job: tuple[str, str, NextAction] | None = None,
+) -> dict:
+    """``POST /v1/runs/{id}/continue``: drive ``run_until_judgment`` once.
+
+    Refuses up front -- before any mechanical step runs -- on an archived
+    course or an active job anywhere on the topic (decision 8), the same
+    catalog codes ``POST /v1/jobs`` uses. Everything past that point is the
+    engine loop over ``StoreSteps``; a guard refusal mid-loop (another
+    process starting a job between steps) surfaces as a ``failed`` stop
+    instead of an HTTP error, exactly as it does from the cockpit today.
+
+    ``after_job`` is passed straight to the loop by the worker's completion
+    hook (``server.DaemonContext.continue_after_job``): the job it names
+    finished outside this call, so the loop applies its stall guard to the
+    first status read instead of to a job it started itself.
+    """
+
+    read_api.require_run(runs, topic_id)
+    _require_not_archived(runs, topic_id)
+    _require_no_active_job(jobs, topic_id)
+
+    def _mutation_guard(_topic_id: str) -> ContextManager[object]:
+        return _active_job_guard(jobs, _topic_id, runs)
+
+    engine = StoreSteps(
+        runs, plan_for=plan_for, run_job=run_job, mutation_guard=_mutation_guard
+    )
+    outcome = run_until_judgment(topic_id, engine, after_job=after_job)
+    return {
+        "topic_id": outcome.topic_id,
+        "steps": [step_payload(step) for step in outcome.steps],
+        "stop": stop_payload(outcome.stop),
+        "status": (
+            read_api.run_status_payload(runs, topic_id, jobs=jobs)
+            if outcome.status is not None
+            else None
+        ),
     }
 
 

@@ -6,6 +6,7 @@ import type {
   AttachProfileResult,
   CatalogPreset,
   CatalogProvider,
+  ContinuePayload,
   EditResponseResult,
   ExportFormat,
   ExportResult,
@@ -447,6 +448,8 @@ export const postExport = (topicId: string, format: ExportFormat, overwrite = fa
     format,
     overwrite,
   });
+export const postContinue = (topicId: string) =>
+  apiPost<ContinuePayload>(`/v1/runs/${encodeURIComponent(topicId)}/continue`, {});
 export const archiveRun = (topicId: string) =>
   apiPost<ArchiveResult>(`/v1/runs/${encodeURIComponent(topicId)}/archive`, {});
 export const unarchiveRun = (topicId: string) =>

@@ -150,6 +150,7 @@ appropriate HTTP status.
 | `POST\|PUT /v1/runs/{id}/draft/skeleton/response` | save (POST) or edit (PUT) the draft skeleton response |
 | `POST\|PUT /v1/runs/{id}/draft/modules/{module_id}/response` | save (POST) or edit (PUT) one module's draft response |
 | `POST /v1/runs/{id}/draft/assemble` | assemble the saved units into the draft stage response (`{force?}`) |
+| `POST /v1/runs/{id}/continue` | drive `education_pipeline.orchestrate.run_until_judgment` one call: mechanical steps (write prompt, assemble, validate, start a job) until the run needs judgment → `{topic_id, steps, stop, status}` |
 | `POST /v1/shutdown`        | graceful stop (used by `daemon stop`) |
 
 No server push in v1: clients poll (`GET /jobs/{id}`, log offsets). Simple,

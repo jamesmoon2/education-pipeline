@@ -8,6 +8,7 @@ a fresh client can read past runs without the daemon running.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import secrets
@@ -32,11 +33,14 @@ from education_pipeline.config import (
     ModelCatalog,
     ModelPlan,
 )
+from education_pipeline.orchestrate import provider_for_stage
 from education_pipeline.providers import get_runner
 from education_pipeline.runs import RunStore, StaleContentError
 from education_pipeline.workspace_lock import workspace_lock
 
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled", "interrupted"})
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -85,6 +89,14 @@ class Job:
     unit: str | None = None
     module_id: str | None = None
     batch_id: str | None = None
+    # Headless chain (Phase 3, decision 9). ``chain`` marks a job the
+    # run-to-judgment loop started, so the worker's completion hook knows to
+    # carry the chain on; ``continuation`` is what that hook recorded when this
+    # job (or its whole batch) finished: ``{"after", "steps", "stop", "at"}``.
+    # ``chain`` is a real bool, not a tri-state: records written before this
+    # phase load as False (see ``from_dict``), never None.
+    chain: bool = False
+    continuation: dict | None = None
     metadata: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -94,6 +106,7 @@ class Job:
     def from_dict(cls, data: dict) -> "Job":
         fields = {f: data.get(f) for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         fields["metadata"] = data.get("metadata") or {}
+        fields["chain"] = bool(data.get("chain", False))
         return cls(**fields)
 
 
@@ -440,8 +453,10 @@ class JobRunner:
             # snapshot for display; overrides edited while the job sat queued
             # must govern what actually executes — and the record/manifest
             # must reflect what really ran.
+            # Decision 5: provider resolution has exactly one home, so the
+            # provider stamped here is the provider every other surface names.
             stage_plan = self.plan.stage(job.stage)
-            job.provider = stage_plan.provider or self.plan.provider
+            job.provider = provider_for_stage(self.plan, job.stage)
             job.model = stage_plan.model
             job.effort = stage_plan.effort
             self.store.save(job)
@@ -841,10 +856,16 @@ class Worker:
         runner_factory: Callable[[Job], JobRunner],
         *,
         parallelism: int = DEFAULT_PARALLELISM,
+        on_finished: Callable[[Job], None] | None = None,
     ) -> None:
         self.store = store
         self.runner_factory = runner_factory
         self.parallelism = _validate_parallelism(parallelism)
+        # Completion hook: called exactly once per job that reaches a terminal
+        # status, after its record is saved and outside ``_lock`` (so the hook
+        # may enqueue follow-up work). Anything it raises is logged, never
+        # propagated: a broken hook must not wedge the pool.
+        self.on_finished = on_finished
         self._queue: "queue.Queue[str | None]" = queue.Queue()
         self._cancels: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
@@ -860,6 +881,13 @@ class Worker:
         # winner is whichever thread the OS schedules first and a later batch
         # job can start ahead of an ordinary job that has waited longer.
         self._waiting: deque[str] = deque()
+        # Job ids a loop thread has taken off the queue and not yet finished
+        # with. Claimed under ``_lock`` *before* the record is read, so it is
+        # the single arbiter of who makes a still-"queued" job terminal: a job
+        # parked in ``_acquire_slot`` stays "queued" on disk the whole time it
+        # waits, so without this both ``cancel`` and the loop would write the
+        # canceled record and both would call ``on_finished`` (F3).
+        self._claimed: set[str] = set()
         self._threads: list[threading.Thread] = []
         self._stopping = False
 
@@ -916,20 +944,60 @@ class Worker:
         job = self.store.find(job_id)
         if job is None or job.status in TERMINAL_STATUSES:
             return job
+        # Decide "queued -> canceled" against the loop's claim, under the
+        # worker lock, and write the record in the same critical section: an
+        # unclaimed queued job is this call's to finish, a claimed one belongs
+        # to the loop thread holding it (it may be parked in admission, still
+        # "queued" on disk) and gets only the cancel event. Exactly one of the
+        # two writes the terminal record, so ``on_finished`` fires once (F3).
         with self._lock:
             event = self._cancels.get(job_id)
-        if job.status == "queued":
-            job.status = "canceled"
-            job.ended_at = _utcnow().isoformat()
-            self.store.save(job)
-            if event is not None:
-                event.set()
-            self._forget_waiter(job_id)
-            return job
+            fresh = self.store.find(job_id)
+            mine = (
+                fresh is not None
+                and fresh.status == "queued"
+                and job_id not in self._claimed
+            )
+            if mine:
+                fresh.status = "canceled"
+                fresh.ended_at = _utcnow().isoformat()
+                self.store.save(fresh)
         if event is not None:
             event.set()
         self._forget_waiter(job_id)
+        if mine:
+            # This call, not the worker loop, made the job terminal: the loop
+            # will dequeue it later, see a non-queued status and skip it.
+            self._notify_finished(fresh)
+            return fresh
         return self.store.find(job_id)
+
+    def _claim(self, job_id: str) -> None:
+        """Take responsibility for one dequeued job, before its record is read."""
+
+        with self._lock:
+            self._claimed.add(job_id)
+
+    def _release_claim(self, job_id: str) -> None:
+        """Give it back, once the job is terminal or the loop has skipped it."""
+
+        with self._lock:
+            self._claimed.discard(job_id)
+
+    def _notify_finished(self, job: Job | None) -> None:
+        """Announce one terminal job to the completion hook, if any.
+
+        Always called with the terminal record already saved and no worker
+        lock held, so the hook sees the job as the store sees it and may
+        enqueue further work from inside the callback.
+        """
+
+        if self.on_finished is None or job is None:
+            return
+        try:
+            self.on_finished(job)
+        except Exception:  # noqa: BLE001 - a hook must never kill the pool
+            logger.exception("job completion hook failed for job %s", job.id)
 
     def _wake_waiters(self) -> None:
         with self._admit:
@@ -994,8 +1062,15 @@ class Worker:
             job_id = self._queue.get()
             if job_id is None:
                 return
+            # Claimed before the record is read: from here until the claim is
+            # released, this thread -- not ``cancel`` -- writes this job's
+            # terminal record and announces it.
+            self._claim(job_id)
             job = self.store.find(job_id)
             if job is None or job.status != "queued":
+                # Already terminal (``cancel`` got it before the claim): skip
+                # it silently, its completion was announced by whoever wrote it.
+                self._release_claim(job_id)
                 self._forget_waiter(job_id)
                 continue
             with self._lock:
@@ -1004,14 +1079,18 @@ class Worker:
                 job.status = "canceled"
                 job.ended_at = _utcnow().isoformat()
                 self.store.save(job)
+                self._release_claim(job_id)
                 self._forget_waiter(job_id)
+                self._notify_finished(job)
                 continue
             if not self._acquire_slot(job, cancel):
                 # Canceled while it waited for a slot; it never started.
                 job.status = "canceled"
                 job.ended_at = _utcnow().isoformat()
                 self.store.save(job)
+                self._release_claim(job_id)
                 self._forget_waiter(job_id)
+                self._notify_finished(job)
                 continue
             try:
                 # runner_factory is inside the try so a factory that raises
@@ -1033,6 +1112,10 @@ class Worker:
                     self.store.save(fresh)
             finally:
                 self._release_slot(job)
+                self._release_claim(job_id)
+            # Outside the try/finally and the slot: the hook runs with this
+            # job's slot already released, so work it enqueues can start.
+            self._notify_finished(self.store.find(job_id) or job)
 
     def _admissible(self, job: Job) -> bool:
         """The whole pool rule; caller holds ``_lock``.

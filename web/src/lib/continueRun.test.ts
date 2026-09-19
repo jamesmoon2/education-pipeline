@@ -1,11 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AdvanceResult, NextAction, PlanPayload, PlanStage, RunStatus } from "../api/types";
+import type { NextAction, RunStatus } from "../api/types";
+import type { ContinuePayload } from "../api/types";
 import {
-  MAX_CONTINUE_STEPS,
+  chainFailed,
+  chainFeedback,
+  continueFailed,
   continueFeedback,
+  continueOnlyFeedback,
   continueRun,
   type ContinueApi,
+  type Continuation,
+  type ContinueResult,
+  type ContinueStep,
+  type ContinueStop,
 } from "./continueRun";
+
+/**
+ * T32: continueRun is now a thin client over a single daemon call
+ * (POST /v1/runs/{id}/continue, education_pipeline.orchestrate.run_until_judgment
+ * behind it) instead of driving the chain step by step itself. These tests
+ * replace the old step-by-step-chain suite entirely.
+ */
 
 function makeStatus(action: NextAction["action"], stage: string | null): RunStatus {
   return {
@@ -22,494 +37,230 @@ function makeStatus(action: NextAction["action"], stage: string | null): RunStat
   };
 }
 
-function makeAdvance(status: RunStatus): AdvanceResult {
-  return { performed: "write_prompt", status };
+function makePayload(
+  stop: ContinueStop,
+  steps: ContinueStep[] = [],
+  status: RunStatus | null = null,
+): ContinuePayload {
+  return { topic_id: "t", steps, stop, status };
 }
 
-function makePlanStage(
-  stage: string,
-  provider: string | null,
-  source: PlanStage["source"] = "default",
-): PlanStage {
-  return {
-    stage,
-    provider,
-    model: null,
-    effort: null,
-    recommendation: "",
-    warning: null,
-    source,
-  };
+function makeApi(postContinue: ReturnType<typeof vi.fn>): ContinueApi {
+  return { postContinue };
 }
 
-/** A GET /v1/runs/{id}/plan payload: `provider` is the workspace plan's
- *  default and each stage row is already resolved with this run's overrides
- *  applied (read_api.run_plan_payload). */
-function makePlan(provider: string, stages: PlanStage[] = []): PlanPayload {
-  return { provider, plan_sha256: "sha-plan", stages };
-}
-
-type MockedApi = {
-  [K in keyof ContinueApi]: ReturnType<typeof vi.fn>;
-} & ContinueApi;
-
-/**
- * Every api function is mocked and every test states the responses it needs;
- * an unstubbed call rejects loudly rather than silently resolving undefined.
- */
-function makeApi(overrides: Partial<ContinueApi> = {}): MockedApi {
-  const unstubbed = (name: string) => () =>
-    Promise.reject(new Error(`unexpected ${name} call`));
-  return {
-    getRunStatus: vi.fn(unstubbed("getRunStatus")),
-    postAdvance: vi.fn(unstubbed("postAdvance")),
-    postValidate: vi.fn(unstubbed("postValidate")),
-    enqueueJob: vi.fn(unstubbed("enqueueJob")),
-    getRunPlan: vi.fn(unstubbed("getRunPlan")),
-    ...overrides,
-  } as MockedApi;
-}
-
-describe("continueRun stopping actions", () => {
-  it("stops on approve without touching anything", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("approve", "qa")),
-    });
-    const result = await continueRun("t", api);
-    expect(result.stop).toEqual({ kind: "approve", stage: "qa" });
-    expect(result.steps).toEqual([]);
-    expect(api.postAdvance).not.toHaveBeenCalled();
-    expect(api.enqueueJob).not.toHaveBeenCalled();
-  });
-
-  it("stops on resolve_findings", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("resolve_findings", "repair")),
-    });
-    const result = await continueRun("t", api);
-    expect(result.stop).toEqual({ kind: "resolve_findings" });
-    expect(result.steps).toEqual([]);
-  });
-
-  it("never finalizes or exports on its own", async () => {
-    const finalize = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("finalize", null)),
-    });
-    expect((await continueRun("t", finalize)).stop).toEqual({ kind: "finalize" });
-
-    const done = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("done", null)),
-    });
-    const result = await continueRun("t", done);
-    expect(result.stop).toEqual({ kind: "done" });
-    expect(result.steps).toEqual([]);
-    // The chain only ever calls these four; finalize/export have no adapter.
-    expect(Object.keys(done).sort()).toEqual([
-      "enqueueJob",
-      "getRunPlan",
-      "getRunStatus",
-      "postAdvance",
-      "postValidate",
-    ]);
-  });
-
-  it("stops on an action it does not know", async () => {
-    const api = makeApi({
-      getRunStatus: vi
-        .fn()
-        .mockResolvedValue(makeStatus("teleport" as NextAction["action"], null)),
-    });
-    expect((await continueRun("t", api)).stop).toEqual({ kind: "unfinished" });
-  });
-
-  it("reports the freshest status it read", async () => {
-    const status = makeStatus("approve", "qa");
-    const api = makeApi({ getRunStatus: vi.fn().mockResolvedValue(status) });
-    expect((await continueRun("t", api)).status).toBe(status);
-  });
-});
-
-describe("continueRun mechanical steps", () => {
-  it("advances a write_prompt and reuses the status advance returned", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("write_prompt", "qa")),
-      postAdvance: vi.fn().mockResolvedValue(makeAdvance(makeStatus("approve", "qa"))),
-    });
-    const result = await continueRun("t", api);
-    expect(api.postAdvance).toHaveBeenCalledWith("t");
-    expect(api.getRunStatus).toHaveBeenCalledTimes(1);
-    expect(result.steps).toEqual([{ kind: "advance", stage: "qa" }]);
-    expect(result.stop).toEqual({ kind: "approve", stage: "qa" });
-  });
-
-  it("validates the draft phase on the draft stage and the final phase elsewhere", async () => {
-    const draft = makeApi({
-      getRunStatus: vi
-        .fn()
-        .mockResolvedValueOnce(makeStatus("validate", "draft"))
-        .mockResolvedValueOnce(makeStatus("approve", "qa")),
-      postValidate: vi.fn().mockResolvedValue({}),
-    });
-    const draftResult = await continueRun("t", draft);
-    expect(draft.postValidate).toHaveBeenCalledWith("t", "draft");
-    expect(draftResult.steps).toEqual([{ kind: "validate", phase: "draft" }]);
-    // The validate payload is a report, so the loop re-reads the status.
-    expect(draft.getRunStatus).toHaveBeenCalledTimes(2);
-
-    const final = makeApi({
-      getRunStatus: vi
-        .fn()
-        .mockResolvedValueOnce(makeStatus("validate", "repair"))
-        .mockResolvedValueOnce(makeStatus("finalize", null)),
-      postValidate: vi.fn().mockResolvedValue({}),
-    });
-    const finalResult = await continueRun("t", final);
-    expect(final.postValidate).toHaveBeenCalledWith("t", "final");
-    expect(finalResult.steps).toEqual([{ kind: "validate", phase: "final" }]);
-    expect(finalResult.stop).toEqual({ kind: "finalize" });
-  });
-
-  it("chains a prompt write into a provider job", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("write_prompt", "qa")),
-      postAdvance: vi
-        .fn()
-        .mockResolvedValue(makeAdvance(makeStatus("save_response", "qa"))),
-      getRunPlan: vi.fn().mockResolvedValue(makePlan("claude-code")),
-      enqueueJob: vi.fn().mockResolvedValue({}),
-    });
-    const result = await continueRun("t", api);
-    expect(api.enqueueJob).toHaveBeenCalledWith("t");
-    expect(result.steps).toEqual([
-      { kind: "advance", stage: "qa" },
-      { kind: "enqueue", stage: "qa", provider: "claude-code" },
-    ]);
-    expect(result.stop).toEqual({ kind: "started", stage: "qa", provider: "claude-code" });
-  });
-
-  it("takes the assemble action as an advance step (deterministic, no model call)", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("assemble", "draft")),
-      postAdvance: vi
-        .fn()
-        .mockResolvedValue(makeAdvance(makeStatus("approve", "draft"))),
-    });
-    const result = await continueRun("t", api);
-    expect(api.postAdvance).toHaveBeenCalledWith("t");
-    expect(result.steps).toEqual([{ kind: "advance", stage: "draft" }]);
-    expect(result.stop).toEqual({ kind: "approve", stage: "draft" });
-  });
-
-  it("reports a batch enqueue's job count on the started stop", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getRunPlan: vi.fn().mockResolvedValue(makePlan("claude-code")),
-      enqueueJob: vi.fn().mockResolvedValue({
-        id: "j1",
-        batch_id: "batch-1",
-        jobs: [{ id: "j1" }, { id: "j2" }, { id: "j3" }],
-      }),
-    });
-    const result = await continueRun("t", api);
-    expect(result.stop).toEqual({
-      kind: "started",
-      stage: "draft",
-      provider: "claude-code",
-      count: 3,
-    });
-  });
-
-  it("validates and then stops where the findings need review", async () => {
-    const api = makeApi({
-      getRunStatus: vi
-        .fn()
-        .mockResolvedValueOnce(makeStatus("validate", "draft"))
-        .mockResolvedValueOnce(makeStatus("resolve_findings", "draft")),
-      postValidate: vi.fn().mockResolvedValue({}),
-    });
-    const result = await continueRun("t", api);
-    expect(result.steps).toEqual([{ kind: "validate", phase: "draft" }]);
-    expect(result.stop).toEqual({ kind: "resolve_findings" });
-  });
-
-  it("stops after a bounded number of steps", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("write_prompt", "spec")),
-      postAdvance: vi
-        .fn()
-        .mockResolvedValue(makeAdvance(makeStatus("write_prompt", "spec"))),
-    });
-    const result = await continueRun("t", api);
-    expect(api.postAdvance).toHaveBeenCalledTimes(MAX_CONTINUE_STEPS);
-    expect(result.steps).toHaveLength(MAX_CONTINUE_STEPS);
-    expect(result.stop).toEqual({ kind: "unfinished" });
-  });
-});
-
-describe("continueRun provider decision", () => {
-  it("reads this run's plan, not the workspace-wide one", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getRunPlan: vi.fn().mockResolvedValue(makePlan("codex")),
-      enqueueJob: vi.fn().mockResolvedValue({}),
-    });
-    await continueRun("t", api);
-    expect(api.getRunPlan).toHaveBeenCalledWith("t");
-  });
-
-  it("starts the stage with the plan's default provider", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getRunPlan: vi.fn().mockResolvedValue(makePlan("codex")),
-      enqueueJob: vi.fn().mockResolvedValue({}),
-    });
-    const result = await continueRun("t", api);
-    expect(result.stop).toEqual({ kind: "started", stage: "draft", provider: "codex" });
-  });
-
-  it("starts the stage when this run overrides a manual workspace plan", async () => {
-    // The run-plan payload arrives with the override already applied, so the
-    // manual workspace default must not veto an automatic per-run stage.
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getRunPlan: vi
-        .fn()
-        .mockResolvedValue(makePlan("manual", [makePlanStage("draft", "codex", "override")])),
-      enqueueJob: vi.fn().mockResolvedValue({}),
-    });
-    const result = await continueRun("t", api);
-    expect(api.enqueueJob).toHaveBeenCalledWith("t");
-    expect(result.steps).toEqual([{ kind: "enqueue", stage: "draft", provider: "codex" }]);
-    expect(result.stop).toEqual({ kind: "started", stage: "draft", provider: "codex" });
-  });
-
-  it("stops for the manual loop when this run overrides an automatic workspace plan", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getRunPlan: vi
-        .fn()
-        .mockResolvedValue(
-          makePlan("claude-code", [makePlanStage("draft", "manual", "override")]),
-        ),
-    });
-    const result = await continueRun("t", api);
-    expect(result.stop).toEqual({ kind: "manual", stage: "draft" });
-    expect(api.enqueueJob).not.toHaveBeenCalled();
-  });
-
-  it("names the provider from this run's row, not another run's", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "qa")),
-      getRunPlan: vi.fn().mockResolvedValue(
-        makePlan("manual", [
-          makePlanStage("draft", "codex", "override"),
-          makePlanStage("qa", "claude-code", "override"),
-        ]),
+describe("continueRun (thin client)", () => {
+  // One entry per STOP_KINDS value (education_pipeline/orchestrate.py), plus
+  // a batch-count variant of "started" -- the whole surface the daemon can
+  // report back, per decision 2 of the phase-3 plan ("stop kinds are the
+  // cockpit's, unchanged").
+  const table: { name: string; payload: ContinuePayload }[] = [
+    {
+      name: "started",
+      payload: makePayload(
+        { kind: "started", stage: "qa", provider: "claude-code" },
+        [
+          { kind: "advance", stage: "qa" },
+          { kind: "job", stage: "qa", provider: "claude-code" },
+        ],
       ),
-      enqueueJob: vi.fn().mockResolvedValue({}),
-    });
-    const result = await continueRun("t", api);
-    expect(continueFeedback("draft", result)).toBe(
-      "Approved draft — started qa with claude-code.",
-    );
-  });
-
-  it("prefers the stage's own provider over the plan default", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getRunPlan: vi.fn().mockResolvedValue(
-        makePlan("codex", [
-          makePlanStage("qa", "claude-code"),
-          makePlanStage("draft", "claude-code"),
-        ]),
+    },
+    {
+      name: "started with a module-batch count",
+      payload: makePayload(
+        { kind: "started", stage: "draft", provider: "claude-code", count: 3 },
+        [{ kind: "job", stage: "draft", provider: "claude-code", count: 3 }],
       ),
-      enqueueJob: vi.fn().mockResolvedValue({}),
-    });
+    },
+    {
+      name: "manual",
+      payload: makePayload(
+        { kind: "manual", stage: "qa" },
+        [{ kind: "advance", stage: "qa" }],
+      ),
+    },
+    {
+      name: "plan_unreadable",
+      payload: makePayload(
+        { kind: "plan_unreadable", stage: "qa" },
+        [{ kind: "advance", stage: "qa" }],
+      ),
+    },
+    {
+      name: "approve",
+      payload: makePayload({ kind: "approve", stage: "qa" }, []),
+    },
+    {
+      name: "resolve_findings",
+      payload: makePayload(
+        { kind: "resolve_findings" },
+        [{ kind: "validate", stage: "draft", phase: "draft" }],
+      ),
+    },
+    {
+      name: "finalize",
+      payload: makePayload(
+        { kind: "finalize" },
+        [{ kind: "validate", stage: "repair", phase: "final" }],
+      ),
+    },
+    {
+      name: "done",
+      payload: makePayload({ kind: "done" }, []),
+    },
+    {
+      name: "unfinished",
+      payload: makePayload(
+        { kind: "unfinished" },
+        [{ kind: "advance", stage: "spec" }],
+      ),
+    },
+    {
+      name: "failed",
+      payload: makePayload(
+        {
+          kind: "failed",
+          action: "starting qa with claude-code",
+          message: "provider unavailable",
+        },
+        [],
+      ),
+    },
+  ];
+
+  it.each(table)("returns the $name payload verbatim", async ({ payload }) => {
+    const postContinue = vi.fn().mockResolvedValue(payload);
+    const api = makeApi(postContinue);
+
     const result = await continueRun("t", api);
-    expect(result.stop).toEqual({
-      kind: "started",
-      stage: "draft",
-      provider: "claude-code",
+
+    expect(postContinue).toHaveBeenCalledTimes(1);
+    expect(postContinue).toHaveBeenCalledWith("t");
+    expect(result).toEqual({
+      steps: payload.steps,
+      stop: payload.stop,
+      status: payload.status,
     });
   });
 
-  it("reads a null stage provider as the plan default, the way enqueue does", async () => {
-    // enqueue_stage resolves `stage_plan.provider or plan.provider`, so a row
-    // without a provider of its own is NOT manual — the run-plan panel's
-    // display fallback (null shown as "manual") must not leak in here.
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getRunPlan: vi
-        .fn()
-        .mockResolvedValue(makePlan("codex", [makePlanStage("draft", null)])),
-      enqueueJob: vi.fn().mockResolvedValue({}),
-    });
+  it("reports the freshest status the daemon sent, unmodified", async () => {
+    const status = makeStatus("save_response", "qa");
+    const payload = makePayload({ kind: "started", stage: "qa", provider: "claude-code" }, [], status);
+    const api = makeApi(vi.fn().mockResolvedValue(payload));
+
     const result = await continueRun("t", api);
-    expect(api.enqueueJob).toHaveBeenCalledWith("t");
-    expect(result.stop).toEqual({ kind: "started", stage: "draft", provider: "codex" });
+
+    expect(result.status).toBe(status);
   });
 
-  it("stops for the manual loop when a null stage row falls back to a manual plan", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getRunPlan: vi
-        .fn()
-        .mockResolvedValue(makePlan("manual", [makePlanStage("draft", null)])),
-    });
-    const result = await continueRun("t", api);
-    expect(result.stop).toEqual({ kind: "manual", stage: "draft" });
-    expect(api.enqueueJob).not.toHaveBeenCalled();
+  it("calls postContinue with the given topic id, nothing else", async () => {
+    const payload = makePayload({ kind: "done" }, []);
+    const postContinue = vi.fn().mockResolvedValue(payload);
+    const api = makeApi(postContinue);
+
+    await continueRun("other-topic", api);
+
+    expect(postContinue).toHaveBeenCalledWith("other-topic");
   });
 
-  it("stops for the manual loop when the plan default is manual", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getRunPlan: vi.fn().mockResolvedValue(makePlan("manual")),
-    });
-    const result = await continueRun("t", api);
-    expect(result.stop).toEqual({ kind: "manual", stage: "draft" });
-    expect(api.enqueueJob).not.toHaveBeenCalled();
-  });
-
-  it("stops for the manual loop when only this stage is manual", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getRunPlan: vi
-        .fn()
-        .mockResolvedValue(makePlan("claude-code", [makePlanStage("draft", "manual")])),
-    });
-    const result = await continueRun("t", api);
-    expect(result.stop).toEqual({ kind: "manual", stage: "draft" });
-    expect(api.enqueueJob).not.toHaveBeenCalled();
-  });
-
-  it("stops gracefully when the plan cannot be read", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "draft")),
-      getRunPlan: vi.fn().mockRejectedValue(new Error("plan unreadable")),
-    });
-    const result = await continueRun("t", api);
-    expect(result.stop).toEqual({ kind: "plan_unreadable", stage: "draft" });
-    expect(api.enqueueJob).not.toHaveBeenCalled();
-  });
-
-  it("stops without guessing when save_response names no stage", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", null)),
-    });
-    expect((await continueRun("t", api)).stop).toEqual({ kind: "unfinished" });
-    expect(api.getRunPlan).not.toHaveBeenCalled();
+  it("uses the production api by default (no api argument required)", () => {
+    // Type-level check only: continueRun's second parameter must default to
+    // PRODUCTION_API, so a caller can omit it entirely, exactly as before.
+    expect(continueRun.length).toBeLessThanOrEqual(2);
   });
 });
 
 describe("continueRun failures", () => {
-  it("reports a failed status read", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockRejectedValue(new Error("daemon gone")),
-    });
-    const result = await continueRun("t", api);
-    expect(result.stop).toEqual({
-      kind: "failed",
-      action: "reading the run status",
-      message: "daemon gone",
-    });
-    expect(result.status).toBeNull();
-  });
+  it("wraps a transport error from postContinue as a failed stop", async () => {
+    const api = makeApi(vi.fn().mockRejectedValue(new Error("daemon gone")));
 
-  it("reports a failed advance and keeps the steps taken before it", async () => {
-    const api = makeApi({
-      getRunStatus: vi
-        .fn()
-        .mockResolvedValueOnce(makeStatus("validate", "draft"))
-        .mockResolvedValueOnce(makeStatus("write_prompt", "qa")),
-      postValidate: vi.fn().mockResolvedValue({}),
-      postAdvance: vi.fn().mockRejectedValue(new Error("job j1 is running")),
-    });
     const result = await continueRun("t", api);
-    expect(result.steps).toEqual([{ kind: "validate", phase: "draft" }]);
-    expect(result.stop).toEqual({
-      kind: "failed",
-      action: "writing the qa prompt",
-      message: "job j1 is running",
-    });
-  });
 
-  it("reports a failed validation", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("validate", "repair")),
-      postValidate: vi.fn().mockRejectedValue(new Error("validator crashed")),
-    });
-    expect((await continueRun("t", api)).stop).toEqual({
-      kind: "failed",
-      action: "final validation",
-      message: "validator crashed",
-    });
-  });
-
-  it("reports a failed job start and records no enqueue step", async () => {
-    const api = makeApi({
-      getRunStatus: vi.fn().mockResolvedValue(makeStatus("save_response", "qa")),
-      getRunPlan: vi.fn().mockResolvedValue(makePlan("claude-code")),
-      enqueueJob: vi.fn().mockRejectedValue(new Error("provider unavailable")),
-    });
-    const result = await continueRun("t", api);
-    expect(result.steps).toEqual([]);
-    expect(result.stop).toEqual({
-      kind: "failed",
-      action: "starting qa with claude-code",
-      message: "provider unavailable",
+    expect(result).toEqual({
+      steps: [],
+      stop: { kind: "failed", action: "continuing the run", message: "daemon gone" },
+      status: null,
     });
   });
 
   it("reports a non-Error rejection as text", async () => {
-    const api = makeApi({ getRunStatus: vi.fn().mockRejectedValue("offline") });
-    expect((await continueRun("t", api)).stop).toMatchObject({ message: "offline" });
+    const api = makeApi(vi.fn().mockRejectedValue("offline"));
+
+    const result = await continueRun("t", api);
+
+    expect(result.steps).toEqual([]);
+    expect(result.status).toBeNull();
+    expect(result.stop).toMatchObject({
+      kind: "failed",
+      action: "continuing the run",
+      message: "offline",
+    });
   });
 });
 
+describe("continueFailed", () => {
+  it("is true only when the stop kind is failed", () => {
+    const failed: ContinueResult = {
+      steps: [],
+      stop: { kind: "failed", action: "starting qa with claude-code", message: "provider unavailable" },
+      status: null,
+    };
+    const notFailed: ContinueResult = {
+      steps: [],
+      stop: { kind: "approve", stage: "qa" },
+      status: null,
+    };
+    expect(continueFailed(failed)).toBe(true);
+    expect(continueFailed(notFailed)).toBe(false);
+  });
+});
+
+// Every phrase below is byte-identical to the pre-T32 step-by-step-chain
+// suite; only the step literals changed (`enqueue` -> `job`, and `validate`
+// steps now carry `stage` alongside `phase`, per the daemon's wire shape).
 describe("continueFeedback", () => {
   it("names the provider the next stage started with", () => {
-    const result = {
+    const result: ContinueResult = {
       steps: [
         { kind: "advance", stage: "qa" },
-        { kind: "enqueue", stage: "qa", provider: "claude-code" },
+        { kind: "job", stage: "qa", provider: "claude-code" },
       ],
       stop: { kind: "started", stage: "qa", provider: "claude-code" },
       status: null,
-    } as const;
+    };
     expect(continueFeedback("draft", result)).toBe(
       "Approved draft — started qa with claude-code.",
     );
   });
 
   it("joins the steps it took with where the run now stands", () => {
-    const result = {
-      steps: [{ kind: "validate", phase: "draft" }],
+    const result: ContinueResult = {
+      steps: [{ kind: "validate", stage: "draft", phase: "draft" }],
       stop: { kind: "resolve_findings" },
       status: null,
-    } as const;
+    };
     expect(continueFeedback("qa", result)).toBe(
       "Approved qa — ran draft validation; findings need review.",
     );
   });
 
   it("hands the manual loop back to the user", () => {
-    const result = {
+    const result: ContinueResult = {
       steps: [{ kind: "advance", stage: "qa" }],
       stop: { kind: "manual", stage: "qa" },
       status: null,
-    } as const;
+    };
     expect(continueFeedback("draft", result)).toBe(
       "Approved draft — the qa prompt is ready for you to run.",
     );
   });
 
   it("says the prompt is ready when the model plan could not be read", () => {
-    const result = {
+    const result: ContinueResult = {
       steps: [{ kind: "advance", stage: "qa" }],
       stop: { kind: "plan_unreadable", stage: "qa" },
       status: null,
-    } as const;
+    };
     expect(continueFeedback("draft", result)).toBe(
       "Approved draft — the qa prompt is ready, but the model plan could not be read, so start the stage yourself.",
     );
@@ -525,7 +276,7 @@ describe("continueFeedback", () => {
     ).toBe("Approved outline — draft needs your approval.");
     expect(
       continueFeedback("repair", {
-        steps: [{ kind: "validate", phase: "final" }],
+        steps: [{ kind: "validate", stage: "repair", phase: "final" }],
         stop: { kind: "finalize" },
         status: null,
       }),
@@ -536,7 +287,7 @@ describe("continueFeedback", () => {
   });
 
   it("reports the approval as done when a follow-up failed", () => {
-    const result = {
+    const result: ContinueResult = {
       steps: [{ kind: "advance", stage: "qa" }],
       stop: {
         kind: "failed",
@@ -544,7 +295,7 @@ describe("continueFeedback", () => {
         message: "provider unavailable",
       },
       status: null,
-    } as const;
+    };
     expect(continueFeedback("draft", result)).toBe(
       "Approved draft, but starting qa with claude-code failed: provider unavailable",
     );
@@ -558,5 +309,249 @@ describe("continueFeedback", () => {
         status: null,
       }),
     ).toBe("Approved spec — wrote the outline prompt; more steps are waiting.");
+  });
+
+  it("does not describe a job step on its own -- the started stop already names it", () => {
+    const result: ContinueResult = {
+      steps: [{ kind: "job", stage: "qa", provider: "claude-code" }],
+      stop: { kind: "started", stage: "qa", provider: "claude-code" },
+      status: null,
+    };
+    expect(continueFeedback("draft", result)).toBe(
+      "Approved draft — started qa with claude-code.",
+    );
+  });
+
+  // Codex round 1, F5: assembling a fanned-out draft is its own step kind
+  // ("assemble"), with its own phrase, and -- unlike an "advance" step --
+  // it is never deduped against the stop's stage: assembly is not a prompt
+  // write, so it is always worth naming even when the stop names the same
+  // stage.
+  it("describes an assemble step and never dedupes it against the stop's stage", () => {
+    const result: ContinueResult = {
+      steps: [{ kind: "assemble", stage: "draft" }],
+      stop: { kind: "approve", stage: "draft" },
+      status: null,
+    };
+    expect(continueFeedback("qa", result)).toBe(
+      "Approved qa — assembled the draft; draft needs your approval.",
+    );
+  });
+});
+
+/**
+ * T34: the daemon now carries the chain across job completions (decision 9
+ * addendum). `RunStatus.continuation` reports the latest chained job's
+ * outcome; these two functions turn it into the same kind of feedback line
+ * `continueFeedback` produces for an approval, but headed by what the job
+ * itself did rather than by an approval.
+ */
+function makeContinuation(
+  stop: ContinueStop,
+  steps: ContinueStep[] = [],
+  overrides: Partial<Omit<Continuation, "stop" | "steps">> = {},
+): Continuation {
+  return {
+    job_id: "j1",
+    stage: "draft",
+    provider: "claude-code",
+    after: "job",
+    steps,
+    stop,
+    at: "2026-09-19T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("chainFeedback", () => {
+  // One entry per STOP_KINDS value, mirroring the continueFeedback table
+  // above -- the daemon can report any of the nine back on `continuation`.
+  it.each([
+    {
+      name: "started (no describable steps)",
+      continuation: makeContinuation(
+        { kind: "started", stage: "outline", provider: "claude-code" },
+        [{ kind: "job", stage: "outline", provider: "claude-code" }],
+        { stage: "spec" },
+      ),
+      expected: "After the spec job ran: started outline with claude-code.",
+    },
+    {
+      name: "manual",
+      continuation: makeContinuation(
+        { kind: "manual", stage: "outline" },
+        [{ kind: "advance", stage: "outline" }],
+        { stage: "spec" },
+      ),
+      expected: "After the spec job ran: wrote the outline prompt; the outline prompt is ready for you to run.",
+    },
+    {
+      name: "plan_unreadable",
+      continuation: makeContinuation(
+        { kind: "plan_unreadable", stage: "outline" },
+        [{ kind: "advance", stage: "outline" }],
+        { stage: "spec" },
+      ),
+      expected:
+        "After the spec job ran: wrote the outline prompt; the outline prompt is ready, but the model plan could not be read, so start the stage yourself.",
+    },
+    {
+      name: "approve",
+      continuation: makeContinuation(
+        { kind: "approve", stage: "draft" },
+        [{ kind: "validate", stage: "draft", phase: "draft" }],
+        { stage: "draft" },
+      ),
+      expected: "After the draft job ran: ran draft validation; draft needs your approval.",
+    },
+    {
+      name: "resolve_findings",
+      continuation: makeContinuation(
+        { kind: "resolve_findings" },
+        [{ kind: "validate", stage: "draft", phase: "draft" }],
+        { stage: "draft" },
+      ),
+      expected: "After the draft job ran: ran draft validation; findings need review.",
+    },
+    {
+      name: "finalize",
+      continuation: makeContinuation(
+        { kind: "finalize" },
+        [{ kind: "validate", stage: "repair", phase: "final" }],
+        { stage: "repair" },
+      ),
+      expected: "After the repair job ran: ran final validation; the run is ready to finalize.",
+    },
+    {
+      name: "done (no describable steps)",
+      continuation: makeContinuation({ kind: "done" }, [], { stage: "repair" }),
+      expected: "After the repair job ran: the run is ready to export.",
+    },
+    {
+      name: "unfinished",
+      continuation: makeContinuation(
+        { kind: "unfinished" },
+        [{ kind: "advance", stage: "outline" }],
+        { stage: "spec" },
+      ),
+      expected: "After the spec job ran: wrote the outline prompt; more steps are waiting.",
+    },
+    {
+      name: "failed",
+      continuation: makeContinuation(
+        {
+          kind: "failed",
+          action: "starting qa with claude-code",
+          message: "provider unavailable",
+        },
+        [{ kind: "advance", stage: "qa" }],
+        { stage: "draft" },
+      ),
+      expected:
+        "After the draft job ran: wrote the qa prompt; starting qa with claude-code failed: provider unavailable.",
+    },
+  ])("$name", ({ continuation, expected }) => {
+    expect(chainFeedback(continuation)).toBe(expected);
+  });
+
+  it("uses the module-jobs prefix for a batch continuation", () => {
+    const continuation = makeContinuation(
+      { kind: "started", stage: "qa", provider: "claude-code", count: 3 },
+      [],
+      { stage: "draft", after: "batch" },
+    );
+    expect(chainFeedback(continuation)).toBe(
+      "After the draft module jobs ran: 3 module jobs started for qa with claude-code.",
+    );
+  });
+
+  // Codex round 1, F5: same as continueFeedback -- an assemble step is
+  // always named, never deduped against the stop's stage.
+  it("describes a chained assemble step without deduping it against the stop's stage", () => {
+    const continuation = makeContinuation(
+      { kind: "approve", stage: "draft" },
+      [{ kind: "assemble", stage: "draft" }],
+      { stage: "draft" },
+    );
+    expect(chainFeedback(continuation)).toBe(
+      "After the draft job ran: assembled the draft; draft needs your approval.",
+    );
+  });
+});
+
+describe("chainFailed", () => {
+  it("is true only when the continuation's stop kind is failed", () => {
+    const failed = makeContinuation({
+      kind: "failed",
+      action: "starting qa with claude-code",
+      message: "provider unavailable",
+    });
+    const notFailed = makeContinuation({ kind: "approve", stage: "qa" });
+    expect(chainFailed(failed)).toBe(true);
+    expect(chainFailed(notFailed)).toBe(false);
+  });
+});
+
+describe("continueOnlyFeedback", () => {
+  it("names the provider the run started with, headed by 'Continued'", () => {
+    const result: ContinueResult = {
+      steps: [
+        { kind: "advance", stage: "qa" },
+        { kind: "job", stage: "qa", provider: "claude-code" },
+      ],
+      stop: { kind: "started", stage: "qa", provider: "claude-code" },
+      status: null,
+    };
+    expect(continueOnlyFeedback(result)).toBe("Continued — started qa with claude-code.");
+  });
+
+  it("joins the steps it took with where the run now stands", () => {
+    const result: ContinueResult = {
+      steps: [{ kind: "validate", stage: "draft", phase: "draft" }],
+      stop: { kind: "resolve_findings" },
+      status: null,
+    };
+    expect(continueOnlyFeedback(result)).toBe(
+      "Continued — ran draft validation; findings need review.",
+    );
+  });
+
+  it("hands the manual loop back to the user without double-naming the stage", () => {
+    const result: ContinueResult = {
+      steps: [{ kind: "advance", stage: "qa" }],
+      stop: { kind: "manual", stage: "qa" },
+      status: null,
+    };
+    expect(continueOnlyFeedback(result)).toBe(
+      "Continued — the qa prompt is ready for you to run.",
+    );
+  });
+
+  it("reports a failure in the same shape continueFeedback uses, headed by 'Continuing failed'", () => {
+    const result: ContinueResult = {
+      steps: [{ kind: "advance", stage: "qa" }],
+      stop: {
+        kind: "failed",
+        action: "starting qa with claude-code",
+        message: "provider unavailable",
+      },
+      status: null,
+    };
+    expect(continueOnlyFeedback(result)).toBe(
+      "Continuing failed: starting qa with claude-code failed: provider unavailable",
+    );
+  });
+
+  // Codex round 1, F5: same as continueFeedback -- an assemble step is
+  // always named, never deduped against the stop's stage.
+  it("describes an assemble step without deduping it against the stop's stage", () => {
+    const result: ContinueResult = {
+      steps: [{ kind: "assemble", stage: "draft" }],
+      stop: { kind: "approve", stage: "draft" },
+      status: null,
+    };
+    expect(continueOnlyFeedback(result)).toBe(
+      "Continued — assembled the draft; draft needs your approval.",
+    );
   });
 });
