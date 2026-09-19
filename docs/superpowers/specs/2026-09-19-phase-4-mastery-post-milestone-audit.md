@@ -9,7 +9,7 @@
 
 ## Closeout disposition
 
-Three threads (T40–T42 from the opportunity map), each merged into the phase
+Four threads (T40–T42 from the opportunity map, T43 added after Codex reviewed PR #41), each merged into the phase
 branch only after the full pytest suite and the guide Playwright specs were
 green on the result; T40 and T42 ran in parallel worktrees, T41 after T40.
 Every thread was strict TDD with a Sonnet test writer and a separate
@@ -76,6 +76,12 @@ record is rewritten in place.
   nested inside a section (axe: moderate, not blocking). The mutation
   "render missed lists for on-track outcomes" is behaviourally equivalent to
   the shipped code and therefore unpinnable; the stronger mutation is pinned.
+- **T43:** an adopted record that never carried a result is not scored on
+  restore; only a stored verdict the current answer key contradicts is
+  corrected (and its first attempt forgotten). A guide that authors the id
+  `results` gets the results page under `results_page`, so its fragment
+  differs from every other export's. The file:// migration-offer e2e case
+  is contention-sensitive under parallel workers and untouched here.
 - **T42:** `/` focuses the first navigation link at every viewport; the
   fallback to the drawer toggle when the navigation is collapsed is not built.
   The four keyboard guards that passed before any listener existed pin the
