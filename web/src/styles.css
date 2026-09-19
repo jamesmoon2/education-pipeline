@@ -326,7 +326,9 @@ kbd {
   width: 60vmax;
   height: 60vmax;
   border-radius: 50%;
-  filter: blur(70px);
+  /* No blur filter: the radial gradients already fade to transparent, and a
+   * 70px blur on a 60vmax element costs a full-screen repaint per frame on
+   * machines without GPU compositing. */
   opacity: 0.9;
   will-change: transform;
   animation: ep-drift 46s var(--ep-ease-out) infinite alternate;
@@ -1237,6 +1239,12 @@ span.error, span.success, span.warning { padding: 0.05rem 0.45rem; }
 .next-action strong { color: var(--ep-color-accent); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.75rem; margin-right: 0.35rem; }
 .primary-action { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ep-space-3); margin: var(--ep-space-4) 0; }
 .primary-action > button:first-of-type { min-height: 2.75rem; padding: 0.6rem 1.35rem; font-size: 1.02rem; }
+/* The paste form and any feedback line take a full row of the action area. */
+.primary-action > .response-form, .primary-action > p, .primary-action > .active-job-status { flex: 1 1 100%; }
+.response-form { display: flex; flex-direction: column; gap: var(--ep-space-3); margin: var(--ep-space-2) 0; padding: var(--ep-space-4); border: 1px solid var(--ep-color-border); border-radius: var(--ep-radius-surface); background: var(--ep-color-surface-glass); }
+.response-form label { width: 100%; }
+.response-form textarea { min-height: 14rem; }
+.response-form button { align-self: flex-start; }
 /* Outer flex row holding the role="status" live region and the ticking clock. */
 .active-job-status { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; }
 .active-job-status p { margin: 0; }
