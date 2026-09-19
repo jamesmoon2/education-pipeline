@@ -155,6 +155,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
   html.js-enhanced[data-print-mode="learner-copy"] .block.knowledge_check .choice-feedback,
   html.js-enhanced[data-print-mode="learner-copy"] .block.knowledge_check .explanation,
   html.js-enhanced[data-print-mode="learner-copy"] .block.worked_reveal .reveal-step,
+  html.js-enhanced[data-print-mode="learner-copy"] .block.worked_reveal .conclusion,
   html.js-enhanced[data-print-mode="learner-copy"] .block.scenario .choice-feedback,
   html.js-enhanced[data-print-mode="learner-copy"] .block.scenario .debrief{display:none!important}
   /* These arrive in sibling threads; hiding them here is cheap now and

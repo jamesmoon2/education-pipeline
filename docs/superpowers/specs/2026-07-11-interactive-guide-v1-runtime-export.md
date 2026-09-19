@@ -205,6 +205,13 @@ restores in full — its answered blocks simply carry no recorded result. A
 version this runtime does not know is refused rather than degraded, because a
 newer shape could read as empty and quietly replace real progress.
 
+Progress adopted from anywhere but this document's own record — a restored
+progress file, or a previous export's storage key — has each answered check
+and scenario rescored from its stored selection against the current answer
+key, and where the rescore contradicts the stored result the first-attempt
+field becomes null rather than carrying a verdict this course would no longer
+produce.
+
 ## 9. Safe Markdown renderer
 
 The current Markdown-subset renderer is the conceptual baseline, but v1 must add
@@ -307,10 +314,10 @@ default) and learner copy:
   not; link destinations are legible where practical; and modules and
   sections avoid pathological page breaks.
 - **Learner copy** additionally hides knowledge-check correctness marks,
-  explanations, and results; worked-reveal step bodies; and scenario
-  feedback and debriefs, while keeping every prompt, choice, and
-  reflection prompt visible. The results page and review panels never
-  print, in either mode.
+  explanations, and results; worked-reveal step bodies and the conclusion
+  those steps build to; and scenario feedback and debriefs, while keeping
+  every prompt, choice, and reflection prompt visible. The results page
+  and review panels never print, in either mode.
 
 The chosen mode is a display preference, not progress: it is stored
 alongside theme preference and survives a progress reset.

@@ -325,10 +325,18 @@
   // reflections complete but never score.
   const SCORABLE_TYPES = new Set(["knowledge_check", "scenario"]);
 
+  // The id the runtime's results page prefers, and the one it falls back to
+  // when the document already carries the first (see `installPage`).
+  const RESULTS_PAGE_ID = "results";
+  const RESULTS_PAGE_FALLBACK_ID = "results_page";
+
   const Results = (() => {
     // [{ id, text, blockIds, itemEl, countEl }] in the guide's outcome order.
     let outcomes = [];
     let summaryTextEl = null;
+    // The id the page was actually installed under. Everything that links to
+    // or routes at the results page reads this rather than the literal.
+    let pageId = RESULTS_PAGE_ID;
 
     // Blocks link to outcomes through `outcome_ids` in the embedded guide
     // JSON, so no attribute has to be added to the document markup. A block
@@ -429,13 +437,22 @@
     // One final page after the last section, inside the same main column. It
     // is deliberately not a guide section: it is not counted, not marked
     // complete, and carries no Next.
+    //
+    // `results` is the readable id, and the one the fixtures, the docs and
+    // every cross-reference name, so it is kept whenever the document leaves
+    // it free. An authored section may legitimately be called `results`
+    // though, and that id belongs to the course: the runtime steps aside to
+    // an id carrying an underscore, which `GUIDE_ID_PATTERN` here and
+    // `ID_RE` in `parse.py` both forbid, so no guide can ever author it and
+    // no future course can take this page's id in turn.
     function installPage() {
       const main = qs("main");
-      if (!main || document.getElementById("results")) return false;
+      if (!main || qs('[data-role="results-page"]')) return false;
       if (qsa('main section[data-role="guide-section"]').length === 0) return false;
+      pageId = document.getElementById(RESULTS_PAGE_ID) ? RESULTS_PAGE_FALLBACK_ID : RESULTS_PAGE_ID;
 
       const page = document.createElement("section");
-      page.id = "results";
+      page.id = pageId;
       page.className = "guide-section results-page";
       page.dataset.role = "results-page";
 
@@ -486,7 +503,7 @@
       summaryTextEl = document.createElement("span");
       summaryTextEl.dataset.role = "results-summary-text";
       const link = document.createElement("a");
-      link.href = "#results";
+      link.href = `#${pageId}`;
       link.textContent = "See your results";
       el.appendChild(summaryTextEl);
       el.appendChild(document.createTextNode(" "));
@@ -540,7 +557,13 @@
       }
     }
 
-    return { install, update };
+    return {
+      install,
+      update,
+      get pageId() {
+        return pageId;
+      },
+    };
   })();
 
   // ---------------------------------------------------------------------
@@ -995,6 +1018,31 @@
   }
 
   // ---------------------------------------------------------------------
+  // Scoring: the one answer key
+  // ---------------------------------------------------------------------
+  //
+  // The rules a submitted answer is scored by, read from the document. They
+  // live here, outside the enhancers, because a restored record has to be
+  // rescored by exactly the same rules the block itself would apply -- two
+  // copies of "what counts as correct" is how a stored result and a live one
+  // drift apart.
+
+  // A check is correct when the selected set equals the correct set.
+  function knowledgeCheckCorrect(inputs, mode, selected) {
+    const correctIds = inputs.filter((i) => i.dataset.correct === "true").map((i) => i.dataset.choiceId);
+    return mode === "single"
+      ? selected.length === 1 && correctIds.includes(selected[0])
+      : selected.length === correctIds.length && correctIds.every((c) => selected.includes(c));
+  }
+
+  // The schema guarantees exactly one "best" choice, so that is the one a
+  // scenario counts as correct.
+  function scenarioCorrect(inputs, choiceId) {
+    const input = inputs.find((i) => i.dataset.choiceId === choiceId);
+    return Boolean(input) && input.dataset.quality === "best";
+  }
+
+  // ---------------------------------------------------------------------
   // Knowledge check
   // ---------------------------------------------------------------------
 
@@ -1014,12 +1062,8 @@
     function updateSubmitEnabled() {
       submitBtn.disabled = selectedIds().length === 0;
     }
-    // A check is correct when the selected set equals the correct set.
     function isCorrectAnswer(selected) {
-      const correctIds = inputs.filter((i) => i.dataset.correct === "true").map((i) => i.dataset.choiceId);
-      return mode === "single"
-        ? selected.length === 1 && correctIds.includes(selected[0])
-        : selected.length === correctIds.length && correctIds.every((c) => selected.includes(c));
+      return knowledgeCheckCorrect(inputs, mode, selected);
     }
     function applySubmittedView(selected) {
       const isCorrect = isCorrectAnswer(selected);
@@ -1178,11 +1222,8 @@
       const i = inputs.find((x) => x.checked);
       return i ? i.dataset.choiceId : null;
     }
-    // The schema guarantees exactly one "best" choice, so that is the one
-    // this scenario counts as correct.
     function isCorrectAnswer(choiceId) {
-      const input = inputs.find((i) => i.dataset.choiceId === choiceId);
-      return Boolean(input) && input.dataset.quality === "best";
+      return scenarioCorrect(inputs, choiceId);
     }
     function updateSubmitEnabled() {
       submitBtn.disabled = !selectedId();
@@ -1397,6 +1438,27 @@
   // ---------------------------------------------------------------------
 
   const Restore = (() => {
+    // A stored result is only ever as good as the answer key it was scored
+    // against. A revised export can flip a choice's correctness while leaving
+    // the choice itself in place (and a progress file is a plain text file
+    // anyone can edit), so a selection that still resolves is not a promise
+    // that the result beside it still holds. Every adopted answer is
+    // therefore rescored from its selection against the document as it is
+    // now, through the very helpers the block itself submits by. Where the
+    // rescore contradicts what was stored, the first attempt goes to null --
+    // "answered, result unknown" -- rather than carrying forward a verdict
+    // this answer key would never have produced.
+    //
+    // An entry that never carried a result at all -- a version-1 progress
+    // file, or a record written before the result fields existed -- has
+    // nothing for the rescore to contradict. "Answered, result unknown" is a
+    // state of its own everywhere else in the runtime, so it is left exactly
+    // that rather than being handed a verdict it was never scored under.
+    function withRescoredResult(entry, correct) {
+      if (typeof entry.correct !== "boolean" || entry.correct === correct) return entry;
+      return Object.assign({}, entry, { correct, firstCorrect: null });
+    }
+
     // A surviving block id is not enough. A revised export can reuse an id
     // for a different kind of block, or rewrite away the very choice the
     // learner picked; either way the enhancer would restore an answer it can
@@ -1410,19 +1472,20 @@
       const type = interactionTypeOf(el);
       if (type !== entry.type) return null;
       if (type === "knowledge_check") {
-        const choiceIds = new Set(
-          qsa('[data-role="kc-choice"]', el).map((input) => input.dataset.choiceId)
-        );
+        const inputs = qsa('[data-role="kc-choice"]', el);
+        const choiceIds = new Set(inputs.map((input) => input.dataset.choiceId));
         if (entry.completed && entry.selectedIds.length === 0) return null;
         if (!entry.selectedIds.every((choiceId) => choiceIds.has(choiceId))) return null;
-        return entry;
+        if (!entry.completed) return entry;
+        return withRescoredResult(entry, knowledgeCheckCorrect(inputs, el.dataset.mode, entry.selectedIds));
       }
       if (type === "scenario") {
         if (entry.selectedId === null) return entry.completed ? null : entry;
-        const choiceIds = new Set(
-          qsa('[data-role="sc-choice"]', el).map((input) => input.dataset.choiceId)
-        );
-        return choiceIds.has(entry.selectedId) ? entry : null;
+        const inputs = qsa('[data-role="sc-choice"]', el);
+        const choiceIds = new Set(inputs.map((input) => input.dataset.choiceId));
+        if (!choiceIds.has(entry.selectedId)) return null;
+        if (!entry.completed) return entry;
+        return withRescoredResult(entry, scenarioCorrect(inputs, entry.selectedId));
       }
       if (type === "worked_reveal") {
         // Nothing here references an id -- only a count, which means something
