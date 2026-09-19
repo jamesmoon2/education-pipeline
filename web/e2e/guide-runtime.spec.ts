@@ -1028,3 +1028,257 @@ test.describe("mastery results (T40, http)", () => {
     expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T41: the review queue. "Missed" = a knowledge_check or scenario whose
+// stored `correct === false` on the latest attempt. `check-loop-type` (in
+// "recognize-loop-types", guide section index 1) sits exactly two sections
+// before "garden-decision" (index 3), which is what makes the distance rule
+// testable in both directions: no panel one section later
+// ("delays-and-leverage", index 2) and a panel two sections later. The
+// scenario block `pest-density-scenario` carries no `retry` flag, so it is
+// used to pin the non-retryable "See the explanation" link text; everything
+// else uses the retryable knowledge check `check-loop-type`.
+// ---------------------------------------------------------------------------
+
+test.describe("review queue (T41, http)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(httpBaseUrl, { waitUntil: "load" });
+  });
+
+  test("entering a section two or more sections after a missed check shows a review panel naming it", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await gotoSection(page, "garden-decision");
+
+    const panel = page.locator('#garden-decision [data-role="review-panel"]');
+    await expect(panel).toBeVisible();
+    await expect(panel).toHaveClass(/review-panel/);
+    await expect(panel.locator("h3")).toHaveText("Review what you missed");
+
+    const labelledBy = await panel.getAttribute("aria-labelledby");
+    expect(labelledBy).toBeTruthy();
+    await expect(page.locator(`#${labelledBy}`)).toHaveText("Review what you missed");
+
+    const items = panel.locator('[data-role="review-items"] li');
+    await expect(items).toHaveCount(1);
+    const item = items.first();
+    await expect(item).toHaveAttribute("data-block-id", "check-loop-type");
+    await expect(item).toContainText(
+      "A project team learns from each successful release, making later releases smoother and creating more opportunities to learn. What kind of loop dominates?",
+    );
+    const link = item.locator('[data-role="practice-again"]');
+    await expect(link).toHaveText("Practice again");
+    await expect(link).toHaveAttribute("href", "#check-loop-type");
+
+    const dismissBtn = panel.locator('[data-role="review-dismiss"]');
+    await expect(dismissBtn).toHaveText("Dismiss");
+
+    const positionedRightAfterHeading = await page
+      .locator("#garden-decision")
+      .evaluate((section) => {
+        const heading = section.querySelector("h2");
+        return Boolean(
+          heading &&
+            heading.nextElementSibling &&
+            heading.nextElementSibling.matches('[data-role="review-panel"]'),
+        );
+      });
+    expect(positionedRightAfterHeading).toBe(true);
+  });
+
+  test("no review panel appears in the section holding the missed block, or the one right after it", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    // Same section as the missed block: distance 0.
+    await expect(page.locator('#recognize-loop-types [data-role="review-panel"]')).toHaveCount(0);
+
+    // The very next section: distance 1.
+    await gotoSection(page, "delays-and-leverage");
+    await expect(page.locator('#delays-and-leverage [data-role="review-panel"]')).toHaveCount(0);
+  });
+
+  test("no review panel appears anywhere when nothing has been answered wrong", async ({ page }) => {
+    await gotoSection(page, "garden-decision");
+    await expect(page.locator('[data-role="review-panel"]')).toHaveCount(0);
+  });
+
+  test("dismissing the review panel hides it for this visit; leaving and returning shows it again while still missed", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await gotoSection(page, "garden-decision");
+    const panel = page.locator('#garden-decision [data-role="review-panel"]');
+    await expect(panel).toBeVisible();
+    await panel.locator('[data-role="review-dismiss"]').click();
+    await expect(panel).toHaveCount(0);
+
+    await gotoSection(page, "delays-and-leverage");
+    await gotoSection(page, "garden-decision");
+    await expect(page.locator('#garden-decision [data-role="review-panel"]')).toBeVisible();
+  });
+
+  test("practice again on a retryable block opens its section, focuses the block, and returns it to an answerable state", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+    await expect(kc).toHaveClass(/is-submitted/);
+
+    await gotoSection(page, "garden-decision");
+    const panel = page.locator('#garden-decision [data-role="review-panel"]');
+    await panel.locator('[data-role="practice-again"]').click();
+
+    await expect(page.locator("#recognize-loop-types")).toHaveClass(/is-current/);
+    await expect(page.locator("article#check-loop-type")).toBeFocused();
+    await expect(kc).not.toHaveClass(/is-submitted/);
+    await expect(kc.locator('[data-role="kc-submit"]')).toBeVisible();
+    await expect(kc.locator('[data-role="kc-choice"]').first()).toBeEnabled();
+    await expect(kc.locator('[data-role="kc-result"]')).toHaveText("");
+  });
+
+  test("the results page lists missed blocks only under outcomes up for review", async ({ page }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+
+    const identifyLoop = page.locator('[data-outcome-id="identify-loop"]');
+    await expect(identifyLoop).toHaveAttribute("data-status", "review");
+    const missedList = identifyLoop.locator('[data-role="results-missed"]');
+    await expect(missedList).toBeVisible();
+    const missedItems = missedList.locator("li");
+    await expect(missedItems).toHaveCount(1);
+    await expect(missedItems.first()).toHaveAttribute("data-block-id", "check-loop-type");
+    await expect(missedItems.first().locator('[data-role="practice-again"]')).toHaveText(
+      "Practice again",
+    );
+
+    const mapLoop = page.locator('[data-outcome-id="map-loop"]');
+    await expect(mapLoop).toHaveAttribute("data-status", "not_started");
+    await expect(mapLoop.locator('[data-role="results-missed"]')).toHaveCount(0);
+
+    const chooseIntervention = page.locator('[data-outcome-id="choose-intervention"]');
+    await expect(chooseIntervention).toHaveAttribute("data-status", "not_started");
+    await expect(chooseIntervention.locator('[data-role="results-missed"]')).toHaveCount(0);
+  });
+
+  test("practice again for a non-retryable scenario keeps its answered view and reads 'See the explanation'", async ({
+    page,
+  }) => {
+    await gotoSection(page, "garden-decision");
+    const sc = page.locator("article.scenario").first();
+    await sc.locator('[data-role="sc-choice"][data-quality="weak"]').check();
+    await sc.locator('[data-role="sc-submit"]').click();
+    await expect(sc).toHaveClass(/is-submitted/);
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const chooseIntervention = page.locator('[data-outcome-id="choose-intervention"]');
+    await expect(chooseIntervention).toHaveAttribute("data-status", "review");
+    const item = chooseIntervention.locator(
+      '[data-role="results-missed"] li[data-block-id="pest-density-scenario"]',
+    );
+    const link = item.locator('[data-role="practice-again"]');
+    await expect(link).toHaveText("See the explanation");
+    await expect(link).toHaveAttribute("href", "#pest-density-scenario");
+
+    await link.click();
+    await expect(page.locator("#garden-decision")).toHaveClass(/is-current/);
+    await expect(page.locator("article#pest-density-scenario")).toBeFocused();
+    await expect(sc).toHaveClass(/is-submitted/);
+    await expect(sc.locator('[data-role="sc-submit"]')).toBeHidden();
+  });
+
+  test("a retry that lands correct removes the block from the results-page missed list", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const identifyLoopBeforeFix = page.locator('[data-outcome-id="identify-loop"]');
+    await expect(identifyLoopBeforeFix).toHaveAttribute("data-status", "review");
+    await expect(
+      identifyLoopBeforeFix.locator('[data-role="results-missed"] li[data-block-id="check-loop-type"]'),
+    ).toHaveCount(1);
+
+    await gotoSection(page, "recognize-loop-types");
+    await kc.locator('[data-role="kc-retry"]').click();
+    await kc.locator('[data-role="kc-choice"][data-correct="true"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await page.evaluate(() => {
+      location.hash = "#results";
+    });
+    const identifyLoop = page.locator('[data-outcome-id="identify-loop"]');
+    await expect(identifyLoop).toHaveAttribute("data-status", "on_track");
+    await expect(identifyLoop.locator('[data-role="results-missed"]')).toHaveCount(0);
+  });
+
+  test("keyboard: Tab reaches the practice-again link and the dismiss button; Enter dismisses", async ({
+    page,
+  }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await gotoSection(page, "garden-decision");
+    const panel = page.locator('#garden-decision [data-role="review-panel"]');
+    const link = panel.locator('[data-role="practice-again"]');
+    const dismissBtn = panel.locator('[data-role="review-dismiss"]');
+
+    await link.focus();
+    await expect(link).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(dismissBtn).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(panel).toHaveCount(0);
+  });
+
+  test("the review panel has no animation and stays accessible", async ({ page }) => {
+    await gotoSection(page, "recognize-loop-types");
+    const kc = page.locator("article.knowledge_check").first();
+    await kc.locator('[data-role="kc-choice"][data-correct="false"]').first().check();
+    await kc.locator('[data-role="kc-submit"]').click();
+
+    await gotoSection(page, "garden-decision");
+    const panel = page.locator('#garden-decision [data-role="review-panel"]');
+    await expect(panel).toBeVisible();
+
+    const styleAttr = (await panel.getAttribute("style")) || "";
+    expect(styleAttr).not.toMatch(/transition|animation/i);
+
+    const results = await new AxeBuilder({ page }).analyze();
+    const serious = results.violations.filter(
+      (v) => v.impact === "serious" || v.impact === "critical",
+    );
+    expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
+  });
+});
