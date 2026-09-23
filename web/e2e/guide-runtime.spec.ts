@@ -2017,3 +2017,127 @@ test.describe("diagram rendering: concept map and comparison (T54)", () => {
     });
   }
 });
+
+test.describe("Codex round 1 on PR #42: no-JS text version, trimmed runtime limits (T57)", () => {
+  const DIAGRAMS_FIXTURE = "tests/fixtures/guides/feedback-loops.diagrams.guide.json";
+  const DIAGRAM_IDS = ["growth-loop-flow", "loop-kinds-map", "loop-types-comparison", "watering-delay-timeline"];
+  let scratch: string;
+
+  test.beforeAll(() => {
+    scratch = mkdtempSync(path.join(tmpdir(), "ep-t57-"));
+  });
+
+  test.afterAll(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  test("without JavaScript the guide and every diagram's text version are visible, not the loading shell", async ({ browser }) => {
+    const file = path.join(scratch, "no-js.html");
+    writeFileSync(file, assembleFixtureDocument(DIAGRAMS_FIXTURE), "utf8");
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    try {
+      await page.goto(`file://${file}`);
+      await expect(page.locator("html")).not.toHaveClass(/js-enhanced/);
+      await expect(page.locator("[data-guide-shell]")).toBeVisible();
+      await expect(page.locator("[data-guide-status]")).toBeHidden();
+      await expect(page.getByRole("heading", { name: "Thinking in Feedback Loops" })).toBeVisible();
+      for (const id of DIAGRAM_IDS) {
+        const figure = page.locator(`figure#${id}`);
+        await expect(figure).toBeVisible();
+        await expect(figure.locator("svg")).toHaveCount(0);
+        await expect(figure.locator(':scope > div[data-role="diagram-text"]')).toBeVisible();
+      }
+      await expect(page.locator("figure#growth-loop-flow .diagram-connections")).toContainText(
+        "Plant biomass → Leaf area",
+      );
+      // Every section is stacked and readable, like the answer-key print.
+      const sections = page.locator('main section[data-role="guide-section"]');
+      const count = await sections.count();
+      expect(count).toBeGreaterThan(1);
+      for (let i = 0; i < count; i += 1) await expect(sections.nth(i)).toBeVisible();
+      await expect(page.locator('[data-role="kc-explanation"]').first()).toBeVisible();
+      await expect(page.locator('[data-role="answer-marker"]').first()).toBeVisible();
+      await expect(page.locator('[data-role="nav-link"]').first()).toBeVisible();
+      // Controls that only work with JavaScript are not offered.
+      for (const selector of [
+        ".course-controls",
+        ".section-nav-controls",
+        ".section-complete-controls",
+        ".kc-controls",
+        ".wr-controls",
+        ".sc-controls",
+        ".rf-controls",
+        ".reflection-input",
+        '[data-role="kc-choice"]',
+        '[data-role="sc-choice"]',
+        ".nav-toggle",
+      ]) {
+        const nodes = page.locator(selector);
+        const n = await nodes.count();
+        for (let i = 0; i < n; i += 1) await expect(nodes.nth(i), selector).toBeHidden();
+      }
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("padded-but-valid diagram strings are measured and drawn trimmed, not dropped to text", async ({ page }) => {
+    const pad = (s: string) => `  ${s}  `;
+    const title = "T".repeat(110) + " whole ok"; // 119 code points
+    const label = "Plant biomass " + "b".repeat(34); // 48 code points
+    const edge = "increases " + "e".repeat(22); // 32 code points
+    const when = "Day 1, morning " + "w".repeat(17); // 32 code points
+    const guide = JSON.parse(readFileSync(path.join(ROOT, DIAGRAMS_FIXTURE), "utf8"));
+    const blocks = guide.modules.flatMap((m: any) => m.sections).flatMap((s: any) => s.blocks);
+    const flow = blocks.find((b: any) => b.id === "growth-loop-flow");
+    flow.title = pad(title);
+    flow.nodes[0].label = pad(label);
+    flow.edges[0].label = pad(edge);
+    const timeline = blocks.find((b: any) => b.id === "watering-delay-timeline");
+    timeline.title = pad(title);
+    timeline.events[0].when = pad(when);
+    timeline.events[0].label = pad(label);
+    const file = path.join(scratch, "padded.guide.json");
+    writeFileSync(file, JSON.stringify(guide), "utf8");
+    // The Python validator accepts these strings: it measures the trimmed value.
+    const findings = execFileSync(
+      "python3",
+      [
+        "-c",
+        [
+          "from pathlib import Path",
+          "from education_pipeline.guides import validate_guide",
+          `print(len(validate_guide(Path(${JSON.stringify(file)}).read_bytes()).findings), end='')`,
+        ].join(";"),
+      ],
+      { cwd: ROOT, encoding: "utf8" },
+    );
+    expect(findings).toBe("0");
+    const html = assembleFixtureDocument(file);
+    expect(html).toContain(JSON.stringify(pad(label)));
+
+    const consoleErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+    await page.setContent(html, { waitUntil: "load" });
+    await expect(page.locator("[data-guide-status]")).toBeHidden();
+    const figure = page.locator("figure#growth-loop-flow");
+    await expect(figure).toHaveAttribute("data-diagram-state", "drawn");
+    expect(await figure.locator("svg > title").textContent()).toBe(title);
+    const desc = await figure.locator("svg > desc").textContent();
+    expect(desc).toContain(`Steps in order: ${label}; Leaf area;`);
+    const edgeText = await figure.locator("g.diagram-edge-label").first().locator("text").allTextContents();
+    expect(edgeText[0]).toBe("increases");
+    const timelineFigure = page.locator("figure#watering-delay-timeline");
+    await expect(timelineFigure).toHaveAttribute("data-diagram-state", "drawn");
+    for (const svg of await timelineFigure.locator("svg").all()) {
+      expect(await svg.locator("title").textContent()).toBe(title);
+      expect(await svg.locator("desc").textContent()).toBe(
+        `Timeline of 4 events, from ${when} (${label}) to Day 4 (Leaves recover).`,
+      );
+    }
+    expect(consoleErrors.join("\n")).not.toContain("fell back to its text version");
+  });
+});
