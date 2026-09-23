@@ -1,9 +1,9 @@
 # Interactive Guides (guide v1)
 
 This page documents the interactive-guide workflow delivered by the
-`interactive_guide` 1.0 content contract: what the pipeline produces, where
-artifacts live, how validation findings and waivers gate finalization, and
-what the exported guide does (and does not) share.
+`interactive_guide` content contract (guide schema 1.0, 1.1 and 1.2): what the
+pipeline produces, where artifacts live, how validation findings and waivers
+gate finalization, and what the exported guide does (and does not) share.
 
 ## Workflow and compatibility
 
@@ -20,6 +20,13 @@ create → spec → outline → draft → (draft validation) → qa → factchec
 
 - `education-pipeline create <topic>` starts a guide run; pass
   `--legacy-markdown` to start a legacy Markdown run instead.
+- **New runs use guide schema 1.2**, with or without a learner profile. 1.2
+  is 1.1 (optional personalization annotations) plus the `diagram` block
+  described below.
+- **Existing runs keep their version.** A guide run pinned to schema 1.0 or
+  1.1 keeps producing the same prompts byte for byte and never gains
+  diagrams; a draft or repair response that declares a different schema
+  version than the run's contract cannot be approved.
 - **Legacy runs are untouched.** A manifest without a `content_contract` field
   is read as legacy Markdown; opening the upgraded tools never mutates or
   strands an existing run. The contract is pinned in `manifest.json` when the
@@ -31,7 +38,8 @@ create → spec → outline → draft → (draft validation) → qa → factchec
 
 Each run directory records its contract in `manifest.json` under
 `content_contract` (kind `interactive_guide`, content type
-`application/vnd.education-pipeline.guide+json;version=1.0`). Stage artifacts
+`application/vnd.education-pipeline.guide+json;version=<schema>`, for example
+`version=1.2` for a new run). Stage artifacts
 keep the standard layout, with format-aware suffixes:
 
 ```text
@@ -68,6 +76,60 @@ step, the same way it runs validation and finalization; the run's next action
 reads `assemble` until it has. Back these up with the
 rest of the run directory; a whole guide written straight to
 `responses/draft.response.json` keeps working and wins over the units.
+
+## Diagrams (schema 1.2)
+
+A guide on schema 1.2 can include `diagram` blocks: small structured pictures
+that sit between the other blocks of a section. A diagram is JSON data — the
+model supplies labels and connections, never SVG, coordinates, colours or
+sizes — and the maintained runtime computes the layout, so the same guide
+draws the same picture every time. Diagrams are optional; no rule requires
+one.
+
+There are four kinds:
+
+| Kind | Data | Drawn as |
+| --- | --- | --- |
+| `flow` | 2–12 `nodes` and 1–16 `edges` | Layers from top to bottom with arrows. Cycles are allowed (feedback loops); a connection back to an earlier step is drawn as a dashed curve on the right. |
+| `concept_map` | a `hub` node, 2–12 `nodes` and 1–12 `edges` | The hub in the centre, the other ideas on a ring around it. Every node must connect to the hub. |
+| `timeline` | 2–10 `events`, each with `when` and `label` | One horizontal axis in the given order, or a vertical list on narrow screens. |
+| `comparison` | 2–4 `items` (columns) and 1–8 `criteria` (rows) | A table with a value for every item in every row. |
+
+Every diagram has a `title`, and may have a `caption`, `outcome_ids` and
+`source_ids`. The limits are validation errors, not warnings:
+
+- labels are plain text of at most 48 characters; edge labels and `when` at
+  most 32; `detail`, caption and comparison cells at most 240, using the
+  inline Markdown subset (emphasis, code, safe links); the title at most 120;
+- every diagram string is a single line;
+- node, event, item and criterion ids are unique within their diagram — they
+  are local to it, so two diagrams may reuse the same local id — while the
+  diagram's own `id` is an ordinary guide-wide block id;
+- edges connect two different existing nodes, with no repeated connection, and
+  a flow node must have at least one edge.
+
+A diagram teaches: it counts toward an outcome's "taught" coverage like rich
+text and callouts, and it is never an interactive block, so every module still
+needs its own knowledge check, worked reveal, scenario or reflection.
+
+**Text version.** The exported HTML carries a complete text version of every
+diagram, rendered on the server: a numbered list of steps and connections for
+a flow (connections that close a loop are marked "loops back"), nested lists
+for a concept map, a numbered list for a timeline, and a real table with
+row and column headers for a comparison. With JavaScript the runtime draws
+the picture above it and folds the text version into a closed "Text version"
+disclosure that stays on the page (and opens for printing); without
+JavaScript, or if a diagram's data cannot be drawn, the text version *is* the
+diagram. A comparison is always the table. The Markdown projection
+(`final/guide.md`) carries an equivalent text version.
+
+**No images; the CSP is unchanged.** The picture is inline SVG built from the
+data with safe DOM calls and styled only by the runtime's own stylesheet and
+theme tokens (light and dark). Guides still cannot contain images, and the
+export's content security policy (`default-src 'none'; img-src 'none'` with
+hashed runtime styles and script) is the same as before. New exports carry
+runtime 1.2, which reads guides on schema 1.0, 1.1 and 1.2; older exports keep
+the runtime they were built with, and learner progress is unaffected.
 
 ## Validation findings and waivers
 

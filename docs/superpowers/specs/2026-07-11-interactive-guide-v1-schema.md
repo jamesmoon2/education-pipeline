@@ -19,7 +19,9 @@ Guide schema v1 must be:
 
 - Encoding is UTF-8.
 - The root value is a JSON object.
-- `schema_version` is the exact string `"1.0"`.
+- `schema_version` is one of the exact strings `"1.0"`, `"1.1"` or `"1.2"`
+  (§18). New runs produce `"1.2"`; a run keeps the version its content
+  contract pinned when it was created.
 - Unknown fields are validation errors in v1. This catches model hallucinations
   and misspellings instead of silently dropping content.
 - Object member order is not semantically meaningful.
@@ -29,6 +31,12 @@ Guide schema v1 must be:
 - Arrays retain authorial order.
 - Every field named `id`, including interaction choice and reveal-step IDs,
   matches `^[a-z][a-z0-9-]{0,63}$` and is unique within the whole guide.
+  **Exception (schema 1.2):** the ids of a diagram's nodes, events, items and
+  criteria (§13a) are *diagram-local*. They must be unique within their
+  diagram (one namespace across its arrays), are not registered in the
+  guide-wide namespace and are not link targets, so two diagrams may reuse
+  the same local id and a local id may equal a guide id. The diagram block's
+  own `id` is an ordinary guide-wide id.
 - Human-facing strings must be non-empty after trimming.
 - No single human-facing text field may exceed 20,000 Unicode code points.
 - The entire parsed guide must fit under the daemon’s configured request/body
@@ -137,7 +145,7 @@ Each section requires `id`, `title`, and one or more blocks.
 Every block is an object with:
 
 - `id`: globally unique guide ID; and
-- `type`: one of the registered v1 types.
+- `type`: one of the registered v1 types (`diagram` only in schema 1.2).
 
 Blocks may optionally include:
 
@@ -303,6 +311,69 @@ The runtime provides a local note area. Notes never leave the guide, are not
 included in exports or print output, and can be cleared from the course controls.
 The schema never contains a learner’s response.
 
+## 13a. Block type: `diagram` (schema 1.2)
+
+```json
+{
+  "id": "growth-loop-flow",
+  "type": "diagram",
+  "kind": "flow",
+  "title": "How plant growth reinforces itself",
+  "caption": "The last connection closes a **reinforcing** loop.",
+  "outcome_ids": ["map-loop"],
+  "nodes": [
+    {"id": "biomass", "label": "Plant biomass"},
+    {"id": "leaf-area", "label": "Leaf area", "detail": "More biomass usually means more leaves."},
+    {"id": "sunlight", "label": "Sunlight captured"},
+    {"id": "growth", "label": "New growth"}
+  ],
+  "edges": [
+    {"from": "biomass", "to": "leaf-area", "label": "increases"},
+    {"from": "leaf-area", "to": "sunlight", "label": "increases"},
+    {"from": "sunlight", "to": "growth", "label": "fuels"},
+    {"from": "growth", "to": "biomass", "label": "adds to"}
+  ]
+}
+```
+
+A diagram is structured data, never markup: it carries no SVG, coordinates,
+colours or sizes, and the runtime computes its layout from the data alone.
+
+Required: `id`, `type`, `kind`, `title`, plus the fields of its kind.
+Optional: `caption`, `outcome_ids` (0+, no duplicates), `source_ids` (0+).
+
+`kind` is one of (snake_case, like block `type`, because it selects a schema
+shape and a code path):
+
+| Kind | Required fields | Element shape |
+| --- | --- | --- |
+| `flow` | `nodes` (2–12), `edges` (1–16) | node `{id, label, detail?}`; edge `{from, to, label?}` |
+| `concept_map` | `hub`, `nodes` (2–12, hub included), `edges` (1–12) | as `flow`; `hub` is a node id |
+| `timeline` | `events` (2–10) | `{id, when, label, detail?}`, drawn in the given order |
+| `comparison` | `items` (2–4), `criteria` (1–8) | item `{id, label}`; criterion `{id, label, values}`; `values` maps **every** item id to a cell string, with no other keys |
+
+A field that belongs to another kind is an unknown field.
+
+Text limits (code points after trimming): `title` ≤ 120; `caption` ≤ 240;
+node, event, item and criterion `label` ≤ 48; edge `label` and `when` ≤ 32;
+`detail` and comparison cells ≤ 240. Every diagram string is a single line
+(no line or paragraph separators). `title`, every `label`, `when` and `hub` are
+plain text; `caption`, `detail` and cells use the inline Markdown subset (§16).
+
+Integrity rules (all validation errors or blockers, none waivable):
+
+- local ids match the guide id pattern and are unique within the diagram
+  (§2);
+- every edge endpoint and the `hub` name a node of the same diagram;
+- no self-edges; no repeated edge (a flow compares the ordered pair, a concept
+  map the unordered pair);
+- every flow node has at least one edge; a flow may contain cycles;
+- every concept-map node is connected to the hub through edges, ignoring
+  direction; and
+- every comparison criterion has a value for every item and no other keys.
+
+A diagram in a `1.0` or `1.1` document is an unknown block type.
+
 ## 14. Glossary
 
 ```json
@@ -339,7 +410,8 @@ record is provenance, not proof that every attached claim is correct.
 
 ## 16. Markdown subset and URL policy
 
-Supported inline syntax:
+Supported inline syntax (the only syntax allowed in the inline-only fields:
+a diagram's `caption`, node and event `detail`, and comparison cells, §13a):
 
 - plain text;
 - emphasis and strong emphasis;
@@ -373,10 +445,12 @@ and relative filesystem traversal are rejected.
 
 Validation enforces:
 
-- every ID is globally unique;
+- every ID is globally unique, except diagram-local ids (§2);
 - every outcome/source reference exists;
 - every outcome is assigned to at least one module;
-- every outcome is taught by at least one explanatory block;
+- every outcome is taught by at least one explanatory block (`rich_text`,
+  `callout` or, in schema 1.2, `diagram`; a diagram is never interactive and
+  no rule requires one);
 - every outcome is assessed or practiced by at least one knowledge check,
   scenario, worked reveal, or reflection;
 - each module has at least one interactive block;
@@ -390,9 +464,19 @@ Validation enforces:
 
 ## 18. Versioning
 
-- `1.0` readers accept only `1.0` documents.
-- Additive optional fields require schema `1.1`, not silent acceptance by a 1.0
-  reader.
+- A reader accepts only the versions it knows; an unknown version is refused,
+  never read as the nearest known one.
+- Additive fields or block types require a new minor version, not silent
+  acceptance by an older reader:
+  - `1.0` is the original schema;
+  - `1.1` is `1.0` plus the optional personalization annotations
+    (`serves_goals`, `goal_exclusions`);
+  - `1.2` is `1.1` plus the `diagram` block (§13a).
+  A diagram in a `1.0` or `1.1` document is refused as an unknown block type.
+- New runs are created on the latest version (`1.2`). A run's content contract
+  pins its version at creation and is never rewritten, so a `1.0` or `1.1` run
+  keeps its prompts and output unchanged, and approving a draft or repair whose
+  `schema_version` differs from the pinned one is refused.
 - Removing or changing meaning requires schema `2.0`.
 - The application may ship explicit migrations between known versions. A
   migration creates a new artifact and manifest event; it never overwrites an
