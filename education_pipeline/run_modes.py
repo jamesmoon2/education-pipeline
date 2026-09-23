@@ -386,6 +386,8 @@ class InteractiveGuideMode(_RunMode):
     def validate_approval(self, store: RunStore, topic_id: str, stage: str, text: str) -> None:
         if stage in {"spec", "outline"}:
             store._validate_guide_approval(topic_id, stage, text)
+        elif stage in {"draft", "repair"}:
+            store._validate_guide_version(topic_id, stage, text)
 
     def is_finalized(self, store: RunStore, topic_id: str) -> bool:
         return store._is_finalized_guide_v1(topic_id)

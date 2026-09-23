@@ -1662,3 +1662,877 @@ def test_skeleton_and_module_draft_prompts_return_prompt_artifacts_with_the_same
     assert type(skeleton_artifact) is type(module_artifact) is type(draft_artifact) is PromptArtifact
     assert {f.name for f in fields(skeleton_artifact)} == {f.name for f in fields(draft_artifact)}
     assert {f.name for f in fields(module_artifact)} == {f.name for f in fields(draft_artifact)}
+
+
+# --- Schema 1.2 (diagram block) and the 1.0/1.1 byte-identity matrix --------
+#
+# Spec: docs/superpowers/specs/2026-09-23-diagram-block-design.md §8. The
+# 1.0 and 1.1 prompt bytes must never move (§8.5); the 1.2 prompts are the
+# 1.0/1.1 prompts rewritten by the §8.2 line rules, plus the §8.3 diagram
+# guidance and the §8.4 profile lines on the two section-authoring prompts.
+
+from education_pipeline.guides.blueprints import get_blueprint  # noqa: E402
+from education_pipeline.profiles import LearnerPreferences, LearnerProfile  # noqa: E402
+from education_pipeline.prompts import (  # noqa: E402
+    compile_guide_v1_module_draft_prompt,
+    compile_guide_v1_module_repair_prompt,
+    compile_guide_v1_section_repair_prompt,
+    compile_guide_v1_skeleton_prompt,
+)
+
+_GUIDE_V1_STAGES = (
+    "spec",
+    "outline",
+    "draft",
+    "skeleton",
+    "module_draft",
+    "qa",
+    "factcheck",
+    "repair",
+    "module_repair",
+    "section_repair",
+)
+
+# The profile every matrix / 1.2 test attaches. Its visual-aid preferences
+# would select `flow` and `concept_map` and the "frequent" line under 1.2, so
+# a 1.2 feature leaking into a 1.0 or 1.1 prompt moves a pinned SHA.
+_MATRIX_PROFILE = LearnerProfile(
+    id="visual-profile",
+    target_learner="team cohort",
+    professional_experience="early-career analysts",
+    learning_goals=("understand systems thinking",),
+    learning_preferences=LearnerPreferences(
+        preferred_visual_aids=("flowcharts", "concept maps"),
+        diagram_frequency="frequent",
+    ),
+)
+
+# `procedural-skill` gains `diagram_kinds = ("flow",)` under §8.3; 1.0/1.1
+# prompts must never read it.
+_MATRIX_BLUEPRINT_ID = "procedural-skill"
+
+
+def _versioned_fixture_json(version: str) -> str:
+    data = json.loads(_MODULE_REPAIR_FIXTURE.read_text(encoding="utf-8"))
+    data["schema_version"] = version
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _canonical_fixture_json(version: str) -> str:
+    from education_pipeline.guides import canonical_guide_bytes, normalize_guide, parse_guide
+
+    return canonical_guide_bytes(
+        normalize_guide(parse_guide(_versioned_fixture_json(version)))
+    ).decode("utf-8")
+
+
+def _versioned_skeleton_json(version: str) -> str:
+    data = json.loads(_module_draft_skeleton_json())
+    data["schema_version"] = version
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _compile_every_guide_v1_prompt(
+    version: str,
+    profile: LearnerProfile | None = None,
+    blueprint=None,
+) -> dict[str, str]:
+    """Compile every guide-v1 prompt for one schema version.
+
+    Inputs that carry a version (the spec contract, the draft, the skeleton)
+    declare ``version``, as a run pinned to that version would produce them.
+    """
+
+    topic = Topic(id="systems-thinking", title="Systems Thinking", brief="A brief.")
+    spec_contract = {**GUIDE_SPEC_CONTRACT, "guide_schema_version": version}
+    contract = build_guide_contract(spec_contract, GUIDE_OUTLINE_CONTRACT)
+    module_spec_contract = {**_MODULE_DRAFT_SPEC_CONTRACT, "guide_schema_version": version}
+    module_contract = build_guide_contract(module_spec_contract, _MODULE_DRAFT_OUTLINE_CONTRACT)
+    scoped_contract = build_guide_contract(
+        {
+            **spec_contract,
+            "outcomes": [
+                {"id": "identify-loop", "text": "Identify feedback."},
+                {"id": "map-loop", "text": "Map a loop."},
+                {"id": "choose-intervention", "text": "Choose an intervention."},
+            ],
+        },
+        GUIDE_OUTLINE_CONTRACT,
+    )
+    draft_json = GUIDE_DRAFT_JSON.replace('"1.0"', f'"{version}"')
+    fixture_draft = _canonical_fixture_json(version)
+    common = {"profile": profile, "blueprint": blueprint}
+    return {
+        "spec": compile_guide_v1_spec_prompt(
+            SpecPromptInput(
+                topic_id="systems-thinking",
+                title="Systems Thinking",
+                topic_brief="A brief.",
+                profile=profile,
+            ),
+            guide_schema_version=version,
+            blueprint=blueprint,
+        ).text,
+        "outline": compile_guide_v1_outline_prompt(
+            topic, APPROVED_SPEC, profile, guide_schema_version=version, blueprint=blueprint
+        ).text,
+        "draft": compile_guide_v1_draft_prompt(
+            topic, APPROVED_OUTLINE, contract, profile, blueprint=blueprint
+        ).text,
+        "skeleton": compile_guide_v1_skeleton_prompt(
+            topic,
+            APPROVED_OUTLINE,
+            contract,
+            profile,
+            blueprint=blueprint,
+            module_order=("feedback-loops",),
+        ).text,
+        "module_draft": compile_guide_v1_module_draft_prompt(
+            topic,
+            module_id="intervention-practice",
+            module_index=1,
+            module_order=_MODULE_DRAFT_MODULE_ORDER,
+            skeleton_json=_versioned_skeleton_json(version),
+            guide_contract=module_contract,
+            approved_outline=APPROVED_OUTLINE,
+            **common,
+        ).text,
+        "qa": compile_guide_v1_qa_prompt(
+            topic,
+            approved_spec=APPROVED_SPEC,
+            approved_outline=APPROVED_OUTLINE,
+            draft_guide_json=draft_json,
+            draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
+            **common,
+        ).text,
+        "factcheck": compile_guide_v1_factcheck_prompt(
+            topic,
+            approved_spec=APPROVED_SPEC,
+            approved_outline=APPROVED_OUTLINE,
+            draft_guide_json=draft_json,
+            qa_findings_markdown=APPROVED_QA,
+            draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
+            **common,
+        ).text,
+        "repair": compile_guide_v1_repair_prompt(
+            topic,
+            draft_guide_json=draft_json,
+            qa_findings_markdown=APPROVED_QA,
+            factcheck_findings_markdown=APPROVED_FACTCHECK,
+            draft_findings_json=GUIDE_DRAFT_FINDINGS_JSON,
+            guide_contract=contract,
+            **common,
+        ).text,
+        "module_repair": compile_guide_v1_module_repair_prompt(
+            topic,
+            module_id="loop-basics",
+            draft_guide_json=fixture_draft,
+            qa_findings_markdown=_MODULE_REPAIR_QA,
+            factcheck_findings_markdown=APPROVED_FACTCHECK,
+            draft_findings_json=_MODULE_REPAIR_DRAFT_FINDINGS,
+            guide_contract=scoped_contract,
+            **common,
+        ).text,
+        "section_repair": compile_guide_v1_section_repair_prompt(
+            topic,
+            module_id="loop-basics",
+            section_id="recognize-loop-types",
+            draft_guide_json=fixture_draft,
+            qa_findings_markdown=_MODULE_REPAIR_QA,
+            factcheck_findings_markdown=APPROVED_FACTCHECK,
+            draft_findings_json=_SECTION_REPAIR_DRAFT_FINDINGS,
+            guide_contract=scoped_contract,
+            **common,
+        ).text,
+    }
+
+
+_MATRIX_CASES = tuple(
+    (version, with_profile, with_blueprint)
+    for version in ("1.0", "1.1")
+    for with_profile in (False, True)
+    for with_blueprint in (False, True)
+)
+
+
+def _matrix_key(version: str, with_profile: bool, with_blueprint: bool) -> str:
+    return (
+        f"{version}/{'profile' if with_profile else 'no-profile'}/"
+        f"{'blueprint' if with_blueprint else 'no-blueprint'}"
+    )
+
+
+def _compile_matrix_case(version: str, with_profile: bool, with_blueprint: bool) -> dict[str, str]:
+    return _compile_every_guide_v1_prompt(
+        version,
+        _MATRIX_PROFILE if with_profile else None,
+        get_blueprint(_MATRIX_BLUEPRINT_ID) if with_blueprint else None,
+    )
+
+
+# Recorded from the pre-1.2 compilers (prompts.py unchanged since 2a1aa50).
+# §8.5: these must never move.
+_GUIDE_V1_BYTE_IDENTITY_SHA256: dict[str, dict[str, str]] = {
+    "1.0/no-profile/no-blueprint": {
+        "spec": "8bda2c7da9c54a659d7ec6125dda3f04ee3783581c31a6e4ace97b2987cb8b92",
+        "outline": "6c6a7b251879bc454eb34a2285a77a003cbc566122ace26d93463973da630b7b",
+        "draft": "e8886ffad44f2b0a0728d839940011f5cd1db170430be1f70efc0192381f064c",
+        "skeleton": "c5e88eafaafa15688402c30b0157762e0f248ee8bd5319872586672dd06435d3",
+        "module_draft": "e9aade0e9afc7eb2e34d05c7414c7d1029d267c1f198aa27cf4f75b68baf7622",
+        "qa": "059c85debe9e83725a47ff4920e0827d17007c680bd68f1db8cae97ccac00762",
+        "factcheck": "5976b74b06863f41d7a19d85b8e1ea0110c82d3f231bd79f6fd2e45778013bb3",
+        "repair": "91f6727c59080e1a6e797f2ef06ab5d37abcbbfa0d3baba8682e3bfd663ea418",
+        "module_repair": "379bb81bd50b523940bd25f8e8e0254c67d57f428104ab48098c42597efa465d",
+        "section_repair": "c93e5538ac886696176487dd8c31c8d0324c00a8eadcbd3b17e71c308384ff85",
+    },
+    "1.0/no-profile/blueprint": {
+        "spec": "da997d5b6d8d1782a04751428542a4d38a05632f8830f01f9378f666d60aea13",
+        "outline": "324f89c6489c0886731693b8917f47a5e9fbcf6a438ea804b61d310da9110be0",
+        "draft": "177d7b7d598a79c938cba72ce7e068a4cc4d8623cf518ac3b61d259c29485cc7",
+        "skeleton": "afc6ebad2c9a34a8b8fea0abdbf34ec24ba09f653931c29ae93fcce521322d7c",
+        "module_draft": "e7812654c1cbe2581b2b6e6c4b8be0e9c4d66899d991b93a0a6e434c305fe9bf",
+        "qa": "6426d8dc7ec5245eb9cb12953275f95897448e605311ca5e96903b8d82c20367",
+        "factcheck": "2d64659f39ec4d70bdb4de3b3f15166b3166363db5b6fe0c438eea8ea78925f7",
+        "repair": "8a3d55f405f5afec9b9fea0c51de05315f063068ff5e2947dbabcef7416bc151",
+        "module_repair": "abc36c950b208dea0caac80505a14b534c6d7d0482accc1191dbf10aee46129d",
+        "section_repair": "c03a2f2c8d814a6c7c5f0e1ab97f8f0d4e4d255d22d47ba69cb797fd3e628df8",
+    },
+    "1.0/profile/no-blueprint": {
+        "spec": "acbe5c3d546929e8be9c908dba65852e758dc526986bc27edb7834b43df5e7bc",
+        "outline": "5cb6414ba45c89fcda07d427067fff512868fd8c613d204900991f8066fa800b",
+        "draft": "eaa1872b3b857091f6b5034d7d8b7443b8ac72920c6add4c8931a1d5d00b691e",
+        "skeleton": "24d995e0e298fe7cd9290ed9e5601121983a70eed6169c0885bd619dec428c2e",
+        "module_draft": "6bf45f587f3498873732351c7db5fcd86e05470000931c59c012cacab744b5a9",
+        "qa": "f476910f37211cb46104b757ef9e4dc2cef18ba0c89edf398aaed395047bf71a",
+        "factcheck": "12a5ec632336f323fcf98b558118df2634b43643766809f4cfdda7e70116a044",
+        "repair": "1de6ea0a9fd0268bbfae33f7dbf5534ed2deaae40b4f5cc94e7ff51d0d49a942",
+        "module_repair": "3a41f2707630717597e332eec38ab2b681a222a284ddb1f75a11da2297b9f6d7",
+        "section_repair": "50df2795b7ffb43fc99796eec6f3e366244781fb56ef175d3312c4cf90df5f20",
+    },
+    "1.0/profile/blueprint": {
+        "spec": "ce39fec86d041a424cf67d2881e925547bfe6ffc739d51ecf9d850bc26c8247d",
+        "outline": "38f8c225fb4e5674b3535e9aee78368001edffc7635b869c467fb992dc240400",
+        "draft": "e6252d3bcbfa13074dc6293284ca38ace1329273b5a7e16c730e77f9d3cacf50",
+        "skeleton": "dd9aafd827df91aaf8b10892a729e65e676e7b900928b6b45c95a7f7fe6c8e4b",
+        "module_draft": "19c4401b87528729b17ee7e29192b2039498c75be1bfb72fc02b1b6f6e9bc85b",
+        "qa": "609c933c90c13ac00af7ddda3d5ce136516d8621ebc6bc2727cdeada33be2863",
+        "factcheck": "136bc7194051551e247be986feec0ac14feb222d0a8f02971486346a723f1984",
+        "repair": "696f63684b22f3f7b1eb6cca792556fcbb7bb8238d122a36cefdea5c4ba516a1",
+        "module_repair": "104dc4ecacb9a0c386cf99c62c70fa8afee9a3dd90e44008a0d4c45cd0f12dcc",
+        "section_repair": "8a1d3e4a3989c6401af9e8c4fc2e6828f687031e9d40025f7177401b495cf688",
+    },
+    "1.1/no-profile/no-blueprint": {
+        "spec": "144bcefa493af29d1615dd5a88f6b1a73780d1a447ce7362b0619846a2936687",
+        "outline": "6c6a7b251879bc454eb34a2285a77a003cbc566122ace26d93463973da630b7b",
+        "draft": "d0adf5dc0003ce6e2fd4f806ea9d532cfe70029f0663c9b0ebb147cc6a56dbab",
+        "skeleton": "0d7063d92b142879c96057c59d7da134e696ed6bd96a982fb1d7a6c313f6a547",
+        "module_draft": "735ee418f3edbf40c189ccac4a5999d1175f98f8aa64758cbb507f834d4f89c0",
+        "qa": "81962b15a36c3a45a4042de44d314051ff7be0e8add50755316b4e95582eeac6",
+        "factcheck": "988fe5dcdabc460cebfae3a5011ff08338a54440a468923e7543dbbad5ba6d46",
+        "repair": "db066b38a4c276a414f1386ecbb5b6e862667e14cc6ef838cb2df1b987a90ea5",
+        "module_repair": "00b3ba664fe0f797e47c596e51264a972825f78ba2ed57ffbd9465f9ed13618b",
+        "section_repair": "7c87c4c99adef9cb5c81c664a843df4d18b15bc7d0766446c9a7d0eb9b4e15a9",
+    },
+    "1.1/no-profile/blueprint": {
+        "spec": "bd415ef286159137d526c664c503147c50170ee341ee2f179f10de2eff867539",
+        "outline": "324f89c6489c0886731693b8917f47a5e9fbcf6a438ea804b61d310da9110be0",
+        "draft": "d423d3ec3c5a015ffb989751fa3e3a4b3b9b9ff138397915bb6531d88c132b29",
+        "skeleton": "13193a027ca4d63a195aa791998d14947b02f7590de7380d22dfcb40acfe1a0e",
+        "module_draft": "f78a97622fc1af7100b61ce908f0da337fa1ad9ada5a41ccebe2d59bc82ba57f",
+        "qa": "3ef1bec959487aea0f3a60f8dd2e8ee9b65d80e6fafea83b1e985d8270f8c4ff",
+        "factcheck": "a6c3fb0215205110bf84f770048a71b7c6979e4faa93399fc4663c6d3dddd31b",
+        "repair": "1c9b3c3f6c4e9ce47492e0bb2e929b8dfb8b67348c5201c639297b623ca96408",
+        "module_repair": "9760cdc30796c16638cc592d9eed924da3fc061ec4a2e93b40a576117db25f04",
+        "section_repair": "63162d500ef632de95f7aff3f629ca86febed703f2da26b5c7713d81cbd400d6",
+    },
+    "1.1/profile/no-blueprint": {
+        "spec": "c15097355d207ce4cc2f747c8e8937837dae820c62edfb23354af394efc8d528",
+        "outline": "fd6412748832c6f36ae6a0183a6fba736f8c935b5d495c5c25af46441075eead",
+        "draft": "31469c269e1b03ae865e2f7cadf539658562fd096f3cf26bc413182b137eefcd",
+        "skeleton": "7bf795b271a768cbf44f31dcddf818033138617e838bbb2b295c9f65928bf960",
+        "module_draft": "bb0c62a0b13a8e981a2c9b4a4a1185fcf183c75e05726e266cccee11cabe01fc",
+        "qa": "84b5ac54d4ddb699ba79bda3212947c4ed23b1daf71181ada11e2e144a777700",
+        "factcheck": "3e85355d26ebd94f953dea798d50d914f90a09c0d59cf6a72d2668f3d58aa430",
+        "repair": "cf2d93a1b2fad66a2280d37e7b8bce7b62c2de5ba25eaf742bef793d0a0fcaec",
+        "module_repair": "e837d256f428d2115cd03c2abd4ca02d999de027bf593db6302a8c0d1b6f344e",
+        "section_repair": "b3bb4ba2636f04a358380cb8a262da1a5c3b72f214a61e7ea8ed99c68a6e9c0c",
+    },
+    "1.1/profile/blueprint": {
+        "spec": "8fbb17ea9157bfae5364fd63c86d1edc0c17d82f61b8e4321408fbeb8864badd",
+        "outline": "af539a76a1c9e59849f6e3eb704b7ad19a3d64ac2aec076e4bb32e157ed0a716",
+        "draft": "2c776436e7c12df24735aabebd7c14663a12535e86bb8952073df6d3485e6dbe",
+        "skeleton": "f776ffa85b70bb0929a0c8634f7bca11b383df271d56a380224158e2d43c1d33",
+        "module_draft": "dfd9c10bf92d00a8acab5f2c614db712340ef6bc35ccf0b2d46a176f9914c104",
+        "qa": "6e5da8d58daab1936132658352d0149bb4a606c17ecbef2bbd520bb9cec24b88",
+        "factcheck": "3fa27acb4dec5ab4ae5a5613b6f5fa59371784d321bb97c15fcbfab70ffa9a75",
+        "repair": "0fa65b8a516494e48429a6cddbe69a82903738309a5ace016f6020e07cff9129",
+        "module_repair": "d01bf864d9518df22ee7d2ab0ced653d77ad9657f7d6024296406c11d4c7fa65",
+        "section_repair": "ab7cb16aece79c1a264bc22d2a84a2ab3306324f3a119e58bcec01289db1756f",
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "version, with_profile, with_blueprint",
+    _MATRIX_CASES,
+    ids=[_matrix_key(*case) for case in _MATRIX_CASES],
+)
+def test_guide_v1_prompts_for_1_0_and_1_1_are_byte_identical_to_pre_diagram_base(
+    version: str, with_profile: bool, with_blueprint: bool
+) -> None:
+    """§8.5: every guide-v1 prompt of a 1.0 or 1.1 run keeps its bytes."""
+
+    texts = _compile_matrix_case(version, with_profile, with_blueprint)
+    expected = _GUIDE_V1_BYTE_IDENTITY_SHA256[_matrix_key(version, with_profile, with_blueprint)]
+    assert set(expected) == set(_GUIDE_V1_STAGES)
+    for stage in _GUIDE_V1_STAGES:
+        assert _sha256_text(texts[stage]) == expected[stage], stage
+
+
+def test_byte_identity_matrix_agrees_with_the_existing_1_0_pins() -> None:
+    expected = _GUIDE_V1_BYTE_IDENTITY_SHA256["1.0/no-profile/no-blueprint"]
+    for stage in ("spec", "outline", "draft", "qa"):
+        assert expected[stage] == _GUIDE_V1_NO_BLUEPRINT_PROMPT_TEXT_SHA256[stage], stage
+
+
+# §8.2 `_DIAGRAM_SCHEMA_REFERENCE_LINES`, verbatim.
+_DIAGRAM_SCHEMA_REFERENCE_LINES = (
+    "  - `diagram` (never interactive): `kind`, `title`, optional `caption`, `outcome_ids`, "
+    "`source_ids`, plus the fields of its kind:",
+    "    - `flow`: `nodes` (2-12 of `{id, label, detail?}`) and `edges` (1-16 of "
+    "`{from, to, label?}`); cycles are allowed and are drawn as loops.",
+    "    - `concept_map`: `hub` (one node id), `nodes` (2-12, including the hub) and `edges` "
+    "(1-12); every node must connect to the hub through edges.",
+    "    - `timeline`: `events` (2-10 of `{id, when, label, detail?}`), drawn in the given order.",
+    "    - `comparison`: `items` (2-4 columns of `{id, label}`) and `criteria` (1-8 rows of "
+    "`{id, label, values}`); `values` maps every item id to exactly one cell.",
+    "    - Limits: `title` 120 characters, `label` 48, edge `label` and `when` 32, `detail`, "
+    "`caption` and cells 240; every diagram string is a single line.",
+    "    - `title`, labels and `when` are plain text; `caption`, `detail` and cells allow inline "
+    "Markdown only. Ids inside a diagram only need to be unique within that diagram.",
+    "    - A diagram is data, never drawing instructions: never supply coordinates, sizes, "
+    "colors, SVG, or CSS.",
+)
+
+# §8.3 `_DIAGRAM_GUIDANCE_LINES`, verbatim.
+_DIAGRAM_GUIDANCE_LINES = (
+    "## Diagram Guidance",
+    "A `diagram` shows structure that the surrounding prose explains; it never replaces the "
+    "explanation and never counts as an interaction.",
+    "- Use `flow` for a process, a sequence of stages, or a chain of causes, including a loop "
+    "that feeds back into an earlier step.",
+    "- Use `concept_map` for one central idea and the ideas directly related to it, with a "
+    "short verb phrase on each connection.",
+    "- Use `comparison` to contrast two to four options against the same criteria.",
+    "- Use `timeline` when the order of events or phases in time is the point.",
+    "- No module needs a diagram. Add one only where the structure is easier to see than to "
+    "read, and keep it small: short labels, with longer explanation in `detail` or in the prose.",
+    "- Give every diagram a `title` that says what it shows; the learner-facing text "
+    "alternative is derived from the title and the data.",
+)
+
+# §8.4 emitted lines.
+_FAVORED_KINDS_PREFIX = (
+    "- The learner profile favors these diagram kinds; prefer them where the content has that "
+    "structure: "
+)
+_FREQUENCY_LINES = {
+    "frequent": "- The learner profile asks for frequent diagrams: consider one in most modules, "
+    "wherever the content has structure a picture can show.",
+    "occasional": "- The learner profile asks for occasional diagrams: use one where it clearly "
+    "helps, and not in every module.",
+    "rare": "- The learner profile asks for few diagrams: use one only where the structure is hard "
+    "to follow in prose.",
+}
+
+
+def _favored_kinds_line(*kinds: str) -> str:
+    return _FAVORED_KINDS_PREFIX + ", ".join(f"`{kind}`" for kind in kinds) + "."
+
+
+def _blueprint_kinds_line(blueprint) -> str:
+    kinds = ", ".join(f"`{kind}`" for kind in blueprint.diagram_kinds)
+    return f"- The {blueprint.title} blueprint most often benefits from these kinds: {kinds}."
+
+
+def _apply_1_2_line_rules(text: str) -> str:
+    """The four §8.2 rewrites, applied to already version-substituted text."""
+
+    out: list[str] = []
+    for line in text.split("\n"):
+        line = line.replace("six registered block types", "seven registered block types")
+        line = line.replace(
+            "(except `rich_text`/`callout`)", "(except `rich_text`/`callout`/`diagram`)"
+        )
+        line = line.replace(
+            "Use Markdown only inside the designated `markdown` fields.",
+            "Use Markdown only inside the designated `markdown` fields, plus inline Markdown in "
+            "a diagram's `caption`, `detail` and comparison cells.",
+        )
+        out.append(line)
+        if line.startswith("  - `reflection`:"):
+            out.extend(_DIAGRAM_SCHEMA_REFERENCE_LINES)
+    return "\n".join(out)
+
+
+def _insert_before(text: str, marker: str, lines: tuple[str, ...]) -> str:
+    assert text.count(marker) == 1, marker
+    return text.replace(marker, "\n\n" + "\n".join(lines) + marker)
+
+
+def _expected_1_2_without_profile(text_1_0: str, guidance: tuple[str, ...] = ()) -> str:
+    """A 1.2 prompt with no profile: the 1.0 prompt, re-versioned, §8.2 rules, §8.3 guidance."""
+
+    text = _apply_1_2_line_rules(text_1_0.replace('"1.0"', '"1.2"'))
+    if guidance:
+        text = _insert_before(text, "\n\n## Learner Profile Context", guidance)
+    return text
+
+
+def _expected_1_2_with_profile(
+    text_1_1: str, guidance: tuple[str, ...] = (), *, schema_reference: bool = True
+) -> str:
+    """A 1.2 prompt with a profile: the 1.1 prompt, re-versioned (goal lines and
+    private section included), §8.2 rules, then guidance before the private section."""
+
+    text = (
+        text_1_1.replace('"1.1"', '"1.2"')
+        .replace("Source schema 1.1 permits", "Source schema 1.2 permits")
+        .replace("Target guide source schema: `1.1`.", "Target guide source schema: `1.2`.")
+    )
+    assert "1.1" not in text
+    if schema_reference:
+        text = _apply_1_2_line_rules(text)
+    if guidance:
+        text = _insert_before(text, "\n\n## Private Personalization Instructions", guidance)
+    return text
+
+
+_SCHEMA_REFERENCE_STAGES = (
+    "draft",
+    "skeleton",
+    "module_draft",
+    "repair",
+    "module_repair",
+    "section_repair",
+)
+_GUIDANCE_STAGES = ("draft", "module_draft")
+
+
+@pytest.mark.parametrize("stage", _SCHEMA_REFERENCE_STAGES)
+def test_1_2_prompt_without_profile_is_the_1_0_prompt_with_the_diagram_rules(stage: str) -> None:
+    text_1_0 = _compile_every_guide_v1_prompt("1.0")[stage]
+    text_1_2 = _compile_every_guide_v1_prompt("1.2")[stage]
+
+    guidance = _DIAGRAM_GUIDANCE_LINES if stage in _GUIDANCE_STAGES else ()
+    assert text_1_2 == _expected_1_2_without_profile(text_1_0, guidance)
+
+
+@pytest.mark.parametrize("stage", _SCHEMA_REFERENCE_STAGES)
+def test_1_2_prompt_with_profile_is_the_1_1_prompt_with_the_diagram_rules(stage: str) -> None:
+    text_1_1 = _compile_every_guide_v1_prompt("1.1", _MATRIX_PROFILE)[stage]
+    text_1_2 = _compile_every_guide_v1_prompt("1.2", _MATRIX_PROFILE)[stage]
+
+    guidance = (
+        (
+            *_DIAGRAM_GUIDANCE_LINES,
+            _favored_kinds_line("flow", "concept_map"),
+            _FREQUENCY_LINES["frequent"],
+        )
+        if stage in _GUIDANCE_STAGES
+        else ()
+    )
+    assert text_1_2 == _expected_1_2_with_profile(text_1_1, guidance)
+
+
+def test_1_2_spec_outline_qa_and_factcheck_prompts_follow_their_1_0_and_1_1_bytes() -> None:
+    plain_1_0 = _compile_every_guide_v1_prompt("1.0")
+    plain_1_2 = _compile_every_guide_v1_prompt("1.2")
+    profiled_1_1 = _compile_every_guide_v1_prompt("1.1", _MATRIX_PROFILE)
+    profiled_1_2 = _compile_every_guide_v1_prompt("1.2", _MATRIX_PROFILE)
+
+    for stage in ("spec", "outline", "qa", "factcheck"):
+        assert plain_1_2[stage] == plain_1_0[stage].replace('"1.0"', '"1.2"'), stage
+        # No schema reference here: the outline's own "six registered block
+        # types" line is about `interaction_types` and is never versioned.
+        assert profiled_1_2[stage] == _expected_1_2_with_profile(
+            profiled_1_1[stage], schema_reference=False
+        ), stage
+        assert "## Diagram Guidance" not in plain_1_2[stage], stage
+        assert "## Diagram Guidance" not in profiled_1_2[stage], stage
+
+
+@pytest.mark.parametrize("stage", _GUIDE_V1_STAGES)
+def test_1_2_prompt_without_profile_has_no_goal_lines_and_no_private_section(stage: str) -> None:
+    text = _compile_every_guide_v1_prompt("1.2")[stage]
+
+    assert "serves_goals" not in text, stage
+    assert "goal_exclusions" not in text, stage
+    assert "Source schema" not in text, stage
+    assert "## Private Personalization Instructions" not in text, stage
+    assert "authoritative goal" not in text, stage
+
+
+@pytest.mark.parametrize("stage", ("spec", "outline", *_SCHEMA_REFERENCE_STAGES))
+def test_1_2_prompt_with_profile_keeps_goal_annotations_under_the_1_2_name(stage: str) -> None:
+    text = _compile_every_guide_v1_prompt("1.2", _MATRIX_PROFILE)[stage]
+
+    assert "## Private Personalization Instructions" in text, stage
+    assert "- Target guide source schema: `1.2`." in text, stage
+    assert '{"goal-001":"understand systems thinking"}' in text, stage
+    # The goal text lives only in the delimited private mapping.
+    assert text.count("understand systems thinking") == 1, stage
+    if stage not in ("spec", "outline"):
+        assert "- Source schema 1.2 permits optional `serves_goals` arrays" in text, stage
+        assert "Source schema 1.1" not in text, stage
+
+
+@pytest.mark.parametrize("stage", _SCHEMA_REFERENCE_STAGES)
+def test_1_2_schema_reference_names_seven_block_types_and_the_diagram_once(stage: str) -> None:
+    for profile in (None, _MATRIX_PROFILE):
+        text = _compile_every_guide_v1_prompt("1.2", profile)[stage]
+
+        assert "six registered block types" not in text, stage
+        assert "seven registered block types" in text, stage
+        assert "(except `rich_text`/`callout`/`diagram`)" in text, stage
+        assert (
+            "- Use Markdown only inside the designated `markdown` fields, plus inline Markdown in "
+            "a diagram's `caption`, `detail` and comparison cells."
+        ) in text, stage
+        reference = "\n".join(
+            (
+                "  - `reflection`: `outcome_ids`, `prompt`, optional `guidance`, `placeholder`.",
+                *_DIAGRAM_SCHEMA_REFERENCE_LINES,
+                "- `glossary`: a list of `{id, term, definition}`.",
+            )
+        )
+        assert text.count(reference) == 1, stage
+        assert text.count(_DIAGRAM_SCHEMA_REFERENCE_LINES[0]) == 1, stage
+
+
+def test_module_draft_prompt_inserts_the_diagram_reference_exactly_once() -> None:
+    """The module draft versions its schema reference twice (§8.2 rule 4)."""
+
+    text = _compile_every_guide_v1_prompt("1.2")["module_draft"]
+
+    for line in _DIAGRAM_SCHEMA_REFERENCE_LINES:
+        assert text.count(line) == 1, line
+    assert text.count("## Diagram Guidance") == 1
+
+
+@pytest.mark.parametrize("stage", _GUIDE_V1_STAGES)
+def test_diagram_guidance_only_in_1_2_draft_and_module_draft(stage: str) -> None:
+    for profile in (None, _MATRIX_PROFILE):
+        texts_1_2 = _compile_every_guide_v1_prompt("1.2", profile)
+        expected = 1 if stage in _GUIDANCE_STAGES else 0
+        assert texts_1_2[stage].count("## Diagram Guidance") == expected, stage
+        for version in ("1.0", "1.1"):
+            text = _compile_every_guide_v1_prompt(version, profile)[stage]
+            assert "## Diagram Guidance" not in text, (version, stage)
+            assert "`diagram`" not in text, (version, stage)
+
+
+# --- §8.4 profile keyword map ----------------------------------------------
+
+
+def _profile_with_preferences(
+    visual_aids: tuple[str, ...] = (), frequency: str | None = None
+) -> LearnerProfile:
+    return LearnerProfile(
+        id="visual-profile",
+        target_learner="team cohort",
+        learning_preferences=LearnerPreferences(
+            preferred_visual_aids=visual_aids, diagram_frequency=frequency
+        ),
+    )
+
+
+def _diagram_guidance_section(text: str) -> str:
+    assert text.count("## Diagram Guidance\n") == 1
+    start = text.index("## Diagram Guidance\n")
+    end = text.find("\n\n", start)
+    return text[start:] if end == -1 else text[start:end]
+
+
+def _profile_guidance_lines(
+    visual_aids: tuple[str, ...] = (),
+    frequency: str | None = None,
+    stage: str = "draft",
+    blueprint=None,
+) -> list[str]:
+    """The guidance lines after the fixed `_DIAGRAM_GUIDANCE_LINES`."""
+
+    profile = _profile_with_preferences(visual_aids, frequency)
+    text = _compile_every_guide_v1_prompt("1.2", profile, blueprint)[stage]
+    section = _diagram_guidance_section(text).split("\n")
+    assert tuple(section[: len(_DIAGRAM_GUIDANCE_LINES)]) == _DIAGRAM_GUIDANCE_LINES
+    return section[len(_DIAGRAM_GUIDANCE_LINES) :]
+
+
+_KEYWORD_ROWS = {
+    "flow": (
+        "flowchart",
+        "flow chart",
+        "flow diagram",
+        "process",
+        "sequence",
+        "cycle",
+        "loop",
+        "workflow",
+        "pipeline",
+        "step",
+    ),
+    "concept_map": (
+        "concept map",
+        "mind map",
+        "mindmap",
+        "concept diagram",
+        "network",
+        "relationship",
+    ),
+    "comparison": (
+        "comparison",
+        "compare",
+        "table",
+        "matrix",
+        "side-by-side",
+        "side by side",
+        "pros and cons",
+        "versus",
+    ),
+    "timeline": ("timeline", "time line", "chronology", "chronological", "history"),
+}
+
+_KEYWORD_CASES = tuple(
+    (keyword, kind) for kind, keywords in _KEYWORD_ROWS.items() for keyword in keywords
+)
+
+
+@pytest.mark.parametrize(
+    "keyword, kind", _KEYWORD_CASES, ids=[f"{kind}:{kw}" for kw, kind in _KEYWORD_CASES]
+)
+def test_each_visual_aid_keyword_selects_its_diagram_kind(keyword: str, kind: str) -> None:
+    assert _profile_guidance_lines((keyword,)) == [_favored_kinds_line(kind)]
+
+
+@pytest.mark.parametrize(
+    "entry, kind",
+    [
+        ("Flowcharts", "flow"),
+        ("process maps", "flow"),
+        ("processes", "flow"),
+        ("step-by-step walkthroughs", "flow"),
+        ("Concept Maps", "concept_map"),
+        ("mind maps of the topic", "concept_map"),
+        ("comparison tables", "comparison"),
+        ("TABLES", "comparison"),
+        ("simple timelines", "timeline"),
+    ],
+)
+def test_visual_aid_keywords_match_case_insensitively_and_in_plural(entry: str, kind: str) -> None:
+    assert _profile_guidance_lines((entry,)) == [_favored_kinds_line(kind)]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ["decision trees", "processing notes", "stepwise hints", "tablets", "photos", "charts"],
+)
+def test_visual_aid_without_a_keyword_emits_no_line(entry: str) -> None:
+    assert _profile_guidance_lines((entry,)) == []
+
+
+def test_favored_kinds_are_listed_once_in_diagram_kinds_order() -> None:
+    lines = _profile_guidance_lines(
+        ("timelines", "comparison tables", "mind maps", "process flowcharts", "history")
+    )
+
+    assert lines == [_favored_kinds_line("flow", "concept_map", "comparison", "timeline")]
+
+
+def test_example_profile_yields_exactly_the_concept_map_line() -> None:
+    assert _profile_guidance_lines(("concept maps",)) == [
+        "- The learner profile favors these diagram kinds; prefer them where the content has "
+        "that structure: `concept_map`."
+    ]
+
+
+_FREQUENCY_BUCKETS = {
+    "frequent": (
+        "frequent",
+        "frequently",
+        "often",
+        "many",
+        "lots",
+        "every",
+        "most",
+        "heavy",
+        "plenty",
+    ),
+    "occasional": ("occasional", "occasionally", "some", "sometimes", "moderate", "moderately"),
+    "rare": (
+        "rare",
+        "rarely",
+        "seldom",
+        "minimal",
+        "minimally",
+        "few",
+        "sparing",
+        "sparingly",
+        "none",
+        "never",
+        "avoid",
+    ),
+}
+
+_FREQUENCY_CASES = tuple(
+    (word, bucket) for bucket, words in _FREQUENCY_BUCKETS.items() for word in words
+)
+
+
+@pytest.mark.parametrize(
+    "word, bucket", _FREQUENCY_CASES, ids=[f"{b}:{w}" for w, b in _FREQUENCY_CASES]
+)
+def test_each_frequency_word_selects_its_bucket_line(word: str, bucket: str) -> None:
+    assert _profile_guidance_lines(frequency=word) == [_FREQUENCY_LINES[bucket]]
+
+
+@pytest.mark.parametrize(
+    "frequency, bucket",
+    [
+        ("Frequent", "frequent"),
+        ("diagrams in most sections, please", "frequent"),
+        ("Use them sometimes.", "occasional"),
+        ("rarely -- prose first", "rare"),
+    ],
+)
+def test_frequency_words_are_matched_case_insensitively_in_free_text(
+    frequency: str, bucket: str
+) -> None:
+    assert _profile_guidance_lines(frequency=frequency) == [_FREQUENCY_LINES[bucket]]
+
+
+@pytest.mark.parametrize(
+    "frequency",
+    [
+        "often, but sometimes fewer",  # frequent + occasional ("fewer" is not "few")
+        "some, but many in hard modules",  # occasional + frequent
+        "whenever useful",  # no bucket
+        "",
+    ],
+)
+def test_ambiguous_or_unmatched_frequency_emits_no_line(frequency: str) -> None:
+    assert _profile_guidance_lines(frequency=frequency) == []
+
+
+@pytest.mark.parametrize(
+    "frequency",
+    [
+        "not too many",
+        "no more than some",
+        "without many diagrams",
+        "don't use many",
+        "doesn't need lots",
+    ],
+)
+def test_negated_frequency_emits_no_line(frequency: str) -> None:
+    assert _profile_guidance_lines(frequency=frequency) == []
+
+
+def test_kind_line_precedes_the_frequency_line() -> None:
+    assert _profile_guidance_lines(("timelines",), "occasionally") == [
+        _favored_kinds_line("timeline"),
+        _FREQUENCY_LINES["occasional"],
+    ]
+
+
+@pytest.mark.parametrize("stage", _GUIDANCE_STAGES)
+def test_no_profile_string_ever_appears_in_the_guidance_section(stage: str) -> None:
+    visual_aids = ("Zorblax-branded flowcharts", "timelines of Quuxian history", "Plumbus tables")
+    frequency = "often (Zorblax-level)"
+    blueprint = get_blueprint("casebook")
+
+    lines = _profile_guidance_lines(visual_aids, frequency, stage=stage, blueprint=blueprint)
+    section = "\n".join((*_DIAGRAM_GUIDANCE_LINES, *lines))
+
+    assert lines == [
+        _blueprint_kinds_line(blueprint),
+        _favored_kinds_line("flow", "comparison", "timeline"),
+        _FREQUENCY_LINES["frequent"],
+    ]
+    for value in (*visual_aids, frequency, "zorblax", "quux", "plumbus"):
+        assert value.casefold() not in section.casefold(), value
+    # The profile context itself still carries the values verbatim, elsewhere.
+    text = _compile_every_guide_v1_prompt(
+        "1.2", _profile_with_preferences(visual_aids, frequency), blueprint
+    )[stage]
+    assert "Zorblax-branded flowcharts" in text
+
+
+def test_profile_without_visual_preferences_adds_only_generic_guidance() -> None:
+    assert _profile_guidance_lines() == []
+
+
+# --- §8.3 blueprint diagram kinds ------------------------------------------
+
+_BLUEPRINT_DIAGRAM_KINDS = {
+    "conceptual-foundations": ("concept_map", "comparison"),
+    "procedural-skill": ("flow",),
+    "casebook": ("flow", "comparison"),
+    "quantitative-scientific": ("flow", "comparison"),
+    "exam-preparation": ("comparison", "concept_map"),
+    "project-based": ("timeline", "flow"),
+}
+
+
+def test_blueprint_diagram_kinds_is_a_defaulted_last_field() -> None:
+    from dataclasses import MISSING, fields
+
+    from education_pipeline.guides.blueprints import Blueprint
+
+    last = fields(Blueprint)[-1]
+    assert last.name == "diagram_kinds"
+    assert last.default == ()
+    assert last.default_factory is MISSING
+
+
+@pytest.mark.parametrize("blueprint_id", sorted(_BLUEPRINT_DIAGRAM_KINDS))
+def test_blueprint_diagram_kinds_table(blueprint_id: str) -> None:
+    assert get_blueprint(blueprint_id).diagram_kinds == _BLUEPRINT_DIAGRAM_KINDS[blueprint_id]
+
+
+@pytest.mark.parametrize("blueprint_id", sorted(_BLUEPRINT_DIAGRAM_KINDS))
+@pytest.mark.parametrize("stage", _GUIDANCE_STAGES)
+def test_blueprint_line_names_its_diagram_kinds_in_1_2_guidance(
+    blueprint_id: str, stage: str
+) -> None:
+    blueprint = get_blueprint(blueprint_id)
+    text = _compile_every_guide_v1_prompt("1.2", None, blueprint)[stage]
+    kinds = ", ".join(f"`{kind}`" for kind in _BLUEPRINT_DIAGRAM_KINDS[blueprint_id])
+
+    assert _diagram_guidance_section(text) == "\n".join(
+        (
+            *_DIAGRAM_GUIDANCE_LINES,
+            f"- The {blueprint.title} blueprint most often benefits from these kinds: {kinds}.",
+        )
+    )
+
+
+def test_blueprint_line_precedes_profile_lines() -> None:
+    blueprint = get_blueprint("project-based")
+    lines = _profile_guidance_lines(("concept maps",), "rarely", blueprint=blueprint)
+
+    assert lines == [
+        "- The Project-based learning blueprint most often benefits from these kinds: "
+        "`timeline`, `flow`.",
+        _favored_kinds_line("concept_map"),
+        _FREQUENCY_LINES["rare"],
+    ]
+
+
+def test_blueprint_with_no_diagram_kinds_adds_no_blueprint_line() -> None:
+    from dataclasses import replace
+
+    blueprint = replace(get_blueprint("casebook"), diagram_kinds=())
+    text = _compile_every_guide_v1_prompt("1.2", None, blueprint)["draft"]
+
+    assert _diagram_guidance_section(text) == "\n".join(_DIAGRAM_GUIDANCE_LINES)

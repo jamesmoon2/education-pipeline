@@ -216,7 +216,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--legacy-markdown",
         action="store_true",
-        help="create a legacy Markdown run instead of interactive_guide 1.0",
+        help="create a legacy Markdown run instead of an interactive guide",
     )
     p.add_argument(
         "--blueprint",
@@ -486,7 +486,13 @@ def _cmd_create(args: argparse.Namespace) -> int:
         print(f"created run {args.topic_id} (legacy_markdown)")
     else:
         run = store.create_run(args.topic_id, blueprint=args.blueprint)
-        print(f"created run {args.topic_id} (interactive_guide 1.0)")
+        contract = store.content_contract(args.topic_id)
+        label = (
+            f"{contract.kind} {contract.schema_version}"
+            if contract.schema_version is not None
+            else contract.kind
+        )
+        print(f"created run {args.topic_id} ({label})")
         config = store.blueprint_config(args.topic_id)
         if config is not None:
             line = f"blueprint: {config['id']} ({config['source']})"

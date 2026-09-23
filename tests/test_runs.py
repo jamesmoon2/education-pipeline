@@ -42,6 +42,8 @@ from education_pipeline.runs import (
     SUPPORTED_STAGES,
 )
 
+GUIDE_V1_2_CONTENT_TYPE = "application/vnd.education-pipeline.guide+json;version=1.2"
+
 
 def _create_legacy_run(tmp_path: Path, topic_id: str = "systems-thinking") -> RunStore:
     """Create an explicit legacy Markdown run (post Wave 4 Slice C default flip)."""
@@ -277,7 +279,7 @@ def _create_profiled_guide_run(
     profiles.save_profile_toml(profile_id, profile_toml)
     profiles.attach_profile_to_topic(profile_id, topic_id)
     runs = RunStore(tmp_path)
-    runs.create_run(topic_id)
+    runs.create_run(topic_id, content_contract=ContentContract.interactive_guide_v1_1())
     return runs
 
 
@@ -656,7 +658,7 @@ def test_spec_approval_accepts_matching_blueprint_echo(tmp_path: Path) -> None:
     topic_toml = TOPIC_TOML + 'blueprint = "casebook"\n'
     TopicStore(tmp_path).save_topic_toml("systems-thinking", topic_toml)
     runs = RunStore(tmp_path)
-    runs.create_run("systems-thinking")
+    runs.create_run("systems-thinking", content_contract=ContentContract.interactive_guide_v1())
     prompt = runs.write_topic_spec_prompt("systems-thinking")
     contract = dict(
         VALID_SPEC_CONTRACT,
@@ -698,7 +700,11 @@ def test_validate_run_includes_time_budget_calibration_findings(tmp_path: Path) 
 def test_validate_run_flags_blueprint_contract_mismatch_in_draft(tmp_path: Path) -> None:
     TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
     runs = RunStore(tmp_path)
-    runs.create_run("systems-thinking", blueprint="procedural-skill")
+    runs.create_run(
+        "systems-thinking",
+        content_contract=ContentContract.interactive_guide_v1(),
+        blueprint="procedural-skill",
+    )
     spec_contract = dict(VALID_SPEC_CONTRACT, blueprint="procedural-skill")
     prompt = runs.write_topic_spec_prompt("systems-thinking")
     prompt.response_path.write_text(_guide_spec_response(spec_contract), encoding="utf-8")
@@ -1063,13 +1069,13 @@ def test_run_store_creates_run_directories(tmp_path: Path) -> None:
     assert manifest["events"] == []
     assert manifest["content_contract"] == {
         "kind": "interactive_guide",
-        "schema_version": "1.0",
+        "schema_version": "1.2",
     }
-    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1()
+    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_2()
     draft = store.stage_paths("systems-thinking", "draft")
     assert draft.response_path.name == "draft.response.json"
     assert draft.approved_path.name == "draft.json"
-    assert draft.content_type == GUIDE_V1_CONTENT_TYPE
+    assert draft.content_type == GUIDE_V1_2_CONTENT_TYPE
 
 
 def test_explicit_legacy_create_writes_legacy_contract(tmp_path: Path) -> None:
@@ -4253,31 +4259,60 @@ def test_legacy_run_untouched_by_guide_validation(tmp_path: Path) -> None:
 # --- Wave 4 Slice C: new-run default flip and explicit legacy path ----------
 
 
-def test_create_run_default_is_interactive_guide_v1(tmp_path: Path) -> None:
+def test_create_run_default_is_interactive_guide_v1_2(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
     store.create_run("systems-thinking")
 
     manifest = store.read_manifest("systems-thinking")
     assert manifest["content_contract"] == {
         "kind": "interactive_guide",
-        "schema_version": "1.0",
+        "schema_version": "1.2",
     }
-    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1()
+    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_2()
     draft = store.stage_paths("systems-thinking", "draft")
     assert draft.response_path.suffix == ".json"
     assert draft.approved_path.name == "draft.json"
-    assert draft.content_type == GUIDE_V1_CONTENT_TYPE
+    assert draft.content_type == GUIDE_V1_2_CONTENT_TYPE
+    repair = store.stage_paths("systems-thinking", "repair")
+    assert repair.content_type == GUIDE_V1_2_CONTENT_TYPE
+
+
+def test_interactive_guide_v1_2_contract_factory() -> None:
+    assert ContentContract.interactive_guide_v1_2() == ContentContract(
+        kind="interactive_guide", schema_version="1.2"
+    )
+    assert ContentContract.interactive_guide_v1_2().to_manifest() == {
+        "kind": "interactive_guide",
+        "schema_version": "1.2",
+    }
+
+
+def test_unsupported_content_contract_message_names_every_guide_schema(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+
+    with pytest.raises(ConfigError) as excinfo:
+        store.create_run(
+            "systems-thinking",
+            content_contract=ContentContract(kind="interactive_guide", schema_version="2.0"),
+        )
+
+    assert str(excinfo.value).endswith(
+        "supported contracts are legacy_markdown and interactive_guide schemas "
+        "'1.0', '1.1' and '1.2'"
+    )
 
 
 def test_implicit_write_spec_prompt_creates_guide_v1_run(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
     result = store.write_spec_prompt("systems-thinking", title="Systems Thinking")
 
-    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1()
-    assert "education-pipeline-contract+json" in result.prompt_path.read_text(encoding="utf-8")
+    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_2()
+    prompt_text = result.prompt_path.read_text(encoding="utf-8")
+    assert "education-pipeline-contract+json" in prompt_text
+    assert '"guide_schema_version": "1.2"' in prompt_text
     assert store.read_manifest("systems-thinking")["content_contract"] == {
         "kind": "interactive_guide",
-        "schema_version": "1.0",
+        "schema_version": "1.2",
     }
 
 
@@ -4322,11 +4357,11 @@ def test_mixed_workspace_legacy_and_guide_v1_progress_independently(tmp_path: Pa
 
     runs = RunStore(tmp_path)
     runs.create_run("legacy-topic", content_contract=ContentContract.legacy_markdown())
-    runs.create_run("guide-topic")  # default → interactive_guide 1.0
+    runs.create_run("guide-topic")  # default → interactive_guide 1.2
 
     assert runs.list_run_ids() == ("guide-topic", "legacy-topic")
     assert runs.content_contract("legacy-topic") == ContentContract.legacy_markdown()
-    assert runs.content_contract("guide-topic") == ContentContract.interactive_guide_v1()
+    assert runs.content_contract("guide-topic") == ContentContract.interactive_guide_v1_2()
 
     # Drive legacy fully to finalized while guide sits mid-lifecycle.
     _drive_all_stages_to_approved(runs, "legacy-topic", repair_body="# Legacy Topic\n")
@@ -4354,29 +4389,79 @@ def test_read_plan_overrides_returns_empty_dict_for_fresh_run(tmp_path: Path) ->
 # --- Personalization Wave 2: source 1.1 trace lifecycle ---------------------
 
 
-def test_profiled_new_run_selects_1_1_but_existing_1_0_is_immutable(
-    tmp_path: Path,
-) -> None:
-    profiled = _create_profiled_guide_run(tmp_path / "new")
-    assert profiled.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_1()
-    assert profiled.read_manifest("systems-thinking")["content_contract"] == {
-        "kind": "interactive_guide",
-        "schema_version": "1.1",
-    }
-    draft = profiled.stage_paths("systems-thinking", "draft")
-    repair = profiled.stage_paths("systems-thinking", "repair")
-    assert draft.content_type.endswith("version=1.1")
-    assert repair.content_type.endswith("version=1.1")
-    assert GUIDE_V1_CONTENT_TYPE.endswith("version=1.0")
+def _create_profiled_default_run(root: Path) -> RunStore:
+    """A profiled run created with no explicit contract (the default)."""
 
-    old_root = tmp_path / "old"
-    old = _create_guide_run(old_root)
-    profiles = ProfileStore(old_root)
+    TopicStore(root).save_topic_toml("systems-thinking", TOPIC_TOML)
+    profiles = ProfileStore(root)
     profiles.save_profile_toml("personalized-profile", PERSONALIZED_PROFILE_TOML)
     profiles.attach_profile_to_topic("personalized-profile", "systems-thinking")
-    old.create_run("systems-thinking")
-    assert old.content_contract("systems-thinking") == ContentContract.interactive_guide_v1()
-    assert old.stage_paths("systems-thinking", "draft").content_type == GUIDE_V1_CONTENT_TYPE
+    runs = RunStore(root)
+    runs.create_run("systems-thinking")
+    return runs
+
+
+def test_new_runs_select_1_2_with_or_without_profile_and_existing_manifests_are_immutable(
+    tmp_path: Path,
+) -> None:
+    profiled = _create_profiled_default_run(tmp_path / "profiled")
+    TopicStore(tmp_path / "plain").save_topic_toml("systems-thinking", TOPIC_TOML)
+    plain = RunStore(tmp_path / "plain")
+    plain.create_run("systems-thinking")
+    for store in (profiled, plain):
+        assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_2()
+        assert store.read_manifest("systems-thinking")["content_contract"] == {
+            "kind": "interactive_guide",
+            "schema_version": "1.2",
+        }
+        draft = store.stage_paths("systems-thinking", "draft")
+        repair = store.stage_paths("systems-thinking", "repair")
+        assert draft.content_type == GUIDE_V1_2_CONTENT_TYPE
+        assert repair.content_type == GUIDE_V1_2_CONTENT_TYPE
+    assert GUIDE_V1_CONTENT_TYPE.endswith("version=1.0")
+
+    # An existing 1.0 or 1.1 manifest is untouched by a later profile attach
+    # and a contract-less create_run.
+    for name, contract, content_type in (
+        ("old-1-0", ContentContract.interactive_guide_v1(), GUIDE_V1_CONTENT_TYPE),
+        (
+            "old-1-1",
+            ContentContract.interactive_guide_v1_1(),
+            "application/vnd.education-pipeline.guide+json;version=1.1",
+        ),
+    ):
+        root = tmp_path / name
+        TopicStore(root).save_topic_toml("systems-thinking", TOPIC_TOML)
+        old = RunStore(root)
+        old.create_run("systems-thinking", content_contract=contract)
+        manifest_before = (root / "runs" / "systems-thinking" / "manifest.json").read_bytes()
+        profiles = ProfileStore(root)
+        profiles.save_profile_toml("personalized-profile", PERSONALIZED_PROFILE_TOML)
+        profiles.attach_profile_to_topic("personalized-profile", "systems-thinking")
+        old.create_run("systems-thinking")
+        assert old.content_contract("systems-thinking") == contract
+        assert old.stage_paths("systems-thinking", "draft").content_type == content_type
+        assert (
+            root / "runs" / "systems-thinking" / "manifest.json"
+        ).read_bytes() == manifest_before
+
+
+def test_profiled_prompt_and_response_contract_propagate_schema_1_2(tmp_path: Path) -> None:
+    runs = _create_profiled_default_run(tmp_path)
+    spec = runs.write_topic_spec_prompt("systems-thinking")
+    spec_text = spec.prompt_path.read_text(encoding="utf-8")
+    assert '"guide_schema_version": "1.2"' in spec_text
+    assert "- Target guide source schema: `1.2`." in spec_text
+    assert "goal-001" in spec_text
+
+    spec.response_path.write_text(
+        _guide_spec_response(dict(VALID_SPEC_CONTRACT, guide_schema_version="1.2")),
+        encoding="utf-8",
+    )
+    runs.approve_stage("systems-thinking", "spec")
+    outline = runs.write_outline_prompt("systems-thinking")
+    assert "goal-001" in outline.prompt_path.read_text(encoding="utf-8")
+    assert runs.stage_paths("systems-thinking", "draft").content_type == GUIDE_V1_2_CONTENT_TYPE
 
 
 def test_profiled_prompt_and_response_contract_propagate_schema_1_1(tmp_path: Path) -> None:
@@ -5029,3 +5114,223 @@ def test_export_state_is_stale_for_an_unreadable_export_report(tmp_path: Path) -
 
     sidecar_path.write_bytes(b"\xff\xfe not utf-8")
     assert runs.export_state(tid) == "stale"
+
+
+# --- Decision 13: an approved draft/repair declares the run's schema version --
+#
+# Spec: docs/superpowers/specs/2026-09-23-diagram-block-design.md, decision 13.
+
+_RUN_CONTRACTS = {
+    "1.0": ContentContract.interactive_guide_v1,
+    "1.1": ContentContract.interactive_guide_v1_1,
+    "1.2": lambda: ContentContract.interactive_guide_v1_2(),
+}
+
+_OTHER_SUPPORTED_VERSIONS = tuple(
+    (run_version, declared)
+    for run_version in ("1.0", "1.1", "1.2")
+    for declared in ("1.0", "1.1", "1.2")
+    if declared != run_version
+)
+
+
+def _guide_fixture_declaring(version: object = None, *, drop: bool = False) -> str:
+    data = json.loads(GUIDE_FIXTURE)
+    if drop:
+        del data["schema_version"]
+    else:
+        data["schema_version"] = version
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _create_versioned_guide_run(tmp_path: Path, run_version: str) -> RunStore:
+    TopicStore(tmp_path).save_topic_toml("systems-thinking", TOPIC_TOML)
+    runs = RunStore(tmp_path)
+    runs.create_run("systems-thinking", content_contract=_RUN_CONTRACTS[run_version]())
+    return runs
+
+
+def _drive_versioned_guide_to_draft_prompt(runs: RunStore, run_version: str) -> Path:
+    spec = runs.write_topic_spec_prompt("systems-thinking")
+    spec.response_path.write_text(
+        _guide_spec_response(dict(VALID_SPEC_CONTRACT, guide_schema_version=run_version)),
+        encoding="utf-8",
+    )
+    runs.approve_stage("systems-thinking", "spec")
+    _drive_guide_outline_to_approved(runs, "systems-thinking")
+    return runs.write_draft_prompt("systems-thinking").response_path
+
+
+def _drive_versioned_guide_to_repair_prompt(runs: RunStore, run_version: str) -> Path:
+    _drive_versioned_guide_through_factcheck(runs, run_version)
+    return runs.write_repair_prompt("systems-thinking").response_path
+
+
+def _drive_versioned_guide_through_factcheck(runs: RunStore, run_version: str) -> None:
+    draft_response = _drive_versioned_guide_to_draft_prompt(runs, run_version)
+    draft_response.write_text(_guide_fixture_declaring(run_version), encoding="utf-8")
+    runs.approve_stage("systems-thinking", "draft")
+    runs.validate_run("systems-thinking", "draft")
+    qa = runs.write_qa_prompt("systems-thinking")
+    qa.response_path.write_text("# QA findings\n\nNo major issues.\n", encoding="utf-8")
+    runs.approve_stage("systems-thinking", "qa")
+    fc = runs.write_factcheck_prompt("systems-thinking")
+    fc.response_path.write_text(FACTCHECK_FIXTURE, encoding="utf-8")
+    runs.approve_stage("systems-thinking", "factcheck")
+
+
+def _version_conflict_message(stage: str, got: str, expected: str) -> str:
+    return (
+        f"cannot approve {stage} for guide run 'systems-thinking': guide schema_version "
+        f"{got!r} conflicts with the immutable run content contract: expected {expected!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "run_version, declared",
+    _OTHER_SUPPORTED_VERSIONS,
+    ids=[f"run-{r}-declares-{d}" for r, d in _OTHER_SUPPORTED_VERSIONS],
+)
+def test_draft_approval_refuses_another_supported_schema_version(
+    tmp_path: Path, run_version: str, declared: str
+) -> None:
+    runs = _create_versioned_guide_run(tmp_path, run_version)
+    response = _drive_versioned_guide_to_draft_prompt(runs, run_version)
+    response.write_text(_guide_fixture_declaring(declared), encoding="utf-8")
+
+    with pytest.raises(ConfigError) as excinfo:
+        runs.approve_stage("systems-thinking", "draft")
+
+    assert str(excinfo.value) == _version_conflict_message("draft", declared, run_version)
+    assert runs.stage_status("systems-thinking", "draft").approved is False
+    assert not runs.stage_paths("systems-thinking", "draft").approved_path.exists()
+
+
+@pytest.mark.parametrize(
+    "run_version, declared",
+    _OTHER_SUPPORTED_VERSIONS,
+    ids=[f"run-{r}-declares-{d}" for r, d in _OTHER_SUPPORTED_VERSIONS],
+)
+def test_unscoped_repair_approval_refuses_another_supported_schema_version(
+    tmp_path: Path, run_version: str, declared: str
+) -> None:
+    runs = _create_versioned_guide_run(tmp_path, run_version)
+    response = _drive_versioned_guide_to_repair_prompt(runs, run_version)
+    response.write_text(_guide_fixture_declaring(declared), encoding="utf-8")
+
+    with pytest.raises(ConfigError) as excinfo:
+        runs.approve_stage("systems-thinking", "repair")
+
+    assert str(excinfo.value) == _version_conflict_message("repair", declared, run_version)
+    assert runs.stage_status("systems-thinking", "repair").approved is False
+
+
+@pytest.mark.parametrize("run_version", ["1.0", "1.1"])
+def test_draft_and_repair_declaring_the_run_version_still_approve(
+    tmp_path: Path, run_version: str
+) -> None:
+    runs = _create_versioned_guide_run(tmp_path, run_version)
+    response = _drive_versioned_guide_to_repair_prompt(runs, run_version)
+    response.write_text(_guide_fixture_declaring(run_version), encoding="utf-8")
+
+    runs.approve_stage("systems-thinking", "repair")
+
+    assert runs.stage_status("systems-thinking", "draft").approved is True
+    assert runs.stage_status("systems-thinking", "repair").approved is True
+
+
+_LEFT_TO_VALIDATION = {
+    "unsupported-2.0": _guide_fixture_declaring("2.0"),
+    "unparseable": '{"schema_version": "1.2", "course": ',
+    "non-object": '["1.2"]',
+    "missing-version": _guide_fixture_declaring(drop=True),
+    "non-string-version": _guide_fixture_declaring(1.2),
+}
+
+
+@pytest.mark.parametrize("run_version", ["1.0", "1.1"])
+@pytest.mark.parametrize("case", sorted(_LEFT_TO_VALIDATION))
+def test_draft_approval_leaves_unsupported_or_unreadable_versions_to_validation(
+    tmp_path: Path, run_version: str, case: str
+) -> None:
+    runs = _create_versioned_guide_run(tmp_path, run_version)
+    response = _drive_versioned_guide_to_draft_prompt(runs, run_version)
+    response.write_text(_LEFT_TO_VALIDATION[case], encoding="utf-8")
+
+    runs.approve_stage("systems-thinking", "draft")
+
+    assert runs.stage_status("systems-thinking", "draft").approved is True
+
+
+@pytest.mark.parametrize("run_version", ["1.0", "1.1"])
+@pytest.mark.parametrize("case", ["unsupported-2.0", "unparseable"])
+def test_repair_approval_leaves_unsupported_or_unreadable_versions_to_validation(
+    tmp_path: Path, run_version: str, case: str
+) -> None:
+    runs = _create_versioned_guide_run(tmp_path, run_version)
+    response = _drive_versioned_guide_to_repair_prompt(runs, run_version)
+    response.write_text(_LEFT_TO_VALIDATION[case], encoding="utf-8")
+
+    runs.approve_stage("systems-thinking", "repair")
+
+    assert runs.stage_status("systems-thinking", "repair").approved is True
+    # Validation, not approval, blocks it.
+    gate = runs.validate_and_gate("systems-thinking", "final")
+    assert not gate.gate_open
+
+
+def _diagram_block_from_fixture() -> dict:
+    data = json.loads(
+        Path("tests/fixtures/guides/feedback-loops.diagrams.guide.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    block = next(
+        block
+        for module in data["modules"]
+        for section in module["sections"]
+        for block in section["blocks"]
+        if block["type"] == "diagram" and block["kind"] == "flow"
+    )
+    block = {key: value for key, value in block.items() if key not in {"outcome_ids", "source_ids"}}
+    block["id"] = "spliced-growth-loop-flow"
+    return block
+
+
+def test_scoped_repair_fragment_with_a_diagram_is_refused_by_the_splice_on_a_1_1_run(
+    tmp_path: Path,
+) -> None:
+    runs = _create_versioned_guide_run(tmp_path, "1.1")
+    _drive_versioned_guide_through_factcheck(runs, "1.1")
+    prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+    module = json.loads(_revised_module_json(0))
+    module["sections"][0]["blocks"].append(_diagram_block_from_fixture())
+    # A scoped fragment carries no schema_version, so decision 13 is a no-op;
+    # the splice re-parses under the base draft's 1.1 and refuses the diagram.
+    assert "schema_version" not in module
+    prompt.response_path.write_text(json.dumps(module, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ConfigError) as excinfo:
+        runs.approve_stage("systems-thinking", "repair")
+
+    message = str(excinfo.value)
+    assert message.startswith(
+        "cannot approve module-scoped repair for guide run 'systems-thinking':"
+    )
+    assert "schema.unknown_block_type" in message
+    assert runs.stage_status("systems-thinking", "repair").approved is False
+
+
+def test_scoped_repair_fragment_with_a_diagram_splices_into_a_1_2_run(tmp_path: Path) -> None:
+    runs = _create_versioned_guide_run(tmp_path, "1.2")
+    _drive_versioned_guide_through_factcheck(runs, "1.2")
+    prompt = runs.write_module_repair_prompt("systems-thinking", "loop-basics")
+    module = json.loads(_revised_module_json(0))
+    module["sections"][0]["blocks"].append(_diagram_block_from_fixture())
+    prompt.response_path.write_text(json.dumps(module, ensure_ascii=False), encoding="utf-8")
+
+    approved = runs.approve_stage("systems-thinking", "repair")
+
+    merged = json.loads(approved.read_text(encoding="utf-8"))
+    assert merged["schema_version"] == "1.2"
+    assert merged["modules"][0]["sections"][0]["blocks"][-1]["type"] == "diagram"

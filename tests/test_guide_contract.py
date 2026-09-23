@@ -69,7 +69,7 @@ def test_extract_spec_contract_returns_validated_dict() -> None:
     assert data == VALID_SPEC_CONTRACT
 
 
-@pytest.mark.parametrize("guide_schema_version", ["1.0", "1.1"])
+@pytest.mark.parametrize("guide_schema_version", ["1.0", "1.1", "1.2"])
 def test_spec_and_combined_contract_preserve_supported_guide_schema_versions(
     guide_schema_version: str,
 ) -> None:
@@ -129,6 +129,16 @@ def test_extract_spec_contract_rejects_invalid_fields(mutation: dict, match: str
     contract = {**VALID_SPEC_CONTRACT, **mutation}
     with pytest.raises(ContractError, match=match):
         extract_spec_contract(_spec_markdown(contract))
+
+
+def test_extract_spec_contract_unsupported_version_message_names_every_supported_version() -> None:
+    contract = {**VALID_SPEC_CONTRACT, "guide_schema_version": "2.0"}
+    with pytest.raises(ContractError) as excinfo:
+        extract_spec_contract(_spec_markdown(contract))
+
+    assert str(excinfo.value) == (
+        "spec contract guide_schema_version must be one of ['1.0', '1.1', '1.2'], got '2.0'"
+    )
 
 
 def test_extract_spec_contract_rejects_unknown_field() -> None:

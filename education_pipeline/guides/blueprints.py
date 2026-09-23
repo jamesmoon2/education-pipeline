@@ -30,6 +30,9 @@ class Blueprint:
     draft_lines: tuple[str, ...]
     qa_rubric_lines: tuple[str, ...]
     repair_lines: tuple[str, ...]
+    #: Diagram kinds this blueprint most often benefits from; read only by
+    #: schema 1.2 draft guidance, never by 1.0/1.1 prompts.
+    diagram_kinds: tuple[str, ...] = ()
 
 
 _BLUEPRINTS: tuple[Blueprint, ...] = (
@@ -80,6 +83,7 @@ _BLUEPRINTS: tuple[Blueprint, ...] = (
             "Preserve the concept sequencing; a repaired module must not use a "
             "concept before the module that teaches it.",
         ),
+        diagram_kinds=("concept_map", "comparison"),
     ),
     Blueprint(
         id="procedural-skill",
@@ -122,6 +126,7 @@ _BLUEPRINTS: tuple[Blueprint, ...] = (
             "Repaired procedures must remain complete, ordered, and replayable; "
             "never compress steps away.",
         ),
+        diagram_kinds=("flow",),
     ),
     Blueprint(
         id="casebook",
@@ -169,6 +174,7 @@ _BLUEPRINTS: tuple[Blueprint, ...] = (
             "Repaired scenarios must keep realistic fact patterns and "
             "defensible distractors.",
         ),
+        diagram_kinds=("flow", "comparison"),
     ),
     Blueprint(
         id="quantitative-scientific",
@@ -215,6 +221,7 @@ _BLUEPRINTS: tuple[Blueprint, ...] = (
             "Repaired computations must stay fully worked with units carried "
             "through every step.",
         ),
+        diagram_kinds=("flow", "comparison"),
     ),
     Blueprint(
         id="exam-preparation",
@@ -253,6 +260,7 @@ _BLUEPRINTS: tuple[Blueprint, ...] = (
             "Repaired practice items must keep the assessment format and "
             "per-answer rationales.",
         ),
+        diagram_kinds=("comparison", "concept_map"),
     ),
     Blueprint(
         id="project-based",
@@ -297,6 +305,7 @@ _BLUEPRINTS: tuple[Blueprint, ...] = (
             "A repaired module must still advance the deliverable and end with "
             "its checkable milestone.",
         ),
+        diagram_kinds=("timeline", "flow"),
     ),
 )
 

@@ -30,6 +30,7 @@ from education_pipeline.stage_graph import (
 from education_pipeline.guides import (
     ContractError,
     DEFAULT_GUIDE_SCHEMA_VERSION,
+    SUPPORTED_GUIDE_SCHEMA_VERSIONS,
     apply_waivers,
     canonical_guide_bytes,
     check_contract_conflict,
@@ -71,7 +72,6 @@ from education_pipeline.guides.blueprints import (
 from education_pipeline.atomic_io import read_bytes_retrying
 from education_pipeline.workspace_lock import workspace_lock
 from education_pipeline.workspace import (
-    ProfileStore,
     TopicStore,
     # Run ids are workspace artifact ids: one validator, one message, no
     # matter which surface rejected the id (``workspace`` is upstream of
@@ -197,6 +197,10 @@ class ContentContract:
     @classmethod
     def interactive_guide_v1_1(cls) -> ContentContract:
         return cls(kind="interactive_guide", schema_version="1.1")
+
+    @classmethod
+    def interactive_guide_v1_2(cls) -> ContentContract:
+        return cls(kind="interactive_guide", schema_version="1.2")
 
     def to_manifest(self) -> dict[str, str]:
         value = {"kind": self.kind}
@@ -464,9 +468,9 @@ class RunStore(
     ) -> Path:
         """Create the run directory tree and initialize a manifest if needed.
 
-        Newly created manifests default to interactive-guide schema ``1.1``
-        when an attached profile snapshot already exists, otherwise ``1.0``,
-        when ``content_contract`` is omitted. Pass
+        Newly created manifests default to interactive-guide schema ``1.2``
+        (with or without an attached profile) when ``content_contract`` is
+        omitted; existing manifests keep their recorded version. Pass
         :meth:`ContentContract.legacy_markdown` for an explicit legacy Markdown
         run. When a manifest already exists and ``content_contract`` is omitted,
         the existing run is left unchanged (including pre-existing manifests
@@ -496,11 +500,7 @@ class RunStore(
                 requested = (
                     content_contract
                     if content_contract is not None
-                    else (
-                        ContentContract.interactive_guide_v1_1()
-                        if ProfileStore(self.root).topic_profile_snapshot_path(run.name).is_file()
-                        else ContentContract.interactive_guide_v1()
-                    )
+                    else ContentContract.interactive_guide_v1_2()
                 )
                 _validate_content_contract(requested)
                 manifest = {
@@ -2010,6 +2010,32 @@ class RunStore(
                 f"cannot approve {stage} for guide run {topic_id!r}: {exc}"
             ) from exc
 
+    def _validate_guide_version(self, topic_id: str, stage: str, response_text: str) -> None:
+        """Refuse a draft/repair guide declaring another supported schema version.
+
+        Decision 13: a guide whose ``schema_version`` is a supported version
+        other than the run's immutable contract cannot be approved. Anything
+        else (undecodable, non-object, missing, non-string, or unsupported
+        version) is left to validation, which reports it as a blocker.
+        """
+
+        try:
+            data = json.loads(response_text)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        declared = data.get("schema_version")
+        if not isinstance(declared, str) or declared not in SUPPORTED_GUIDE_SCHEMA_VERSIONS:
+            return
+        expected = self.content_contract(topic_id).schema_version
+        if declared != expected:
+            raise ConfigError(
+                f"cannot approve {stage} for guide run {topic_id!r}: guide schema_version "
+                f"{declared!r} conflicts with the immutable run content contract: "
+                f"expected {expected!r}"
+            )
+
 
     def _manifest_events(self, topic_id: str) -> list[dict]:
         try:
@@ -2265,10 +2291,12 @@ def _validate_content_contract(contract: ContentContract) -> None:
         return
     if contract == ContentContract.interactive_guide_v1_1():
         return
+    if contract == ContentContract.interactive_guide_v1_2():
+        return
     raise ConfigError(
         "unsupported content contract "
         f"{contract.kind!r} schema {contract.schema_version!r}; supported contracts are "
-        "legacy_markdown and interactive_guide schemas '1.0' and '1.1'"
+        "legacy_markdown and interactive_guide schemas '1.0', '1.1' and '1.2'"
     )
 
 
@@ -2277,6 +2305,8 @@ def _guide_content_type(schema_version: str | None) -> str:
         return GUIDE_V1_CONTENT_TYPE
     if schema_version == "1.1":
         return "application/vnd.education-pipeline.guide+json;version=1.1"
+    if schema_version == "1.2":
+        return "application/vnd.education-pipeline.guide+json;version=1.2"
     raise ConfigError(f"unsupported interactive guide schema {schema_version!r}")
 
 

@@ -547,13 +547,42 @@ def test_create_command_defaults_to_interactive_guide(
     ws = tmp_path / "ws"
     assert _run(ws, "create", "systems-thinking") == 0
     out = capsys.readouterr().out
-    assert "created run systems-thinking (interactive_guide 1.0)" in out
+    assert "created run systems-thinking (interactive_guide 1.2)" in out
     runs = RunStore(ws)
-    assert runs.content_contract("systems-thinking") == ContentContract.interactive_guide_v1()
+    assert runs.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_2()
     assert runs.read_manifest("systems-thinking")["content_contract"] == {
         "kind": "interactive_guide",
-        "schema_version": "1.0",
+        "schema_version": "1.2",
     }
+
+
+def test_create_command_prints_the_runs_actual_schema_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = tmp_path / "ws"
+    RunStore(ws).create_run(
+        "systems-thinking", content_contract=ContentContract.interactive_guide_v1_1()
+    )
+    capsys.readouterr()
+
+    assert _run(ws, "create", "systems-thinking") == 0
+    out = capsys.readouterr().out
+    assert "created run systems-thinking (interactive_guide 1.1)" in out
+    assert RunStore(ws).content_contract("systems-thinking") == (
+        ContentContract.interactive_guide_v1_1()
+    )
+
+
+def test_create_command_help_does_not_name_a_guide_schema_version(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from education_pipeline.cli import main
+
+    with pytest.raises(SystemExit):
+        main(["create", "--help"])
+    out = capsys.readouterr().out
+    assert "create a legacy Markdown run instead of an interactive guide" in " ".join(out.split())
+    assert "interactive_guide 1.0" not in out
 
 
 def test_create_command_legacy_markdown(

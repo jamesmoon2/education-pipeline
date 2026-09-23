@@ -10,7 +10,10 @@ from typing import Sequence
 from education_pipeline.config import ConfigError
 from education_pipeline.guides.blueprints import Blueprint
 from education_pipeline.guides.model import (
+    ANNOTATION_SCHEMA_VERSIONS,
     DEFAULT_GUIDE_SCHEMA_VERSION,
+    DIAGRAM_KINDS,
+    DIAGRAM_SCHEMA_VERSIONS,
     SUPPORTED_GUIDE_SCHEMA_VERSIONS,
     Guide,
     Module,
@@ -688,9 +691,58 @@ def _guide_schema_version(value: object) -> str:
     return value
 
 
+_DIAGRAM_SCHEMA_REFERENCE_LINES = (
+    "  - `diagram` (never interactive): `kind`, `title`, optional `caption`, `outcome_ids`, "
+    "`source_ids`, plus the fields of its kind:",
+    "    - `flow`: `nodes` (2-12 of `{id, label, detail?}`) and `edges` (1-16 of "
+    "`{from, to, label?}`); cycles are allowed and are drawn as loops.",
+    "    - `concept_map`: `hub` (one node id), `nodes` (2-12, including the hub) and `edges` "
+    "(1-12); every node must connect to the hub through edges.",
+    "    - `timeline`: `events` (2-10 of `{id, when, label, detail?}`), drawn in the given order.",
+    "    - `comparison`: `items` (2-4 columns of `{id, label}`) and `criteria` (1-8 rows of "
+    "`{id, label, values}`); `values` maps every item id to exactly one cell.",
+    "    - Limits: `title` 120 characters, `label` 48, edge `label` and `when` 32, `detail`, "
+    "`caption` and cells 240; every diagram string is a single line.",
+    "    - `title`, labels and `when` are plain text; `caption`, `detail` and cells allow inline "
+    "Markdown only. Ids inside a diagram only need to be unique within that diagram.",
+    "    - A diagram is data, never drawing instructions: never supply coordinates, sizes, "
+    "colors, SVG, or CSS.",
+)
+
+#: Schema 1.2 line rewrites (spec §8.2), applied in order to each versioned line.
+#: Each is idempotent, so versioning an already-versioned block is a no-op.
+_DIAGRAM_LINE_REWRITES = (
+    ("six registered block types", "seven registered block types"),
+    ("(except `rich_text`/`callout`)", "(except `rich_text`/`callout`/`diagram`)"),
+    (
+        "Use Markdown only inside the designated `markdown` fields.",
+        "Use Markdown only inside the designated `markdown` fields, plus inline Markdown in a "
+        "diagram's `caption`, `detail` and comparison cells.",
+    ),
+)
+
+_REFLECTION_REFERENCE_PREFIX = "  - `reflection`:"
+
+
+def _diagram_versioned_lines(lines: tuple[str, ...]) -> tuple[str, ...]:
+    out: list[str] = []
+    for index, line in enumerate(lines):
+        for old, new in _DIAGRAM_LINE_REWRITES:
+            line = line.replace(old, new)
+        out.append(line)
+        if line.startswith(_REFLECTION_REFERENCE_PREFIX):
+            following = lines[index + 1] if index + 1 < len(lines) else None
+            if following != _DIAGRAM_SCHEMA_REFERENCE_LINES[0]:
+                out.extend(_DIAGRAM_SCHEMA_REFERENCE_LINES)
+    return tuple(out)
+
+
 def _versioned_lines(lines: tuple[str, ...], guide_schema_version: str) -> tuple[str, ...]:
     version = _guide_schema_version(guide_schema_version)
-    return tuple(line.replace('"1.0"', f'"{version}"') for line in lines)
+    versioned = tuple(line.replace('"1.0"', f'"{version}"') for line in lines)
+    if version in DIAGRAM_SCHEMA_VERSIONS:
+        return _diagram_versioned_lines(versioned)
+    return versioned
 
 
 def _guide_spec_contract_lines(guide_schema_version: str) -> tuple[str, ...]:
@@ -698,14 +750,22 @@ def _guide_spec_contract_lines(guide_schema_version: str) -> tuple[str, ...]:
 
 
 def _guide_json_output_lines(
-    lines: tuple[str, ...], guide_schema_version: str
+    lines: tuple[str, ...], guide_schema_version: str, *, profile_present: bool
 ) -> tuple[str, ...]:
+    """Version ``lines`` and append the goal-annotation lines where they apply.
+
+    Never for 1.0; always for 1.1 (so a 1.1 run whose profile was detached
+    keeps its bytes); for diagram-era versions only when a profile is present.
+    """
+
     versioned = _versioned_lines(lines, guide_schema_version)
     if guide_schema_version == DEFAULT_GUIDE_SCHEMA_VERSION:
         return versioned
+    if guide_schema_version in DIAGRAM_SCHEMA_VERSIONS and not profile_present:
+        return versioned
     return (
         *versioned,
-        "- Source schema 1.1 permits optional `serves_goals` arrays on outcomes and modules and optional "
+        f"- Source schema {guide_schema_version} permits optional `serves_goals` arrays on outcomes and modules and optional "
         "`goal_exclusions` records on course metadata; omit each field when empty.",
         "- `goal_exclusions` is a list of records exactly `{goal_id, reason}`; `goal_id` must be an opaque "
         "authoritative goal id and `reason` must be a non-empty string.",
@@ -730,7 +790,7 @@ def _guide_contract_text_and_version(guide_contract: bytes) -> tuple[str, str]:
 def _private_personalization_lines(
     profile: LearnerProfile | None, guide_schema_version: str
 ) -> tuple[str, ...]:
-    if profile is None or guide_schema_version != "1.1":
+    if profile is None or guide_schema_version not in ANNOTATION_SCHEMA_VERSIONS:
         return ()
 
     goals = authoritative_goals(profile)
@@ -782,7 +842,7 @@ def _profile_without_authoritative_goals(
 ) -> LearnerProfile | None:
     """Keep goal text solely in the delimited private mapping for 1.1 prompts."""
 
-    if profile is None or guide_schema_version != "1.1":
+    if profile is None or guide_schema_version not in ANNOTATION_SCHEMA_VERSIONS:
         return profile
     return replace(profile, learning_goals=())
 
@@ -921,12 +981,162 @@ def _guide_draft_sections(
     )
 
 
+_DIAGRAM_GUIDANCE_LINES = (
+    "## Diagram Guidance",
+    "A `diagram` shows structure that the surrounding prose explains; it never replaces the "
+    "explanation and never counts as an interaction.",
+    "- Use `flow` for a process, a sequence of stages, or a chain of causes, including a loop "
+    "that feeds back into an earlier step.",
+    "- Use `concept_map` for one central idea and the ideas directly related to it, with a "
+    "short verb phrase on each connection.",
+    "- Use `comparison` to contrast two to four options against the same criteria.",
+    "- Use `timeline` when the order of events or phases in time is the point.",
+    "- No module needs a diagram. Add one only where the structure is easier to see than to "
+    "read, and keep it small: short labels, with longer explanation in `detail` or in the prose.",
+    "- Give every diagram a `title` that says what it shows; the learner-facing text "
+    "alternative is derived from the title and the data.",
+)
+
+#: Spec §8.4: fixed keyword map from free-text visual-aid preferences to kinds.
+_VISUAL_AID_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "flow": (
+        "flowchart",
+        "flow chart",
+        "flow diagram",
+        "process",
+        "sequence",
+        "cycle",
+        "loop",
+        "workflow",
+        "pipeline",
+        "step",
+    ),
+    "concept_map": (
+        "concept map",
+        "mind map",
+        "mindmap",
+        "concept diagram",
+        "network",
+        "relationship",
+    ),
+    "comparison": (
+        "comparison",
+        "compare",
+        "table",
+        "matrix",
+        "side-by-side",
+        "side by side",
+        "pros and cons",
+        "versus",
+    ),
+    "timeline": ("timeline", "time line", "chronology", "chronological", "history"),
+}
+
+_DIAGRAM_FREQUENCY_BUCKETS: tuple[tuple[str, frozenset[str]], ...] = (
+    (
+        "frequent",
+        frozenset(
+            {"frequent", "frequently", "often", "many", "lots", "every", "most", "heavy", "plenty"}
+        ),
+    ),
+    (
+        "occasional",
+        frozenset({"occasional", "occasionally", "some", "sometimes", "moderate", "moderately"}),
+    ),
+    (
+        "rare",
+        frozenset(
+            {
+                "rare",
+                "rarely",
+                "seldom",
+                "minimal",
+                "minimally",
+                "few",
+                "sparing",
+                "sparingly",
+                "none",
+                "never",
+                "avoid",
+            }
+        ),
+    ),
+)
+
+_DIAGRAM_FREQUENCY_NEGATIONS = frozenset({"not", "no", "without", "don", "doesn"})
+
+_DIAGRAM_FREQUENCY_LINES = {
+    "frequent": "- The learner profile asks for frequent diagrams: consider one in most modules, "
+    "wherever the content has structure a picture can show.",
+    "occasional": "- The learner profile asks for occasional diagrams: use one where it clearly "
+    "helps, and not in every module.",
+    "rare": "- The learner profile asks for few diagrams: use one only where the structure is hard "
+    "to follow in prose.",
+}
+
+
+def _backticked_kinds(kinds: Sequence[str]) -> str:
+    return ", ".join(f"`{kind}`" for kind in kinds)
+
+
+def _preferred_diagram_kinds(visual_aids: Sequence[str]) -> tuple[str, ...]:
+    texts = [entry.casefold() for entry in visual_aids]
+    return tuple(
+        kind
+        for kind in DIAGRAM_KINDS
+        if any(
+            re.search(rf"\b{re.escape(keyword)}(?:s|es)?\b", text)
+            for keyword in _VISUAL_AID_KEYWORDS[kind]
+            for text in texts
+        )
+    )
+
+
+def _diagram_frequency_bucket(value: str | None) -> str | None:
+    if value is None:
+        return None
+    words = set(re.findall(r"[a-z]+", value.casefold()))
+    if words & _DIAGRAM_FREQUENCY_NEGATIONS:
+        return None
+    matched = [bucket for bucket, bucket_words in _DIAGRAM_FREQUENCY_BUCKETS if words & bucket_words]
+    return matched[0] if len(matched) == 1 else None
+
+
+def _diagram_guidance_lines(
+    blueprint: Blueprint | None, profile: LearnerProfile | None
+) -> tuple[str, ...]:
+    """Fixed diagram guidance; no profile or blueprint string is ever echoed."""
+
+    lines = list(_DIAGRAM_GUIDANCE_LINES)
+    if blueprint is not None and blueprint.diagram_kinds:
+        lines.append(
+            f"- The {blueprint.title} blueprint most often benefits from these kinds: "
+            f"{_backticked_kinds(blueprint.diagram_kinds)}."
+        )
+    if profile is not None:
+        preferences = profile.learning_preferences
+        kinds = _preferred_diagram_kinds(preferences.preferred_visual_aids)
+        if kinds:
+            lines.append(
+                "- The learner profile favors these diagram kinds; prefer them where the content "
+                f"has that structure: {_backticked_kinds(kinds)}."
+            )
+        bucket = _diagram_frequency_bucket(preferences.diagram_frequency)
+        if bucket is not None:
+            lines.append(_DIAGRAM_FREQUENCY_LINES[bucket])
+    return tuple(lines)
+
+
 def _guide_authoring_output_lines(
     lines: tuple[str, ...],
     guide_schema_version: str,
     profile: LearnerProfile | None,
+    *,
+    blueprint: Blueprint | None = None,
+    diagram_guidance: bool = False,
 ) -> tuple[str, ...]:
-    """Version the output contract and append the private personalization block."""
+    """Version the output contract, add 1.2 diagram guidance, and append the
+    private personalization block."""
 
     personalization_lines = _private_personalization_lines(
         profile, guide_schema_version
@@ -934,8 +1144,14 @@ def _guide_authoring_output_lines(
     personalization_suffix = (
         ("", *personalization_lines) if personalization_lines else ()
     )
+    guidance: tuple[str, ...] = ()
+    if diagram_guidance and guide_schema_version in DIAGRAM_SCHEMA_VERSIONS:
+        guidance = ("", *_diagram_guidance_lines(blueprint, profile))
     return (
-        *_guide_json_output_lines(lines, guide_schema_version),
+        *_guide_json_output_lines(
+            lines, guide_schema_version, profile_present=profile is not None
+        ),
+        *guidance,
         *personalization_suffix,
     )
 
@@ -962,7 +1178,11 @@ def compile_guide_v1_draft_prompt(
         header_lines=_DRAFT_HEADER_LINES,
         sections=_guide_draft_sections(approved_outline, contract_text),
         output_and_quality_lines=_guide_authoring_output_lines(
-            _GUIDE_DRAFT_OUTPUT_AND_QUALITY_LINES, guide_schema_version, profile
+            _GUIDE_DRAFT_OUTPUT_AND_QUALITY_LINES,
+            guide_schema_version,
+            profile,
+            blueprint=blueprint,
+            diagram_guidance=True,
         ),
         topic=topic,
         profile=_profile_without_authoritative_goals(profile, guide_schema_version),
@@ -1227,7 +1447,11 @@ def compile_guide_v1_module_draft_prompt(
             ),
         ),
         output_and_quality_lines=_guide_authoring_output_lines(
-            output_lines, guide_schema_version, profile
+            output_lines,
+            guide_schema_version,
+            profile,
+            blueprint=blueprint,
+            diagram_guidance=True,
         ),
         topic=topic,
         profile=_profile_without_authoritative_goals(profile, guide_schema_version),
@@ -1441,7 +1665,9 @@ def compile_guide_v1_repair_prompt(
         sections=tuple(sections),
         output_and_quality_lines=(
             *_guide_json_output_lines(
-                _GUIDE_REPAIR_OUTPUT_AND_QUALITY_LINES, guide_schema_version
+                _GUIDE_REPAIR_OUTPUT_AND_QUALITY_LINES,
+                guide_schema_version,
+                profile_present=profile is not None,
             ),
             *personalization_suffix,
         ),
@@ -1762,7 +1988,11 @@ def compile_guide_v1_module_repair_prompt(
         "### Schema Reference",
         *_versioned_lines(_GUIDE_SCHEMA_REFERENCE_LINES, guide_schema_version),
         "",
-        *_guide_json_output_lines(_MODULE_REPAIR_QUALITY_LINES, guide_schema_version),
+        *_guide_json_output_lines(
+            _MODULE_REPAIR_QUALITY_LINES,
+            guide_schema_version,
+            profile_present=profile is not None,
+        ),
         *personalization_suffix,
     )
     # v1 embeds the fact-check report in full rather than filtering it by module
@@ -1924,7 +2154,11 @@ def compile_guide_v1_section_repair_prompt(
         "### Schema Reference",
         *_versioned_lines(_GUIDE_SCHEMA_REFERENCE_LINES, guide_schema_version),
         "",
-        *_guide_json_output_lines(_SECTION_REPAIR_QUALITY_LINES, guide_schema_version),
+        *_guide_json_output_lines(
+            _SECTION_REPAIR_QUALITY_LINES,
+            guide_schema_version,
+            profile_present=profile is not None,
+        ),
         *personalization_suffix,
     )
     return _compile_stage_prompt(
