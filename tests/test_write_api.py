@@ -867,9 +867,9 @@ def test_guide_status_stage_content_and_validate_payloads(tmp_path):
     draft.approved_path.write_bytes(FIXTURE.read_bytes())
 
     before = write_api.read_api.run_status_payload(runs, "t")
-    assert before["content_contract"] == {"kind": "interactive_guide", "schema_version": "1.0"}
+    assert before["content_contract"] == {"kind": "interactive_guide", "schema_version": "1.2"}
     assert before["validations"]["draft"]["state"] == "missing"
-    assert write_api.read_api.stage_content(runs, "t", "draft")["content_type"].endswith("version=1.0")
+    assert write_api.read_api.stage_content(runs, "t", "draft")["content_type"].endswith("version=1.2")
 
     result = write_api.validate_run(runs, jobs, "t", "draft")
     assert result["state"] == "current"
