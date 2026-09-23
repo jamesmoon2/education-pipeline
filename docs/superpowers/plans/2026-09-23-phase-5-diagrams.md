@@ -17,9 +17,9 @@
 | --- | --- | --- | --- |
 | T50 | Design spec | The spec settles block shape per kind, limits, validation rules and codes, version gating, run version selection, server-rendered text version, runtime layouts, CSP-safe styling, prompt lines and profile mapping. An adversarial review has been folded in and every line reference checked. | - [x] |
 | T51 | Model, parse, normalize, validate, project | `Diagram` dataclass in the `Block` union. Parser gated on schema 1.2. Normalizer. Validation rules and codes from the spec. Canonical JSON round-trip. Markdown projection as a text rendering. `SUPPORTED_GUIDE_SCHEMA_VERSIONS` gains 1.2 wherever it is restated. A 1.1 document carrying a diagram is rejected. Fixture `tests/fixtures/guides/feedback-loops.diagrams.guide.json` covers all four kinds. Unit tests cover every rule. | - [x] |
-| T52 | Prompts and personalization | Schema 1.2 reference lines for the diagram block. New runs get schema 1.2. Blueprint guidance says when to use each kind. Profile visual-aid preferences map to fixed instructions and add no new echo of profile values. Prompts for 1.0 and 1.1 contracts stay byte-identical (existing SHA pins untouched). There are new snapshot pins for 1.2. | - [ ] |
-| T53 | Runtime renderer: flow and timeline | `document.py` renders the `<figure>` with a server-side text version. The runtime draws flow as a layered layout (longest-path rank, back edges routed as curves so feedback loops work, arrowheads) and timeline as a linear layout. Styling comes only from classes in `runtime.css` and theme tokens, with no inline style. `RUNTIME_VERSION` becomes 1.2, and schema 1.2 is accepted by the runtime and the document assembler. e2e renders the fixture in both themes, and axe is clean. | - [ ] |
-| T54 | Runtime renderer: concept map and comparison | Concept map uses a hub-plus-ring radial layout with edge labels. Comparison is a styled server-rendered table (no SVG). Exit criteria are the same as T53. | - [ ] |
+| T52 | Prompts and personalization | Schema 1.2 reference lines for the diagram block. New runs get schema 1.2. Blueprint guidance says when to use each kind. Profile visual-aid preferences map to fixed instructions and add no new echo of profile values. Prompts for 1.0 and 1.1 contracts stay byte-identical (existing SHA pins untouched). There are new snapshot pins for 1.2. | - [x] |
+| T53 | Runtime renderer: flow and timeline | `document.py` renders the `<figure>` with a server-side text version. The runtime draws flow as a layered layout (longest-path rank, back edges routed as curves so feedback loops work, arrowheads) and timeline as a linear layout. Styling comes only from classes in `runtime.css` and theme tokens, with no inline style. `RUNTIME_VERSION` becomes 1.2, and schema 1.2 is accepted by the runtime and the document assembler. e2e renders the fixture in both themes, and axe is clean. | - [x] |
+| T54 | Runtime renderer: concept map and comparison | Concept map uses a hub-plus-ring radial layout with edge labels. Comparison is a styled server-rendered table (no SVG). Exit criteria are the same as T53. | - [x] |
 | T55 | Cockpit and export | The cockpit preview and JSON tree show diagrams (preview goes through the server renderer). Static checks cover the new figure markup. The export sidecar records runtime 1.2. The CSP string is unchanged. There are tests in `test_guide_static_checks.py`, `test_guide_document.py` and the cockpit unit tests where anything is touched. | - [ ] |
 | T56 | Fixture, docs, audit | The example course gains two diagrams (a flow with a feedback loop and a comparison) and moves to schema 1.2. `build_example.py` shows no diff. Docs (`interactive-guides.md`, the schema spec §2/§16/§18 and the runtime spec) are updated. The audit ledger and phase closeout are written. | - [ ] |
 
@@ -113,3 +113,30 @@ The order is T50 → T51. After T51, T52 (prompts, engine only) and T53 (documen
   - **Gates:** pytest 2387 passed, 1 skipped.
   - **Choices for cases the tests don't pin:** a diagram with no `kind` reports only `schema.missing_field`. `diagrams.py` keeps its own `ID_RE` copy, because importing it from `parse.py` would be circular.
   - **Deferred:** `document.py` still refuses a diagram until T53. `contract.py` message text moves in T52.
+- **T52** landed in a parallel worktree (red `4c76f49`, green `c205c09`, merged `8a265da`).
+  - **Changes:** `prompts.py` +258, and `runs.py`, `run_modes.py`, `cli.py`, `blueprints.py`, `contract.py` and `build_example.py` (pinned to the 1.1 contract until T56).
+    - New runs default to `ContentContract.interactive_guide_v1_2()` with or without a profile.
+    - The 1.2 schema reference and diagram guidance appear only in 1.2 draft and module-draft prompts.
+    - The profile keyword and frequency map (including negation words) emits fixed lines only.
+    - Blueprints gain `diagram_kinds`.
+    - The goal lines are version-gated for 1.1 and profile-gated for 1.2.
+    - Decision 13 is `RunStore._validate_guide_version`, called from `validate_approval` for draft and repair.
+    - `create` prints the run's real contract.
+  - **Tests:** red added an 80-SHA byte-identity matrix for every guide-v1 prompt under 1.0 and 1.1, with or without a profile and with or without a blueprint. It passed before and after green, and its 1.0 SHAs match the pre-existing pins. The 1.2 prompts are pinned as exact rewrites of their 1.0 and 1.1 counterparts rather than as new SHAs. The migration pins the spec listed were applied.
+  - **Mutations:** goal lines emitted without a profile (12 failures) and the gate compared against the default version (44 failures) were both caught.
+- **T53** landed in a parallel worktree (red `c67dea1`, green `c98c240`, merged `6100fa4`).
+  - **Changes:**
+    - `document.py` +65 renders the `<figure class="block diagram">` for all four kinds with a server text version.
+    - `runtime.js` +338 adds the `Diagrams` module with shared drawing helpers, the flow layout (longest-path layers, back edges as right-hand curves) and the timeline layout (horizontal and vertical SVGs switched by media query).
+    - `runtime.css` +23.
+    - `RUNTIME_VERSION` 1.2, and runtime and document accept schema 1.2.
+    - Example export rebuilt (still schema 1.1).
+  - **Tests:** red added 12 pytest cases and 14 e2e cases. The red writer checked the e2e cases against a stub that accepted 1.2 but drew nothing and tightened two cases that passed vacuously.
+  - **Mutations:** back-edge detection disabled (11 failures) and a shared marker id (2 failures) were both caught.
+  - **Gates on the merge:** pytest 2605 passed, 1 skipped; vitest 627; build clean.
+  - **Full Playwright on the merged head:** 139 passed, 8 failed. All 8 are cockpit full-run flows affected by the 1.2 default; see the e2e fix entry below.
+- **T54** landed (red `96464da`, green merged `748d8a3`).
+  - **Changes:** `runtime.js` +37 net for `drawConceptMap` (hub at the centre, ring from 12 o'clock clockwise, edges clipped at box borders with midpoint labels). Comparison needed no runtime code beyond T53's `table` state. `runtime.css` unchanged. `runtime.js` is now 2367 lines, +376 for the phase against a 450 budget.
+  - **Tests:** red added 6 pytest guards (the markup landed in T53) and 13 e2e cases (10 red, 3 guards).
+  - **Mutations:** unclipped endpoints and a ring shifted one slot were both caught.
+  - **Gates:** guide specs 130/130; pytest 2611 passed, 1 skipped.
