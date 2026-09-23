@@ -20,8 +20,8 @@
 | T52 | Prompts and personalization | Schema 1.2 reference lines for the diagram block. New runs get schema 1.2. Blueprint guidance says when to use each kind. Profile visual-aid preferences map to fixed instructions and add no new echo of profile values. Prompts for 1.0 and 1.1 contracts stay byte-identical (existing SHA pins untouched). There are new snapshot pins for 1.2. | - [x] |
 | T53 | Runtime renderer: flow and timeline | `document.py` renders the `<figure>` with a server-side text version. The runtime draws flow as a layered layout (longest-path rank, back edges routed as curves so feedback loops work, arrowheads) and timeline as a linear layout. Styling comes only from classes in `runtime.css` and theme tokens, with no inline style. `RUNTIME_VERSION` becomes 1.2, and schema 1.2 is accepted by the runtime and the document assembler. e2e renders the fixture in both themes, and axe is clean. | - [x] |
 | T54 | Runtime renderer: concept map and comparison | Concept map uses a hub-plus-ring radial layout with edge labels. Comparison is a styled server-rendered table (no SVG). Exit criteria are the same as T53. | - [x] |
-| T55 | Cockpit and export | The cockpit preview and JSON tree show diagrams (preview goes through the server renderer). Static checks cover the new figure markup. The export sidecar records runtime 1.2. The CSP string is unchanged. There are tests in `test_guide_static_checks.py`, `test_guide_document.py` and the cockpit unit tests where anything is touched. | - [ ] |
-| T56 | Fixture, docs, audit | The example course gains two diagrams (a flow with a feedback loop and a comparison) and moves to schema 1.2. `build_example.py` shows no diff. Docs (`interactive-guides.md`, the schema spec §2/§16/§18 and the runtime spec) are updated. The audit ledger and phase closeout are written. | - [ ] |
+| T55 | Cockpit and export | The cockpit preview and JSON tree show diagrams (preview goes through the server renderer). Static checks cover the new figure markup. The export sidecar records runtime 1.2. The CSP string is unchanged. There are tests in `test_guide_static_checks.py`, `test_guide_document.py` and the cockpit unit tests where anything is touched. | - [x] |
+| T56 | Fixture, docs, audit | The example course gains two diagrams (a flow with a feedback loop and a comparison) and moves to schema 1.2. `build_example.py` shows no diff. Docs (`interactive-guides.md`, the schema spec §2/§16/§18 and the runtime spec) are updated. The audit ledger and phase closeout are written. | - [x] |
 
 ## Order and parallelism between threads
 
@@ -140,3 +140,42 @@ The order is T50 → T51. After T51, T52 (prompts, engine only) and T53 (documen
   - **Tests:** red added 6 pytest guards (the markup landed in T53) and 13 e2e cases (10 red, 3 guards).
   - **Mutations:** unclipped endpoints and a ring shifted one slot were both caught.
   - **Gates:** guide specs 130/130; pytest 2611 passed, 1 skipped.
+- **E2E fix-up** (`607f951`, merged `5fea0c0`). After the T52/T53 merge, 8 cockpit full-run flows failed; all 8 passed at `2a1aa50`.
+  - **Cause.** Each flow creates its run from the cockpit, so the run now defaults to 1.2. Each then pasted a 1.0 or 1.1 spec contract, which spec approval refuses.
+  - **Fix.** Only files under `web/e2e/` changed. They now declare 1.2, and the shared fixtures are re-declared in memory, because pytest uses the files too.
+  - **Gate.** Full Playwright 147/147.
+- **T55** landed (red `b73f12e`, green `6ceabc5`), +15/−4 in three files.
+  - **Static checks.** `static_checks._Analyzer` tracks `<figure>` depth, and a heading inside a figure fails the heading-order check.
+  - **Cockpit bug fixed.** `ResponseEditor` treated only the 1.0 guide content type as a guide. This bug predates the phase and cost 1.1 runs the guide preview. It now uses one prefix check, and `types.ts` gains the 1.1 and 1.2 literals.
+  - **Guards added.** Export sidecar `runtime_version` 1.2 and CSP unchanged for a full 1.2 run; `JsonTreeView` shows `from`, `to` and `values`; `CanonicalGuidePreview` passes diagram figures through.
+  - **Mutation.** Figure depth never decremented; caught.
+  - **Gates.** pytest 2616 passed, 1 skipped; vitest 634.
+- **T56** landed (red `bec8a84`, green `cc24097`, docs `9f7bb30`).
+  - **Example course.** It moves to schema 1.2. It gains the flow `growth-loop-flow`, whose back edge closes the reinforcing loop, after `loop-introduction`. It also gains the comparison `intervention-comparison`, titled "Acting again versus waiting out a delay" (the spec gave no title), after `delay-explanation`.
+  - **Build and pins.** `build_example.py` is back to a plain `create_run`, and a second run is byte-identical. The report gate is open with zero findings, and the reading estimate moved from 8.41 to 9.94 minutes against a declared 15.
+  - **Docs.** `interactive-guides.md` gains a Diagrams section. The schema spec changes §2, §7, §13a, §16, §17 and §18. The runtime spec changes §2, §3, §4, §6a and §12, plus a default note in the validation-pipeline spec and the example README.
+  - **Not done.** No screenshots were refreshed, because no script produces them from the example.
+
+## Phase closeout
+
+Seven threads plus one e2e fix-up, on `claude/p5-engineering-manager-twgrxe`. T52 and T53 ran in parallel worktrees and merged in the order T53, then T52. T54 ran in its own worktree after that merge. T55 and T56 ran in the phase checkout.
+
+Final gate on the branch head:
+
+| Gate | Result |
+| --- | --- |
+| pytest (Python 3.11) | 2619 passed, 1 skipped (baseline 2201) |
+| `python3 -m education_pipeline --help` | clean |
+| `npm run build` | clean |
+| vitest | 634 (baseline 627) |
+| Playwright full suite | 160/160 (guide specs 103 → 130) |
+
+The diff against `main` at `2a1aa50` is 58 files, +9151 / −169, most of it tests, fixtures, the regenerated example export and docs. Production code under `education_pipeline/` and `web/src` changed by about +1440 lines. `runtime.js` went from 1991 to 2367 lines, and `runtime.css` from 164 to 187.
+
+Shape after the phase:
+
+- **Schema 1.2.** A guide can carry a `diagram` block in four kinds: flow, concept map, comparison and timeline. Each is plain JSON that is validated for integrity and limits, and that the model writes as data.
+- **Rendering.** The server always renders a text version, so the guide reads without JavaScript and in print. The maintained runtime draws a deterministic SVG from the embedded guide data, styled only by classes and theme tokens, with alt text derived from the data. A comparison is simply a table. The CSP string is unchanged and pinned.
+- **Runs and prompts.** New runs default to 1.2. Existing runs keep their pinned version, and their 1.0 and 1.1 prompts are byte-identical (pinned by 80 SHAs). A draft can no longer change its run's schema version. Profile visual-aid preferences steer the prompts through fixed text only.
+
+Departures and accepted limitations are in the audit ledger.
