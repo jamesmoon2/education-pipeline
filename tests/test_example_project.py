@@ -177,3 +177,107 @@ def test_draft_and_repair_ship_identical_content() -> None:
     draft = _assembled_draft_bytes()
     repair = (EXAMPLE_DIR / "responses" / "repair.guide.json").read_bytes()
     assert draft == repair
+
+
+def _blocks_by_section(guide: dict) -> dict[tuple[str, str], list[dict]]:
+    return {
+        (module["id"], section["id"]): section["blocks"]
+        for module in guide["modules"]
+        for section in module["sections"]
+    }
+
+
+def test_example_guide_is_schema_1_2() -> None:
+    """New runs default to 1.2 (diagram spec decision 3); the example is a
+    plain new run, so its contract, skeleton, assembled draft and repair
+    response all carry 1.2."""
+
+    assert json.loads(SKELETON_RESPONSE.read_text(encoding="utf-8"))[
+        "schema_version"
+    ] == "1.2"
+    assert json.loads(_assembled_draft_bytes())["schema_version"] == "1.2"
+    repair = json.loads(
+        (RESPONSES_DIR / "repair.guide.json").read_text(encoding="utf-8")
+    )
+    assert repair["schema_version"] == "1.2"
+    spec_text = (RESPONSES_DIR / "spec.md").read_text(encoding="utf-8")
+    assert '"guide_schema_version": "1.2"' in spec_text
+    html = EXPORT_HTML.read_text(encoding="utf-8")
+    assert 'data-guide-schema="1.2"' in html
+    assert 'data-guide-runtime="1.2"' in html
+
+
+def test_example_guide_carries_a_flow_and_a_comparison_diagram() -> None:
+    """Diagram spec §12: a flow with a feedback loop in ``loop-basics`` and a
+    comparison in ``intervention-practice``."""
+
+    guide = json.loads(_assembled_draft_bytes())
+    diagrams = [
+        block
+        for module in guide["modules"]
+        for section in module["sections"]
+        for block in section["blocks"]
+        if block["type"] == "diagram"
+    ]
+    assert {block["kind"] for block in diagrams} == {"flow", "comparison"}
+
+    sections = _blocks_by_section(guide)
+
+    foundations = [b["id"] for b in sections[("loop-basics", "feedback-foundations")]]
+    position = foundations.index("loop-introduction")
+    assert foundations[position + 1] == "growth-loop-flow"
+    flow = sections[("loop-basics", "feedback-foundations")][position + 1]
+    assert flow["kind"] == "flow"
+    assert flow["outcome_ids"] == ["map-loop"]
+    assert [node["id"] for node in flow["nodes"]] == [
+        "biomass",
+        "leaf-area",
+        "sunlight",
+        "growth",
+    ]
+    # The last edge closes the reinforcing loop.
+    assert {"from": "growth", "to": "biomass", "label": "adds to"} in flow["edges"]
+
+    delays = [b["id"] for b in sections[("intervention-practice", "delays-and-leverage")]]
+    position = delays.index("delay-explanation")
+    assert delays[position + 1] == "intervention-comparison"
+    comparison = sections[("intervention-practice", "delays-and-leverage")][
+        position + 1
+    ]
+    assert comparison["kind"] == "comparison"
+    assert comparison["outcome_ids"] == ["choose-intervention"]
+    assert [(item["id"], item["label"]) for item in comparison["items"]] == [
+        ("act-again", "Act again right away"),
+        ("wait-out", "Wait out the delay"),
+    ]
+    assert [
+        (criterion["id"], criterion["label"], criterion["values"])
+        for criterion in comparison["criteria"]
+    ] == [
+        (
+            "first-sign",
+            "What you see first",
+            {"act-again": "A quick visible change", "wait-out": "Little visible change"},
+        ),
+        (
+            "after-delay",
+            "After the delay",
+            {"act-again": "*Overshoot* past the goal", "wait-out": "Settles near the goal"},
+        ),
+        (
+            "cost",
+            "Main cost",
+            {
+                "act-again": "Wasted effort and swings",
+                "wait-out": "Patience while nothing seems to happen",
+            },
+        ),
+    ]
+
+
+def test_export_renders_both_diagram_figures() -> None:
+    html = EXPORT_HTML.read_text(encoding="utf-8")
+    assert 'data-diagram-kind="flow"' in html
+    assert 'data-diagram-kind="comparison"' in html
+    assert 'id="growth-loop-flow"' in html
+    assert 'id="intervention-comparison"' in html
