@@ -15,7 +15,7 @@
 
 | ID | Thread | Exit criteria | Status |
 | --- | --- | --- | --- |
-| T50 | Design spec | The spec settles block shape per kind, limits, validation rules and codes, version gating, run version selection, server-rendered text version, runtime layouts, CSP-safe styling, prompt lines and profile mapping. An adversarial review has been folded in and every line reference checked. | - [ ] |
+| T50 | Design spec | The spec settles block shape per kind, limits, validation rules and codes, version gating, run version selection, server-rendered text version, runtime layouts, CSP-safe styling, prompt lines and profile mapping. An adversarial review has been folded in and every line reference checked. | - [x] |
 | T51 | Model, parse, normalize, validate, project | `Diagram` dataclass in the `Block` union. Parser gated on schema 1.2. Normalizer. Validation rules and codes from the spec. Canonical JSON round-trip. Markdown projection as a text rendering. `SUPPORTED_GUIDE_SCHEMA_VERSIONS` gains 1.2 wherever it is restated. A 1.1 document carrying a diagram is rejected. Fixture `tests/fixtures/guides/feedback-loops.diagrams.guide.json` covers all four kinds. Unit tests cover every rule. | - [ ] |
 | T52 | Prompts and personalization | Schema 1.2 reference lines for the diagram block. New runs get schema 1.2. Blueprint guidance says when to use each kind. Profile visual-aid preferences map to fixed instructions and add no new echo of profile values. Prompts for 1.0 and 1.1 contracts stay byte-identical (existing SHA pins untouched). There are new snapshot pins for 1.2. | - [ ] |
 | T53 | Runtime renderer: flow and timeline | `document.py` renders the `<figure>` with a server-side text version. The runtime draws flow as a layered layout (longest-path rank, back edges routed as curves so feedback loops work, arrowheads) and timeline as a linear layout. Styling comes only from classes in `runtime.css` and theme tokens, with no inline style. `RUNTIME_VERSION` becomes 1.2, and schema 1.2 is accepted by the runtime and the document assembler. e2e renders the fixture in both themes, and axe is clean. | - [ ] |
@@ -99,3 +99,10 @@ The order is T50 → T51. After T51, T52 (prompts, engine only) and T53 (documen
 ## Closeout log
 
 (One line per thread as it lands: what changed, test counts, accepted limitations.)
+
+- **T50** landed: spec `docs/superpowers/specs/2026-09-23-diagram-block-design.md` (1.3k lines). Opus wrote it from the decisions above; a second Opus reviewed it adversarially, edited it in place, spot-checked about 60 anchors, and simulated the 1.2 default and the draft-version gate on `2a1aa50`.
+  - **The 1.2 default breaks 84 existing tests.** Nearly all are spec approvals whose contract says 1.0 or 1.1, and they are fixed by pinning the creation helpers, as listed in the spec's Migration section.
+  - **Refinements to the decisions above.** Kind names are snake_case. `BLOCK_TYPES` stays at six, because outline `interaction_types` reuses it, and diagram is gated on the schema version. `title` is limited to 120 characters and `caption` to 240, and every diagram string must be a single line. Duplicate concept-map edges are judged on the unordered pair. The `<figure>` is itself the block element. The timeline breakpoint switches between two SVGs with a media query, so nothing is measured at runtime. 1.1 goal lines stay gated on version; only 1.2 gates them on profile presence.
+  - **New decision 13 (T52).** Approving a draft or an unscoped repair is refused when its `schema_version` is a supported version other than the run's own.
+  - **Found along the way.** The cockpit `ResponseEditor` treats only the 1.0 content type as a guide; T55 fixes it. `create` prints a hard-coded "1.0"; T52 fixes it.
+  - **Accepted.** Edge crossings in the layouts.

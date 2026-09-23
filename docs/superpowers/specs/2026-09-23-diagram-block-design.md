@@ -79,7 +79,7 @@ line, the verified one is given.
   (`runs.py:2275-2280`, 1.0 constant at `:133-135`) enumerate versions. Spec
   approval refuses a contract block whose `guide_schema_version` differs from
   the run's (`runs.py:1998-2003`); the **guide JSON's** `schema_version` is not
-  compared with the run contract anywhere (see Open question 1). CLI `create`
+  compared with the run contract anywhere (decision 13 adds the check). CLI `create`
   prints a hard-coded `(interactive_guide 1.0)` (`cli.py:489`, help `:219`) even
   for profiled 1.1 runs.
 - **Blocks.** Six dataclasses and the `Block` union (`model.py:67-135`).
@@ -105,8 +105,16 @@ line, the verified one is given.
   (`validation.py:246-269`), so every new parse code needs a `RULES` entry.
   `_text_fields` (`validation.py:424-433`) walks dataclass fields by
   `field.name` and does not understand mappings. The block loop that re-checks
-  in-memory `Guide` inputs is `validation.py:819-833`. Reading time uses
-  `READING_TIME_BLOCK_SECONDS.get(type, 0)` (`validation.py:90-97,542`).
+  in-memory `Guide` inputs is `validation.py:819-833`; its
+  `source.missing_for_required_claim` check is limited to `RichText`/`Callout`
+  (`:833`). Reading time uses
+  `READING_TIME_BLOCK_SECONDS.get(type, 0)` (`validation.py:90-97,542`), and its
+  word count is `_text_fields` over **every** string field, ids, `type` and
+  `kind` included (`:537`); the constants dict is pinned by
+  `tests/test_guide_validation.py:419`. The same `_text_fields` output feeds
+  the privacy, placeholder and prompt-leak scans (`:787-812`). The optional
+  audit fingerprints a block with `dataclasses.asdict` (`guides/audit.py:524`),
+  i.e. by Python field names — deterministic, never user-visible.
   `CalibrationContext`'s docstring states the no-echo rule (`validation.py:77-78`).
 - **Projection / document.** `_project_block` ends in `assert isinstance(block,
   Reflection)` (`projection.py:83-119`). `document._block` raises
@@ -134,7 +142,15 @@ line, the verified one is given.
   draft `:1185`, module repair `:1763`, section repair `:1925`) or via
   `_guide_json_output_lines` (`:700-716`; callers `:938`, `:1443`, `:1765`,
   `:1927`). The module-draft prompt applies `_versioned_lines` **twice** to its
-  schema reference (`:1185`, then again through `:1225-1227`).
+  schema reference (`:1185`, then again through `:1229-1231`). The skeleton
+  embeds the **unversioned** reference (`:1007`) inside its output lines, which
+  then pass through `_versioned_lines` once (`:1050-1054` → `:938`), so every
+  §8.2 rewrite reaches the skeleton prompt too. QA and fact-check prompts take
+  no schema version and embed no schema reference, so nothing in this design
+  reaches them. The only prompt SHA pins that exist are the five **1.0**
+  no-blueprint pins (`tests/test_prompts.py:576-582`) and the legacy pins
+  (`:131-138`); **no 1.1 prompt is SHA-pinned today** (1.1 tests assert
+  substrings only, e.g. `:1077-1078`), which is why §8.5 adds a matrix.
   `_guide_json_output_lines` appends the goal-annotation lines for every
   version other than `1.0` (`:704-716`) and does not know whether a profile is
   attached. `_private_personalization_lines` (`:733`) and
@@ -144,11 +160,11 @@ line, the verified one is given.
   `runs_draft_units.py:248,403`), so `profile is not None` is exactly
   "a profile snapshot exists".
 - **Profiles.** `LearnerPreferences.preferred_visual_aids` / `diagram_frequency`
-  (`profiles.py:76-77`) are echoed verbatim into the profile context
+  (`profiles.py:74-75`) are echoed verbatim into the profile context
   (`profiles.py:359-360`) and count toward the `pacing` facet
   (`guides/personalization.py:150-151`).
 - **Blueprints.** `Blueprint` is a frozen dataclass without defaults
-  (`blueprints.py:19-32`); keyword matching uses `\b…\b` over casefolded text
+  (`blueprints.py:19-32`); keyword matching uses `\b…\b` over `.lower()`ed text
   (`blueprints.py:416`).
 - **Cockpit.** `JsonTreeView` is a generic JSON walk (`JsonTreeView.tsx:35-76`);
   `StageContentView` picks it by `contentType.includes("json")`.
@@ -231,6 +247,31 @@ changed.
 11. **Profile preferences as fixed text** (plan 11). Adopted with the exact
     keyword table and lines in §8.4.
 12. **Runtime 1.2** (plan 12). Adopted.
+13. **Draft version must match the run (new; resolves the former open question
+    1).** Today nothing compares an approved guide's `schema_version` with the
+    run's pinned contract (only the spec contract is compared,
+    `runs.py:1998-2003`; `GuideV1Mode.validate_approval` checks spec and outline
+    only, `run_modes.py:386-388`), so a pinned 1.0/1.1 run could approve a
+    draft declaring 1.2, and finalize/export would ship diagrams under a 1.0
+    contract and content type. Rule, added in T52: `validate_approval` also
+    runs for `draft` and `repair`; when the response text decodes as a JSON
+    object whose `schema_version` is a string **in
+    `SUPPORTED_GUIDE_SCHEMA_VERSIONS`** and differs from
+    `content_contract(topic_id).schema_version`, approval raises
+    `ConfigError("cannot approve {stage} for guide run {id!r}: guide schema_version {got!r} conflicts with the immutable run content contract: expected {expected!r}")`.
+    Anything else (undecodable text, non-object, missing, non-string or
+    *unsupported* version such as `"2.0"`) is left to validation, which already
+    reports it as a blocker — existing tests deliberately approve a `"2.0"`
+    repair to exercise the non-waivable path
+    (`test_runs.py::test_guide_v1_non_waivable_blocker_cannot_be_bypassed`,
+    `test_release_gate_acceptance.py::test_structural_refusal_export_raises_and_leaves_no_artifacts`).
+    A scoped repair fragment carries no `schema_version`, so the rule is a
+    no-op for it; the splice re-parses under the base draft's (already
+    checked) version, so a diagram spliced into a 1.1 draft is refused as
+    `schema.unknown_block_type`. Assembled per-module drafts carry the
+    skeleton's version into `draft.response.json`, which is what approval
+    reads. Verified against `2a1aa50`: this rule alone changes the result of
+    **no** existing test (full suite green with it applied).
 
 ## Design
 
@@ -441,9 +482,12 @@ stored in the diagram's `items` order. `from` is a Python keyword, hence the
   {"events"}, "comparison": {"items","criteria"}}`. When `kind` is not one of
   the four, `required` is only the four common fields and **all** kind fields
   are optional, so a bad kind yields one `schema.invalid_value` at `{path}/kind`
-  with message `invalid diagram kind` and no cascade. The generic block code
+  with message `invalid diagram kind` (any non-string `kind` included) and no
+  cascade: `_check_diagram` is **not** called for a bad kind, so present kind
+  arrays are not shape-checked. The generic block code
   already registers `id`, checks `outcome_ids` (minimum 0) and `source_ids`, and
-  checks `title` as plain text. Then `_check_diagram(c, block, path)`.
+  checks `title` as plain text. Then, for a valid kind only,
+  `_check_diagram(c, block, path)`.
 - `_check_diagram` (shape; runs on the raw dict):
   1. `caption` → `c.text(..., markdown=True)`; `hub` → `c.text`.
   2. Each present kind array → `c.array(value, p)` (no bounds here; bounds are
@@ -487,7 +531,7 @@ on sets of `(code, path)` plus exact messages.
 | 2a | Local id not matching `ID_RE` | `schema.invalid_id` | `…/nodes/{i}/id` | `must match ^[a-z][a-z0-9-]{0,63}$` |
 | 2b | Local id repeated in the diagram (nodes, events, items, criteria share one namespace) | `diagram.duplicate_id` | later occurrence `…/{array}/{i}/id` | `duplicates diagram ID first declared at {first_path}` |
 | 3 | Trimmed length over limit | `diagram.text_too_long` | field path | `must not exceed {limit} characters` |
-| 4 | String contains `\n`, `\r`, U+2028 or U+2029 | `diagram.multiline_text` | field path | `must be a single line` |
+| 4 | The **raw, untrimmed** string contains `\n`, `\r`, U+2028 or U+2029 anywhere (a trailing `"\n"` fails too, because normalization keeps raw strings) | `diagram.multiline_text` | field path | `must be a single line` |
 | 5 | Edge endpoint or `hub` not a node id | `diagram.unknown_node` | `…/edges/{i}/from`, `…/to`, `{base}/hub` | `unknown node ID {ref!r}` |
 | 6 | `from == to` | `diagram.self_edge` | `…/edges/{i}` | `an edge must connect two different nodes` |
 | 7 | Repeated pair (flow: ordered; concept map: unordered) | `diagram.duplicate_edge` | later `…/edges/{i}` | `duplicates the edge at {base}/edges/{j}` |
@@ -557,7 +601,18 @@ helper `json_field_items(value) -> Iterator[tuple[str, object, Field]]` lives in
   never fire, because parse already failed.
 - `READING_TIME_BLOCK_SECONDS["diagram"] = 30` **(refined; flagged)**: reading
   a picture costs time beyond its label words, which `_text_fields` already
-  counts.
+  counts (as it does for every block, it also counts ids, `type`, `kind` and
+  edge `from`/`to` ids as words; keyed `values` contribute their cells only,
+  not the item-id keys). The pin `tests/test_guide_validation.py:419` gains the
+  entry.
+- `source.missing_for_required_claim` (`:833`) stays `RichText`/`Callout`
+  only: a diagram restates structure the surrounding prose explains and
+  sources, so it never raises that warning.
+- The privacy / placeholder / prompt-leak scans need no change: they run over
+  `_text_fields`, which (with §4's key rule) now yields every diagram string,
+  including cells at `…/criteria/{i}/values/{item_id}`. The Markdown-only
+  checks (`path.endswith("/markdown", …)`, `:805`) do not match `detail`,
+  `caption` or cells, which is correct: they allow no fences or headings.
 - No finding message contains a profile value; diagram messages contain only
   codes, limits, JSON paths and model-authored ids, and still pass through
   `_sanitize_finding`.
@@ -571,8 +626,11 @@ and ends, when `caption` is set, with `["", caption]`.
 - **flow:** `f"{n}. {label}"` + `f": {detail}"` if detail, one per node; then
   `["", "Connections:", ""]`; then per edge
   `f"- {from label} → {to label}"` + `f" — {label}"` if labelled +
-  `f" (loops back to step {k})"` if its index is in `back_edge_indices`, with
-  `k` the 1-based position of the target node.
+  `" (loops back)"` if its index is in `back_edge_indices`. **(refined)** No
+  step number: a DFS back edge's target is a DFS ancestor, which is always on
+  an earlier *layer* of the picture but not necessarily earlier in the
+  document-order step list (nodes `[a, b, c]`, edges `a→c, c→b, b→c`: the back
+  edge `b→c` would read "loops back to step 3" from step 2).
 - **concept_map:** nodes in order hub first, then the others in document order:
   `f"- {label}"` + `" (central idea)"` for the hub + `f": {detail}"` if detail;
   under each, for its outgoing edges in edge order, `"  - "` + (`f"{label} "` if
@@ -602,7 +660,7 @@ Connections:
 - Plant biomass → Leaf area — increases
 - Leaf area → Sunlight captured — increases
 - Sunlight captured → New growth — fuels
-- New growth → Plant biomass — adds to (loops back to step 1)
+- New growth → Plant biomass — adds to (loops back)
 
 The last connection closes a **reinforcing** loop.
 ```
@@ -634,7 +692,7 @@ The last connection closes a **reinforcing** loop.
     `<ol class="diagram-steps">` + per node
     `<li><span class="diagram-label">{esc label}</span>[: <span class="diagram-detail">{inl detail}</span>]</li>`
     + `</ol><p class="diagram-list-label">Connections</p><ul class="diagram-connections">`
-    + per edge `<li>{esc from label} → {esc to label}[ — {esc label}][ (loops back to step {k})]</li>`
+    + per edge `<li>{esc from label} → {esc to label}[ — {esc label}][ (loops back)]</li>`
     + `</ul>`.
   - **concept_map:** `<ul class="diagram-map">` + per node (hub first)
     `<li><span class="diagram-label">{esc label}</span>[ (central idea)][: <span class="diagram-detail">{inl detail}</span>][<ul class="diagram-map-links">…</ul>]</li>`
@@ -774,7 +832,10 @@ lots, every, most, heavy, plenty}`, `occasional = {occasional, occasionally,
 some, sometimes, moderate, moderately}`, `rare = {rare, rarely, seldom, minimal,
 minimally, few, sparing, sparingly, none, never, avoid}`; exactly one bucket
 must match, otherwise nothing is emitted (the `_mapped_skill_level` rule,
-`validation.py:546-557`).
+`validation.py:546-557`). **(refined)** If `words` contains any of `{not, no,
+without, don, doesn}` nothing is emitted either, because a bag-of-words
+reading inverts negations ("not too many" would otherwise map to *frequent*);
+emitting nothing is always safe, as no rule demands a diagram.
 
 Emitted lines (profile present, version in `DIAGRAM_SCHEMA_VERSIONS`), in this
 order, each only when it applies:
@@ -815,6 +876,9 @@ equal bytes (the expected SHAs are recorded in the test from `2a1aa50`).
   `"application/vnd.education-pipeline.guide+json;version=1.2"`.
 - `contract.py:147` message: `spec contract guide_schema_version must be one of
   ['1.0', '1.1', '1.2'], got …` (built from `sorted(SUPPORTED_GUIDE_SCHEMA_VERSIONS)`).
+- `GuideV1Mode.validate_approval` (`run_modes.py:386-388`): decision 13's
+  draft/repair version gate, via a new `RunStore._validate_guide_version`
+  beside `_validate_guide_approval`.
 - CLI (`cli.py:489`): `print(f"created run {id} (interactive_guide
   {contract.schema_version})")` from `store.content_contract(id)`; help
   (`:219`): `create a legacy Markdown run instead of an interactive guide`.
@@ -856,7 +920,10 @@ bounds; every element is a plain object; local ids match `GUIDE_ID_PATTERN`
 and are unique; every label/`when` is a non-empty string within its limit
 (code points via `Array.from`); edge endpoints and `hub` name nodes; no
 self-edges; each criterion's `values` is a plain object with a string for
-every item id. Anything else returns `false`.
+every item id. Anything else returns `false`. Local-id lookups use `Map` /
+`Set`, and `values` membership uses
+`Object.prototype.hasOwnProperty.call(values, itemId)`, because an item id
+may legally be `constructor`, which every plain object inherits.
 
 #### 10.3 Shared drawing rules
 
@@ -889,7 +956,9 @@ every item id. Anything else returns `false`.
   edges carry `marker-end="url(#{id}__arrow{sfx})"`.
 - Group order: `<g class="diagram-edges">`, `<g class="diagram-edge-labels">`,
   `<g class="diagram-nodes">` (timeline: `diagram-axis-group`,
-  `diagram-events`). Node: `<g class="diagram-node[ diagram-node--hub]"><rect
+  `diagram-event-group`). SVG class names are disjoint from the server text
+  version's classes (§7), so no `runtime.css` rule meant for SVG (`fill`,
+  `font-size` in px) ever styles the HTML text version. Node: `<g class="diagram-node[ diagram-node--hub]"><rect
   class="diagram-node-box" x y width height rx="6"/><text
   class="diagram-node-label" text-anchor="middle"><tspan x y>line</tspan>…</text></g>`.
   Edge: `<path class="diagram-edge[ diagram-edge--back]" d="…" marker-end="…"/>`.
@@ -962,7 +1031,7 @@ EVENT_BLOCK_LINES * EVENT_LINE_H` (80); `W = 2*MARGIN + n*SLOT_W`, `H =
 Event `i` at `x_i = MARGIN + SLOT_W/2 + i*SLOT_W`: `<circle
 class="diagram-event-marker" r="6">` on the axis; `<line class="diagram-tick">`
 from the marker edge to `AXIS_Y ∓ TICK`; lines = `wrap(when, EVENT_CHARS, 2)`
-(tspans class `diagram-when`) then `wrap(label, EVENT_CHARS, 3)` (class
+(tspans class `diagram-event-when`) then `wrap(label, EVENT_CHARS, 3)` (class
 `diagram-event-label`), `text-anchor="middle"`. Even `i` above the axis
 (last baseline at `AXIS_Y - TICK - 4`, earlier lines `EVENT_LINE_H` higher),
 odd `i` below (first baseline at `AXIS_Y + TICK + 14`). Example: `viewBox="0 0
@@ -971,14 +1040,22 @@ odd `i` below (first baseline at `AXIS_Y + TICK + 14`). Example: `viewBox="0 0
 **Timeline, vertical (`timeline-v`).** `AXIS_X = MARGIN + 8`; event `i` marker
 at `(AXIS_X, MARGIN + 8 + i*ROW_H)`; text `x = AXIS_X + 20`,
 `text-anchor="start"`, `wrap(when, EVENT_CHARS_V, 2)` then `wrap(label,
-EVENT_CHARS_V, 3)`, first baseline at marker `y + 5`, then `+EVENT_LINE_H`.
+EVENT_CHARS_V, 3)` (same tspan classes as horizontal), first baseline at
+marker `y + 5`, then `+EVENT_LINE_H`; no ticks.
 `W = VERT_W`, `H = 2*MARGIN + 8 + (n-1)*ROW_H + BLOCK_H`; axis from `(AXIS_X,
 MARGIN)` to `(AXIS_X, H - MARGIN)`. Example: `viewBox="0 0 360 424"`. Both
 timeline SVGs are inserted, horizontal first.
 
 Known limitations (accepted; the text version is authoritative): long forward
 edges and back edges from a non-rightmost node may cross other nodes; wide
-layers and large rings scale down to the column width.
+layers, large rings and long horizontal timelines scale down to the column
+width, so text in them can get small (a 10-event horizontal timeline is
+1548 wide; an 11-node flow layer is 2160 wide) — the text version and browser
+zoom remain the fallback. "Byte-deterministic" means identical markup for a
+given guide **in a given browser engine**: ring coordinates use `Math.sin` /
+`Math.cos`, whose last-bit results are not specified across engines, so the
+Playwright determinism and `viewBox` assertions run in Chromium only and no
+Python test predicts SVG bytes.
 
 #### 10.5 Alt text (`<desc>`)
 
@@ -1024,7 +1101,7 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
 .diagram-edge-label-text{fill:var(--ep-color-text-muted);font-size:12px}
 .diagram-axis,.diagram-tick{stroke:var(--ep-color-border);stroke-width:2}
 .diagram-event-marker{fill:var(--ep-color-accent)}
-.diagram-when{fill:var(--ep-color-text);font-size:13px;font-weight:600}
+.diagram-event-when{fill:var(--ep-color-text);font-size:13px;font-weight:600}
 .diagram-event-label{fill:var(--ep-color-text);font-size:13px}
 .diagram-svg--timeline-v{display:none}
 .diagram-text-toggle summary{cursor:pointer;font-family:var(--ep-font-interface);font-size:.9rem;color:var(--ep-color-accent)}
@@ -1089,15 +1166,57 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
 
 - **Pinned runs.** Manifests are never rewritten; a 1.0 or 1.1 run keeps its
   prompts byte for byte (§8.5) and rejects diagrams at parse.
-- **Default switch (T52).** Every test whose *subject* is the default contract
-  moves to 1.2: `test_runs.py:4256` (`test_create_run_default_…`), `:4272`,
-  `:4315-4330` (mixed workspace), `:4357-4378` (becomes "new runs select 1.2,
-  existing 1.0 stays"), `test_cli.py:545-556`, `test_write_api.py:870`. Tests
-  that only relied on the default incidentally, and approve a spec contract
-  pinned to `"1.0"`, pass `ContentContract.interactive_guide_v1()` explicitly
-  so they keep their meaning. `scripts/build_example.py:82` passes
-  `content_contract=ContentContract.interactive_guide_v1_1()` in T52 (export
-  bytes unchanged) and T56 removes it together with moving the example to 1.2.
+- **Default switch (T52).** Measured, not estimated: applying only the
+  default switch (1.2 added to the version sets, `create_run` defaulting to
+  `interactive_guide_v1_2()`, the annotation gates widened) to `2a1aa50` fails
+  **84** existing tests (plus `test_guide_parse.py::…[1.2]`, which is T51's).
+  Almost all fail for one reason: they create a run without a contract and
+  then approve a spec contract pinned to `"1.0"` or `"1.1"`, which spec
+  approval refuses (`runs.py:1998-2003`). Rule: a test whose **subject** is
+  the default moves to 1.2; every other test pins the contract it always had,
+  at its creation helper, so its meaning is unchanged. The fixes, by root:
+  - `tests/test_runs.py:280` `_create_profiled_guide_run` → pass
+    `content_contract=ContentContract.interactive_guide_v1_1()`. This one line
+    covers the profiled/audit/trace tests in `test_runs.py` (the other 31), and the
+    profiled callers in `test_cli.py` (4 audit/report tests),
+    `test_write_api.py` (3 audit tests), `test_personalization_acceptance.py`
+    (9), `test_release_gate_acceptance.py` (3
+    `…byte_identical_in_every_audit_state[*]`) and `test_export.py`
+    (`test_personalized_source_stays_local_while_export_and_sidecar_are_stripped`)
+    wherever they build through it; any that create their own run pin
+    `_v1_1()` the same way.
+  - `tests/test_server.py:1229` (`_drive_guide_through_qa_http`, 9 scoped
+    repair tests) → `interactive_guide_v1()`; `:1459` (profiled helper, 10
+    personalization/audit HTTP tests) → `interactive_guide_v1_1()`.
+  - `tests/test_release_gate_acceptance.py:266`
+    (`test_contrasting_blueprint_drives_divergent_prompts_and_contract_gates`)
+    and `tests/test_runs.py` `test_spec_approval_accepts_matching_blueprint_echo`,
+    `test_validate_run_flags_blueprint_contract_mismatch_in_draft` → pin
+    `interactive_guide_v1()`.
+  - **Default is the subject — rewrite to 1.2:**
+    `test_runs.py::test_create_run_default_is_interactive_guide_v1` (`:4256`),
+    `::test_implicit_write_spec_prompt_creates_guide_v1_run` (`:4272`),
+    `::test_mixed_workspace_legacy_and_guide_v1_progress_independently`
+    (`:4315`), `::test_run_store_creates_run_directories` (`:1052`, asserts the
+    manifest contract at `:1064-1067`),
+    `::test_profiled_new_run_selects_1_1_but_existing_1_0_is_immutable`
+    (`:4357`, becomes "new runs select 1.2 with or without a profile; an
+    existing 1.0 or 1.1 manifest is untouched"),
+    `::test_profiled_prompt_and_response_contract_propagate_schema_1_1`
+    (`:4382`, pin `_v1_1()` and keep, plus a 1.2 twin),
+    `test_cli.py::test_create_command_defaults_to_interactive_guide`
+    (`:545-556`, prints `interactive_guide 1.2`),
+    `test_write_api.py::test_guide_status_stage_content_and_validate_payloads`
+    (`:865-870`, contract and `version=1.2` content type; its fixture draft is
+    written straight to the approved path, so decision 13 does not apply).
+  - `test_example_project.py` (2 regeneration tests): fixed by
+    `scripts/build_example.py:82` passing
+    `content_contract=ContentContract.interactive_guide_v1_1()` in T52 (export
+    bytes unchanged); T56 removes it together with moving the example to 1.2.
+  The complete failing list (84) is recorded in the T52 closeout; after these
+  edits T52 must show exactly these tests changed and no other.
+  Decision 13's approval gate, applied alone to `2a1aa50`, fails **zero**
+  tests (verified).
 - **Thread order.** A default 1.2 run cannot export a 1.2 document until T53
   adds 1.2 to the runtime set. Merge T53 before T52 when both are ready; no test
   exercises the gap, and the phase ships as one PR.
@@ -1138,8 +1257,14 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
   module-draft prompt; each keyword row and frequency bucket, ambiguity → no
   line, and a profile string never appearing in the guidance section; 1.2
   without profile has no goal lines and no private section; blueprint line per
-  `diagram_kinds`. `test_runs.py` / `test_cli.py` / `test_write_api.py` per
-  Migration; `test_guide_contract.py` accepts 1.2.
+  `diagram_kinds`; frequency negation → no line. `test_runs.py` /
+  `test_cli.py` / `test_write_api.py` / `test_server.py` / acceptance tests per
+  Migration; `test_guide_contract.py` accepts 1.2. Decision 13: a 1.0 and a
+  1.1 run each refuse to approve a whole-guide draft and an unscoped repair
+  declaring another supported version (exact message), still approve a
+  `"2.0"` or unparseable response (validation blocks it later), and a scoped
+  repair fragment carrying a diagram into a 1.1 draft is refused by the
+  splice.
 - **T53** — `test_guide_document.py`: exact figure markup for flow and
   timeline, `data-diagram-kind`, no heading inside the figure, a diagram in a
   1.1 `Guide` raises, `guide-data` embeds `from`/`to`; runtime version 1.2
@@ -1148,7 +1273,9 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
   `desc` strings of §10.5, one `.diagram-edge--back`, marker ids unique in the
   document, `details` closed with summary "Text version", two renders give
   identical SVG `outerHTML`, the vertical timeline shows at 375 px width,
-  `beforeprint` opens and `afterprint` restores the details; tampered
+  `beforeprint` opens and `afterprint` restores the details (dispatched with
+  `window.dispatchEvent(new Event("beforeprint"))`, since
+  `page.emulateMedia({media: "print"})` fires neither event); tampered
   guide-data (unknown `to`) leaves state `text` with no SVG while the rest of
   the guide boots; the unknown-schema test expects `runtime 1.2`; axe clean in
   light and dark. `guide-progress.spec.ts` unchanged and green.
@@ -1164,11 +1291,12 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
 
 ## Open questions
 
-1. **Guide version vs run version.** Nothing compares a draft's
-   `schema_version` with the run's pinned contract, so a pinned 1.0/1.1 run can
-   approve a 1.2 draft carrying diagrams (a pre-existing gap, now with a
-   visible consequence). Default: out of scope; propose a follow-up rule
-   `schema.version_mismatch` at draft validation.
+**Manager resolutions at T50 close (2026-09-23):** 1 — decision 13 ships in T52. 2 — node ids stay diagram-local. 3 — confirmed: 1.1 goal lines stay version-gated (byte identity), 1.2 gates them on profile presence. 4 — keep. 5 — accept 30 s; revisit if the example trips `time.estimate_implausible`. 6 — crossings accepted for this version and recorded in the audit ledger.
+
+1. **Guide version vs run version** — resolved by decision 13 (an approval
+   gate, not a validation rule: `validate_guide` has no run context, and a
+   finding would still let the mismatched draft be approved). Confirm it
+   belongs in T52 rather than a follow-up.
 2. **Diagram-local ids** follow plan decision 6 but cost a special case in
    `_collect_ids` and an exception to schema §2. The alternative (guide-wide
    node ids, like choice ids) needs no special case but makes the model prefix
@@ -1202,6 +1330,9 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
 - `runtime.js` grows by ≤ 450 lines and `runtime.css` by ≤ 30 lines.
 - The example course ships a flow with a feedback loop and a comparison, and
   its export is byte-reproducible.
-- Pre-existing pytest cases pass unmodified except the default-contract tests
-  listed under Migration, the `"1.2"`-is-unsupported parametrization, and the
-  runtime-version tests.
+- Pre-existing pytest cases pass unmodified except: the default-switch tests
+  and pinned creation helpers listed under Migration; the `"1.2"`-is-unsupported
+  parametrization (`test_guide_parse.py:278`); the reading-time constants pin
+  (`test_guide_validation.py:419`); and the runtime/schema-version tests
+  (`test_guide_document.py:214-218`, the `guide-runtime.spec.ts`
+  unknown-schema case).
