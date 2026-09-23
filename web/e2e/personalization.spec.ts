@@ -31,7 +31,7 @@ const HOSTILE_AUDIT_SUMMARY = "HOSTILE_AUDIT_SUMMARY_9B2E_DO_NOT_PUBLISH";
 
 const SPEC = `# Course Specification\n\n\`\`\`education-pipeline-contract+json\n${JSON.stringify({
   contract_version: 1,
-  guide_schema_version: "1.1",
+  guide_schema_version: "1.2",
   blueprint: "conceptual-foundations",
   estimated_minutes: 30,
   outcomes: [{ id: "identify-loop", text: "Identify reinforcing and balancing feedback." }],
@@ -51,10 +51,17 @@ const OUTLINE = `# Course Outline\n\n\`\`\`education-pipeline-outline+json\n${JS
   },
 })}\n\`\`\``;
 
-const SAFE_GUIDE = readFileSync(
-  resolve(import.meta.dirname, "../../tests/fixtures/guides/feedback-loops.personalized.guide.json"),
-  "utf-8",
-);
+// New runs default to guide schema 1.2 (diagram-block spec, Migration); the
+// shared fixture is authored at 1.1, so re-declare it at the run's version.
+const SAFE_GUIDE = JSON.stringify({
+  ...JSON.parse(
+    readFileSync(
+      resolve(import.meta.dirname, "../../tests/fixtures/guides/feedback-loops.personalized.guide.json"),
+      "utf-8",
+    ),
+  ),
+  schema_version: "1.2",
+});
 const leakedGuide = JSON.parse(SAFE_GUIDE);
 leakedGuide.modules[0].sections[0].blocks[0].markdown += ` ${PRIVATE_PROFILE_VALUE}`;
 const LEAKED_GUIDE = JSON.stringify(leakedGuide);
@@ -268,7 +275,7 @@ test("personalization milestone: private profile through safe audited export", a
   await expect(topicRow.getByText(`Attached ${PROFILE_ID}.`, { exact: true })).toBeVisible();
   await topicRow.getByRole("link", { name: TOPIC, exact: true }).click();
 
-  // Full schema-1.1 guide run with a planted private-value leak.
+  // Full schema-1.2 guide run with a planted private-value leak.
   await page.getByRole("button", { name: "Advance", exact: true }).click();
   await page.getByRole("button", { name: "Paste response…", exact: true }).click();
   await page.getByLabel("Response for spec", { exact: true }).fill(SPEC);

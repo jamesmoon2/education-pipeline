@@ -33,7 +33,7 @@ const PLACEHOLDER_PATH = "/modules/0/sections/0/blocks/0/markdown";
 // guide-internal, so these do not introduce findings of their own.
 const SPEC = `# Course Specification\n\n\`\`\`education-pipeline-contract+json\n${JSON.stringify({
   contract_version: 1,
-  guide_schema_version: "1.0",
+  guide_schema_version: "1.2",
   blueprint: "conceptual-foundations",
   estimated_minutes: 30,
   outcomes: [{ id: "identify-loop", text: "Identify reinforcing and balancing feedback." }],
@@ -47,12 +47,16 @@ const OUTLINE = `# Course Outline\n\n\`\`\`education-pipeline-outline+json\n${JS
 })}\n\`\`\``;
 
 function guideFixtures() {
-  const base = JSON.parse(
-    readFileSync(
-      resolve(import.meta.dirname, "../../tests/fixtures/guides/feedback-loops.guide.json"),
-      "utf-8",
+  const base = {
+    ...JSON.parse(
+      readFileSync(
+        resolve(import.meta.dirname, "../../tests/fixtures/guides/feedback-loops.guide.json"),
+        "utf-8",
+      ),
     ),
-  );
+    // New runs default to guide schema 1.2 (diagram-block spec, Migration).
+    schema_version: "1.2",
+  };
   // Repaired guide: keep the level-1 heading (the waivable finding that
   // remains), leave everything else pristine.
   const repaired = JSON.parse(JSON.stringify(base));
