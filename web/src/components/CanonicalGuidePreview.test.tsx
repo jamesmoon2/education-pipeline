@@ -146,4 +146,27 @@ describe("CanonicalGuidePreview", () => {
     expect(postMessage).not.toHaveBeenCalled();
     contentWindow.mockRestore();
   });
+
+  it("passes server HTML containing a diagram figure through to the frame unchanged", async () => {
+    const html =
+      '<!doctype html><figure class="block diagram" id="growth-loop-flow" ' +
+      'data-diagram-kind="flow"><figcaption class="diagram-caption">' +
+      '<strong class="diagram-title">How plant growth reinforces itself</strong>' +
+      "</figcaption></figure>";
+    vi.mocked(getStageContent).mockResolvedValue({
+      ...stage,
+      approved: '{"schema_version":"1.2","course":{"id":"approved"}}',
+      content_type:
+        "application/vnd.education-pipeline.guide+json;version=1.2" as unknown as typeof stage.content_type,
+    });
+    vi.mocked(postGuidePreview).mockResolvedValue({
+      html,
+      content_sha256: "c".repeat(64),
+      validation: { blocking: 0, errors: 0, warnings: 0 },
+    });
+    render(<CanonicalGuidePreview topicId="feedback-loops" />);
+
+    const frame = await screen.findByTitle("Interactive guide preview");
+    expect(frame).toHaveAttribute("srcdoc", html);
+  });
 });

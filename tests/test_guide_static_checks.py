@@ -1,5 +1,6 @@
 """Static checks computed from the assembled export document (stdlib only)."""
 from pathlib import Path
+import re
 
 import pytest
 
@@ -240,3 +241,63 @@ def test_equal_but_not_identical_asset_strings_still_match(guide):
 
     result = compute_static_checks(guide, assets=copied, packaged_assets=packaged)
     assert result.context.assets_match is True
+
+
+# --- Diagram block (T55): figures and heading order -----------------------
+
+DIAGRAMS_FIXTURE = (
+    Path(__file__).parent / "fixtures/guides/feedback-loops.diagrams.guide.json"
+)
+
+
+@pytest.fixture()
+def diagrams_guide():
+    parsed = parse_guide(DIAGRAMS_FIXTURE.read_text(encoding="utf-8"))
+    assert parsed.ok
+    return normalize_guide(parsed)
+
+
+def test_diagrams_fixture_passes_every_static_check(diagrams_guide):
+    result = compute_static_checks(diagrams_guide)
+    ctx = result.context
+    assert (ctx.render_succeeded, ctx.assets_match, ctx.controls_have_labels,
+            ctx.heading_order_valid) == (True, True, True, True)
+    assert result.document is not None
+    assert 'class="block diagram"' in result.document
+
+
+def test_heading_injected_into_a_diagram_figure_fails_heading_order(diagrams_guide):
+    """Plan decision 8: no headings in a figure. A heading at a level that
+    would be in order anywhere else still fails once it sits inside a figure."""
+    from education_pipeline.guides.static_checks import _analyze_document
+
+    document = compute_static_checks(diagrams_guide).document
+    assert document is not None
+    marker = '<figcaption class="diagram-caption">'
+    assert marker in document
+    # Repeat the level of the heading just before the figure: that level is in
+    # order at that point and leaves every later heading in order, so only the
+    # figure rule can reject it.
+    at = document.index(marker)
+    level = re.findall(r"<h([1-6])[\s>]", document[:at])[-1]
+    injected = (
+        document[:at] + f"<h{level}>Inside a figure</h{level}>" + document[at:]
+    )
+    assert _analyze_document(document).heading_order_valid is True
+    assert _analyze_document(injected).heading_order_valid is False
+
+
+def test_heading_inside_any_figure_fails_and_headings_after_it_pass():
+    from education_pipeline.guides.static_checks import _analyze_document
+
+    assert _analyze_document(
+        "<h1>a</h1><h2>b</h2><figure><figcaption>c</figcaption></figure><h2>d</h2>"
+    ).heading_order_valid is True
+    assert _analyze_document(
+        "<h1>a</h1><h2>b</h2><figure><h3>c</h3></figure>"
+    ).heading_order_valid is False
+    # Depth is tracked, not a flag: closing an inner figure leaves the outer
+    # one open.
+    assert _analyze_document(
+        "<h1>a</h1><figure><figure></figure><h2>c</h2></figure>"
+    ).heading_order_valid is False

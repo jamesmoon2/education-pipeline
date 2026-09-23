@@ -55,4 +55,42 @@ describe("JsonTreeView", () => {
     rerender(<JsonTreeView value={{ modules: ["outro"] }} />);
     expect(screen.getByText('"outro"')).toBeInTheDocument();
   });
+
+  it("renders a diagram block's from/to edges and keyed comparison values generically", () => {
+    // Diagram blocks (schema 1.2) need no tree change: edges carry `from` and
+    // `to`, and comparison criteria carry `values` keyed by item id.
+    const flow = {
+      id: "growth-loop-flow",
+      type: "diagram",
+      kind: "flow",
+      nodes: [{ id: "biomass", label: "Plant biomass" }],
+      edges: [{ from: "biomass", to: "leaf-area", label: "increases" }],
+    };
+    const comparison = {
+      id: "loop-types-comparison",
+      type: "diagram",
+      kind: "comparison",
+      items: [{ id: "reinforcing", label: "Reinforcing loop" }],
+      criteria: [
+        {
+          id: "effect",
+          label: "What it does",
+          values: { reinforcing: "Amplifies change in one direction" },
+        },
+      ],
+    };
+    const { container } = render(<JsonTreeView value={{ blocks: [flow, comparison] }} />);
+    const keys = Array.from(container.querySelectorAll(".json-key")).map((el) =>
+      el.textContent?.replace(/:?\s*$/, ""),
+    );
+    expect(keys).toEqual(expect.arrayContaining(["from", "to", "values"]));
+
+    const values = Array.from(container.querySelectorAll("details.json-node")).find(
+      (node) => node.querySelector(":scope > summary .json-key")?.textContent?.trim() === "values",
+    );
+    expect(values).toBeDefined();
+    const itemKey = values!.querySelector(":scope > .json-children .json-key");
+    expect(itemKey).toHaveTextContent("reinforcing:");
+    expect(values).toHaveTextContent('"Amplifies change in one direction"');
+  });
 });

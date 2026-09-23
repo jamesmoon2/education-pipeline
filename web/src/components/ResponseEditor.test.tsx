@@ -203,4 +203,53 @@ describe("ResponseEditor", () => {
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(props.onClose).toHaveBeenCalled();
   });
+
+  // Every interactive-guide schema version is a guide: 1.0, 1.1 and the 1.2
+  // diagram schema all get JSON checking and the sandboxed guide preview.
+  it.each([
+    "application/vnd.education-pipeline.guide+json;version=1.1",
+    "application/vnd.education-pipeline.guide+json;version=1.2",
+  ] as const)("previews a %s response through the guide preview", async (contentType) => {
+    const { postGuidePreview } = await import("../api/client");
+    vi.mocked(postGuidePreview).mockResolvedValue({
+      html: '<!doctype html><figure class="block diagram" data-diagram-kind="flow"></figure>',
+      content_sha256: "abc",
+      validation: { blocking: 0, errors: 0, warnings: 0 },
+    });
+    const content = '{"schema_version":"1.2"}';
+    renderEditor({ content, contentType });
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(postGuidePreview).toHaveBeenCalledWith(content);
+    expect(postPreview).not.toHaveBeenCalled();
+    const frame = await screen.findByTitle("Interactive guide preview");
+    expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    expect(frame).toHaveAttribute("srcdoc", expect.stringContaining("figure"));
+    expect(document.querySelector(".preview.content")).toBeNull();
+  });
+
+  it.each([
+    "application/vnd.education-pipeline.guide+json;version=1.1",
+    "application/vnd.education-pipeline.guide+json;version=1.2",
+  ] as const)("checks JSON syntax in a %s response", async (contentType) => {
+    renderEditor({ content: '{"schema_version":"1.2"}', contentType });
+
+    fireEvent.change(screen.getByLabelText("Edit response for repair"), {
+      target: { value: "{" },
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("JSON syntax error");
+  });
+
+  it("keeps a markdown (legacy) response on the markdown preview", async () => {
+    const { postGuidePreview } = await import("../api/client");
+    vi.mocked(postPreview).mockResolvedValue({ html: "<h1>Legacy</h1>" });
+    renderEditor({ content: "{", contentType: "text/markdown" });
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(postPreview).toHaveBeenCalledWith("{");
+    expect(postGuidePreview).not.toHaveBeenCalled();
+    expect(await screen.findByText("Legacy")).toBeInTheDocument();
+    expect(screen.queryByTitle("Interactive guide preview")).not.toBeInTheDocument();
+  });
 });

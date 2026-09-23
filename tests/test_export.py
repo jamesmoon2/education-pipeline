@@ -1,6 +1,12 @@
+import base64
+import hashlib
 import json
+from pathlib import Path
+import re
 
 import test_runs
+
+from education_pipeline.guide_runtime import load_runtime_assets
 
 from education_pipeline import (
     build_markdown_bundle,
@@ -161,3 +167,60 @@ def test_personalized_source_stays_local_while_export_and_sidecar_are_stripped(
     )[1].split("</script>", 1)[0]
     payload = json.loads(embedded)
     assert payload["schema_version"] == "1.1"
+
+
+# --- Diagram block (T55): a 1.2 export --------------------------------------
+
+DIAGRAMS_FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.diagrams.guide.json"
+
+
+def _export_diagrams_run(tmp_path: Path):
+    topic_id = "systems-thinking"
+    body = DIAGRAMS_FIXTURE.read_text(encoding="utf-8")
+    runs = test_runs._create_versioned_guide_run(tmp_path, "1.2")
+    test_runs._drive_versioned_guide_to_draft_prompt(runs, "1.2").write_text(
+        body, encoding="utf-8"
+    )
+    runs.approve_stage(topic_id, "draft")
+    runs.validate_run(topic_id, "draft")
+    qa = runs.write_qa_prompt(topic_id)
+    qa.response_path.write_text("# QA findings\n\nNo major issues.\n", encoding="utf-8")
+    runs.approve_stage(topic_id, "qa")
+    fc = runs.write_factcheck_prompt(topic_id)
+    fc.response_path.write_text(test_runs.FACTCHECK_FIXTURE, encoding="utf-8")
+    runs.approve_stage(topic_id, "factcheck")
+    repair = runs.write_repair_prompt(topic_id)
+    repair.response_path.write_text(body, encoding="utf-8")
+    runs.approve_stage(topic_id, "repair")
+    runs.validate_run(topic_id, "final")
+    runs.finalize_run(topic_id)
+    return runs, runs.export_run(topic_id), topic_id
+
+
+def test_diagram_export_sidecar_records_runtime_1_2(tmp_path: Path) -> None:
+    runs, exported, topic_id = _export_diagrams_run(tmp_path)
+    sidecar = json.loads(runs.export_report_path(topic_id).read_text(encoding="utf-8"))
+    assert sidecar["export"]["runtime_version"] == "1.2"
+    assert 'data-diagram-kind="flow"' in exported.read_text(encoding="utf-8")
+
+
+def test_diagram_export_content_security_policy_is_unchanged(tmp_path: Path) -> None:
+    """Diagrams are drawn by the hashed runtime: the exported CSP gains no
+    directive (no img-src, no style/script relaxation)."""
+    _runs, exported, _topic_id = _export_diagrams_run(tmp_path)
+    assets = load_runtime_assets()
+
+    def sha(text: str) -> str:
+        return base64.b64encode(hashlib.sha256(text.encode("utf-8")).digest()).decode()
+
+    csp = re.search(
+        r'<meta http-equiv="Content-Security-Policy" content="([^"]*)">',
+        exported.read_text(encoding="utf-8"),
+    ).group(1)
+    assert csp == (
+        "default-src 'none'; img-src 'none'; "
+        f"style-src 'sha256-{sha(assets.css)}'; "
+        f"script-src 'sha256-{sha(assets.javascript)}'; "
+        "connect-src 'none'; font-src 'none'; media-src 'none'; "
+        "object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+    )
