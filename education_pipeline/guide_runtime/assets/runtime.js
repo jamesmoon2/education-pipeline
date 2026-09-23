@@ -1642,8 +1642,45 @@
       return [horizontal, vertical];
     }
 
-    // concept_map has no layout yet, so its figure keeps the server's text version.
-    const LAYOUTS = { flow: drawFlow, timeline: drawTimeline };
+    // Hub at the centre; the other nodes on a ring from 12 o'clock, clockwise,
+    // with R wide enough that neighbouring ring boxes never touch.
+    function drawConceptMap(data) {
+      const { nodes, edges } = data;
+      const hub = nodes.find((n) => n.id === data.hub);
+      const ring = nodes.filter((n) => n !== hub);
+      const k = ring.length;
+      const lines = new Map(nodes.map((n) => [n.id, wrap(n.label, L.NODE_CHARS, L.NODE_MAX_LINES)]));
+      const nodeH = 2 * L.NODE_PAD_Y + Math.max(...[...lines.values()].map((l) => l.length)) * L.NODE_LINE_H;
+      const r = k <= 1 ? L.R_MIN : Math.max(L.R_MIN, Math.ceil((L.NODE_W + L.RING_GAP) / (2 * Math.sin(Math.PI / k))));
+      const [cx, cy] = [L.MARGIN + r + L.NODE_W / 2, L.MARGIN + r + nodeH / 2];
+      const centre = new Map([[hub.id, [cx, cy]]]);
+      ring.forEach((n, i) => {
+        const theta = -Math.PI / 2 + (2 * Math.PI * i) / k;
+        centre.set(n.id, [cx + r * Math.cos(theta), cy + r * Math.sin(theta)]);
+      });
+      const groups = ["diagram-edges", "diagram-edge-labels", "diagram-nodes"].map((cls) => svgEl("g", { class: cls }));
+      for (const e of edges) {
+        const [[x1, y1], [x2, y2]] = [centre.get(e.from), centre.get(e.to)];
+        const [dx, dy] = [x2 - x1, y2 - y1];
+        // Leave each centre by the part of the segment inside its box.
+        const t = Math.min(L.NODE_W / 2 / Math.abs(dx), nodeH / 2 / Math.abs(dy));
+        const [sx, sy, tx, ty] = [x1 + t * dx, y1 + t * dy, x2 - t * dx, y2 - t * dy];
+        const d = `M${fmt(sx)},${fmt(sy)} L${fmt(tx)},${fmt(ty)}`;
+        svgEl("path", { class: "diagram-edge", d, "marker-end": `url(#${data.id}__arrow)` }, groups[0]);
+        if (typeof e.label === "string") drawEdgeLabel(groups[1], e.label, (sx + tx) / 2, (sy + ty) / 2);
+      }
+      for (const n of [hub, ...ring]) {
+        const [x, y] = centre.get(n.id);
+        drawNode(groups[2], x - L.NODE_W / 2, y - nodeH / 2, nodeH, lines.get(n.id), n === hub);
+      }
+      const desc = `Concept map centered on ${hub.label}, connected to ${k} idea${k === 1 ? "" : "s"}: ` +
+        `${ring.map((n) => n.label).join("; ")}.`;
+      const svg = svgRoot(data, "concept-map", "", 2 * (L.MARGIN + r) + L.NODE_W, 2 * (L.MARGIN + r) + nodeH, desc);
+      svg.append(arrowDefs(data.id, ""), ...groups);
+      return [svg];
+    }
+
+    const LAYOUTS = { flow: drawFlow, concept_map: drawConceptMap, timeline: drawTimeline };
 
     // The text version moves, unchanged, into a closed disclosure where it stood.
     function wrapTextVersion(figure, text) {

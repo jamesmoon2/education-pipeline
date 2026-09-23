@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.2" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-oyK5MXKbAmCa3OMlvknttwxb264aFcvkjiZVcuEhHQQ='; script-src 'sha256-EF+UzJKeJu7XQ/0fP3o+f6fl73Cj4v9d7/RFYFFwHsg='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
+<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.2" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-oyK5MXKbAmCa3OMlvknttwxb264aFcvkjiZVcuEhHQQ='; script-src 'sha256-8BhHRCkXbcXdhyVa7p2vlTp02gCFm30YDHgKT77CYwY='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
  * Derives from the product token system in docs/design-system.md (§4.2):
  * the guide surface reads with Literata on a white surface, interface
  * chrome uses the Plex Sans stack, and status is never color alone.
@@ -1830,8 +1830,45 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
       return [horizontal, vertical];
     }
 
-    // concept_map has no layout yet, so its figure keeps the server's text version.
-    const LAYOUTS = { flow: drawFlow, timeline: drawTimeline };
+    // Hub at the centre; the other nodes on a ring from 12 o'clock, clockwise,
+    // with R wide enough that neighbouring ring boxes never touch.
+    function drawConceptMap(data) {
+      const { nodes, edges } = data;
+      const hub = nodes.find((n) => n.id === data.hub);
+      const ring = nodes.filter((n) => n !== hub);
+      const k = ring.length;
+      const lines = new Map(nodes.map((n) => [n.id, wrap(n.label, L.NODE_CHARS, L.NODE_MAX_LINES)]));
+      const nodeH = 2 * L.NODE_PAD_Y + Math.max(...[...lines.values()].map((l) => l.length)) * L.NODE_LINE_H;
+      const r = k <= 1 ? L.R_MIN : Math.max(L.R_MIN, Math.ceil((L.NODE_W + L.RING_GAP) / (2 * Math.sin(Math.PI / k))));
+      const [cx, cy] = [L.MARGIN + r + L.NODE_W / 2, L.MARGIN + r + nodeH / 2];
+      const centre = new Map([[hub.id, [cx, cy]]]);
+      ring.forEach((n, i) => {
+        const theta = -Math.PI / 2 + (2 * Math.PI * i) / k;
+        centre.set(n.id, [cx + r * Math.cos(theta), cy + r * Math.sin(theta)]);
+      });
+      const groups = ["diagram-edges", "diagram-edge-labels", "diagram-nodes"].map((cls) => svgEl("g", { class: cls }));
+      for (const e of edges) {
+        const [[x1, y1], [x2, y2]] = [centre.get(e.from), centre.get(e.to)];
+        const [dx, dy] = [x2 - x1, y2 - y1];
+        // Leave each centre by the part of the segment inside its box.
+        const t = Math.min(L.NODE_W / 2 / Math.abs(dx), nodeH / 2 / Math.abs(dy));
+        const [sx, sy, tx, ty] = [x1 + t * dx, y1 + t * dy, x2 - t * dx, y2 - t * dy];
+        const d = `M${fmt(sx)},${fmt(sy)} L${fmt(tx)},${fmt(ty)}`;
+        svgEl("path", { class: "diagram-edge", d, "marker-end": `url(#${data.id}__arrow)` }, groups[0]);
+        if (typeof e.label === "string") drawEdgeLabel(groups[1], e.label, (sx + tx) / 2, (sy + ty) / 2);
+      }
+      for (const n of [hub, ...ring]) {
+        const [x, y] = centre.get(n.id);
+        drawNode(groups[2], x - L.NODE_W / 2, y - nodeH / 2, nodeH, lines.get(n.id), n === hub);
+      }
+      const desc = `Concept map centered on ${hub.label}, connected to ${k} idea${k === 1 ? "" : "s"}: ` +
+        `${ring.map((n) => n.label).join("; ")}.`;
+      const svg = svgRoot(data, "concept-map", "", 2 * (L.MARGIN + r) + L.NODE_W, 2 * (L.MARGIN + r) + nodeH, desc);
+      svg.append(arrowDefs(data.id, ""), ...groups);
+      return [svg];
+    }
+
+    const LAYOUTS = { flow: drawFlow, concept_map: drawConceptMap, timeline: drawTimeline };
 
     // The text version moves, unchanged, into a closed disclosure where it stood.
     function wrapTextVersion(figure, text) {

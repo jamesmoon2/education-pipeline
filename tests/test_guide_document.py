@@ -17,6 +17,9 @@ from education_pipeline.guide_runtime import (
 )
 from education_pipeline.guides import normalize_guide, parse_guide
 from education_pipeline.guides.model import (
+    ComparisonCriterion,
+    ComparisonItem,
+    ComparisonValue,
     Diagram,
     DiagramEdge,
     DiagramNode,
@@ -536,3 +539,235 @@ def test_content_security_policy_string_is_pinned(fixture: Path) -> None:
         "connect-src 'none'; font-src 'none'; media-src 'none'; "
         "object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
     )
+
+
+# --- Diagram block: concept map and comparison (T54) ----------------------
+
+
+CONCEPT_MAP_FIGURE = (
+    '<figure class="block diagram" id="loop-kinds-map" data-diagram-kind="concept_map">'
+    '<figcaption class="diagram-caption">'
+    '<strong class="diagram-title">Kinds of feedback</strong>'
+    "</figcaption>"
+    '<div class="diagram-text" data-role="diagram-text">'
+    '<ul class="diagram-map">'
+    '<li><span class="diagram-label">Feedback loop</span> (central idea)'
+    '<ul class="diagram-map-links">'
+    "<li>can be → Reinforcing loop</li>"
+    "<li>can be → Balancing loop</li>"
+    "</ul></li>"
+    '<li><span class="diagram-label">Reinforcing loop</span>: '
+    '<span class="diagram-detail">Amplifies change in one direction.</span></li>'
+    '<li><span class="diagram-label">Balancing loop</span>: '
+    '<span class="diagram-detail">Pushes a quantity toward a goal or limit.</span>'
+    '<ul class="diagram-map-links">'
+    "<li>overshoots with a → Delay</li>"
+    "</ul></li>"
+    '<li><span class="diagram-label">Delay</span></li>'
+    "</ul>"
+    "</div>"
+    "</figure>"
+)
+
+COMPARISON_FIGURE = (
+    '<figure class="block diagram" id="loop-types-comparison" data-diagram-kind="comparison">'
+    '<figcaption class="diagram-caption">'
+    '<strong class="diagram-title">Reinforcing and balancing loops side by side</strong>'
+    "</figcaption>"
+    '<div class="diagram-text" data-role="diagram-text">'
+    '<table class="diagram-table">'
+    "<thead><tr>"
+    '<th scope="col">Criterion</th>'
+    '<th scope="col">Reinforcing loop</th>'
+    '<th scope="col">Balancing loop</th>'
+    "</tr></thead>"
+    "<tbody>"
+    '<tr><th scope="row">What it does</th>'
+    "<td>Amplifies change in one direction</td>"
+    "<td>Pushes toward a goal or limit</td></tr>"
+    '<tr><th scope="row">Garden example</th>'
+    "<td>More leaves capture more light</td>"
+    "<td>Watering stops once the soil is moist</td></tr>"
+    '<tr><th scope="row">Main risk</th>'
+    "<td>Runaway growth or collapse</td>"
+    "<td><em>Overcorrection</em> when feedback is delayed</td></tr>"
+    "</tbody></table>"
+    "</div>"
+    "</figure>"
+)
+
+
+def test_concept_map_diagram_figure_markup_is_exact() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    assert _figure(document, "loop-kinds-map") == CONCEPT_MAP_FIGURE
+
+
+def test_comparison_diagram_figure_markup_is_exact() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    assert _figure(document, "loop-types-comparison") == COMPARISON_FIGURE
+
+
+def test_concept_map_and_comparison_are_figures_without_interactive_markers() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    for block_id in ("loop-kinds-map", "loop-types-comparison"):
+        figure = _figure(document, block_id)
+        assert "data-interactive" not in figure
+        assert "<details" not in figure and "<svg" not in figure
+        assert "data-diagram-state" not in figure
+    for local_id in ("feedback-loop", "reinforcing", "balancing", "delay", "effect", "example", "risk"):
+        assert f'id="{local_id}"' not in document
+
+
+def test_concept_map_lists_the_hub_first_and_escapes_every_plain_string() -> None:
+    block = Diagram(
+        id="escape-map",
+        kind="concept_map",
+        title="Map <of> & ideas",
+        caption="Hub is **central**",
+        hub="centre",
+        nodes=(
+            DiagramNode("leaf", "Leaf <a>", detail="*Soft* & `code`"),
+            DiagramNode("centre", 'Hub "C"'),
+            DiagramNode("other", "Other & more"),
+        ),
+        edges=(
+            DiagramEdge("centre", "leaf"),
+            DiagramEdge("centre", "other", label="<links>"),
+            DiagramEdge("other", "leaf", label="feeds"),
+        ),
+    )
+    document = assemble_guide_document(_with_blocks(diagrams_guide(), block))
+    assert _figure(document, "escape-map") == (
+        '<figure class="block diagram" id="escape-map" data-diagram-kind="concept_map">'
+        '<figcaption class="diagram-caption">'
+        '<strong class="diagram-title">Map &lt;of&gt; &amp; ideas</strong>'
+        ' <span class="diagram-caption-text">Hub is <strong>central</strong></span>'
+        "</figcaption>"
+        '<div class="diagram-text" data-role="diagram-text">'
+        '<ul class="diagram-map">'
+        '<li><span class="diagram-label">Hub &quot;C&quot;</span> (central idea)'
+        '<ul class="diagram-map-links">'
+        "<li>→ Leaf &lt;a&gt;</li>"
+        "<li>&lt;links&gt; → Other &amp; more</li>"
+        "</ul></li>"
+        '<li><span class="diagram-label">Leaf &lt;a&gt;</span>: '
+        '<span class="diagram-detail"><em>Soft</em> &amp; <code>code</code></span></li>'
+        '<li><span class="diagram-label">Other &amp; more</span>'
+        '<ul class="diagram-map-links">'
+        "<li>feeds → Leaf &lt;a&gt;</li>"
+        "</ul></li>"
+        "</ul>"
+        "</div>"
+        "</figure>"
+    )
+
+
+def test_comparison_escapes_labels_and_renders_inline_cells() -> None:
+    block = Diagram(
+        id="escape-table",
+        kind="comparison",
+        title="A & B",
+        items=(ComparisonItem("a", "Item <a>"), ComparisonItem("b", 'Item "b"')),
+        criteria=(
+            ComparisonCriterion(
+                "cost",
+                "Cost & time",
+                values=(
+                    ComparisonValue("a", "**Low** <cheap>"),
+                    ComparisonValue("b", "See [the outcome](#map-loop)"),
+                ),
+            ),
+        ),
+    )
+    document = assemble_guide_document(_with_blocks(diagrams_guide(), block))
+    assert _figure(document, "escape-table") == (
+        '<figure class="block diagram" id="escape-table" data-diagram-kind="comparison">'
+        '<figcaption class="diagram-caption">'
+        '<strong class="diagram-title">A &amp; B</strong>'
+        "</figcaption>"
+        '<div class="diagram-text" data-role="diagram-text">'
+        '<table class="diagram-table">'
+        '<thead><tr><th scope="col">Criterion</th>'
+        '<th scope="col">Item &lt;a&gt;</th>'
+        '<th scope="col">Item &quot;b&quot;</th></tr></thead>'
+        '<tbody><tr><th scope="row">Cost &amp; time</th>'
+        "<td><strong>Low</strong> &lt;cheap&gt;</td>"
+        '<td>See <a href="#map-loop">the outcome</a></td></tr>'
+        "</tbody></table>"
+        "</div>"
+        "</figure>"
+    )
+
+
+def test_guide_data_embeds_concept_map_and_comparison_as_canonical_dicts() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    payload = json.loads(
+        re.search(
+            r'<script id="guide-data" type="application/json">(.*?)</script>', document
+        ).group(1)
+    )
+    blocks = {
+        b["id"]: b
+        for m in payload["modules"]
+        for s in m["sections"]
+        for b in s["blocks"]
+        if b["type"] == "diagram"
+    }
+    assert blocks["loop-kinds-map"] == {
+        "edges": [
+            {"from": "feedback-loop", "label": "can be", "to": "reinforcing"},
+            {"from": "feedback-loop", "label": "can be", "to": "balancing"},
+            {"from": "balancing", "label": "overshoots with a", "to": "delay"},
+        ],
+        "hub": "feedback-loop",
+        "id": "loop-kinds-map",
+        "kind": "concept_map",
+        "nodes": [
+            {"id": "feedback-loop", "label": "Feedback loop"},
+            {"detail": "Amplifies change in one direction.", "id": "reinforcing", "label": "Reinforcing loop"},
+            {"detail": "Pushes a quantity toward a goal or limit.", "id": "balancing", "label": "Balancing loop"},
+            {"id": "delay", "label": "Delay"},
+        ],
+        "outcome_ids": ["identify-loop"],
+        "source_ids": [],
+        "title": "Kinds of feedback",
+        "type": "diagram",
+    }
+    assert blocks["loop-types-comparison"] == {
+        "criteria": [
+            {
+                "id": "effect",
+                "label": "What it does",
+                "values": {
+                    "balancing": "Pushes toward a goal or limit",
+                    "reinforcing": "Amplifies change in one direction",
+                },
+            },
+            {
+                "id": "example",
+                "label": "Garden example",
+                "values": {
+                    "balancing": "Watering stops once the soil is moist",
+                    "reinforcing": "More leaves capture more light",
+                },
+            },
+            {
+                "id": "risk",
+                "label": "Main risk",
+                "values": {
+                    "balancing": "*Overcorrection* when feedback is delayed",
+                    "reinforcing": "Runaway growth or collapse",
+                },
+            },
+        ],
+        "id": "loop-types-comparison",
+        "items": [
+            {"id": "reinforcing", "label": "Reinforcing loop"},
+            {"id": "balancing", "label": "Balancing loop"},
+        ],
+        "kind": "comparison",
+        "outcome_ids": ["identify-loop"],
+        "source_ids": ["meadows-2008"],
+        "title": "Reinforcing and balancing loops side by side",
+        "type": "diagram",
+    }
