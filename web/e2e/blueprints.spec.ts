@@ -14,7 +14,7 @@ let ws: string;
 
 const SPEC = `# Course Specification\n\n\`\`\`education-pipeline-contract+json\n${JSON.stringify({
   contract_version: 1,
-  guide_schema_version: "1.0",
+  guide_schema_version: "1.2",
   blueprint: "conceptual-foundations",
   estimated_minutes: 30,
   outcomes: [{ id: "identify-loop", text: "Identify reinforcing and balancing feedback." }],
@@ -27,12 +27,17 @@ const OUTLINE = `# Course Outline\n\n\`\`\`education-pipeline-outline+json\n${JS
   modules: { "feedback-loops": { outcome_ids: ["identify-loop"], estimated_minutes: 30, interaction_types: ["knowledge_check", "worked_reveal"] } },
 })}\n\`\`\``;
 
-const FIXTURE = JSON.parse(
-  readFileSync(
-    resolve(import.meta.dirname, "../../tests/fixtures/guides/feedback-loops.guide.json"),
-    "utf-8",
+// New runs default to guide schema 1.2 (diagram-block spec, Migration); the
+// shared fixture is authored at 1.0, so re-declare it at the run's version.
+const FIXTURE = {
+  ...JSON.parse(
+    readFileSync(
+      resolve(import.meta.dirname, "../../tests/fixtures/guides/feedback-loops.guide.json"),
+      "utf-8",
+    ),
   ),
-);
+  schema_version: "1.2",
+};
 const DRAFT = JSON.stringify(FIXTURE);
 
 function revisedModuleFragment(): string {
