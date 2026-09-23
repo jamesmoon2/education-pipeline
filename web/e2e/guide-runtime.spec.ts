@@ -84,7 +84,7 @@ test.describe("guide schema compatibility", () => {
 
     await expect(page.locator("[data-guide-shell]")).toBeHidden();
     await expect(page.locator("[data-guide-status]")).toContainText(
-      "schema 2.0, runtime 1.1",
+      "schema 2.0, runtime 1.2",
     );
   });
 });
@@ -1383,4 +1383,282 @@ test.describe("results page never collides with an authored id (T43)", () => {
     await link.click();
     await expect(resultsPage).toHaveClass(/is-current/);
   });
+});
+
+test.describe("diagram rendering: flow and timeline (T53)", () => {
+  const DIAGRAMS_FIXTURE = "tests/fixtures/guides/feedback-loops.diagrams.guide.json";
+  const FLOW = "figure#growth-loop-flow";
+  const TIMELINE = "figure#watering-delay-timeline";
+  const FLOW_DESC =
+    "Flow diagram with 4 steps and 4 connections, 1 of which loops back to an earlier step. " +
+    "Steps in order: Plant biomass; Leaf area; Sunlight captured; New growth.";
+  const TIMELINE_DESC =
+    "Timeline of 4 events, from Day 1, morning (Water the bed) to Day 4 (Leaves recover).";
+  let diagramsHtml: string;
+
+  test.beforeAll(() => {
+    diagramsHtml = assembleFixtureDocument(DIAGRAMS_FIXTURE);
+  });
+
+  async function load(page: import("@playwright/test").Page, html = diagramsHtml) {
+    await page.setContent(html, { waitUntil: "load" });
+    await expect(page.locator("[data-guide-status]")).toBeHidden();
+  }
+
+  async function expectNoSeriousViolations(page: import("@playwright/test").Page) {
+    const results = await new AxeBuilder({ page }).analyze();
+    const serious = results.violations.filter(
+      (v) => v.impact === "serious" || v.impact === "critical",
+    );
+    expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
+  }
+
+  test("the document declares schema 1.2 and runtime 1.2 and boots without errors", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(String(error)));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    await load(page);
+    await expect(page.locator("html")).toHaveAttribute("data-guide-schema", "1.2");
+    await expect(page.locator("html")).toHaveAttribute("data-guide-runtime", "1.2");
+    await expect(page.locator("[data-guide-shell]")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test("flow is drawn as one labelled svg[role=img] with the §10.4 viewBox", async ({ page }) => {
+    await load(page);
+    const figure = page.locator(FLOW);
+    await expect(figure).toHaveAttribute("data-diagram-state", "drawn");
+    const svg = figure.locator("svg");
+    await expect(svg).toHaveCount(1);
+    await expect(svg).toHaveAttribute("role", "img");
+    await expect(svg).toHaveAttribute("focusable", "false");
+    await expect(svg).toHaveClass("diagram-svg diagram-svg--flow");
+    await expect(svg).toHaveAttribute("viewBox", "0 0 261 368");
+    await expect(svg).toHaveAttribute("width", "261");
+    await expect(svg).toHaveAttribute("height", "368");
+    await expect(svg).toHaveAttribute("aria-labelledby", "growth-loop-flow__title");
+    await expect(svg).toHaveAttribute("aria-describedby", "growth-loop-flow__desc");
+    await expect(svg.locator("title#growth-loop-flow__title")).toHaveText(
+      "How plant growth reinforces itself",
+    );
+    await expect(svg.locator("desc#growth-loop-flow__desc")).toHaveText(FLOW_DESC);
+    await expect(svg).toBeVisible();
+    await expect(page.getByRole("img", { name: "How plant growth reinforces itself" })).toHaveCount(1);
+  });
+
+  test("flow draws four nodes, four edges and exactly one back edge with an arrowhead", async ({ page }) => {
+    await load(page);
+    const svg = page.locator(`${FLOW} svg`);
+    await expect(svg.locator("g.diagram-node")).toHaveCount(4);
+    await expect(svg.locator("path.diagram-edge")).toHaveCount(4);
+    await expect(page.locator(".diagram-edge--back")).toHaveCount(1);
+    await expect(svg.locator("path.diagram-edge--back")).toHaveCount(1);
+    await expect(svg.locator("g.diagram-edge-label")).toHaveCount(4);
+    await expect(svg.locator("marker#growth-loop-flow__arrow")).toHaveCount(1);
+    const markerEnds = await svg
+      .locator("path.diagram-edge")
+      .evaluateAll((paths) => paths.map((p) => p.getAttribute("marker-end")));
+    expect(markerEnds).toEqual(Array(4).fill("url(#growth-loop-flow__arrow)"));
+    const labels = await svg
+      .locator("g.diagram-node text")
+      .evaluateAll((nodes) => nodes.map((n) => n.textContent));
+    expect(labels).toEqual(["Plant biomass", "Leaf area", "Sunlight captured", "New growth"]);
+  });
+
+  test("timeline is drawn as a horizontal then a vertical svg with the §10.4 viewBoxes", async ({ page }) => {
+    await load(page);
+    const figure = page.locator(TIMELINE);
+    await expect(figure).toHaveAttribute("data-diagram-state", "drawn");
+    const svgs = figure.locator("svg");
+    await expect(svgs).toHaveCount(2);
+    const horizontal = svgs.nth(0);
+    const vertical = svgs.nth(1);
+    await expect(horizontal).toHaveClass("diagram-svg diagram-svg--timeline-h");
+    await expect(vertical).toHaveClass("diagram-svg diagram-svg--timeline-v");
+    await expect(horizontal).toHaveAttribute("viewBox", "0 0 648 240");
+    await expect(vertical).toHaveAttribute("viewBox", "0 0 360 424");
+    for (const [svg, sfx] of [[horizontal, "-h"], [vertical, "-v"]] as const) {
+      await expect(svg).toHaveAttribute("role", "img");
+      await expect(svg).toHaveAttribute("focusable", "false");
+      await expect(svg).toHaveAttribute("aria-labelledby", `watering-delay-timeline__title${sfx}`);
+      await expect(svg).toHaveAttribute("aria-describedby", `watering-delay-timeline__desc${sfx}`);
+      await expect(svg.locator(`title#watering-delay-timeline__title${sfx}`)).toHaveText(
+        "Why watering again too soon overcorrects",
+      );
+      await expect(svg.locator(`desc#watering-delay-timeline__desc${sfx}`)).toHaveText(TIMELINE_DESC);
+      await expect(svg.locator("circle.diagram-event-marker")).toHaveCount(4);
+      await expect(svg.locator("marker")).toHaveCount(0);
+    }
+    await expect(horizontal.locator("line.diagram-tick")).toHaveCount(4);
+    await expect(vertical.locator("line.diagram-tick")).toHaveCount(0);
+  });
+
+  test("the figure reads figcaption, svg(s), then a closed 'Text version' disclosure holding the text", async ({ page }) => {
+    await load(page);
+    for (const [selector, expected] of [
+      [FLOW, ["figcaption", "svg", "details"]],
+      [TIMELINE, ["figcaption", "svg", "svg", "details"]],
+    ] as const) {
+      const figure = page.locator(selector);
+      const children = await figure.evaluate((el) =>
+        Array.from(el.children).map((c) => c.localName),
+      );
+      expect(children).toEqual(expected);
+      const details = figure.locator(':scope > details[data-role="diagram-text-toggle"]');
+      await expect(details).toHaveCount(1);
+      await expect(details).toHaveClass("diagram-text-toggle");
+      await expect(details).not.toHaveAttribute("open", /.*/);
+      await expect(details.locator(":scope > summary")).toHaveText("Text version");
+      await expect(details.locator(':scope > div[data-role="diagram-text"]')).toHaveCount(1);
+    }
+    await expect(page.locator(`${FLOW} .diagram-connections`)).toBeHidden();
+    await page.locator(`${FLOW} summary`).click();
+    await expect(page.locator(`${FLOW} .diagram-connections`)).toContainText(
+      "New growth → Plant biomass — adds to (loops back)",
+    );
+  });
+
+  test("every id in the document is unique, including marker, title and desc ids", async ({ page }) => {
+    await load(page);
+    const ids = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("[id]")).map((el) => el.id),
+    );
+    const duplicates = ids.filter((id, i) => ids.indexOf(id) !== i);
+    expect(duplicates).toEqual([]);
+    const markerIds = await page
+      .locator("svg marker")
+      .evaluateAll((markers) => markers.map((m) => m.id));
+    expect(markerIds).toContain("growth-loop-flow__arrow");
+    expect(new Set(markerIds).size).toBe(markerIds.length);
+  });
+
+  test("the svgs use no inline style, script, image or foreignObject", async ({ page }) => {
+    await load(page);
+    await expect(page.locator(`${FLOW} svg, ${TIMELINE} svg`)).toHaveCount(3);
+    const offending = await page.evaluate(() =>
+      Array.from(
+        document.querySelectorAll(
+          "figure.diagram svg [style], figure.diagram svg[style], figure.diagram svg style, " +
+            "figure.diagram svg script, figure.diagram svg image, figure.diagram svg foreignObject",
+        ),
+      ).map((el) => el.outerHTML),
+    );
+    expect(offending).toEqual([]);
+  });
+
+  test("two renders of the same guide give identical svg markup", async ({ page }) => {
+    const snapshot = () =>
+      page
+        .locator("figure.diagram svg")
+        .evaluateAll((svgs) => svgs.map((svg) => svg.outerHTML));
+    await load(page);
+    const first = await snapshot();
+    await load(page);
+    const second = await snapshot();
+    expect(first.length).toBeGreaterThanOrEqual(3);
+    expect(second).toEqual(first);
+  });
+
+  test("the horizontal timeline shows on a wide screen and the vertical one at 375px", async ({ page }) => {
+    await load(page);
+    await page.evaluate(() => {
+      location.hash = "#delays-and-leverage";
+    });
+    await expect(page.locator("#delays-and-leverage")).toHaveClass(/is-current/);
+    await expect(page.locator(`${TIMELINE} svg.diagram-svg--timeline-h`)).toBeVisible();
+    await expect(page.locator(`${TIMELINE} svg.diagram-svg--timeline-v`)).toBeHidden();
+
+    await page.setViewportSize({ width: 375, height: 812 });
+    await expect(page.locator(`${TIMELINE} svg.diagram-svg--timeline-v`)).toBeVisible();
+    await expect(page.locator(`${TIMELINE} svg.diagram-svg--timeline-h`)).toBeHidden();
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+
+  test("beforeprint opens closed text versions and afterprint restores them", async ({ page }) => {
+    await load(page);
+    const flowDetails = page.locator(`${FLOW} details[data-role="diagram-text-toggle"]`);
+    const timelineDetails = page.locator(`${TIMELINE} details[data-role="diagram-text-toggle"]`);
+    await expect(flowDetails).toHaveCount(1);
+    await expect(timelineDetails).toHaveCount(1);
+    // A disclosure the learner opened stays open after printing.
+    await timelineDetails.evaluate((el) => el.setAttribute("open", ""));
+
+    await page.evaluate(() => window.dispatchEvent(new Event("beforeprint")));
+    await expect(flowDetails).toHaveAttribute("open", "");
+    await expect(flowDetails).toHaveAttribute("data-print-opened", /.*/);
+    await expect(timelineDetails).toHaveAttribute("open", "");
+    await expect(timelineDetails).not.toHaveAttribute("data-print-opened", /.*/);
+
+    await page.evaluate(() => window.dispatchEvent(new Event("afterprint")));
+    await expect(flowDetails).not.toHaveAttribute("open", /.*/);
+    await expect(flowDetails).not.toHaveAttribute("data-print-opened", /.*/);
+    await expect(timelineDetails).toHaveAttribute("open", "");
+  });
+
+  test("print media hides the disclosure summary", async ({ page }) => {
+    await load(page);
+    await expect(page.locator(`${FLOW} summary`)).toHaveCount(1);
+    await page.emulateMedia({ media: "print" });
+    await expect(page.locator(`${FLOW} summary`)).toBeHidden();
+  });
+
+  test("tampered guide-data (unknown edge target) leaves the text version and no svg while the guide boots", async ({ page }) => {
+    const original = '{"from":"biomass","label":"increases","to":"leaf-area"}';
+    expect(diagramsHtml).toContain(original);
+    const tampered = diagramsHtml.replace(
+      original,
+      '{"from":"biomass","label":"increases","to":"missing-node"}',
+    );
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+    page.on("pageerror", (error) => pageErrors.push(String(error)));
+    await load(page, tampered);
+
+    await expect(page.getByRole("heading", { name: "Thinking in Feedback Loops" })).toBeVisible();
+    await expect(page.locator("[data-guide-shell]")).toBeVisible();
+    const figure = page.locator(FLOW);
+    await expect(figure).toHaveAttribute("data-diagram-state", "text");
+    await expect(figure.locator("svg")).toHaveCount(0);
+    await expect(figure.locator("details")).toHaveCount(0);
+    await expect(figure.locator(':scope > div[data-role="diagram-text"]')).toBeVisible();
+    await expect(figure.locator(".diagram-connections")).toContainText("Plant biomass → Leaf area");
+    // The other diagrams and the interactive blocks still work.
+    await expect(page.locator(TIMELINE)).toHaveAttribute("data-diagram-state", "drawn");
+    await expect(page.locator(`${TIMELINE} svg`)).toHaveCount(2);
+    await expect(page.locator("html")).toHaveClass(/js-enhanced/);
+    // Boot continued past the diagrams: later install steps still ran.
+    await expect(page.locator('[data-role="results-page"]')).toHaveCount(1);
+    expect(pageErrors).toEqual([]);
+    expect(consoleErrors).toContainEqual(
+      expect.stringContaining("guide-runtime: diagram fell back to its text version:"),
+    );
+    expect(consoleErrors.join("\n")).toContain("growth-loop-flow");
+  });
+
+  for (const theme of ["light", "dark"] as const) {
+    test(`diagram sections have no serious or critical accessibility violations (${theme})`, async ({ page }) => {
+      await load(page);
+      await page.locator('[data-role="theme-select"]').selectOption(theme);
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(page.locator(FLOW)).toHaveAttribute("data-diagram-state", "drawn");
+      await expectNoSeriousViolations(page);
+      await page.locator(`${FLOW} summary`).click();
+      await expectNoSeriousViolations(page);
+
+      await page.evaluate(() => {
+        location.hash = "#delays-and-leverage";
+      });
+      await expect(page.locator("#delays-and-leverage")).toHaveClass(/is-current/);
+      await expect(page.locator(`${TIMELINE} svg.diagram-svg--timeline-h`)).toBeVisible();
+      await expectNoSeriousViolations(page);
+    });
+  }
 });
