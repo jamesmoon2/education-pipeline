@@ -130,12 +130,35 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
   *{scroll-behavior:auto!important;animation-duration:.001ms!important;transition-duration:.001ms!important}
 }
 
+figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
+.diagram-caption{font-family:var(--ep-font-interface);font-size:.95rem}
+.diagram-caption-text{display:block;color:var(--ep-color-text-muted)}
+.diagram-svg{display:block;max-width:100%;height:auto;margin:.75rem 0;font-family:var(--ep-font-interface)}
+.diagram-node-box{fill:var(--ep-color-surface);stroke:var(--ep-color-accent);stroke-width:1.5}
+.diagram-node--hub .diagram-node-box{fill:var(--ep-color-accent-soft);stroke-width:2.5}
+.diagram-node-label{fill:var(--ep-color-text);font-size:14px}
+.diagram-edge{fill:none;stroke:var(--ep-color-text-muted);stroke-width:1.5}
+.diagram-edge--back{stroke-dasharray:6 4}
+.diagram-arrowhead{fill:var(--ep-color-text-muted)}
+.diagram-edge-label-bg{fill:var(--ep-color-surface)}
+.diagram-edge-label-text{fill:var(--ep-color-text-muted);font-size:12px}
+.diagram-axis,.diagram-tick{stroke:var(--ep-color-border);stroke-width:2}
+.diagram-event-marker{fill:var(--ep-color-accent)}
+.diagram-event-when{fill:var(--ep-color-text);font-size:13px;font-weight:600}
+.diagram-event-label{fill:var(--ep-color-text);font-size:13px}
+.diagram-svg--timeline-v{display:none}
+.diagram-text-toggle summary{cursor:pointer;font-family:var(--ep-font-interface);font-size:.9rem;color:var(--ep-color-accent)}
+.diagram-table th[scope="row"]{background:var(--ep-color-surface-subtle)}
+.diagram[data-diagram-state="table"] .diagram-text{overflow-x:auto}
+@media(max-width:40rem){.diagram-svg--timeline-h{display:none}.diagram-svg--timeline-v{display:block}}
 @media print{
   .guide-nav,.skip-link,.course-controls,.progress-migration,.section-nav-controls,.section-complete-controls,
   .kc-controls,.wr-controls,.sc-controls,.rf-controls,.reflection-input,.nav-toggle,
   .live-region,.progress-summary,.results-summary{display:none!important}
   .layout{display:block;max-width:none}
   .block{break-inside:avoid}
+  .diagram-text-toggle>summary{display:none}
+  .diagram{break-inside:avoid}
   .course-header{padding:0;border:0;background:none}
   .js-enhanced main section[data-role="guide-section"]{display:block!important}
   .js-enhanced .block.knowledge_check .choice-feedback,
