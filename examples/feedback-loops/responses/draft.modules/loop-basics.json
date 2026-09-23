@@ -28,6 +28,57 @@
           "markdown": "A **feedback loop** exists when a change travels through a system and eventually influences its starting quantity. Reinforcing loops amplify direction; balancing loops resist a gap or move toward a goal."
         },
         {
+          "id": "growth-loop-flow",
+          "type": "diagram",
+          "kind": "flow",
+          "title": "How plant growth reinforces itself",
+          "caption": "The last connection closes a **reinforcing** loop.",
+          "outcome_ids": [
+            "map-loop"
+          ],
+          "nodes": [
+            {
+              "id": "biomass",
+              "label": "Plant biomass"
+            },
+            {
+              "id": "leaf-area",
+              "label": "Leaf area",
+              "detail": "More biomass usually means more leaves."
+            },
+            {
+              "id": "sunlight",
+              "label": "Sunlight captured"
+            },
+            {
+              "id": "growth",
+              "label": "New growth"
+            }
+          ],
+          "edges": [
+            {
+              "from": "biomass",
+              "to": "leaf-area",
+              "label": "increases"
+            },
+            {
+              "from": "leaf-area",
+              "to": "sunlight",
+              "label": "increases"
+            },
+            {
+              "from": "sunlight",
+              "to": "growth",
+              "label": "fuels"
+            },
+            {
+              "from": "growth",
+              "to": "biomass",
+              "label": "adds to"
+            }
+          ]
+        },
+        {
           "id": "garden-connection",
           "type": "callout",
           "kind": "connection",

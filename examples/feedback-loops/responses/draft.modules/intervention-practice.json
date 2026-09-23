@@ -28,6 +28,51 @@
           "markdown": "A **delay** separates an action from its visible result. Teams may add work when progress looks slow, just as gardeners may water again before moisture reaches deeper roots. Mapping the delay helps prevent overcorrection."
         },
         {
+          "id": "intervention-comparison",
+          "type": "diagram",
+          "kind": "comparison",
+          "title": "Acting again versus waiting out a delay",
+          "outcome_ids": [
+            "choose-intervention"
+          ],
+          "items": [
+            {
+              "id": "act-again",
+              "label": "Act again right away"
+            },
+            {
+              "id": "wait-out",
+              "label": "Wait out the delay"
+            }
+          ],
+          "criteria": [
+            {
+              "id": "first-sign",
+              "label": "What you see first",
+              "values": {
+                "act-again": "A quick visible change",
+                "wait-out": "Little visible change"
+              }
+            },
+            {
+              "id": "after-delay",
+              "label": "After the delay",
+              "values": {
+                "act-again": "*Overshoot* past the goal",
+                "wait-out": "Settles near the goal"
+              }
+            },
+            {
+              "id": "cost",
+              "label": "Main cost",
+              "values": {
+                "act-again": "Wasted effort and swings",
+                "wait-out": "Patience while nothing seems to happen"
+              }
+            }
+          ]
+        },
+        {
           "id": "delay-warning",
           "type": "callout",
           "kind": "warning",

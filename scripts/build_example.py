@@ -24,7 +24,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from education_pipeline import ProfileStore, RunStore, TopicStore  # noqa: E402
-from education_pipeline.runs import ContentContract  # noqa: E402
 
 EXAMPLE_DIR = REPO_ROOT / "examples" / "feedback-loops"
 TOPIC_ID = "feedback-loops"
@@ -80,8 +79,7 @@ def build_export(example_dir: Path, workspace: Path) -> tuple[bytes, bytes]:
     profiles.attach_profile_to_topic(PROFILE_ID, TOPIC_ID)
 
     runs = RunStore(workspace)
-    # The example stays on schema 1.1 until it moves to 1.2 (diagram spec, T56).
-    runs.create_run(TOPIC_ID, content_contract=ContentContract.interactive_guide_v1_1())
+    runs.create_run(TOPIC_ID)
 
     stage_bodies = {
         "spec": (responses / "spec.md").read_text(encoding="utf-8"),
