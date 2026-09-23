@@ -118,6 +118,17 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
 
 .js-enhanced .nav-toggle{display:inline-block}
 
+/* Without JavaScript the boot step that un-hides the shell never runs, so
+ * the static guide shows itself here instead: every section stacked, with
+ * answers, feedback and diagram text versions visible as in the answer-key
+ * print, and no controls that would do nothing. */
+@media(scripting:none){
+  [data-guide-shell][hidden]{display:block}
+  [data-guide-status],.course-controls,.progress-summary,.section-nav-controls,.section-complete-controls,
+  .kc-controls,.wr-controls,.sc-controls,.rf-controls,.reflection-input,.block.reflection .local-data-note,
+  [data-role="kc-choice"],[data-role="sc-choice"]{display:none}
+}
+
 @media(max-width:48rem){
   .layout{display:block}
   .guide-nav{position:static}

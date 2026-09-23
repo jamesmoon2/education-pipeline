@@ -1393,7 +1393,8 @@
     // An item id may legally be "constructor", which every plain object inherits.
     const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
     const points = (s) => Array.from(s);
-    const isText = (s, limit) => typeof s === "string" && s.trim() !== "" && points(s).length <= limit;
+    // Measured trimmed, as guides/diagrams.py measures len(value.strip()).
+    const isText = (s, limit) => typeof s === "string" && s.trim() !== "" && points(s.trim()).length <= limit;
     // One decimal, and no DOM measurement anywhere, so a guide always yields the same markup.
     const fmt = (v) => String(Math.round(v * 10) / 10);
     let printHooked = false;
@@ -1682,6 +1683,21 @@
 
     const LAYOUTS = { flow: drawFlow, concept_map: drawConceptMap, timeline: drawTimeline };
 
+    // A checked diagram with its drawn strings trimmed, so padding a valid
+    // string may carry never reaches the SVG, its title or its description.
+    function trimmed(data) {
+      const tidy = (item, keys) => {
+        const out = { ...item };
+        for (const key of keys) if (typeof out[key] === "string") out[key] = out[key].trim();
+        return out;
+      };
+      const copy = tidy(data, ["title"]);
+      for (const name of ["nodes", "edges", "events"]) {
+        if (Array.isArray(data[name])) copy[name] = data[name].map((item) => tidy(item, ["label", "when"]));
+      }
+      return copy;
+    }
+
     // The text version moves, unchanged, into a closed disclosure where it stood.
     function wrapTextVersion(figure, text) {
       const details = document.createElement("details");
@@ -1728,7 +1744,7 @@
           if (!text || !valid(byId.get(figure.id), kind)) throw new Error("invalid diagram");
           if (kind === "comparison") figure.dataset.diagramState = "table";
           if (!has(LAYOUTS, kind)) continue;
-          for (const svg of LAYOUTS[kind](byId.get(figure.id))) inserted.push(figure.insertBefore(svg, text));
+          for (const svg of LAYOUTS[kind](trimmed(byId.get(figure.id)))) inserted.push(figure.insertBefore(svg, text));
           wrapTextVersion(figure, text);
           figure.dataset.diagramState = "drawn";
         } catch (error) {

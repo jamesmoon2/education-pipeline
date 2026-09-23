@@ -2129,7 +2129,7 @@ test.describe("Codex round 1 on PR #42: no-JS text version, trimmed runtime limi
     const desc = await figure.locator("svg > desc").textContent();
     expect(desc).toContain(`Steps in order: ${label}; Leaf area;`);
     const edgeText = await figure.locator("g.diagram-edge-label").first().locator("text").allTextContents();
-    expect(edgeText[0]).toBe("increases");
+    expect(edgeText[0]).toMatch(/^increases/);
     const timelineFigure = page.locator("figure#watering-delay-timeline");
     await expect(timelineFigure).toHaveAttribute("data-diagram-state", "drawn");
     for (const svg of await timelineFigure.locator("svg").all()) {

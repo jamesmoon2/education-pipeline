@@ -210,6 +210,13 @@ HTML file containing the guide content plus the packaged runtime (CSS and
 JavaScript inlined). It works offline from a `file:` URL — no daemon, no Node,
 no network requests. The canonical guide JSON can be exported alongside it.
 
+With JavaScript disabled or blocked, the file still reads as a static guide:
+every section in order with answers, feedback and each diagram's text version
+visible (like the answer-key print), and the controls that need JavaScript
+(theme, print mode, progress, section navigation buttons, submit and reveal
+buttons, reflection notes) hidden. This relies on the CSS `scripting` media
+feature, supported by current Chromium, Firefox and Safari.
+
 ### Local progress storage and reset
 
 Learner progress (completed sections, interaction state, reflection notes,

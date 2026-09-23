@@ -180,7 +180,7 @@ values). Then:
   is removed, the text version stays in place outside any disclosure, the figure is marked
   `data-diagram-state="text"` and the block id is logged to the console. One
   bad diagram never stops the rest of the guide. Without JavaScript the text
-  version is the diagram.
+  version is the diagram (see §15, "Without JavaScript").
 
 Layouts are computed from the data alone, with fixed constants and no DOM
 measurement, so a given guide yields identical SVG markup in a given browser
@@ -440,6 +440,22 @@ Custom themes, user CSS, and model-selected styling are deferred.
 If the embedded guide cannot load, the static shell displays a plain-language
 error with schema version, runtime version, and a suggestion to re-export from a
 compatible Education Pipeline version. It never leaves a blank page.
+
+**Without JavaScript.** The guide shell is served `hidden` and only the
+runtime's boot un-hides it, so a browser with JavaScript disabled or blocked
+relies on `runtime.css` instead: under `@media (scripting: none)` it shows the
+shell and hides the "Loading course…" status. No inline style or CSP change is
+involved. The no-JS view reads like the answer-key print: every section is
+stacked in order, the section links jump within the page, knowledge-check
+answer markers and explanations, every worked-reveal step and conclusion, and
+scenario feedback and debriefs are visible, and every diagram shows its
+server-rendered text version (a comparison is its table). Controls that need
+the runtime are hidden: course controls (theme, print mode, progress
+download/restore/reset), section navigation and "Mark section complete", the
+submit/reveal/retry/skip buttons, the choice inputs, and the reflection note
+field with its storage note (reflection prompts and guidance stay). Nothing is
+stored. A browser without the `scripting` media feature shows only the
+loading status, as before.
 
 One malformed optional block must not crash navigation for the entire course in
 development preview. Production export should prevent such content through

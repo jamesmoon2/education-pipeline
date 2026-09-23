@@ -32,7 +32,8 @@ comparison   items (columns) x criteria (rows)             -> server-rendered <t
 ```
 
 The server (`document.py`) always renders a complete **text version** inside a
-`<figure>`, so a guide works without JavaScript and in print. The maintained
+`<figure>`, so a guide works without JavaScript (the runtime stylesheet's
+`@media (scripting: none)` rule reveals the static guide) and in print. The maintained
 runtime reads the same data from `guide-data`, lays it out deterministically,
 inserts an `<svg role="img">` built with `createElementNS` and styled only by
 `runtime.css` classes, and folds the text version into a `<details>` disclosure.

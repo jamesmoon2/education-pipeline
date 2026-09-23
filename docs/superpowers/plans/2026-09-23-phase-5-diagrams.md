@@ -22,6 +22,7 @@
 | T54 | Runtime renderer: concept map and comparison | Concept map uses a hub-plus-ring radial layout with edge labels. Comparison is a styled server-rendered table (no SVG). Exit criteria are the same as T53. | - [x] |
 | T55 | Cockpit and export | The cockpit preview and JSON tree show diagrams (preview goes through the server renderer). Static checks cover the new figure markup. The export sidecar records runtime 1.2. The CSP string is unchanged. There are tests in `test_guide_static_checks.py`, `test_guide_document.py` and the cockpit unit tests where anything is touched. | - [x] |
 | T56 | Fixture, docs, audit | The example course gains two diagrams (a flow with a feedback loop and a comparison) and moves to schema 1.2. `build_example.py` shows no diff. Docs (`interactive-guides.md`, the schema spec §2/§16/§18 and the runtime spec) are updated. The audit ledger and phase closeout are written. | - [x] |
+| T57 | Codex round 1 on PR #42 | With JavaScript disabled the exported guide shows its shell (a `@media (scripting: none)` rule in `runtime.css`, CSP unchanged): sections stacked, answers and every diagram text version visible, JS-only controls hidden. The runtime measures diagram strings trimmed, as the Python validator does, and draws them trimmed. e2e covers both. | - [x] |
 
 ## Order and parallelism between threads
 
@@ -60,7 +61,7 @@ The order is T50 → T51. After T51, T52 (prompts, engine only) and T53 (documen
    - `document.py` renders `<figure class="diagram" data-diagram-kind="…" id="…">` holding the title, a text version and the caption in `<figcaption>`. The text version is an ordered list of steps and edges for flow, nested lists for a concept map, an ordered list for a timeline, and a real `<table>` with `<th scope>` headers for comparison. The figure contains no heading elements, so the heading-order static check is unaffected.
    - The runtime inserts an `<svg role="img">` before the text version, with `<title>` and `<desc>` derived from the data. The text version then collapses into a `<details>` "Text version" disclosure that stays in the DOM.
    - Comparison gets no SVG: the table is the rendering, and the runtime only adds styling hooks.
-   - Without JavaScript the text version is the diagram.
+   - Without JavaScript the text version is the diagram. The guide shell is revealed by `runtime.css` under `@media (scripting: none)` (T57), since only the runtime boot removes its `hidden` attribute.
    - The runtime lays out the data embedded in `guide-data`, not the text version.
 9. **CSP unchanged.** The SVG is built with `createElementNS` and styled only by classes defined in `runtime.css`, using the existing theme tokens. There are no `style` attributes, no `<style>` element inside the SVG, no `<image>`, no `innerHTML` and no `foreignObject`. `default-src 'none'; img-src 'none'` stays, and the hashed style and script sources stay. A test pins the CSP string.
 10. **Layouts.**
