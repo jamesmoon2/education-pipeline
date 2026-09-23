@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TypeAlias
 
 #: Every Interactive Guide schema version this codebase reads and writes. One
 #: definition, so a new version is added in one place instead of in each
 #: parser, contract check, prompt compiler and run-content contract.
-SUPPORTED_GUIDE_SCHEMA_VERSIONS = frozenset({"1.0", "1.1"})
+SUPPORTED_GUIDE_SCHEMA_VERSIONS = frozenset({"1.0", "1.1", "1.2"})
+
+#: Schema versions that allow the source-only goal annotations
+#: (``serves_goals`` / ``goal_exclusions``).
+ANNOTATION_SCHEMA_VERSIONS = frozenset({"1.1", "1.2"})
+
+#: Schema versions that allow the ``diagram`` block.
+DIAGRAM_SCHEMA_VERSIONS = frozenset({"1.2"})
+
+#: The newest schema version this codebase writes.
+LATEST_GUIDE_SCHEMA_VERSION = "1.2"
+
+#: Diagram kinds, in the order used everywhere a kind list is printed.
+DIAGRAM_KINDS = ("flow", "concept_map", "comparison", "timeline")
 
 #: The schema version assumed when a run, a prompt or an unparseable source
 #: does not name one.
@@ -130,8 +143,82 @@ class Reflection:
     source_ids: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class DiagramNode:
+    id: str
+    label: str
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
+class DiagramEdge:
+    from_id: str = field(metadata={"json": "from"})
+    to_id: str = field(metadata={"json": "to"})
+    label: str | None = None
+
+
+@dataclass(frozen=True)
+class TimelineEvent:
+    id: str
+    when: str
+    label: str
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
+class ComparisonItem:
+    id: str
+    label: str
+
+
+@dataclass(frozen=True)
+class ComparisonValue:
+    item_id: str
+    text: str
+
+
+@dataclass(frozen=True)
+class ComparisonCriterion:
+    id: str
+    label: str
+    #: Stored in the diagram's ``items`` order; serialized as an object keyed
+    #: by item id.
+    values: tuple[ComparisonValue, ...] = field(
+        default=(), metadata={"json_keyed": ("item_id", "text")}
+    )
+
+
+@dataclass(frozen=True)
+class Diagram:
+    id: str
+    kind: str
+    title: str
+    type: str = "diagram"
+    caption: str | None = None
+    hub: str | None = None
+    nodes: tuple[DiagramNode, ...] = field(default=(), metadata={"omit_empty": True})
+    edges: tuple[DiagramEdge, ...] = field(default=(), metadata={"omit_empty": True})
+    events: tuple[TimelineEvent, ...] = field(
+        default=(), metadata={"omit_empty": True}
+    )
+    items: tuple[ComparisonItem, ...] = field(
+        default=(), metadata={"omit_empty": True}
+    )
+    criteria: tuple[ComparisonCriterion, ...] = field(
+        default=(), metadata={"omit_empty": True}
+    )
+    outcome_ids: tuple[str, ...] = ()
+    source_ids: tuple[str, ...] = ()
+
+
 Block: TypeAlias = (
-    RichText | Callout | KnowledgeCheck | WorkedReveal | Scenario | Reflection
+    RichText
+    | Callout
+    | KnowledgeCheck
+    | WorkedReveal
+    | Scenario
+    | Reflection
+    | Diagram
 )
 
 

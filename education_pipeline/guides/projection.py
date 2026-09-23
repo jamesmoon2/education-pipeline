@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from .diagrams import KIND_LABELS, back_edge_indices
 from .model import (
     Callout,
+    Diagram,
     Guide,
     KnowledgeCheck,
     Reflection,
@@ -110,10 +112,93 @@ def _project_block(block) -> list[str]:
         for choice in block.choices:
             lines += ["", f"- **{choice.label}** ({choice.quality}): {choice.feedback}"]
         return lines + ["", f"**Debrief:** {block.debrief}"]
+    if isinstance(block, Diagram):
+        return _project_diagram(block)
     assert isinstance(block, Reflection)
     lines = ["", "#### Reflection", "", block.prompt]
     if block.guidance:
         lines += ["", f"**Guidance:** {block.guidance}"]
     if block.placeholder:
         lines += [f"**Note prompt:** {block.placeholder}"]
+    return lines
+
+
+def _project_diagram(block: Diagram) -> list[str]:
+    """The diagram's text version: title, kind label, the kind's body, caption."""
+
+    lines = ["", f"#### {block.title}", "", f"*{KIND_LABELS[block.kind]}*", ""]
+    body = {
+        "flow": _project_flow,
+        "concept_map": _project_concept_map,
+        "timeline": _project_timeline,
+        "comparison": _project_comparison,
+    }[block.kind]
+    lines += body(block)
+    if block.caption:
+        lines += ["", block.caption]
+    return lines
+
+
+def _with_detail(text: str, detail: str | None) -> str:
+    return f"{text}: {detail}" if detail else text
+
+
+def _node_labels(block: Diagram) -> dict[str, str]:
+    return {node.id: node.label for node in block.nodes}
+
+
+def _project_flow(block: Diagram) -> list[str]:
+    labels = _node_labels(block)
+    back = back_edge_indices(block)
+    lines = [
+        _with_detail(f"{n}. {node.label}", node.detail)
+        for n, node in enumerate(block.nodes, 1)
+    ]
+    lines += ["", "Connections:", ""]
+    for index, edge in enumerate(block.edges):
+        line = f"- {labels.get(edge.from_id, edge.from_id)} → {labels.get(edge.to_id, edge.to_id)}"
+        if edge.label:
+            line += f" — {edge.label}"
+        if index in back:
+            line += " (loops back)"
+        lines.append(line)
+    return lines
+
+
+def _project_concept_map(block: Diagram) -> list[str]:
+    labels = _node_labels(block)
+    ordered = [node for node in block.nodes if node.id == block.hub] + [
+        node for node in block.nodes if node.id != block.hub
+    ]
+    lines = []
+    for node in ordered:
+        text = f"- {node.label}" + (" (central idea)" if node.id == block.hub else "")
+        lines.append(_with_detail(text, node.detail))
+        for edge in block.edges:
+            if edge.from_id == node.id:
+                prefix = f"{edge.label} " if edge.label else ""
+                lines.append(f"  - {prefix}→ {labels.get(edge.to_id, edge.to_id)}")
+    return lines
+
+
+def _project_timeline(block: Diagram) -> list[str]:
+    return [
+        _with_detail(f"{n}. {event.when} — {event.label}", event.detail)
+        for n, event in enumerate(block.events, 1)
+    ]
+
+
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|")
+
+
+def _project_comparison(block: Diagram) -> list[str]:
+    lines = [
+        "| Criterion | " + " | ".join(_cell(item.label) for item in block.items) + " |",
+        "| --- |" + " --- |" * len(block.items),
+    ]
+    for criterion in block.criteria:
+        cells = {value.item_id: value.text for value in criterion.values}
+        row = [_cell(cells.get(item.id, "")) for item in block.items]
+        lines.append(f"| {_cell(criterion.label)} | " + " | ".join(row) + " |")
     return lines

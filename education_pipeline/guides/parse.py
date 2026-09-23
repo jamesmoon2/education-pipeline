@@ -8,10 +8,20 @@ import re
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
+from .diagrams import KIND_FIELDS, diagram_findings
 from .model import (
+    ANNOTATION_SCHEMA_VERSIONS,
+    DIAGRAM_SCHEMA_VERSIONS,
     SUPPORTED_GUIDE_SCHEMA_VERSIONS,
     Callout,
     Choice,
+    ComparisonCriterion,
+    ComparisonItem,
+    ComparisonValue,
+    Diagram,
+    DiagramEdge,
+    DiagramNode,
+    TimelineEvent,
     Course,
     GoalExclusion,
     GlossaryEntry,
@@ -42,6 +52,18 @@ BLOCK_TYPES = {
     "worked_reveal",
     "scenario",
     "reflection",
+}
+#: Not in ``BLOCK_TYPES``: that set is also the outline's plannable
+#: ``interaction_types``, and a diagram is not an interaction to plan.
+DIAGRAM_BLOCK_TYPE = "diagram"
+
+#: Required and optional keys of each diagram kind-array element.
+DIAGRAM_ELEMENT_SPECS: dict[str, tuple[set[str], set[str]]] = {
+    "nodes": ({"id", "label"}, {"detail"}),
+    "edges": ({"from", "to"}, {"label"}),
+    "events": ({"id", "when", "label"}, {"detail"}),
+    "items": ({"id", "label"}, set()),
+    "criteria": ({"id", "label", "values"}, set()),
 }
 
 
@@ -223,13 +245,23 @@ def _check_root(c: _Checker, root: dict[str, Any], *, skeleton: bool = False) ->
         c.error(
             "schema.unsupported_version",
             "/schema_version",
-            "supported schema versions are exactly '1.0' and '1.1'",
+            "supported schema versions are exactly '1.0', '1.1' and '1.2'",
         )
-    annotations_allowed = schema_version == "1.1"
+    annotations_allowed = (
+        isinstance(schema_version, str) and schema_version in ANNOTATION_SCHEMA_VERSIONS
+    )
+    diagrams_allowed = (
+        isinstance(schema_version, str) and schema_version in DIAGRAM_SCHEMA_VERSIONS
+    )
     _check_course(c, root.get("course"), "/course", annotations_allowed)
     _check_outcomes(c, root.get("outcomes"), "/outcomes", annotations_allowed)
     _check_modules(
-        c, root.get("modules"), "/modules", annotations_allowed, skeleton=skeleton
+        c,
+        root.get("modules"),
+        "/modules",
+        annotations_allowed,
+        skeleton=skeleton,
+        diagrams_allowed=diagrams_allowed,
     )
     _check_glossary(c, root.get("glossary"), "/glossary")
     _check_sources(c, root.get("sources"), "/sources")
@@ -432,6 +464,7 @@ def _check_modules(
     annotations_allowed: bool,
     *,
     skeleton: bool = False,
+    diagrams_allowed: bool = False,
 ) -> None:
     modules = c.array(value, path, 1)
     if modules is None:
@@ -479,15 +512,26 @@ def _check_modules(
             blocks = c.array(section.get("blocks"), f"{sp}/blocks", 1)
             if blocks is not None:
                 for k, block in enumerate(blocks):
-                    _check_block(c, block, f"{sp}/blocks/{k}")
+                    _check_block(
+                        c,
+                        block,
+                        f"{sp}/blocks/{k}",
+                        diagrams_allowed=diagrams_allowed,
+                    )
 
 
-def _check_block(c: _Checker, value: Any, path: str) -> None:
+def _check_block(
+    c: _Checker, value: Any, path: str, *, diagrams_allowed: bool = False
+) -> None:
     if not isinstance(value, dict):
         c.error("schema.invalid_type", path, "must be an object")
         return
+    errors_before = len(c.errors)
     block_type = value.get("type")
-    if block_type not in BLOCK_TYPES:
+    known = block_type in BLOCK_TYPES or (
+        diagrams_allowed and block_type == DIAGRAM_BLOCK_TYPE
+    )
+    if not known:
         c.error(
             "schema.unknown_block_type",
             f"{path}/type",
@@ -524,7 +568,11 @@ def _check_block(c: _Checker, value: Any, path: str) -> None:
             {"guidance", "placeholder"},
         ),
     }
-    required, optional = specs[block_type]
+    required, optional = (
+        _diagram_spec(value.get("kind"))
+        if block_type == DIAGRAM_BLOCK_TYPE
+        else specs[block_type]
+    )
     block = c.obj(value, path, required, optional | common_optional)
     if not block:
         return
@@ -570,6 +618,101 @@ def _check_block(c: _Checker, value: Any, path: str) -> None:
         _check_steps(c, block.get("steps"), f"{path}/steps")
     elif block_type == "scenario":
         _check_scenario(c, block, path)
+    elif block_type == DIAGRAM_BLOCK_TYPE:
+        _check_diagram(c, block, path, errors_before)
+
+
+def _valid_diagram_kind(kind: Any) -> bool:
+    return isinstance(kind, str) and kind in KIND_FIELDS
+
+
+def _diagram_spec(kind: Any) -> tuple[set[str], set[str]]:
+    """Required and optional keys of a diagram block of ``kind``.
+
+    A bad ``kind`` makes every kind field optional so it yields exactly one
+    ``invalid diagram kind`` diagnostic and no cascade.
+    """
+
+    common = {"id", "type", "kind", "title"}
+    if _valid_diagram_kind(kind):
+        return common | set(KIND_FIELDS[kind]), {"caption"}
+    all_kind_fields = {name for names in KIND_FIELDS.values() for name in names}
+    return common, {"caption"} | all_kind_fields
+
+
+def _check_diagram(
+    c: _Checker, block: dict[str, Any], path: str, errors_before: int
+) -> None:
+    """Shape-check a diagram's raw dict, then apply the pure diagram rules."""
+
+    kind = block.get("kind")
+    if not _valid_diagram_kind(kind):
+        if "kind" in block:
+            c.error("schema.invalid_value", f"{path}/kind", "invalid diagram kind")
+        return
+    if "caption" in block:
+        c.text(block["caption"], f"{path}/caption", markdown=True)
+    if "hub" in block:
+        c.text(block["hub"], f"{path}/hub")
+    for name in KIND_FIELDS[kind]:
+        if name == "hub" or name not in block:
+            continue
+        elements = c.array(block[name], f"{path}/{name}")
+        if elements is None:
+            continue
+        required, optional = DIAGRAM_ELEMENT_SPECS[name]
+        for i, raw in enumerate(elements):
+            _check_diagram_element(c, raw, f"{path}/{name}/{i}", required, optional)
+    if "criteria" in block and isinstance(block["criteria"], list):
+        item_ids = _raw_item_ids(block.get("items"))
+        for i, criterion in enumerate(block["criteria"]):
+            if isinstance(criterion, dict) and "values" in criterion:
+                _check_diagram_values(
+                    c, criterion["values"], f"{path}/criteria/{i}/values", item_ids
+                )
+    if len(c.errors) == errors_before:
+        for code, finding_path, message in diagram_findings(
+            _normalize_block(block), path
+        ):
+            c.error(code, finding_path, message)
+
+
+def _check_diagram_element(
+    c: _Checker, value: Any, path: str, required: set[str], optional: set[str]
+) -> None:
+    element = c.obj(value, path, required, optional)
+    if element is None:
+        return
+    for key in sorted((required | optional) - {"values"}):
+        if key in element:
+            c.text(element[key], f"{path}/{key}", markdown=key == "detail")
+
+
+def _raw_item_ids(items: Any) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    return list(
+        dict.fromkeys(
+            item["id"]
+            for item in items
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        )
+    )
+
+
+def _check_diagram_values(
+    c: _Checker, values: Any, path: str, item_ids: list[str]
+) -> None:
+    if not isinstance(values, dict):
+        c.error("schema.invalid_type", path, "must be an object")
+        return
+    for key, value in values.items():
+        if key not in item_ids:
+            c.error("diagram.unknown_value_key", f"{path}/{key}", f"unknown item ID {key!r}")
+        c.text(value, f"{path}/{key}", markdown=True)
+    for item_id in item_ids:
+        if item_id not in values:
+            c.error("diagram.missing_value", path, f"missing a value for item {item_id!r}")
 
 
 def _check_knowledge(c: _Checker, block: dict[str, Any], path: str) -> None:
@@ -810,7 +953,7 @@ def _check_references_and_coverage(
                 refs = {x for x in block.get("outcome_ids", []) if isinstance(x, str)}
                 kind = block.get("type")
                 present_types.add(kind)
-                if kind in {"rich_text", "callout"}:
+                if kind in {"rich_text", "callout", DIAGRAM_BLOCK_TYPE}:
                     taught.update(refs)
                 if kind in interactive:
                     practiced.update(refs)
@@ -913,9 +1056,51 @@ def _normalize_block(item: Mapping[str, Any]):
             debrief=item["debrief"],
             **common,
         )
+    if kind == DIAGRAM_BLOCK_TYPE:
+        return _normalize_diagram(item, common)
     return Reflection(
         prompt=item["prompt"],
         guidance=item.get("guidance"),
         placeholder=item.get("placeholder"),
+        **common,
+    )
+
+
+def _normalize_diagram(item: Mapping[str, Any], common: dict[str, Any]) -> Diagram:
+    """Build a ``Diagram`` from a shape-checked raw dict; strings stay raw."""
+
+    items = tuple(ComparisonItem(id=x["id"], label=x["label"]) for x in item.get("items", ()))
+    return Diagram(
+        kind=item["kind"],
+        title=item["title"],
+        caption=item.get("caption"),
+        hub=item.get("hub"),
+        nodes=tuple(
+            DiagramNode(id=x["id"], label=x["label"], detail=x.get("detail"))
+            for x in item.get("nodes", ())
+        ),
+        edges=tuple(
+            DiagramEdge(from_id=x["from"], to_id=x["to"], label=x.get("label"))
+            for x in item.get("edges", ())
+        ),
+        events=tuple(
+            TimelineEvent(
+                id=x["id"], when=x["when"], label=x["label"], detail=x.get("detail")
+            )
+            for x in item.get("events", ())
+        ),
+        items=items,
+        criteria=tuple(
+            ComparisonCriterion(
+                id=x["id"],
+                label=x["label"],
+                values=tuple(
+                    ComparisonValue(item_id=entry.id, text=x["values"][entry.id])
+                    for entry in items
+                    if entry.id in x["values"]
+                ),
+            )
+            for x in item.get("criteria", ())
+        ),
         **common,
     )

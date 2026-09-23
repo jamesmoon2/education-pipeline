@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
+from dataclasses import Field, fields, is_dataclass
 import hashlib
 import json
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 from .model import Guide
 
@@ -32,17 +32,41 @@ class AssemblyError(SpliceError):
         super().__init__(message)
 
 
+def json_field_items(value: Any) -> Iterator[tuple[str, Any, Field]]:
+    """Yield ``(json key, value, field)`` for each serialized field of a dataclass.
+
+    The key is ``field.metadata["json"]`` when set (``from`` is a Python
+    keyword), else the field name. A field is skipped when it is ``None``, or
+    empty and either named in ``_EMPTY_OMITTED_FIELDS`` or marked
+    ``omit_empty``. Shared by :func:`guide_to_dict` and validation's text walk
+    so their paths agree.
+    """
+
+    for field in fields(value):
+        item = getattr(value, field.name)
+        if item is None:
+            continue
+        if not item and (
+            field.name in _EMPTY_OMITTED_FIELDS or field.metadata.get("omit_empty")
+        ):
+            continue
+        yield field.metadata.get("json", field.name), item, field
+
+
 def guide_to_dict(value: Any) -> Any:
     if is_dataclass(value):
-        return {
-            field.name: guide_to_dict(getattr(value, field.name))
-            for field in fields(value)
-            if getattr(value, field.name) is not None
-            and not (
-                field.name in _EMPTY_OMITTED_FIELDS
-                and not getattr(value, field.name)
-            )
-        }
+        result = {}
+        for key, item, field in json_field_items(value):
+            keyed = field.metadata.get("json_keyed")
+            if keyed is not None:
+                key_attr, value_attr = keyed
+                result[key] = {
+                    getattr(entry, key_attr): guide_to_dict(getattr(entry, value_attr))
+                    for entry in item
+                }
+            else:
+                result[key] = guide_to_dict(item)
+        return result
     if isinstance(value, tuple):
         return [guide_to_dict(item) for item in value]
     return value
@@ -251,7 +275,8 @@ def _collect_ids(value: Any) -> list[str]:
 
     Element ids live at the ``id`` key of every object in the guide model
     (module, section, block, choice, reveal step, glossary entry, source), so
-    one recursive walk finds them all.
+    one recursive walk finds them all. A diagram's node, event, item and
+    criterion ids are diagram-local, so only the diagram's own id is claimed.
     """
 
     found: list[str] = []
@@ -259,6 +284,8 @@ def _collect_ids(value: Any) -> list[str]:
         identifier = value.get("id")
         if isinstance(identifier, str):
             found.append(identifier)
+        if value.get("type") == "diagram":
+            return found
         for key, item in value.items():
             if key != "id":
                 found.extend(_collect_ids(item))
