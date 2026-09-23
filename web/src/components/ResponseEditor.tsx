@@ -10,8 +10,8 @@ import type { StageContent } from "../api/types";
 import { useAction } from "../hooks/useAction";
 import GuidePreviewFrame from "./GuidePreviewFrame";
 
-const GUIDE_CONTENT_TYPE =
-  "application/vnd.education-pipeline.guide+json;version=1.0";
+// Every interactive-guide schema version (1.0, 1.1, 1.2, ...) is a guide.
+const GUIDE_CONTENT_TYPE_PREFIX = "application/vnd.education-pipeline.guide+json;";
 
 export default function ResponseEditor({
   topicId,
@@ -39,7 +39,7 @@ export default function ResponseEditor({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewHtml, setPreviewHtml] = useState("");
   const save = useAction(onSaved);
-  const isGuide = contentType === GUIDE_CONTENT_TYPE;
+  const isGuide = contentType.startsWith(GUIDE_CONTENT_TYPE_PREFIX);
   const isJson = isGuide || contentType === "application/json";
   const canPreview = contentType !== "application/json";
   let jsonError: string | null = null;
