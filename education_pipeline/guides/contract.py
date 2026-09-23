@@ -144,8 +144,8 @@ def validate_spec_contract(data: Mapping[str, Any]) -> None:
         "guide_schema_version"
     ] not in SUPPORTED_GUIDE_SCHEMA_VERSIONS:
         raise ContractError(
-            "spec contract guide_schema_version must be one of ['1.0', '1.1'], "
-            f"got {data['guide_schema_version']!r}"
+            "spec contract guide_schema_version must be one of "
+            f"{sorted(SUPPORTED_GUIDE_SCHEMA_VERSIONS)}, got {data['guide_schema_version']!r}"
         )
     if not _is_non_empty_str(data["blueprint"]):
         raise ContractError("spec contract blueprint must be a non-empty string")
