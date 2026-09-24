@@ -317,7 +317,10 @@ For guide-v1 runs:
 The run store must not infer a new run’s content contract from filename alone.
 Legacy manifests without `content_contract` are interpreted as
 `legacy_markdown`. After this milestone lands, every newly created manifest
-defaults to `interactive_guide` schema `1.0`. The CLI/API may expose an explicit
+defaults to `interactive_guide` schema `1.0`. (Later phases moved the default:
+new runs are now created on schema `1.2`, with or without a learner profile;
+existing manifests keep the version they pinned. See the schema spec §18.)
+The CLI/API may expose an explicit
 legacy override for compatibility testing and recovery, but there is no mutable
 workspace-wide switch in this milestone. Changing a run's content contract
 after its first prompt is written is rejected.

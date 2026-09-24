@@ -358,7 +358,9 @@ export interface StageContent {
   content_type:
     | "text/markdown"
     | "application/json"
-    | "application/vnd.education-pipeline.guide+json;version=1.0";
+    | "application/vnd.education-pipeline.guide+json;version=1.0"
+    | "application/vnd.education-pipeline.guide+json;version=1.1"
+    | "application/vnd.education-pipeline.guide+json;version=1.2";
   // Present only on the repair stage of interactive-guide runs. `section_id`
   // is present (non-null) only for a section-scoped repair; a whole-module
   // scope carries no `section_id` key, matching the daemon's payload.

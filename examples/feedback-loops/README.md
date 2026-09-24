@@ -37,6 +37,11 @@ browser's `localStorage` and has a built-in reset control.
   the stage's draft response automatically once every module is saved.
 - **All six interaction types** the runtime supports: rich text, callouts,
   knowledge checks, worked reveals, scenarios, and reflections.
+- **Diagrams (guide schema 1.2).** A flow diagram whose last connection
+  closes a reinforcing loop (`growth-loop-flow`, drawn with a curved
+  loop-back edge) and a comparison table (`intervention-comparison`). Both
+  are plain JSON data in the module responses; the runtime draws the flow
+  and keeps a text version of each in the page.
 - **Personalization with privacy.** The guide serves two of the profile's
   three goals and records a reasoned exclusion for the third. None of the
   profile's private values (name, experience, goal text) appear in the

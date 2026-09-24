@@ -5,11 +5,11 @@
     "state": "not_run"
   },
   "export": {
-    "file_sha256": "af361bf114b7c0fd9a82673b52f5cd72a9d47d8805ce0cca8c9f1acf1e20dd6d",
-    "input_sha256": "eeae1564ebbae3c063b56043877414f0f3b18adf7ae40d04a664eec8344ace26",
-    "runtime_css_sha256": "7fc1fcb302ea7d32e5e3a50a1e70ec2d3c746b69694ea1837d44173fc3362b80",
-    "runtime_js_sha256": "55e629684ae3846d58b018eb8e8141edb49751fec0844cc6a2d8f6729aeb2783",
-    "runtime_version": "1.1"
+    "file_sha256": "3eb03f929cef81bcc88b50b0d9504f3c253f831837d2648a334f33036491507b",
+    "input_sha256": "cd55524040d7bed247cdc897f1987a85b5b25aac15bf507c691f0fb3f9fef2b5",
+    "runtime_css_sha256": "178c78708fefe8e8fe8e6b46fc87809ba08737acc07e11cc05adbd47fcc85b7f",
+    "runtime_js_sha256": "ac9892cc903d5921d145bd49bcfd38ad9301c54706b2bc5b44b265873bb14a9b",
+    "runtime_version": "1.2"
   },
   "gate": {
     "effective_blocking": 0,
@@ -18,8 +18,8 @@
   "quality_report_schema_version": 2,
   "report": {
     "findings": [],
-    "guide_schema_version": "1.1",
-    "guide_sha256": "2ae762c2629b5789bab67a271d1ded68d359dd0e1003d5f721b5b0b55b1dfa87",
+    "guide_schema_version": "1.2",
+    "guide_sha256": "16e0ed6c16daafa07f518850477332f0738eca15015ec7c96298938c383c33ad",
     "phase": "final",
     "report_schema_version": 3,
     "summary": {
@@ -32,7 +32,7 @@
   },
   "waivers": {
     "applied": [],
-    "guide_sha256": "2ae762c2629b5789bab67a271d1ded68d359dd0e1003d5f721b5b0b55b1dfa87",
+    "guide_sha256": "16e0ed6c16daafa07f518850477332f0738eca15015ec7c96298938c383c33ad",
     "orphaned": [],
     "rejected": [],
     "stale": false

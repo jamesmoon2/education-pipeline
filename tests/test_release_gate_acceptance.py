@@ -258,12 +258,16 @@ def test_contrasting_blueprint_drives_divergent_prompts_and_contract_gates(
     spec echo enforces the configured blueprint and its interaction minimum,
     and a matching run proceeds normally."""
 
-    from education_pipeline import RunStore, TopicStore
+    from education_pipeline import ContentContract, RunStore, TopicStore
 
     tid = "systems-thinking"
     TopicStore(tmp_path).save_topic_toml(tid, test_runs.TOPIC_TOML)
     runs = RunStore(tmp_path)
-    runs.create_run(tid, blueprint="quantitative-scientific")
+    runs.create_run(
+        tid,
+        content_contract=ContentContract.interactive_guide_v1(),
+        blueprint="quantitative-scientific",
+    )
 
     spec_prompt = runs.write_topic_spec_prompt(tid)
     text = spec_prompt.artifact.text

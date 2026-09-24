@@ -39,6 +39,9 @@ class _Analyzer(HTMLParser):
         self.controls_ok = True
         self.heading_ok = True
         self._previous_heading = 0
+        # Open <figure> depth: a figure holds no headings (diagram plan
+        # decision 8), so any heading inside one fails heading order.
+        self._figure_depth = 0
         # {"has_text": bool, "wraps_unnamed": bool} per open <label>
         self._open_labels: list[dict[str, bool]] = []
         self._open_buttons: list[dict[str, bool]] = []  # {"named": bool}
@@ -47,8 +50,12 @@ class _Analyzer(HTMLParser):
         attributes = dict(attrs)
         if tag == "label":
             self._open_labels.append({"has_text": False, "wraps_unnamed": False})
+        if tag == "figure":
+            self._figure_depth += 1
         if tag in _HEADINGS:
             level = _HEADINGS[tag]
+            if self._figure_depth:
+                self.heading_ok = False
             # Skip detection is relative to the *previous* heading, not the
             # deepest seen so far: after h1,h2,h3, a later h2 -> h4 skips h3
             # even though an h3 appeared earlier in the document. A document
@@ -80,6 +87,8 @@ class _Analyzer(HTMLParser):
                 self._open_buttons[-1]["named"] = True
 
     def handle_endtag(self, tag):
+        if tag == "figure" and self._figure_depth:
+            self._figure_depth -= 1
         if tag == "label" and self._open_labels:
             label = self._open_labels.pop()
             if label["wraps_unnamed"] and not label["has_text"]:

@@ -15,10 +15,13 @@ from education_pipeline.text_scalars import (
     replace_surrogates,
 )
 
-from .canonical import guide_sha256
+from .canonical import guide_sha256, json_field_items
+from .diagrams import diagram_findings
 from .model import (
     DEFAULT_GUIDE_SCHEMA_VERSION,
+    DIAGRAM_SCHEMA_VERSIONS,
     Callout,
+    Diagram,
     Guide,
     KnowledgeCheck,
     RichText,
@@ -94,6 +97,7 @@ READING_TIME_BLOCK_SECONDS = {
     "worked_reveal": 90,
     "scenario": 60,
     "reflection": 60,
+    "diagram": 30,
 }
 
 #: Mechanical mapping between declared course difficulty and the free-text
@@ -171,6 +175,16 @@ RULES = {
     "time.estimate_implausible": Rule("warning", False, False, "Align the declared estimate with the actual content volume.", "draft"),
     "time.module_overrun": Rule("warning", False, False, "Split the module into shorter sittings.", "outline"),
     "difficulty.learner_mismatch": Rule("warning", False, False, "Align the declared difficulty with the learner's level.", "outline"),
+    "diagram.duplicate_id": Rule("blocker", True, False, "Give every node, event, item and criterion a unique ID within its diagram.", "draft"),
+    "diagram.unknown_node": Rule("blocker", True, False, "Reference a node declared in the same diagram.", "draft"),
+    "diagram.text_too_long": Rule("error", True, False, "Shorten the diagram text to its limit.", "draft"),
+    "diagram.multiline_text": Rule("error", True, False, "Keep every diagram string on one line.", "draft"),
+    "diagram.self_edge": Rule("error", True, False, "Connect two different nodes.", "draft"),
+    "diagram.duplicate_edge": Rule("error", True, False, "Remove the repeated edge.", "draft"),
+    "diagram.isolated_node": Rule("error", True, False, "Connect the node or remove it.", "draft"),
+    "diagram.disconnected": Rule("error", True, False, "Connect every node to the hub through edges.", "draft"),
+    "diagram.missing_value": Rule("error", True, False, "Give the criterion a value for every item.", "draft"),
+    "diagram.unknown_value_key": Rule("error", True, False, "Key comparison values by the diagram's item IDs.", "draft"),
 }
 
 _PLACEHOLDER = re.compile(r"\b(?:todo|tbd|lorem ipsum|insert (?:text|content) here)\b", re.I)
@@ -421,11 +435,37 @@ def _validation_report(
     )
 
 
+def _diagram_block_findings(schema_version: str, block: Diagram, path: str) -> list[Finding]:
+    """Re-check an in-memory diagram; text input already failed at parse."""
+
+    if schema_version not in DIAGRAM_SCHEMA_VERSIONS:
+        return [_finding("schema.unknown_block_type", f"{path}/type", "unknown block type 'diagram'", "", (block.id,))]
+    return [
+        _finding(code, finding_path, message, "", (block.id,))
+        for code, finding_path, message in diagram_findings(block, path)
+    ]
+
+
 def _text_fields(value: object, path: str = "") -> Iterable[tuple[str, str]]:
+    """Every string in ``value`` at its canonical JSON path.
+
+    Paths use the canonical JSON keys (``from``/``to``), and a keyed field
+    (comparison ``values``) yields each text at ``.../values/{key}``, so
+    validation paths equal parse paths.
+    """
+
     if is_dataclass(value):
-        for field in fields(value):
-            child = getattr(value, field.name)
-            yield from _text_fields(child, f"{path}/{field.name}")
+        for key, child, field in json_field_items(value):
+            keyed = field.metadata.get("json_keyed")
+            if keyed is None:
+                yield from _text_fields(child, f"{path}/{key}")
+                continue
+            key_attr, value_attr = keyed
+            for entry in child:
+                yield from _text_fields(
+                    getattr(entry, value_attr),
+                    f"{path}/{key}/{getattr(entry, key_attr)}",
+                )
     elif isinstance(value, tuple):
         for index, child in enumerate(value):
             yield from _text_fields(child, f"{path}/{index}")
@@ -829,6 +869,8 @@ def validate_guide(
                     findings.append(_finding("scenario.invalid_quality_set", path, "Scenario must contain exactly one best choice.", block.id, (block.id,)))
                 elif isinstance(block, WorkedReveal) and len(block.steps) < 2:
                     findings.append(_finding("worked_reveal.too_few_steps", path, "Worked reveal has fewer than two steps.", block.id, (block.id,)))
+                elif isinstance(block, Diagram):
+                    findings.extend(_diagram_block_findings(checked_guide.schema_version, block, path))
                 if context.sources_required and isinstance(block, (RichText, Callout)) and not block.source_ids:
                     findings.append(_finding("source.missing_for_required_claim", path, "Source-required content has no source reference.", block.id, (block.id,)))
     static_checks = (

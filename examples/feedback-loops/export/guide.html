@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-guide-schema="1.1" data-guide-runtime="1.1" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-f8H8swLqfTLl46UKHnDsLTx0a2lpTqGDfUQXP8M2K4A='; script-src 'sha256-VeYpaErjhG1YsBjrjoFB7bSXUf7AhEzGotj2cprrJ4M='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
+<html lang="en" data-guide-schema="1.2" data-guide-runtime="1.2" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-F4x4cI/v6Oj+jmtG/IeAm6CHN6zAfhHMBa29R/zIW38='; script-src 'sha256-rJiSzJA9WSHRRb1JvP04rZMBxUcGsrxbRLJlhzuxSps='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
  * Derives from the product token system in docs/design-system.md (§4.2):
  * the guide surface reads with Literata on a white surface, interface
  * chrome uses the Plex Sans stack, and status is never color alone.
@@ -119,6 +119,17 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
 
 .js-enhanced .nav-toggle{display:inline-block}
 
+/* Without JavaScript the boot step that un-hides the shell never runs, so
+ * the static guide shows itself here instead: every section stacked, with
+ * answers, feedback and diagram text versions visible as in the answer-key
+ * print, and no controls that would do nothing. */
+@media(scripting:none){
+  [data-guide-shell][hidden]{display:block}
+  [data-guide-status],.course-controls,.progress-summary,.section-nav-controls,.section-complete-controls,
+  .kc-controls,.wr-controls,.sc-controls,.rf-controls,.reflection-input,.block.reflection .local-data-note,
+  [data-role="kc-choice"],[data-role="sc-choice"]{display:none}
+}
+
 @media(max-width:48rem){
   .layout{display:block}
   .guide-nav{position:static}
@@ -131,12 +142,35 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
   *{scroll-behavior:auto!important;animation-duration:.001ms!important;transition-duration:.001ms!important}
 }
 
+figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
+.diagram-caption{font-family:var(--ep-font-interface);font-size:.95rem}
+.diagram-caption-text{display:block;color:var(--ep-color-text-muted)}
+.diagram-svg{display:block;max-width:100%;height:auto;margin:.75rem 0;font-family:var(--ep-font-interface)}
+.diagram-node-box{fill:var(--ep-color-surface);stroke:var(--ep-color-accent);stroke-width:1.5}
+.diagram-node--hub .diagram-node-box{fill:var(--ep-color-accent-soft);stroke-width:2.5}
+.diagram-node-label{fill:var(--ep-color-text);font-size:14px}
+.diagram-edge{fill:none;stroke:var(--ep-color-text-muted);stroke-width:1.5}
+.diagram-edge--back{stroke-dasharray:6 4}
+.diagram-arrowhead{fill:var(--ep-color-text-muted)}
+.diagram-edge-label-bg{fill:var(--ep-color-surface)}
+.diagram-edge-label-text{fill:var(--ep-color-text-muted);font-size:12px}
+.diagram-axis,.diagram-tick{stroke:var(--ep-color-border);stroke-width:2}
+.diagram-event-marker{fill:var(--ep-color-accent)}
+.diagram-event-when{fill:var(--ep-color-text);font-size:13px;font-weight:600}
+.diagram-event-label{fill:var(--ep-color-text);font-size:13px}
+.diagram-svg--timeline-v{display:none}
+.diagram-text-toggle summary{cursor:pointer;font-family:var(--ep-font-interface);font-size:.9rem;color:var(--ep-color-accent)}
+.diagram-table th[scope="row"]{background:var(--ep-color-surface-subtle)}
+.diagram[data-diagram-state="table"] .diagram-text{overflow-x:auto}
+@media(max-width:40rem){.diagram-svg--timeline-h{display:none}.diagram-svg--timeline-v{display:block}}
 @media print{
   .guide-nav,.skip-link,.course-controls,.progress-migration,.section-nav-controls,.section-complete-controls,
   .kc-controls,.wr-controls,.sc-controls,.rf-controls,.reflection-input,.nav-toggle,
   .live-region,.progress-summary,.results-summary{display:none!important}
   .layout{display:block;max-width:none}
   .block{break-inside:avoid}
+  .diagram-text-toggle>summary{display:none}
+  .diagram{break-inside:avoid}
   .course-header{padding:0;border:0;background:none}
   .js-enhanced main section[data-role="guide-section"]{display:block!important}
   .js-enhanced .block.knowledge_check .choice-feedback,
@@ -163,7 +197,7 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
    * correct once they exist, in both print modes. */
   [data-role="results-page"],[data-role="review-panel"]{display:none!important}
 }
-</style></head><body><a class="skip-link" href="#guide-main">Skip to course content</a><div class="live-region visually-hidden" data-role="nav-announcement" role="status" aria-live="polite"></div><div class="error-shell" data-guide-status role="alert">Loading course…</div><div data-guide-shell hidden><header class="course-header"><h1>Thinking in Feedback Loops</h1><p>A practical introduction through projects and gardens</p><p>Learn to recognize feedback, map its structure, and choose thoughtful interventions.</p><p>15 minutes · introductory</p><div class="progress-summary" data-role="progress-summary" role="status" aria-live="polite"></div></header><div class="progress-migration" data-role="progress-migration" role="status" aria-live="polite" hidden><p class="progress-migration-message">You have progress from a previous version of this course. <span data-role="progress-migration-detail"></span></p><div class="progress-migration-controls"><button type="button" data-role="resume-progress">Resume that progress</button><button type="button" data-role="dismiss-progress">Start fresh</button></div></div><div class="course-controls" aria-label="Course controls"><h2 class="sr-only">Course controls</h2><label class="theme-control">Theme<select data-role="theme-select"><option value="system">Match system</option><option value="light">Light</option><option value="dark">Dark</option></select></label><fieldset class="print-mode-control" data-role="print-mode"><legend>Print</legend><label><input type="radio" name="print-mode" value="answer-key" checked> Answer key</label><label><input type="radio" name="print-mode" value="learner-copy"> Learner copy</label></fieldset><button type="button" data-role="reset-progress">Reset progress…</button><button type="button" data-role="download-progress">Download progress</button><button type="button" data-role="restore-progress">Restore progress…</button><input class="progress-file-input" type="file" accept="application/json" data-role="progress-file-input" aria-label="Progress file to restore" hidden><p class="local-data-note">Your progress and reflection notes are stored only in this browser, for this exported file, and never leave your device. A downloaded progress file is yours to keep and stays on your device too.</p><p class="keyboard-help" data-role="keyboard-help">Keyboard: ← and → move between sections, / jumps to the course navigation.</p><p class="progress-file-status" data-role="progress-file-status" role="status" aria-live="polite"></p><p class="storage-notice" data-role="storage-notice" role="status" aria-live="polite" hidden></p></div><div class="layout"><nav class="guide-nav" aria-label="Course sections"><button type="button" class="nav-toggle" data-role="nav-toggle" aria-expanded="false" aria-controls="guide-nav-list">Sections</button><h2>Course navigation</h2><ol id="guide-nav-list"><li><a href="#feedback-foundations" data-role="nav-link" data-section-id="feedback-foundations">How loops behave — From events to loops</a></li><li><a href="#recognize-loop-types" data-role="nav-link" data-section-id="recognize-loop-types">How loops behave — Recognize loop behavior</a></li><li><a href="#delays-and-leverage" data-role="nav-link" data-section-id="delays-and-leverage">Intervene with the whole loop in view — Delays change what you see</a></li><li><a href="#garden-decision" data-role="nav-link" data-section-id="garden-decision">Intervene with the whole loop in view — Practice a gardening decision</a></li></ol></nav><main id="guide-main"><section id="feedback-foundations" data-role="guide-section" data-module-id="loop-basics" data-module-title="How loops behave" data-section-title="From events to loops"><p class="module-context">How loops behave</p><h2>From events to loops</h2><article class="block rich_text" id="loop-introduction"><p>A <strong>feedback loop</strong> exists when a change travels through a system and eventually influences its starting quantity. Reinforcing loops amplify direction; balancing loops resist a gap or move toward a goal.</p></article><article class="block callout" id="garden-connection"><h3>Connect it to gardening</h3><p>More leaf growth can capture more sunlight, enabling still more growth—a reinforcing loop. A thermostat-like watering controller instead compares soil moisture with a target and reduces the gap.</p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section><section id="recognize-loop-types" data-role="guide-section" data-module-id="loop-basics" data-module-title="How loops behave" data-section-title="Recognize loop behavior"><p class="module-context">How loops behave</p><h2>Recognize loop behavior</h2><article class="block knowledge_check" id="check-loop-type" data-interactive="true" data-mode="single" data-retry="true"><h3>A project team learns from each successful release, making later releases smoother and creating more opportunities to learn. What kind of loop dominates?</h3><div class="choice-group" role="group" aria-label="Answer choices"><ul class="choices"><li class="choice-item" id="release-reinforcing"><label class="choice-label-wrap"><input type="radio" name="kc-input-check-loop-type" value="release-reinforcing" data-choice-id="release-reinforcing" data-correct="true" data-role="kc-choice"><span class="choice-label">Reinforcing</span></label><span class="choice-feedback" data-role="answer-marker">Answer: correct</span></li><li class="choice-item" id="release-balancing"><label class="choice-label-wrap"><input type="radio" name="kc-input-check-loop-type" value="release-balancing" data-choice-id="release-balancing" data-correct="false" data-role="kc-choice"><span class="choice-label">Balancing</span></label><span class="choice-feedback" data-role="answer-marker">Answer: incorrect</span></li><li class="choice-item" id="release-unrelated"><label class="choice-label-wrap"><input type="radio" name="kc-input-check-loop-type" value="release-unrelated" data-choice-id="release-unrelated" data-correct="false" data-role="kc-choice"><span class="choice-label">No feedback loop</span></label><span class="choice-feedback" data-role="answer-marker">Answer: incorrect</span></li></ul></div><div class="kc-controls"><button type="button" class="kc-submit" data-role="kc-submit" disabled>Submit answer</button><button type="button" class="kc-retry" data-role="kc-retry" hidden>Try again</button></div><div class="live-region" data-role="kc-result" role="status" aria-live="polite"></div><p class="explanation" data-role="kc-explanation"><strong>Explanation:</strong> Success increases learning, which improves later success: the change amplifies itself.</p></article><article class="block worked_reveal" id="map-growth-loop" data-interactive="true"><h3>Map the reinforcing loop in a young garden&#x27;s plant growth.</h3><div class="wr-controls"><button type="button" class="wr-reveal" data-role="wr-reveal-next">Reveal first step</button><button type="button" class="wr-show-all" data-role="wr-show-all">Show all</button><button type="button" class="wr-reset" data-role="wr-reset" hidden>Reset steps</button></div><div class="live-region" data-role="wr-live" role="status" aria-live="polite"></div><ol class="reveal-steps" data-role="reveal-steps" data-total-steps="3"><li class="reveal-step" id="choose-biomass" data-role="reveal-step" data-step-index="1"><strong>Choose the quantity</strong><p>Start with <strong>plant biomass</strong>, something that can rise or fall over time.</p></li><li class="reveal-step" id="trace-leaf-area" data-role="reveal-step" data-step-index="2"><strong>Trace the first effect</strong><p>More biomass usually creates more leaf area, assuming the plant remains healthy.</p></li><li class="reveal-step" id="close-growth-loop" data-role="reveal-step" data-step-index="3"><strong>Close the loop</strong><p>More leaf area captures more sunlight, which supports growth and increases biomass again.</p></li></ol><p class="conclusion" data-role="wr-conclusion">The loop reinforces growth until water, nutrients, space, or another limiting factor becomes important.</p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section><section id="delays-and-leverage" data-role="guide-section" data-module-id="intervention-practice" data-module-title="Intervene with the whole loop in view" data-section-title="Delays change what you see"><p class="module-context">Intervene with the whole loop in view</p><h2>Delays change what you see</h2><article class="block rich_text" id="delay-explanation"><p>A <strong>delay</strong> separates an action from its visible result. Teams may add work when progress looks slow, just as gardeners may water again before moisture reaches deeper roots. Mapping the delay helps prevent overcorrection.</p></article><article class="block callout" id="delay-warning"><h3>Watch for overcorrection</h3><p>Before acting twice, ask whether the first action is still moving through the system.</p></article><article class="block knowledge_check" id="check-delay-response" data-interactive="true" data-mode="multiple" data-retry="true"><h3>Which actions help when a delayed balancing loop appears unresponsive?</h3><div class="choice-group" role="group" aria-label="Answer choices"><ul class="choices"><li class="choice-item" id="delay-map"><label class="choice-label-wrap"><input type="checkbox" name="kc-input-check-delay-response" value="delay-map" data-choice-id="delay-map" data-correct="true" data-role="kc-choice"><span class="choice-label">Map when the intervention should affect the measured quantity</span></label><span class="choice-feedback" data-role="answer-marker">Answer: correct</span></li><li class="choice-item" id="delay-observe"><label class="choice-label-wrap"><input type="checkbox" name="kc-input-check-delay-response" value="delay-observe" data-choice-id="delay-observe" data-correct="true" data-role="kc-choice"><span class="choice-label">Observe a leading indicator while waiting</span></label><span class="choice-feedback" data-role="answer-marker">Answer: correct</span></li><li class="choice-item" id="delay-double"><label class="choice-label-wrap"><input type="checkbox" name="kc-input-check-delay-response" value="delay-double" data-choice-id="delay-double" data-correct="false" data-role="kc-choice"><span class="choice-label">Immediately double the intervention</span></label><span class="choice-feedback" data-role="answer-marker">Answer: incorrect</span></li></ul></div><div class="kc-controls"><button type="button" class="kc-submit" data-role="kc-submit" disabled>Submit answer</button><button type="button" class="kc-retry" data-role="kc-retry" hidden>Try again</button></div><div class="live-region" data-role="kc-result" role="status" aria-live="polite"></div><p class="explanation" data-role="kc-explanation"><strong>Explanation:</strong> Mapping the delay and watching a leading indicator distinguish slow response from failed response; immediately doubling can produce oscillation or overshoot.</p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section><section id="garden-decision" data-role="guide-section" data-module-id="intervention-practice" data-module-title="Intervene with the whole loop in view" data-section-title="Practice a gardening decision"><p class="module-context">Intervene with the whole loop in view</p><h2>Practice a gardening decision</h2><article class="block scenario" id="pest-density-scenario" data-interactive="true"><h3>Pest damage rises as garden beds become denser. What should you inspect first before choosing an intervention?</h3><div class="choice-group" role="group" aria-label="Scenario choices"><ul class="scenario-choices"><li class="choice-item" id="pest-spray"><label class="choice-label-wrap"><input type="radio" name="sc-input-pest-density-scenario" value="pest-spray" data-choice-id="pest-spray" data-quality="weak" data-role="sc-choice"><span class="choice-label">Immediately increase pesticide use</span></label><span class="choice-feedback" data-role="sc-feedback">weak: This treats visible damage before checking how density, pest reproduction, and predator populations interact.</span></li><li class="choice-item" id="pest-map"><label class="choice-label-wrap"><input type="radio" name="sc-input-pest-density-scenario" value="pest-map" data-choice-id="pest-map" data-quality="best" data-role="sc-choice"><span class="choice-label">Map plant density, pest pressure, predator response, and their delays</span></label><span class="choice-feedback" data-role="sc-feedback">best: This exposes both reinforcing pest pressure and a potentially delayed balancing response from predators.</span></li><li class="choice-item" id="pest-ignore"><label class="choice-label-wrap"><input type="radio" name="sc-input-pest-density-scenario" value="pest-ignore" data-choice-id="pest-ignore" data-quality="harmful" data-role="sc-choice"><span class="choice-label">Wait indefinitely because nature always balances itself</span></label><span class="choice-feedback" data-role="sc-feedback">harmful: A balancing response may be too weak or delayed to prevent serious damage; observation needs a decision threshold.</span></li></ul></div><div class="sc-controls"><button type="button" class="sc-submit" data-role="sc-submit" disabled>Submit choice</button><button type="button" class="sc-retry" data-role="sc-retry" hidden>Try again</button></div><div class="live-region" data-role="sc-result" role="status" aria-live="polite"></div><p class="debrief" data-role="sc-debrief"><strong>Debrief:</strong> A thoughtful intervention begins by locating the important loops, their relative strength, and the delay before each response becomes visible.</p></article><article class="block reflection" id="project-reflection" data-interactive="true"><h3 id="project-reflection-prompt">Where might a delayed feedback loop be shaping a project you know?</h3><p class="guidance">Name the changing quantity, trace how it eventually affects itself, and identify one delay before proposing an intervention.</p><p class="local-data-note">Notes are stored only in this browser, for this file, and are never included in print or export.</p><textarea class="reflection-input" data-role="reflection-input" aria-labelledby="project-reflection-prompt" placeholder="Draft a private loop map in words…" rows="4"></textarea><div class="rf-controls"><button type="button" class="rf-skip" data-role="rf-skip">Skip this reflection</button><button type="button" class="rf-reset" data-role="rf-reset" hidden>Clear my note</button></div><p class="rf-status" data-role="rf-status" role="status" aria-live="polite"></p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section></main></div><aside class="course-info"><h2>Learning outcomes</h2><ul><li id="identify-loop">Identify reinforcing and balancing feedback in a familiar system.</li><li id="map-loop">Map a feedback loop by tracing a changing quantity back to itself.</li><li id="choose-intervention">Choose an intervention that accounts for feedback structure and delays.</li></ul><h2>Glossary</h2><dl><dt id="feedback-loop-term">Feedback loop</dt><dd><p>A chain of cause and effect that eventually influences its starting quantity.</p></dd><dt id="reinforcing-loop-term">Reinforcing loop</dt><dd><p>A loop that amplifies change in the same direction.</p></dd><dt id="balancing-loop-term">Balancing loop</dt><dd><p>A loop that counteracts a gap or moves a system toward a goal.</p></dd><dt id="delay-term">Delay</dt><dd><p>The elapsed time between a cause and an observable effect in a feedback structure.</p></dd></dl><h2>Sources</h2><ol><li id="meadows-2008"><strong>Thinking in Systems: A Primer</strong>: Donella H. Meadows (2008) — <p>General background on feedback structures, delays, and intervention in systems.</p> <a href="https://www.chelseagreen.com/product/thinking-in-systems/" rel="noopener noreferrer" aria-label="External link">Source</a></li></ol></aside></div><script id="guide-data" type="application/json">{"course":{"blueprint":"conceptual-foundations","description":"Learn to recognize feedback, map its structure, and choose thoughtful interventions.","difficulty":"introductory","estimated_minutes":15,"id":"feedback-loops","language":"en","learner_summary":"Designed for a project manager who values concrete gardening examples and scenario practice.","subtitle":"A practical introduction through projects and gardens","title":"Thinking in Feedback Loops"},"glossary":[{"definition":"A chain of cause and effect that eventually influences its starting quantity.","id":"feedback-loop-term","term":"Feedback loop"},{"definition":"A loop that amplifies change in the same direction.","id":"reinforcing-loop-term","term":"Reinforcing loop"},{"definition":"A loop that counteracts a gap or moves a system toward a goal.","id":"balancing-loop-term","term":"Balancing loop"},{"definition":"The elapsed time between a cause and an observable effect in a feedback structure.","id":"delay-term","term":"Delay"}],"modules":[{"estimated_minutes":7,"id":"loop-basics","outcome_ids":["identify-loop","map-loop"],"sections":[{"blocks":[{"id":"loop-introduction","markdown":"A **feedback loop** exists when a change travels through a system and eventually influences its starting quantity. Reinforcing loops amplify direction; balancing loops resist a gap or move toward a goal.","outcome_ids":["identify-loop"],"source_ids":["meadows-2008"],"type":"rich_text"},{"id":"garden-connection","kind":"connection","markdown":"More leaf growth can capture more sunlight, enabling still more growth—a reinforcing loop. A thermostat-like watering controller instead compares soil moisture with a target and reduces the gap.","outcome_ids":["identify-loop"],"source_ids":[],"title":"Connect it to gardening","type":"callout"}],"id":"feedback-foundations","title":"From events to loops"},{"blocks":[{"choices":[{"correct":true,"id":"release-reinforcing","label":"Reinforcing"},{"correct":false,"id":"release-balancing","label":"Balancing"},{"correct":false,"id":"release-unrelated","label":"No feedback loop"}],"explanation":"Success increases learning, which improves later success: the change amplifies itself.","id":"check-loop-type","mode":"single","outcome_ids":["identify-loop"],"prompt":"A project team learns from each successful release, making later releases smoother and creating more opportunities to learn. What kind of loop dominates?","retry":true,"source_ids":[],"type":"knowledge_check"},{"conclusion":"The loop reinforces growth until water, nutrients, space, or another limiting factor becomes important.","id":"map-growth-loop","outcome_ids":["map-loop"],"prompt":"Map the reinforcing loop in a young garden's plant growth.","source_ids":[],"steps":[{"id":"choose-biomass","markdown":"Start with **plant biomass**, something that can rise or fall over time.","title":"Choose the quantity"},{"id":"trace-leaf-area","markdown":"More biomass usually creates more leaf area, assuming the plant remains healthy.","title":"Trace the first effect"},{"id":"close-growth-loop","markdown":"More leaf area captures more sunlight, which supports growth and increases biomass again.","title":"Close the loop"}],"type":"worked_reveal"}],"id":"recognize-loop-types","title":"Recognize loop behavior"}],"summary":"Recognize the structures that amplify change or move a system toward a goal.","title":"How loops behave"},{"estimated_minutes":8,"id":"intervention-practice","outcome_ids":["map-loop","choose-intervention"],"sections":[{"blocks":[{"id":"delay-explanation","markdown":"A **delay** separates an action from its visible result. Teams may add work when progress looks slow, just as gardeners may water again before moisture reaches deeper roots. Mapping the delay helps prevent overcorrection.","outcome_ids":["map-loop","choose-intervention"],"source_ids":["meadows-2008"],"type":"rich_text"},{"id":"delay-warning","kind":"warning","markdown":"Before acting twice, ask whether the first action is still moving through the system.","outcome_ids":["choose-intervention"],"source_ids":[],"title":"Watch for overcorrection","type":"callout"},{"choices":[{"correct":true,"id":"delay-map","label":"Map when the intervention should affect the measured quantity"},{"correct":true,"id":"delay-observe","label":"Observe a leading indicator while waiting"},{"correct":false,"id":"delay-double","label":"Immediately double the intervention"}],"explanation":"Mapping the delay and watching a leading indicator distinguish slow response from failed response; immediately doubling can produce oscillation or overshoot.","id":"check-delay-response","mode":"multiple","outcome_ids":["map-loop","choose-intervention"],"prompt":"Which actions help when a delayed balancing loop appears unresponsive?","retry":true,"source_ids":[],"type":"knowledge_check"}],"id":"delays-and-leverage","title":"Delays change what you see"},{"blocks":[{"choices":[{"feedback":"This treats visible damage before checking how density, pest reproduction, and predator populations interact.","id":"pest-spray","label":"Immediately increase pesticide use","quality":"weak"},{"feedback":"This exposes both reinforcing pest pressure and a potentially delayed balancing response from predators.","id":"pest-map","label":"Map plant density, pest pressure, predator response, and their delays","quality":"best"},{"feedback":"A balancing response may be too weak or delayed to prevent serious damage; observation needs a decision threshold.","id":"pest-ignore","label":"Wait indefinitely because nature always balances itself","quality":"harmful"}],"debrief":"A thoughtful intervention begins by locating the important loops, their relative strength, and the delay before each response becomes visible.","id":"pest-density-scenario","outcome_ids":["choose-intervention"],"prompt":"Pest damage rises as garden beds become denser. What should you inspect first before choosing an intervention?","source_ids":[],"type":"scenario"},{"guidance":"Name the changing quantity, trace how it eventually affects itself, and identify one delay before proposing an intervention.","id":"project-reflection","outcome_ids":["map-loop","choose-intervention"],"placeholder":"Draft a private loop map in words…","prompt":"Where might a delayed feedback loop be shaping a project you know?","source_ids":[],"type":"reflection"}],"id":"garden-decision","title":"Practice a gardening decision"}],"summary":"Use a loop map to avoid treating symptoms and to anticipate delayed effects.","title":"Intervene with the whole loop in view"}],"outcomes":[{"id":"identify-loop","text":"Identify reinforcing and balancing feedback in a familiar system."},{"id":"map-loop","text":"Map a feedback loop by tracing a changing quantity back to itself."},{"id":"choose-intervention","text":"Choose an intervention that accounts for feedback structure and delays."}],"schema_version":"1.1","sources":[{"authors":["Donella H. Meadows"],"id":"meadows-2008","note":"General background on feedback structures, delays, and intervention in systems.","published":"2008","title":"Thinking in Systems: A Primer","url":"https://www.chelseagreen.com/product/thinking-in-systems/"}]}</script><script>(() => {
+</style></head><body><a class="skip-link" href="#guide-main">Skip to course content</a><div class="live-region visually-hidden" data-role="nav-announcement" role="status" aria-live="polite"></div><div class="error-shell" data-guide-status role="alert">Loading course…</div><div data-guide-shell hidden><header class="course-header"><h1>Thinking in Feedback Loops</h1><p>A practical introduction through projects and gardens</p><p>Learn to recognize feedback, map its structure, and choose thoughtful interventions.</p><p>15 minutes · introductory</p><div class="progress-summary" data-role="progress-summary" role="status" aria-live="polite"></div></header><div class="progress-migration" data-role="progress-migration" role="status" aria-live="polite" hidden><p class="progress-migration-message">You have progress from a previous version of this course. <span data-role="progress-migration-detail"></span></p><div class="progress-migration-controls"><button type="button" data-role="resume-progress">Resume that progress</button><button type="button" data-role="dismiss-progress">Start fresh</button></div></div><div class="course-controls" aria-label="Course controls"><h2 class="sr-only">Course controls</h2><label class="theme-control">Theme<select data-role="theme-select"><option value="system">Match system</option><option value="light">Light</option><option value="dark">Dark</option></select></label><fieldset class="print-mode-control" data-role="print-mode"><legend>Print</legend><label><input type="radio" name="print-mode" value="answer-key" checked> Answer key</label><label><input type="radio" name="print-mode" value="learner-copy"> Learner copy</label></fieldset><button type="button" data-role="reset-progress">Reset progress…</button><button type="button" data-role="download-progress">Download progress</button><button type="button" data-role="restore-progress">Restore progress…</button><input class="progress-file-input" type="file" accept="application/json" data-role="progress-file-input" aria-label="Progress file to restore" hidden><p class="local-data-note">Your progress and reflection notes are stored only in this browser, for this exported file, and never leave your device. A downloaded progress file is yours to keep and stays on your device too.</p><p class="keyboard-help" data-role="keyboard-help">Keyboard: ← and → move between sections, / jumps to the course navigation.</p><p class="progress-file-status" data-role="progress-file-status" role="status" aria-live="polite"></p><p class="storage-notice" data-role="storage-notice" role="status" aria-live="polite" hidden></p></div><div class="layout"><nav class="guide-nav" aria-label="Course sections"><button type="button" class="nav-toggle" data-role="nav-toggle" aria-expanded="false" aria-controls="guide-nav-list">Sections</button><h2>Course navigation</h2><ol id="guide-nav-list"><li><a href="#feedback-foundations" data-role="nav-link" data-section-id="feedback-foundations">How loops behave — From events to loops</a></li><li><a href="#recognize-loop-types" data-role="nav-link" data-section-id="recognize-loop-types">How loops behave — Recognize loop behavior</a></li><li><a href="#delays-and-leverage" data-role="nav-link" data-section-id="delays-and-leverage">Intervene with the whole loop in view — Delays change what you see</a></li><li><a href="#garden-decision" data-role="nav-link" data-section-id="garden-decision">Intervene with the whole loop in view — Practice a gardening decision</a></li></ol></nav><main id="guide-main"><section id="feedback-foundations" data-role="guide-section" data-module-id="loop-basics" data-module-title="How loops behave" data-section-title="From events to loops"><p class="module-context">How loops behave</p><h2>From events to loops</h2><article class="block rich_text" id="loop-introduction"><p>A <strong>feedback loop</strong> exists when a change travels through a system and eventually influences its starting quantity. Reinforcing loops amplify direction; balancing loops resist a gap or move toward a goal.</p></article><figure class="block diagram" id="growth-loop-flow" data-diagram-kind="flow"><figcaption class="diagram-caption"><strong class="diagram-title">How plant growth reinforces itself</strong> <span class="diagram-caption-text">The last connection closes a <strong>reinforcing</strong> loop.</span></figcaption><div class="diagram-text" data-role="diagram-text"><ol class="diagram-steps"><li><span class="diagram-label">Plant biomass</span></li><li><span class="diagram-label">Leaf area</span>: <span class="diagram-detail">More biomass usually means more leaves.</span></li><li><span class="diagram-label">Sunlight captured</span></li><li><span class="diagram-label">New growth</span></li></ol><p class="diagram-list-label">Connections</p><ul class="diagram-connections"><li>Plant biomass → Leaf area — increases</li><li>Leaf area → Sunlight captured — increases</li><li>Sunlight captured → New growth — fuels</li><li>New growth → Plant biomass — adds to (loops back)</li></ul></div></figure><article class="block callout" id="garden-connection"><h3>Connect it to gardening</h3><p>More leaf growth can capture more sunlight, enabling still more growth—a reinforcing loop. A thermostat-like watering controller instead compares soil moisture with a target and reduces the gap.</p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section><section id="recognize-loop-types" data-role="guide-section" data-module-id="loop-basics" data-module-title="How loops behave" data-section-title="Recognize loop behavior"><p class="module-context">How loops behave</p><h2>Recognize loop behavior</h2><article class="block knowledge_check" id="check-loop-type" data-interactive="true" data-mode="single" data-retry="true"><h3>A project team learns from each successful release, making later releases smoother and creating more opportunities to learn. What kind of loop dominates?</h3><div class="choice-group" role="group" aria-label="Answer choices"><ul class="choices"><li class="choice-item" id="release-reinforcing"><label class="choice-label-wrap"><input type="radio" name="kc-input-check-loop-type" value="release-reinforcing" data-choice-id="release-reinforcing" data-correct="true" data-role="kc-choice"><span class="choice-label">Reinforcing</span></label><span class="choice-feedback" data-role="answer-marker">Answer: correct</span></li><li class="choice-item" id="release-balancing"><label class="choice-label-wrap"><input type="radio" name="kc-input-check-loop-type" value="release-balancing" data-choice-id="release-balancing" data-correct="false" data-role="kc-choice"><span class="choice-label">Balancing</span></label><span class="choice-feedback" data-role="answer-marker">Answer: incorrect</span></li><li class="choice-item" id="release-unrelated"><label class="choice-label-wrap"><input type="radio" name="kc-input-check-loop-type" value="release-unrelated" data-choice-id="release-unrelated" data-correct="false" data-role="kc-choice"><span class="choice-label">No feedback loop</span></label><span class="choice-feedback" data-role="answer-marker">Answer: incorrect</span></li></ul></div><div class="kc-controls"><button type="button" class="kc-submit" data-role="kc-submit" disabled>Submit answer</button><button type="button" class="kc-retry" data-role="kc-retry" hidden>Try again</button></div><div class="live-region" data-role="kc-result" role="status" aria-live="polite"></div><p class="explanation" data-role="kc-explanation"><strong>Explanation:</strong> Success increases learning, which improves later success: the change amplifies itself.</p></article><article class="block worked_reveal" id="map-growth-loop" data-interactive="true"><h3>Map the reinforcing loop in a young garden&#x27;s plant growth.</h3><div class="wr-controls"><button type="button" class="wr-reveal" data-role="wr-reveal-next">Reveal first step</button><button type="button" class="wr-show-all" data-role="wr-show-all">Show all</button><button type="button" class="wr-reset" data-role="wr-reset" hidden>Reset steps</button></div><div class="live-region" data-role="wr-live" role="status" aria-live="polite"></div><ol class="reveal-steps" data-role="reveal-steps" data-total-steps="3"><li class="reveal-step" id="choose-biomass" data-role="reveal-step" data-step-index="1"><strong>Choose the quantity</strong><p>Start with <strong>plant biomass</strong>, something that can rise or fall over time.</p></li><li class="reveal-step" id="trace-leaf-area" data-role="reveal-step" data-step-index="2"><strong>Trace the first effect</strong><p>More biomass usually creates more leaf area, assuming the plant remains healthy.</p></li><li class="reveal-step" id="close-growth-loop" data-role="reveal-step" data-step-index="3"><strong>Close the loop</strong><p>More leaf area captures more sunlight, which supports growth and increases biomass again.</p></li></ol><p class="conclusion" data-role="wr-conclusion">The loop reinforces growth until water, nutrients, space, or another limiting factor becomes important.</p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section><section id="delays-and-leverage" data-role="guide-section" data-module-id="intervention-practice" data-module-title="Intervene with the whole loop in view" data-section-title="Delays change what you see"><p class="module-context">Intervene with the whole loop in view</p><h2>Delays change what you see</h2><article class="block rich_text" id="delay-explanation"><p>A <strong>delay</strong> separates an action from its visible result. Teams may add work when progress looks slow, just as gardeners may water again before moisture reaches deeper roots. Mapping the delay helps prevent overcorrection.</p></article><figure class="block diagram" id="intervention-comparison" data-diagram-kind="comparison"><figcaption class="diagram-caption"><strong class="diagram-title">Acting again versus waiting out a delay</strong></figcaption><div class="diagram-text" data-role="diagram-text"><table class="diagram-table"><thead><tr><th scope="col">Criterion</th><th scope="col">Act again right away</th><th scope="col">Wait out the delay</th></tr></thead><tbody><tr><th scope="row">What you see first</th><td>A quick visible change</td><td>Little visible change</td></tr><tr><th scope="row">After the delay</th><td><em>Overshoot</em> past the goal</td><td>Settles near the goal</td></tr><tr><th scope="row">Main cost</th><td>Wasted effort and swings</td><td>Patience while nothing seems to happen</td></tr></tbody></table></div></figure><article class="block callout" id="delay-warning"><h3>Watch for overcorrection</h3><p>Before acting twice, ask whether the first action is still moving through the system.</p></article><article class="block knowledge_check" id="check-delay-response" data-interactive="true" data-mode="multiple" data-retry="true"><h3>Which actions help when a delayed balancing loop appears unresponsive?</h3><div class="choice-group" role="group" aria-label="Answer choices"><ul class="choices"><li class="choice-item" id="delay-map"><label class="choice-label-wrap"><input type="checkbox" name="kc-input-check-delay-response" value="delay-map" data-choice-id="delay-map" data-correct="true" data-role="kc-choice"><span class="choice-label">Map when the intervention should affect the measured quantity</span></label><span class="choice-feedback" data-role="answer-marker">Answer: correct</span></li><li class="choice-item" id="delay-observe"><label class="choice-label-wrap"><input type="checkbox" name="kc-input-check-delay-response" value="delay-observe" data-choice-id="delay-observe" data-correct="true" data-role="kc-choice"><span class="choice-label">Observe a leading indicator while waiting</span></label><span class="choice-feedback" data-role="answer-marker">Answer: correct</span></li><li class="choice-item" id="delay-double"><label class="choice-label-wrap"><input type="checkbox" name="kc-input-check-delay-response" value="delay-double" data-choice-id="delay-double" data-correct="false" data-role="kc-choice"><span class="choice-label">Immediately double the intervention</span></label><span class="choice-feedback" data-role="answer-marker">Answer: incorrect</span></li></ul></div><div class="kc-controls"><button type="button" class="kc-submit" data-role="kc-submit" disabled>Submit answer</button><button type="button" class="kc-retry" data-role="kc-retry" hidden>Try again</button></div><div class="live-region" data-role="kc-result" role="status" aria-live="polite"></div><p class="explanation" data-role="kc-explanation"><strong>Explanation:</strong> Mapping the delay and watching a leading indicator distinguish slow response from failed response; immediately doubling can produce oscillation or overshoot.</p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section><section id="garden-decision" data-role="guide-section" data-module-id="intervention-practice" data-module-title="Intervene with the whole loop in view" data-section-title="Practice a gardening decision"><p class="module-context">Intervene with the whole loop in view</p><h2>Practice a gardening decision</h2><article class="block scenario" id="pest-density-scenario" data-interactive="true"><h3>Pest damage rises as garden beds become denser. What should you inspect first before choosing an intervention?</h3><div class="choice-group" role="group" aria-label="Scenario choices"><ul class="scenario-choices"><li class="choice-item" id="pest-spray"><label class="choice-label-wrap"><input type="radio" name="sc-input-pest-density-scenario" value="pest-spray" data-choice-id="pest-spray" data-quality="weak" data-role="sc-choice"><span class="choice-label">Immediately increase pesticide use</span></label><span class="choice-feedback" data-role="sc-feedback">weak: This treats visible damage before checking how density, pest reproduction, and predator populations interact.</span></li><li class="choice-item" id="pest-map"><label class="choice-label-wrap"><input type="radio" name="sc-input-pest-density-scenario" value="pest-map" data-choice-id="pest-map" data-quality="best" data-role="sc-choice"><span class="choice-label">Map plant density, pest pressure, predator response, and their delays</span></label><span class="choice-feedback" data-role="sc-feedback">best: This exposes both reinforcing pest pressure and a potentially delayed balancing response from predators.</span></li><li class="choice-item" id="pest-ignore"><label class="choice-label-wrap"><input type="radio" name="sc-input-pest-density-scenario" value="pest-ignore" data-choice-id="pest-ignore" data-quality="harmful" data-role="sc-choice"><span class="choice-label">Wait indefinitely because nature always balances itself</span></label><span class="choice-feedback" data-role="sc-feedback">harmful: A balancing response may be too weak or delayed to prevent serious damage; observation needs a decision threshold.</span></li></ul></div><div class="sc-controls"><button type="button" class="sc-submit" data-role="sc-submit" disabled>Submit choice</button><button type="button" class="sc-retry" data-role="sc-retry" hidden>Try again</button></div><div class="live-region" data-role="sc-result" role="status" aria-live="polite"></div><p class="debrief" data-role="sc-debrief"><strong>Debrief:</strong> A thoughtful intervention begins by locating the important loops, their relative strength, and the delay before each response becomes visible.</p></article><article class="block reflection" id="project-reflection" data-interactive="true"><h3 id="project-reflection-prompt">Where might a delayed feedback loop be shaping a project you know?</h3><p class="guidance">Name the changing quantity, trace how it eventually affects itself, and identify one delay before proposing an intervention.</p><p class="local-data-note">Notes are stored only in this browser, for this file, and are never included in print or export.</p><textarea class="reflection-input" data-role="reflection-input" aria-labelledby="project-reflection-prompt" placeholder="Draft a private loop map in words…" rows="4"></textarea><div class="rf-controls"><button type="button" class="rf-skip" data-role="rf-skip">Skip this reflection</button><button type="button" class="rf-reset" data-role="rf-reset" hidden>Clear my note</button></div><p class="rf-status" data-role="rf-status" role="status" aria-live="polite"></p></article><div class="section-nav-controls" data-role="section-nav-controls"><button type="button" data-role="prev-section">Previous section</button><span class="section-position" data-role="section-position"></span><button type="button" data-role="next-section">Next section</button></div><div class="section-complete-controls"><button type="button" class="mark-complete" data-role="mark-complete">Mark section complete</button><p class="section-status" data-role="section-status" role="status" aria-live="polite"></p></div></section></main></div><aside class="course-info"><h2>Learning outcomes</h2><ul><li id="identify-loop">Identify reinforcing and balancing feedback in a familiar system.</li><li id="map-loop">Map a feedback loop by tracing a changing quantity back to itself.</li><li id="choose-intervention">Choose an intervention that accounts for feedback structure and delays.</li></ul><h2>Glossary</h2><dl><dt id="feedback-loop-term">Feedback loop</dt><dd><p>A chain of cause and effect that eventually influences its starting quantity.</p></dd><dt id="reinforcing-loop-term">Reinforcing loop</dt><dd><p>A loop that amplifies change in the same direction.</p></dd><dt id="balancing-loop-term">Balancing loop</dt><dd><p>A loop that counteracts a gap or moves a system toward a goal.</p></dd><dt id="delay-term">Delay</dt><dd><p>The elapsed time between a cause and an observable effect in a feedback structure.</p></dd></dl><h2>Sources</h2><ol><li id="meadows-2008"><strong>Thinking in Systems: A Primer</strong>: Donella H. Meadows (2008) — <p>General background on feedback structures, delays, and intervention in systems.</p> <a href="https://www.chelseagreen.com/product/thinking-in-systems/" rel="noopener noreferrer" aria-label="External link">Source</a></li></ol></aside></div><script id="guide-data" type="application/json">{"course":{"blueprint":"conceptual-foundations","description":"Learn to recognize feedback, map its structure, and choose thoughtful interventions.","difficulty":"introductory","estimated_minutes":15,"id":"feedback-loops","language":"en","learner_summary":"Designed for a project manager who values concrete gardening examples and scenario practice.","subtitle":"A practical introduction through projects and gardens","title":"Thinking in Feedback Loops"},"glossary":[{"definition":"A chain of cause and effect that eventually influences its starting quantity.","id":"feedback-loop-term","term":"Feedback loop"},{"definition":"A loop that amplifies change in the same direction.","id":"reinforcing-loop-term","term":"Reinforcing loop"},{"definition":"A loop that counteracts a gap or moves a system toward a goal.","id":"balancing-loop-term","term":"Balancing loop"},{"definition":"The elapsed time between a cause and an observable effect in a feedback structure.","id":"delay-term","term":"Delay"}],"modules":[{"estimated_minutes":7,"id":"loop-basics","outcome_ids":["identify-loop","map-loop"],"sections":[{"blocks":[{"id":"loop-introduction","markdown":"A **feedback loop** exists when a change travels through a system and eventually influences its starting quantity. Reinforcing loops amplify direction; balancing loops resist a gap or move toward a goal.","outcome_ids":["identify-loop"],"source_ids":["meadows-2008"],"type":"rich_text"},{"caption":"The last connection closes a **reinforcing** loop.","edges":[{"from":"biomass","label":"increases","to":"leaf-area"},{"from":"leaf-area","label":"increases","to":"sunlight"},{"from":"sunlight","label":"fuels","to":"growth"},{"from":"growth","label":"adds to","to":"biomass"}],"id":"growth-loop-flow","kind":"flow","nodes":[{"id":"biomass","label":"Plant biomass"},{"detail":"More biomass usually means more leaves.","id":"leaf-area","label":"Leaf area"},{"id":"sunlight","label":"Sunlight captured"},{"id":"growth","label":"New growth"}],"outcome_ids":["map-loop"],"source_ids":[],"title":"How plant growth reinforces itself","type":"diagram"},{"id":"garden-connection","kind":"connection","markdown":"More leaf growth can capture more sunlight, enabling still more growth—a reinforcing loop. A thermostat-like watering controller instead compares soil moisture with a target and reduces the gap.","outcome_ids":["identify-loop"],"source_ids":[],"title":"Connect it to gardening","type":"callout"}],"id":"feedback-foundations","title":"From events to loops"},{"blocks":[{"choices":[{"correct":true,"id":"release-reinforcing","label":"Reinforcing"},{"correct":false,"id":"release-balancing","label":"Balancing"},{"correct":false,"id":"release-unrelated","label":"No feedback loop"}],"explanation":"Success increases learning, which improves later success: the change amplifies itself.","id":"check-loop-type","mode":"single","outcome_ids":["identify-loop"],"prompt":"A project team learns from each successful release, making later releases smoother and creating more opportunities to learn. What kind of loop dominates?","retry":true,"source_ids":[],"type":"knowledge_check"},{"conclusion":"The loop reinforces growth until water, nutrients, space, or another limiting factor becomes important.","id":"map-growth-loop","outcome_ids":["map-loop"],"prompt":"Map the reinforcing loop in a young garden's plant growth.","source_ids":[],"steps":[{"id":"choose-biomass","markdown":"Start with **plant biomass**, something that can rise or fall over time.","title":"Choose the quantity"},{"id":"trace-leaf-area","markdown":"More biomass usually creates more leaf area, assuming the plant remains healthy.","title":"Trace the first effect"},{"id":"close-growth-loop","markdown":"More leaf area captures more sunlight, which supports growth and increases biomass again.","title":"Close the loop"}],"type":"worked_reveal"}],"id":"recognize-loop-types","title":"Recognize loop behavior"}],"summary":"Recognize the structures that amplify change or move a system toward a goal.","title":"How loops behave"},{"estimated_minutes":8,"id":"intervention-practice","outcome_ids":["map-loop","choose-intervention"],"sections":[{"blocks":[{"id":"delay-explanation","markdown":"A **delay** separates an action from its visible result. Teams may add work when progress looks slow, just as gardeners may water again before moisture reaches deeper roots. Mapping the delay helps prevent overcorrection.","outcome_ids":["map-loop","choose-intervention"],"source_ids":["meadows-2008"],"type":"rich_text"},{"criteria":[{"id":"first-sign","label":"What you see first","values":{"act-again":"A quick visible change","wait-out":"Little visible change"}},{"id":"after-delay","label":"After the delay","values":{"act-again":"*Overshoot* past the goal","wait-out":"Settles near the goal"}},{"id":"cost","label":"Main cost","values":{"act-again":"Wasted effort and swings","wait-out":"Patience while nothing seems to happen"}}],"id":"intervention-comparison","items":[{"id":"act-again","label":"Act again right away"},{"id":"wait-out","label":"Wait out the delay"}],"kind":"comparison","outcome_ids":["choose-intervention"],"source_ids":[],"title":"Acting again versus waiting out a delay","type":"diagram"},{"id":"delay-warning","kind":"warning","markdown":"Before acting twice, ask whether the first action is still moving through the system.","outcome_ids":["choose-intervention"],"source_ids":[],"title":"Watch for overcorrection","type":"callout"},{"choices":[{"correct":true,"id":"delay-map","label":"Map when the intervention should affect the measured quantity"},{"correct":true,"id":"delay-observe","label":"Observe a leading indicator while waiting"},{"correct":false,"id":"delay-double","label":"Immediately double the intervention"}],"explanation":"Mapping the delay and watching a leading indicator distinguish slow response from failed response; immediately doubling can produce oscillation or overshoot.","id":"check-delay-response","mode":"multiple","outcome_ids":["map-loop","choose-intervention"],"prompt":"Which actions help when a delayed balancing loop appears unresponsive?","retry":true,"source_ids":[],"type":"knowledge_check"}],"id":"delays-and-leverage","title":"Delays change what you see"},{"blocks":[{"choices":[{"feedback":"This treats visible damage before checking how density, pest reproduction, and predator populations interact.","id":"pest-spray","label":"Immediately increase pesticide use","quality":"weak"},{"feedback":"This exposes both reinforcing pest pressure and a potentially delayed balancing response from predators.","id":"pest-map","label":"Map plant density, pest pressure, predator response, and their delays","quality":"best"},{"feedback":"A balancing response may be too weak or delayed to prevent serious damage; observation needs a decision threshold.","id":"pest-ignore","label":"Wait indefinitely because nature always balances itself","quality":"harmful"}],"debrief":"A thoughtful intervention begins by locating the important loops, their relative strength, and the delay before each response becomes visible.","id":"pest-density-scenario","outcome_ids":["choose-intervention"],"prompt":"Pest damage rises as garden beds become denser. What should you inspect first before choosing an intervention?","source_ids":[],"type":"scenario"},{"guidance":"Name the changing quantity, trace how it eventually affects itself, and identify one delay before proposing an intervention.","id":"project-reflection","outcome_ids":["map-loop","choose-intervention"],"placeholder":"Draft a private loop map in words…","prompt":"Where might a delayed feedback loop be shaping a project you know?","source_ids":[],"type":"reflection"}],"id":"garden-decision","title":"Practice a gardening decision"}],"summary":"Use a loop map to avoid treating symptoms and to anticipate delayed effects.","title":"Intervene with the whole loop in view"}],"outcomes":[{"id":"identify-loop","text":"Identify reinforcing and balancing feedback in a familiar system."},{"id":"map-loop","text":"Map a feedback loop by tracing a changing quantity back to itself."},{"id":"choose-intervention","text":"Choose an intervention that accounts for feedback structure and delays."}],"schema_version":"1.2","sources":[{"authors":["Donella H. Meadows"],"id":"meadows-2008","note":"General background on feedback structures, delays, and intervention in systems.","published":"2008","title":"Thinking in Systems: A Primer","url":"https://www.chelseagreen.com/product/thinking-in-systems/"}]}</script><script>(() => {
   "use strict";
 
   // ---------------------------------------------------------------------
@@ -1535,6 +1569,396 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
   }
 
   // ---------------------------------------------------------------------
+  // Diagrams (schema 1.2): an SVG drawn from guide-data over the server's
+  // complete text version, which stays in the DOM behind a disclosure.
+  // Not an enhancer: a diagram has no interaction and no stored record.
+  // ---------------------------------------------------------------------
+
+  const DIAGRAM_LAYOUT = Object.freeze({
+    MARGIN: 24, NODE_W: 160, NODE_PAD_Y: 10, NODE_LINE_H: 18, NODE_CHARS: 18, NODE_MAX_LINES: 3, COL_GAP: 40,
+    LAYER_GAP: 56, BACK_OFFSET: 32, EDGE_CHARS: 16, EDGE_MAX_LINES: 2, EDGE_LINE_H: 15, EDGE_CHAR_W: 7, R_MIN: 200,
+    RING_GAP: 24, SLOT_W: 150, EVENT_CHARS: 18, EVENT_CHARS_V: 30, EVENT_LINE_H: 16, EVENT_BLOCK_LINES: 5, TICK: 16,
+    MARKER_R: 6, ROW_H: 96, VERT_W: 360,
+  });
+
+  const Diagrams = (() => {
+    const L = DIAGRAM_LAYOUT;
+    const BOUNDS = {
+      flow: { nodes: [2, 12], edges: [1, 16] },
+      concept_map: { nodes: [2, 12], edges: [1, 12] },
+      timeline: { events: [2, 10] },
+      comparison: { items: [2, 4], criteria: [1, 8] },
+    };
+    // An item id may legally be "constructor", which every plain object inherits.
+    const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+    const points = (s) => Array.from(s);
+    // Measured trimmed, as guides/diagrams.py measures len(value.strip()).
+    const isText = (s, limit) => typeof s === "string" && s.trim() !== "" && points(s.trim()).length <= limit;
+    // One decimal, and no DOM measurement anywhere, so a guide always yields the same markup.
+    const fmt = (v) => String(Math.round(v * 10) / 10);
+    let printHooked = false;
+
+    // Defensive re-check of guide-data, which may have been edited by hand.
+    function valid(data, kind) {
+      if (!isPlainObject(data) || data.type !== "diagram" || data.kind !== kind) return false;
+      if (!has(BOUNDS, kind) || !isText(data.title, 120)) return false;
+      const ids = new Set();
+      for (const [name, [min, max]] of Object.entries(BOUNDS[kind])) {
+        const list = data[name];
+        if (!Array.isArray(list) || list.length < min || list.length > max) return false;
+        for (const item of list) {
+          if (!isPlainObject(item)) return false;
+          if (name === "edges") {
+            if (item.label !== undefined && !isText(item.label, 32)) return false;
+            continue;
+          }
+          if (typeof item.id !== "string" || !GUIDE_ID_PATTERN.test(item.id) || ids.has(item.id)) return false;
+          ids.add(item.id);
+          if (!isText(item.label, 48) || (name === "events" && !isText(item.when, 32))) return false;
+        }
+      }
+      if (kind === "comparison") {
+        return data.criteria.every((c) => isPlainObject(c.values) &&
+          data.items.every((item) => has(c.values, item.id) && typeof c.values[item.id] === "string"));
+      }
+      if (kind === "timeline") return true;
+      const nodes = new Set(data.nodes.map((n) => n.id));
+      if (kind === "concept_map" && !nodes.has(data.hub)) return false;
+      return data.edges.every((e) => nodes.has(e.from) && nodes.has(e.to) && e.from !== e.to);
+    }
+
+    // Greedy word wrap in code points; a word wider than a line is cut into
+    // chunks; overflow ends the last kept line in "…".
+    function wrap(value, width, maxLines) {
+      const lines = [];
+      let line = "";
+      for (const word of value.trim().split(/\s+/)) {
+        const chars = points(word);
+        if (line && (chars.length > width || points(line).length + 1 + chars.length > width)) {
+          lines.push(line);
+          line = "";
+        }
+        if (chars.length > width) {
+          for (let i = 0; i < chars.length; i += width) lines.push(chars.slice(i, i + width).join(""));
+        } else line = line ? `${line} ${word}` : word;
+      }
+      if (line) lines.push(line);
+      if (lines.length <= maxLines) return lines;
+      return [...lines.slice(0, maxLines - 1), points(lines[maxLines - 1]).slice(0, width - 1).join("") + "…"];
+    }
+
+    // Attributes are set in the literal's order, fixed in code, so the bytes are too.
+    function svgEl(name, attrs, parent, text) {
+      const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+      for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+      if (text !== undefined) node.textContent = text;
+      if (parent) parent.appendChild(node);
+      return node;
+    }
+
+    // `__` cannot occur in a guide id, so these ids never collide with one.
+    function svgRoot(data, variant, sfx, width, height, desc) {
+      const [w, h, id] = [String(width), String(height), data.id];
+      const svg = svgEl("svg", {
+        class: `diagram-svg diagram-svg--${variant}`, role: "img", focusable: "false", viewBox: `0 0 ${w} ${h}`,
+        width: w, height: h, "aria-labelledby": `${id}__title${sfx}`, "aria-describedby": `${id}__desc${sfx}`,
+      });
+      svgEl("title", { id: `${id}__title${sfx}` }, svg, data.title);
+      svgEl("desc", { id: `${id}__desc${sfx}` }, svg, desc);
+      return svg;
+    }
+
+    // One arrowhead per SVG; its id carries the figure id, so no two figures share one.
+    function arrowDefs(id, sfx) {
+      const defs = svgEl("defs", {});
+      const marker = svgEl("marker", {
+        id: `${id}__arrow${sfx}`, class: "diagram-marker", viewBox: "0 0 10 10", refX: "10", refY: "5",
+        markerWidth: "6", markerHeight: "6", markerUnits: "strokeWidth", orient: "auto-start-reverse",
+      }, defs);
+      svgEl("path", { class: "diagram-arrowhead", d: "M0,0 L10,5 L0,10 z" }, marker);
+      return defs;
+    }
+
+    // `lines` holds strings, or [tspanClass, string] pairs.
+    function textLines(parent, attrs, lines, x, y0, lineH) {
+      const text = svgEl("text", attrs, parent);
+      lines.forEach((line, j) => {
+        const [cls, value] = Array.isArray(line) ? line : [null, line];
+        const pos = { x: fmt(x), y: fmt(y0 + j * lineH) };
+        svgEl("tspan", cls ? { class: cls, ...pos } : pos, text, value);
+      });
+    }
+
+    function drawNode(parent, x, y, nodeH, lines, hub) {
+      const g = svgEl("g", { class: hub ? "diagram-node diagram-node--hub" : "diagram-node" }, parent);
+      const box = { class: "diagram-node-box", x: fmt(x), y: fmt(y), width: fmt(L.NODE_W), height: fmt(nodeH), rx: "6" };
+      svgEl("rect", box, g);
+      const top = y + nodeH / 2 - (lines.length * L.NODE_LINE_H) / 2 + 13;
+      textLines(g, { class: "diagram-node-label", "text-anchor": "middle" }, lines, x + L.NODE_W / 2, top, L.NODE_LINE_H);
+    }
+
+    // Returns the background's bottom-right corner, for the SVG's extent.
+    function drawEdgeLabel(parent, label, px, py) {
+      const lines = wrap(label, L.EDGE_CHARS, L.EDGE_MAX_LINES);
+      const w = Math.max(...lines.map((line) => points(line).length)) * L.EDGE_CHAR_W + 8;
+      const h = lines.length * L.EDGE_LINE_H + 4;
+      const g = svgEl("g", { class: "diagram-edge-label" }, parent);
+      svgEl("rect", {
+        class: "diagram-edge-label-bg", x: fmt(px - w / 2), y: fmt(py - h / 2), width: fmt(w), height: fmt(h), rx: "3",
+      }, g);
+      const top = py - (lines.length * L.EDGE_LINE_H) / 2 + 11;
+      textLines(g, { class: "diagram-edge-label-text", "text-anchor": "middle" }, lines, px, top, L.EDGE_LINE_H);
+      return [px + w / 2, py + h / 2];
+    }
+
+    // Edges a depth-first walk in document order meets while their target is
+    // still on the stack; identical to guides/diagrams.py back_edge_indices.
+    function backEdges(count, links) {
+      const colour = new Array(count).fill("white");
+      const back = new Set();
+      const visit = (u) => {
+        colour[u] = "grey";
+        links.forEach(([from, to], i) => {
+          if (from !== u) return;
+          if (colour[to] === "grey") back.add(i);
+          else if (colour[to] === "white") visit(to);
+        });
+        colour[u] = "black";
+      };
+      for (let u = 0; u < count; u++) if (colour[u] === "white") visit(u);
+      return back;
+    }
+
+    // Longest path from the sources over the forward (acyclic) edges.
+    function ranks(count, forward) {
+      const rank = new Array(count).fill(0);
+      const indegree = new Array(count).fill(0);
+      forward.forEach(([, to]) => (indegree[to] += 1));
+      const done = new Set();
+      while (done.size < count) {
+        const u = indegree.findIndex((d, i) => d === 0 && !done.has(i));
+        if (u < 0) throw new Error("diagram forward edges form a cycle");
+        done.add(u);
+        for (const [from, to] of forward) {
+          if (from === u) [rank[to], indegree[to]] = [Math.max(rank[to], rank[u] + 1), indegree[to] - 1];
+        }
+      }
+      return rank;
+    }
+
+    function drawFlow(data) {
+      const { nodes, edges } = data;
+      const index = new Map(nodes.map((n, i) => [n.id, i]));
+      const links = edges.map((e) => [index.get(e.from), index.get(e.to)]);
+      const back = backEdges(nodes.length, links);
+      const rank = ranks(nodes.length, links.filter((_, i) => !back.has(i)));
+      const lines = nodes.map((n) => wrap(n.label, L.NODE_CHARS, L.NODE_MAX_LINES));
+      const nodeH = 2 * L.NODE_PAD_Y + Math.max(...lines.map((l) => l.length)) * L.NODE_LINE_H;
+      const layers = [];
+      rank.forEach((r, u) => (layers[r] = layers[r] || []).push(u));
+      const layerW = (n) => n * L.NODE_W + (n - 1) * L.COL_GAP;
+      const maxW = Math.max(...layers.map((layer) => layerW(layer.length)));
+      const pos = [];
+      layers.forEach((layer, r) => layer.forEach((u, i) => {
+        const x = L.MARGIN + (maxW - layerW(layer.length)) / 2 + i * (L.NODE_W + L.COL_GAP);
+        pos[u] = { x, y: L.MARGIN + r * (nodeH + L.LAYER_GAP) };
+      }));
+      let [right, bottom] = [0, 0];
+      const grow = ([x, y]) => ([right, bottom] = [Math.max(right, x), Math.max(bottom, y)]);
+      const groups = ["diagram-edges", "diagram-edge-labels", "diagram-nodes"].map((cls) => svgEl("g", { class: cls }));
+      let k = 0;
+      edges.forEach((e, i) => {
+        const [s, t] = [pos[links[i][0]], pos[links[i][1]]];
+        let d, at;
+        if (back.has(i)) {
+          const [sx, sy, tx, ty] = [s.x + L.NODE_W, s.y + nodeH / 2, t.x + L.NODE_W, t.y + nodeH / 2];
+          const cx = L.MARGIN + maxW + L.BACK_OFFSET * ++k;
+          d = `M${fmt(sx)},${fmt(sy)} C${fmt(cx)},${fmt(sy)} ${fmt(cx)},${fmt(ty)} ${fmt(tx)},${fmt(ty)}`;
+          grow([cx, Math.max(sy, ty)]);
+          at = [0.125 * (sx + tx) + 0.75 * cx, (sy + ty) / 2];
+        } else {
+          const [sx, sy, tx, ty] = [s.x + L.NODE_W / 2, s.y + nodeH, t.x + L.NODE_W / 2, t.y];
+          d = `M${fmt(sx)},${fmt(sy)} L${fmt(tx)},${fmt(ty)}`;
+          at = [(sx + tx) / 2, (sy + ty) / 2];
+        }
+        const cls = back.has(i) ? "diagram-edge diagram-edge--back" : "diagram-edge";
+        svgEl("path", { class: cls, d, "marker-end": `url(#${data.id}__arrow)` }, groups[0]);
+        if (typeof e.label === "string") grow(drawEdgeLabel(groups[1], e.label, at[0], at[1]));
+      });
+      pos.forEach(({ x, y }, u) => {
+        drawNode(groups[2], x, y, nodeH, lines[u], false);
+        grow([x + L.NODE_W, y + nodeH]);
+      });
+      const [n, b] = [edges.length, back.size];
+      const desc =
+        `Flow diagram with ${nodes.length} steps and ${n} connection${n === 1 ? "" : "s"}` +
+        `${b ? `, ${b} of which loop${b === 1 ? "s" : ""} back to an earlier step` : ""}. ` +
+        `Steps in order: ${nodes.map((node) => node.label).join("; ")}.`;
+      const svg = svgRoot(data, "flow", "", Math.ceil(right + L.MARGIN), Math.ceil(bottom + L.MARGIN), desc);
+      svg.append(arrowDefs(data.id, ""), ...groups);
+      return [svg];
+    }
+
+    // Two SVGs, horizontal first; runtime.css shows the one that fits the width.
+    function drawTimeline(data) {
+      const events = data.events;
+      const [n, first, last] = [events.length, events[0], events[events.length - 1]];
+      const desc = `Timeline of ${n} events, from ${first.when} (${first.label}) to ${last.when} (${last.label}).`;
+      const blockH = L.EVENT_BLOCK_LINES * L.EVENT_LINE_H;
+      const eventLines = (e, chars) => [
+        ...wrap(e.when, chars, 2).map((line) => ["diagram-event-when", line]),
+        ...wrap(e.label, chars, 3).map((line) => ["diagram-event-label", line]),
+      ];
+      const frame = (svg, x1, y1, x2, y2) => {
+        const axis = svgEl("g", { class: "diagram-axis-group" }, svg);
+        svgEl("line", { class: "diagram-axis", x1: fmt(x1), y1: fmt(y1), x2: fmt(x2), y2: fmt(y2) }, axis);
+        return [axis, svgEl("g", { class: "diagram-event-group" }, svg)];
+      };
+      const marker = (parent, cx, cy) =>
+        svgEl("circle", { class: "diagram-event-marker", cx: fmt(cx), cy: fmt(cy), r: fmt(L.MARKER_R) }, parent);
+
+      const width = 2 * L.MARGIN + n * L.SLOT_W;
+      const axisY = L.MARGIN + blockH + L.TICK;
+      const horizontal = svgRoot(data, "timeline-h", "-h", width, 2 * L.MARGIN + 2 * blockH + 2 * L.TICK, desc);
+      const [axisH, eventsH] = frame(horizontal, L.MARGIN, axisY, width - L.MARGIN, axisY);
+      events.forEach((e, i) => {
+        const [x, dir, lines] = [L.MARGIN + L.SLOT_W / 2 + i * L.SLOT_W, i % 2 ? 1 : -1, eventLines(e, L.EVENT_CHARS)];
+        marker(eventsH, x, axisY);
+        const [y1, y2] = [fmt(axisY + dir * L.MARKER_R), fmt(axisY + dir * L.TICK)];
+        svgEl("line", { class: "diagram-tick", x1: fmt(x), y1, x2: fmt(x), y2 }, axisH);
+        const top = dir < 0 ? axisY - L.TICK - 4 - (lines.length - 1) * L.EVENT_LINE_H : axisY + L.TICK + 14;
+        textLines(eventsH, { "text-anchor": "middle" }, lines, x, top, L.EVENT_LINE_H);
+      });
+
+      const axisX = L.MARGIN + 8;
+      const height = 2 * L.MARGIN + 8 + (n - 1) * L.ROW_H + blockH;
+      const vertical = svgRoot(data, "timeline-v", "-v", L.VERT_W, height, desc);
+      const [, eventsV] = frame(vertical, axisX, L.MARGIN, axisX, height - L.MARGIN);
+      events.forEach((e, i) => {
+        const y = L.MARGIN + 8 + i * L.ROW_H;
+        marker(eventsV, axisX, y);
+        textLines(eventsV, { "text-anchor": "start" }, eventLines(e, L.EVENT_CHARS_V), axisX + 20, y + 5, L.EVENT_LINE_H);
+      });
+      return [horizontal, vertical];
+    }
+
+    // Hub at the centre; the other nodes on a ring from 12 o'clock, clockwise,
+    // with R wide enough that neighbouring ring boxes never touch.
+    function drawConceptMap(data) {
+      const { nodes, edges } = data;
+      const hub = nodes.find((n) => n.id === data.hub);
+      const ring = nodes.filter((n) => n !== hub);
+      const k = ring.length;
+      const lines = new Map(nodes.map((n) => [n.id, wrap(n.label, L.NODE_CHARS, L.NODE_MAX_LINES)]));
+      const nodeH = 2 * L.NODE_PAD_Y + Math.max(...[...lines.values()].map((l) => l.length)) * L.NODE_LINE_H;
+      const r = k <= 1 ? L.R_MIN : Math.max(L.R_MIN, Math.ceil((L.NODE_W + L.RING_GAP) / (2 * Math.sin(Math.PI / k))));
+      const [cx, cy] = [L.MARGIN + r + L.NODE_W / 2, L.MARGIN + r + nodeH / 2];
+      const centre = new Map([[hub.id, [cx, cy]]]);
+      ring.forEach((n, i) => {
+        const theta = -Math.PI / 2 + (2 * Math.PI * i) / k;
+        centre.set(n.id, [cx + r * Math.cos(theta), cy + r * Math.sin(theta)]);
+      });
+      const groups = ["diagram-edges", "diagram-edge-labels", "diagram-nodes"].map((cls) => svgEl("g", { class: cls }));
+      for (const e of edges) {
+        const [[x1, y1], [x2, y2]] = [centre.get(e.from), centre.get(e.to)];
+        const [dx, dy] = [x2 - x1, y2 - y1];
+        // Leave each centre by the part of the segment inside its box.
+        const t = Math.min(L.NODE_W / 2 / Math.abs(dx), nodeH / 2 / Math.abs(dy));
+        const [sx, sy, tx, ty] = [x1 + t * dx, y1 + t * dy, x2 - t * dx, y2 - t * dy];
+        const d = `M${fmt(sx)},${fmt(sy)} L${fmt(tx)},${fmt(ty)}`;
+        svgEl("path", { class: "diagram-edge", d, "marker-end": `url(#${data.id}__arrow)` }, groups[0]);
+        if (typeof e.label === "string") drawEdgeLabel(groups[1], e.label, (sx + tx) / 2, (sy + ty) / 2);
+      }
+      for (const n of [hub, ...ring]) {
+        const [x, y] = centre.get(n.id);
+        drawNode(groups[2], x - L.NODE_W / 2, y - nodeH / 2, nodeH, lines.get(n.id), n === hub);
+      }
+      const desc = `Concept map centered on ${hub.label}, connected to ${k} idea${k === 1 ? "" : "s"}: ` +
+        `${ring.map((n) => n.label).join("; ")}.`;
+      const svg = svgRoot(data, "concept-map", "", 2 * (L.MARGIN + r) + L.NODE_W, 2 * (L.MARGIN + r) + nodeH, desc);
+      svg.append(arrowDefs(data.id, ""), ...groups);
+      return [svg];
+    }
+
+    const LAYOUTS = { flow: drawFlow, concept_map: drawConceptMap, timeline: drawTimeline };
+
+    // A checked diagram with its drawn strings trimmed, so padding a valid
+    // string may carry never reaches the SVG, its title or its description.
+    function trimmed(data) {
+      const tidy = (item, keys) => {
+        const out = { ...item };
+        for (const key of keys) if (typeof out[key] === "string") out[key] = out[key].trim();
+        return out;
+      };
+      const copy = tidy(data, ["title"]);
+      for (const name of ["nodes", "edges", "events"]) {
+        if (Array.isArray(data[name])) copy[name] = data[name].map((item) => tidy(item, ["label", "when"]));
+      }
+      return copy;
+    }
+
+    // The text version moves, unchanged, into a closed disclosure where it stood.
+    function wrapTextVersion(figure, text) {
+      const details = document.createElement("details");
+      details.className = "diagram-text-toggle";
+      details.dataset.role = "diagram-text-toggle";
+      const summary = document.createElement("summary");
+      summary.textContent = "Text version";
+      details.appendChild(summary);
+      figure.insertBefore(details, text);
+      details.appendChild(text);
+    }
+
+    // Print shows every text version; only the ones opened for printing close again.
+    function hookPrint() {
+      if (printHooked) return;
+      printHooked = true;
+      window.addEventListener("beforeprint", () => {
+        for (const details of qsa('details[data-role="diagram-text-toggle"]:not([open])')) {
+          details.open = true;
+          details.dataset.printOpened = "true";
+        }
+      });
+      window.addEventListener("afterprint", () => {
+        for (const details of qsa('details[data-role="diagram-text-toggle"][data-print-opened]')) {
+          details.open = false;
+          delete details.dataset.printOpened;
+        }
+      });
+    }
+
+    function install(guide) {
+      const byId = new Map();
+      const list = (value, key) => (isPlainObject(value) && Array.isArray(value[key]) ? value[key] : []);
+      if (isPlainObject(guide) && guide.schema_version === "1.2") {
+        for (const block of list(guide, "modules").flatMap((m) => list(m, "sections")).flatMap((s) => list(s, "blocks"))) {
+          if (isPlainObject(block) && block.type === "diagram" && typeof block.id === "string") byId.set(block.id, block);
+        }
+      }
+      for (const figure of qsa("figure.diagram")) {
+        const inserted = [];
+        try {
+          const kind = figure.dataset.diagramKind;
+          const text = qs(':scope > [data-role="diagram-text"]', figure);
+          if (!text || !valid(byId.get(figure.id), kind)) throw new Error("invalid diagram");
+          if (kind === "comparison") figure.dataset.diagramState = "table";
+          if (!has(LAYOUTS, kind)) continue;
+          for (const svg of LAYOUTS[kind](trimmed(byId.get(figure.id)))) inserted.push(figure.insertBefore(svg, text));
+          wrapTextVersion(figure, text);
+          figure.dataset.diagramState = "drawn";
+        } catch (error) {
+          inserted.forEach((svg) => svg.remove());
+          figure.dataset.diagramState = "text";
+          console.error("guide-runtime: diagram fell back to its text version:", figure.id);
+        }
+      }
+      hookPrint();
+    }
+
+    return { install };
+  })();
+
+  // ---------------------------------------------------------------------
   // Block dispatch
   // ---------------------------------------------------------------------
 
@@ -2112,11 +2536,11 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
     try {
       const rawText = dataEl.textContent;
       const guide = JSON.parse(rawText);
-      const supportedSchemas = new Set(["1.0", "1.1"]);
+      const supportedSchemas = new Set(["1.0", "1.1", "1.2"]);
       if (
         !supportedSchemas.has(guide.schema_version) ||
         guide.schema_version !== expectedSchema ||
-        expectedRuntime !== "1.1"
+        expectedRuntime !== "1.2"
       ) {
         throw new Error("unsupported guide schema/runtime version");
       }
@@ -2130,6 +2554,8 @@ th{font-family:var(--ep-font-interface);font-size:.875rem}
 
       document.documentElement.classList.add("js-enhanced");
       enhanceCourseControls(guide);
+      // Never throws: each figure falls back to its text version on its own.
+      Diagrams.install(guide);
       enhanceBlocks();
       // Both read the enhanced blocks, and the first section shown asks the
       // review queue for a panel, so both are ready before Nav boots.

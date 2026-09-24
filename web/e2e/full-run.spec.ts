@@ -70,13 +70,20 @@ test("full write flow: import → advance/paste/approve ×5 → finalize → exp
 });
 
 test("guide-v1 fixture reaches validation, finalize, export, and mixed-workspace resume", async ({ page }) => {
-  const fixture = readFileSync(
-    resolve(import.meta.dirname, "../../tests/fixtures/guides/feedback-loops.guide.json"),
-    "utf-8",
-  );
+  // New runs default to guide schema 1.2 (diagram-block spec, Migration);
+  // the shared fixture is authored at 1.0, so re-declare it at the run's version.
+  const fixture = JSON.stringify({
+    ...JSON.parse(
+      readFileSync(
+        resolve(import.meta.dirname, "../../tests/fixtures/guides/feedback-loops.guide.json"),
+        "utf-8",
+      ),
+    ),
+    schema_version: "1.2",
+  });
   const spec = `# Course Specification\n\n\`\`\`education-pipeline-contract+json\n${JSON.stringify({
     contract_version: 1,
-    guide_schema_version: "1.0",
+    guide_schema_version: "1.2",
     blueprint: "conceptual-foundations",
     estimated_minutes: 30,
     outcomes: [{ id: "identify-loop", text: "Identify reinforcing and balancing feedback." }],
@@ -156,16 +163,20 @@ test("guide run drafts module by module through the paste loop", async ({ page }
   const fixture: {
     outcomes: { id: string; text: string }[];
     modules: { id: string; title: string; sections: unknown[] }[];
-  } = JSON.parse(
-    readFileSync(
-      resolve(import.meta.dirname, "../../tests/fixtures/guides/feedback-loops.guide.json"),
-      "utf-8",
+  } = {
+    ...JSON.parse(
+      readFileSync(
+        resolve(import.meta.dirname, "../../tests/fixtures/guides/feedback-loops.guide.json"),
+        "utf-8",
+      ),
     ),
-  );
+    // New runs default to guide schema 1.2 (diagram-block spec, Migration).
+    schema_version: "1.2",
+  };
 
   const spec = `# Course Specification\n\n\`\`\`education-pipeline-contract+json\n${JSON.stringify({
     contract_version: 1,
-    guide_schema_version: "1.0",
+    guide_schema_version: "1.2",
     blueprint: "conceptual-foundations",
     estimated_minutes: 30,
     outcomes: fixture.outcomes,

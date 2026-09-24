@@ -1226,7 +1226,7 @@ def _drive_guide_through_qa_http(context, topic_id="scoped-topic", *, draft_body
     )
     TopicStore(context.root).save_topic_toml(topic_id, topic_toml)
     runs = context.runs
-    runs.create_run(topic_id)
+    runs.create_run(topic_id, content_contract=ContentContract.interactive_guide_v1())
     test_runs._drive_guide_through_factcheck(runs, topic_id, draft_body=draft_body)
     return runs
 
@@ -1456,7 +1456,7 @@ def _ready_audit_http_run(context, topic_id="audit-topic"):
     )
     profiles.save_profile_toml(profile_id, profile_toml)
     profiles.attach_profile_to_topic(profile_id, topic_id)
-    context.runs.create_run(topic_id)
+    context.runs.create_run(topic_id, content_contract=ContentContract.interactive_guide_v1_1())
     runs = context.runs
     test_runs._drive_profiled_guide_to_finalize_ready(runs, topic_id)
     return runs, topic_id

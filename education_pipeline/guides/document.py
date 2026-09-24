@@ -18,7 +18,8 @@ from education_pipeline.guide_runtime import (
 )
 
 from .canonical import guide_to_dict
-from .model import Guide
+from .diagrams import back_edge_indices
+from .model import DIAGRAM_SCHEMA_VERSIONS, Diagram, Guide
 from .projection import public_guide_projection
 
 DocumentMode = Literal["export", "preview"]
@@ -229,11 +230,69 @@ def _rf_block(b: object) -> str:
     )
 
 
+def _diagram_detail(detail: str | None, ids: frozenset[str]) -> str:
+    return f': <span class="diagram-detail">{_inline(detail, ids)}</span>' if detail else ""
+
+
+def _diagram_body(b: Diagram, ids: frozenset[str]) -> str:
+    esc = html.escape
+    labels = {n.id: n.label for n in b.nodes}
+    if b.kind == "flow":
+        back = back_edge_indices(b)
+        steps = "".join(f'<li><span class="diagram-label">{esc(n.label)}</span>{_diagram_detail(n.detail, ids)}</li>' for n in b.nodes)
+        links = "".join(
+            f'<li>{esc(labels[e.from_id])} → {esc(labels[e.to_id])}'
+            f'{" — " + esc(e.label) if e.label else ""}{" (loops back)" if i in back else ""}</li>'
+            for i, e in enumerate(b.edges)
+        )
+        return (f'<ol class="diagram-steps">{steps}</ol><p class="diagram-list-label">Connections</p>'
+                f'<ul class="diagram-connections">{links}</ul>')
+    if b.kind == "concept_map":
+        ordered = sorted(b.nodes, key=lambda n: n.id != b.hub)
+        items = []
+        for n in ordered:
+            out = "".join(f'<li>{esc(e.label) + " " if e.label else ""}→ {esc(labels[e.to_id])}</li>' for e in b.edges if e.from_id == n.id)
+            nested = f'<ul class="diagram-map-links">{out}</ul>' if out else ""
+            hub = " (central idea)" if n.id == b.hub else ""
+            items.append(f'<li><span class="diagram-label">{esc(n.label)}</span>{hub}{_diagram_detail(n.detail, ids)}{nested}</li>')
+        return f'<ul class="diagram-map">{"".join(items)}</ul>'
+    if b.kind == "timeline":
+        events = "".join(
+            f'<li><span class="diagram-when">{esc(e.when)}</span> — <span class="diagram-label">{esc(e.label)}</span>'
+            f'{_diagram_detail(e.detail, ids)}</li>'
+            for e in b.events
+        )
+        return f'<ol class="diagram-events">{events}</ol>'
+    if b.kind == "comparison":
+        head = "".join(f'<th scope="col">{esc(i.label)}</th>' for i in b.items)
+        rows = "".join(
+            f'<tr><th scope="row">{esc(c.label)}</th>'
+            + "".join(f"<td>{_inline(v.text, ids)}</td>" for v in c.values)
+            + "</tr>"
+            for c in b.criteria
+        )
+        return (f'<table class="diagram-table"><thead><tr><th scope="col">Criterion</th>{head}</tr></thead>'
+                f"<tbody>{rows}</tbody></table>")
+    raise GuideDocumentError(f"unsupported diagram kind: {b.kind!r}")
+
+
+def _diagram_block(b: Diagram, ids: frozenset[str]) -> str:
+    esc = html.escape
+    caption = f' <span class="diagram-caption-text">{_inline(b.caption, ids)}</span>' if b.caption else ""
+    return (
+        f'<figure class="block diagram" id="{esc(b.id)}" data-diagram-kind="{esc(b.kind)}">'
+        f'<figcaption class="diagram-caption"><strong class="diagram-title">{esc(b.title)}</strong>{caption}</figcaption>'
+        f'<div class="diagram-text" data-role="diagram-text">{_diagram_body(b, ids)}</div>'
+        f"</figure>"
+    )
+
+
 _INTERACTIVE_TYPES = frozenset({"knowledge_check", "worked_reveal", "scenario", "reflection"})
 
 
 def _block(block: object, ids: frozenset[str]) -> str:
     b = block
+    if b.type == "diagram": return _diagram_block(b, ids)
     extra = ""
     if b.type == "rich_text": body = render_guide_markdown(b.markdown, ids)
     elif b.type == "callout": body = (f"<h3>{html.escape(b.title or b.kind.title())}</h3>" + render_guide_markdown(b.markdown, ids))
@@ -256,6 +315,10 @@ def assemble_guide_document(guide: Guide, assets: RuntimeAssets | None = None, m
     if mode not in {"export", "preview"}: raise GuideDocumentError(f"unsupported document mode: {mode!r}")
     assets = assets or load_runtime_assets()
     if assets.version != RUNTIME_VERSION: raise GuideDocumentError(f"unsupported runtime version: {assets.version!r}")
+    if guide.schema_version not in DIAGRAM_SCHEMA_VERSIONS and any(
+        b.type == "diagram" for m in guide.modules for s in m.sections for b in s.blocks
+    ):
+        raise GuideDocumentError("unsupported block type: 'diagram'")
     guide = public_guide_projection(guide)
     ids = _all_ids(guide)
     nav = "".join(

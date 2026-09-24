@@ -61,6 +61,58 @@
               "type": "rich_text"
             },
             {
+              "caption": "The last connection closes a **reinforcing** loop.",
+              "edges": [
+                {
+                  "from": "biomass",
+                  "label": "increases",
+                  "to": "leaf-area"
+                },
+                {
+                  "from": "leaf-area",
+                  "label": "increases",
+                  "to": "sunlight"
+                },
+                {
+                  "from": "sunlight",
+                  "label": "fuels",
+                  "to": "growth"
+                },
+                {
+                  "from": "growth",
+                  "label": "adds to",
+                  "to": "biomass"
+                }
+              ],
+              "id": "growth-loop-flow",
+              "kind": "flow",
+              "nodes": [
+                {
+                  "id": "biomass",
+                  "label": "Plant biomass"
+                },
+                {
+                  "detail": "More biomass usually means more leaves.",
+                  "id": "leaf-area",
+                  "label": "Leaf area"
+                },
+                {
+                  "id": "sunlight",
+                  "label": "Sunlight captured"
+                },
+                {
+                  "id": "growth",
+                  "label": "New growth"
+                }
+              ],
+              "outcome_ids": [
+                "map-loop"
+              ],
+              "source_ids": [],
+              "title": "How plant growth reinforces itself",
+              "type": "diagram"
+            },
+            {
               "id": "garden-connection",
               "kind": "connection",
               "markdown": "More leaf growth can capture more sunlight, enabling still more growth—a reinforcing loop. A thermostat-like watering controller instead compares soil moisture with a target and reduces the gap.",
@@ -166,6 +218,52 @@
                 "meadows-2008"
               ],
               "type": "rich_text"
+            },
+            {
+              "criteria": [
+                {
+                  "id": "first-sign",
+                  "label": "What you see first",
+                  "values": {
+                    "act-again": "A quick visible change",
+                    "wait-out": "Little visible change"
+                  }
+                },
+                {
+                  "id": "after-delay",
+                  "label": "After the delay",
+                  "values": {
+                    "act-again": "*Overshoot* past the goal",
+                    "wait-out": "Settles near the goal"
+                  }
+                },
+                {
+                  "id": "cost",
+                  "label": "Main cost",
+                  "values": {
+                    "act-again": "Wasted effort and swings",
+                    "wait-out": "Patience while nothing seems to happen"
+                  }
+                }
+              ],
+              "id": "intervention-comparison",
+              "items": [
+                {
+                  "id": "act-again",
+                  "label": "Act again right away"
+                },
+                {
+                  "id": "wait-out",
+                  "label": "Wait out the delay"
+                }
+              ],
+              "kind": "comparison",
+              "outcome_ids": [
+                "choose-intervention"
+              ],
+              "source_ids": [],
+              "title": "Acting again versus waiting out a delay",
+              "type": "diagram"
             },
             {
               "id": "delay-warning",
@@ -288,7 +386,7 @@
       "text": "Choose an intervention that accounts for feedback structure and delays."
     }
   ],
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "sources": [
     {
       "authors": [

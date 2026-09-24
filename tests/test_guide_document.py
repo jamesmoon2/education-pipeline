@@ -9,8 +9,22 @@ import re
 
 import pytest
 
-from education_pipeline.guide_runtime import RuntimeAssets, load_runtime_assets
+from education_pipeline.guide_runtime import (
+    RUNTIME_VERSION,
+    SUPPORTED_SCHEMA_VERSIONS,
+    RuntimeAssets,
+    load_runtime_assets,
+)
 from education_pipeline.guides import normalize_guide, parse_guide
+from education_pipeline.guides.model import (
+    ComparisonCriterion,
+    ComparisonItem,
+    ComparisonValue,
+    Diagram,
+    DiagramEdge,
+    DiagramNode,
+    TimelineEvent,
+)
 from education_pipeline.guides.document import (
     GuideDocumentError,
     assemble_guide_document,
@@ -21,6 +35,10 @@ FIXTURE = Path(__file__).parent / "fixtures/guides/feedback-loops.guide.json"
 PERSONALIZED_FIXTURE = (
     Path(__file__).parent
     / "fixtures/guides/feedback-loops.personalized.guide.json"
+)
+
+DIAGRAMS_FIXTURE = (
+    Path(__file__).parent / "fixtures/guides/feedback-loops.diagrams.guide.json"
 )
 
 
@@ -211,8 +229,545 @@ def test_document_accepts_1_1_but_embeds_only_the_public_projection() -> None:
     assert "Synthetic deferred objective." not in document
 
 
-def test_runtime_version_is_1_1_for_phase_4_mastery() -> None:
+def test_runtime_version_is_1_2_for_phase_5_diagrams() -> None:
     assets = load_runtime_assets()
-    assert assets.version == "1.1"
+    assert assets.version == "1.2"
+    assert RUNTIME_VERSION == "1.2"
+    assert SUPPORTED_SCHEMA_VERSIONS == frozenset({"1.0", "1.1", "1.2"})
     document = assemble_guide_document(guide(), assets)
-    assert 'data-guide-runtime="1.1"' in document
+    assert 'data-guide-runtime="1.2"' in document
+
+
+# --- Diagram block (schema 1.2, T53) --------------------------------------
+
+
+def diagrams_guide():
+    return normalize_guide(parse_guide(DIAGRAMS_FIXTURE.read_bytes()))
+
+
+def _figure(document: str, block_id: str) -> str:
+    match = re.search(
+        rf'<figure class="block diagram" id="{re.escape(block_id)}".*?</figure>',
+        document,
+        re.DOTALL,
+    )
+    assert match, f"no diagram figure for {block_id!r}"
+    return match.group(0)
+
+
+def _with_blocks(value, *blocks):
+    """Return ``value`` with the first section's blocks replaced by ``blocks``."""
+    module = value.modules[0]
+    section = replace(module.sections[0], blocks=tuple(blocks))
+    module = replace(module, sections=(section,) + module.sections[1:])
+    return replace(value, modules=(module,) + value.modules[1:])
+
+
+FLOW_FIGURE = (
+    '<figure class="block diagram" id="growth-loop-flow" data-diagram-kind="flow">'
+    '<figcaption class="diagram-caption">'
+    '<strong class="diagram-title">How plant growth reinforces itself</strong>'
+    ' <span class="diagram-caption-text">The last connection closes a '
+    "<strong>reinforcing</strong> loop.</span>"
+    "</figcaption>"
+    '<div class="diagram-text" data-role="diagram-text">'
+    '<ol class="diagram-steps">'
+    '<li><span class="diagram-label">Plant biomass</span></li>'
+    '<li><span class="diagram-label">Leaf area</span>: '
+    '<span class="diagram-detail">More biomass usually means more leaves.</span></li>'
+    '<li><span class="diagram-label">Sunlight captured</span></li>'
+    '<li><span class="diagram-label">New growth</span></li>'
+    "</ol>"
+    '<p class="diagram-list-label">Connections</p>'
+    '<ul class="diagram-connections">'
+    "<li>Plant biomass → Leaf area — increases</li>"
+    "<li>Leaf area → Sunlight captured — increases</li>"
+    "<li>Sunlight captured → New growth — fuels</li>"
+    "<li>New growth → Plant biomass — adds to (loops back)</li>"
+    "</ul>"
+    "</div>"
+    "</figure>"
+)
+
+TIMELINE_FIGURE = (
+    '<figure class="block diagram" id="watering-delay-timeline" data-diagram-kind="timeline">'
+    '<figcaption class="diagram-caption">'
+    '<strong class="diagram-title">Why watering again too soon overcorrects</strong>'
+    "</figcaption>"
+    '<div class="diagram-text" data-role="diagram-text">'
+    '<ol class="diagram-events">'
+    '<li><span class="diagram-when">Day 1, morning</span> — '
+    '<span class="diagram-label">Water the bed</span></li>'
+    '<li><span class="diagram-when">Day 1, evening</span> — '
+    '<span class="diagram-label">Surface still looks dry</span></li>'
+    '<li><span class="diagram-when">Day 3</span> — '
+    '<span class="diagram-label">Moisture reaches the roots</span>: '
+    '<span class="diagram-detail">The delay hides the effect of the first watering.</span></li>'
+    '<li><span class="diagram-when">Day 4</span> — '
+    '<span class="diagram-label">Leaves recover</span></li>'
+    "</ol>"
+    "</div>"
+    "</figure>"
+)
+
+
+def test_diagrams_fixture_assembles_as_schema_1_2() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    assert 'data-guide-schema="1.2"' in document
+    assert 'data-guide-runtime="1.2"' in document
+    assert document.count('<figure class="block diagram"') == 4
+    for block_id, kind in (
+        ("growth-loop-flow", "flow"),
+        ("loop-kinds-map", "concept_map"),
+        ("loop-types-comparison", "comparison"),
+        ("watering-delay-timeline", "timeline"),
+    ):
+        assert f'id="{block_id}" data-diagram-kind="{kind}"' in document
+
+
+def test_flow_diagram_figure_markup_is_exact() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    assert _figure(document, "growth-loop-flow") == FLOW_FIGURE
+
+
+def test_timeline_diagram_figure_markup_is_exact() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    assert _figure(document, "watering-delay-timeline") == TIMELINE_FIGURE
+
+
+def test_diagram_is_a_figure_block_not_an_article() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    for block_id in ("growth-loop-flow", "watering-delay-timeline"):
+        assert '<article class="block diagram"' not in document
+        figure = _figure(document, block_id)
+        assert "data-interactive" not in figure
+
+
+def test_diagram_figure_has_no_heading_control_extra_id_or_runtime_state() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    for block_id in (
+        "growth-loop-flow",
+        "loop-kinds-map",
+        "loop-types-comparison",
+        "watering-delay-timeline",
+    ):
+        figure = _figure(document, block_id)
+        assert not re.search(r"<h[1-6][\s>]", figure), block_id
+        assert not re.search(r"<(input|button|select|textarea)[\s>]", figure), block_id
+        assert re.findall(r'\sid="([^"]*)"', figure) == [block_id]
+        assert "data-diagram-state" not in figure
+        assert "<svg" not in figure and "<details" not in figure
+        assert "style=" not in figure
+
+
+def test_diagram_local_ids_are_not_rendered_or_link_targets() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    for local_id in ("biomass", "leaf-area", "sunlight", "growth", "water", "surface", "roots", "recover"):
+        assert f'id="{local_id}"' not in document
+    with pytest.raises(GuideDocumentError):
+        render_guide_markdown("[node](#biomass)", {"growth-loop-flow"})
+
+
+def test_flow_without_caption_or_edge_labels_escapes_every_plain_string() -> None:
+    block = Diagram(
+        id="escape-flow",
+        kind="flow",
+        title='Tags <b> & "quotes"',
+        nodes=(
+            DiagramNode("a", "A <start>"),
+            DiagramNode("b", "B & C", detail="See `code` and *care* <here>"),
+        ),
+        edges=(DiagramEdge("a", "b"), DiagramEdge("b", "a", label="<back>")),
+    )
+    document = assemble_guide_document(_with_blocks(diagrams_guide(), block))
+    assert _figure(document, "escape-flow") == (
+        '<figure class="block diagram" id="escape-flow" data-diagram-kind="flow">'
+        '<figcaption class="diagram-caption">'
+        '<strong class="diagram-title">Tags &lt;b&gt; &amp; &quot;quotes&quot;</strong>'
+        "</figcaption>"
+        '<div class="diagram-text" data-role="diagram-text">'
+        '<ol class="diagram-steps">'
+        '<li><span class="diagram-label">A &lt;start&gt;</span></li>'
+        '<li><span class="diagram-label">B &amp; C</span>: '
+        '<span class="diagram-detail">See <code>code</code> and <em>care</em> &lt;here&gt;</span></li>'
+        "</ol>"
+        '<p class="diagram-list-label">Connections</p>'
+        '<ul class="diagram-connections">'
+        "<li>A &lt;start&gt; → B &amp; C</li>"
+        "<li>B &amp; C → A &lt;start&gt; — &lt;back&gt; (loops back)</li>"
+        "</ul>"
+        "</div>"
+        "</figure>"
+    )
+
+
+def test_timeline_caption_and_detail_render_the_inline_subset() -> None:
+    block = Diagram(
+        id="inline-timeline",
+        kind="timeline",
+        title="Inline timeline",
+        caption="See [the outcome](#map-loop) & **why**",
+        events=(
+            TimelineEvent("one", "T < 1", "First"),
+            TimelineEvent("two", "Later", "Second", detail="*Slow* change"),
+        ),
+    )
+    document = assemble_guide_document(_with_blocks(diagrams_guide(), block))
+    assert _figure(document, "inline-timeline") == (
+        '<figure class="block diagram" id="inline-timeline" data-diagram-kind="timeline">'
+        '<figcaption class="diagram-caption">'
+        '<strong class="diagram-title">Inline timeline</strong>'
+        ' <span class="diagram-caption-text">See <a href="#map-loop">the outcome</a>'
+        " &amp; <strong>why</strong></span>"
+        "</figcaption>"
+        '<div class="diagram-text" data-role="diagram-text">'
+        '<ol class="diagram-events">'
+        '<li><span class="diagram-when">T &lt; 1</span> — '
+        '<span class="diagram-label">First</span></li>'
+        '<li><span class="diagram-when">Later</span> — '
+        '<span class="diagram-label">Second</span>: '
+        '<span class="diagram-detail"><em>Slow</em> change</span></li>'
+        "</ol>"
+        "</div>"
+        "</figure>"
+    )
+
+
+def test_diagram_caption_with_unknown_internal_link_fails_closed() -> None:
+    block = Diagram(
+        id="bad-link-flow",
+        kind="flow",
+        title="Bad link",
+        caption="[node](#biomass)",
+        nodes=(DiagramNode("a", "A"), DiagramNode("b", "B")),
+        edges=(DiagramEdge("a", "b"),),
+    )
+    with pytest.raises(GuideDocumentError, match="unsafe or unknown Markdown link target"):
+        assemble_guide_document(_with_blocks(diagrams_guide(), block))
+
+
+@pytest.mark.parametrize("version", ["1.0", "1.1"])
+def test_diagram_in_a_pre_1_2_guide_raises(version: str) -> None:
+    value = replace(diagrams_guide(), schema_version=version)
+    with pytest.raises(
+        GuideDocumentError, match=re.escape("unsupported block type: 'diagram'")
+    ):
+        assemble_guide_document(value)
+
+
+def test_guide_data_embeds_each_diagram_as_its_canonical_dict() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    payload = json.loads(
+        re.search(
+            r'<script id="guide-data" type="application/json">(.*?)</script>', document
+        ).group(1)
+    )
+    assert payload["schema_version"] == "1.2"
+    blocks = {
+        b["id"]: b
+        for m in payload["modules"]
+        for s in m["sections"]
+        for b in s["blocks"]
+        if b["type"] == "diagram"
+    }
+    assert set(blocks) == {
+        "growth-loop-flow",
+        "loop-kinds-map",
+        "loop-types-comparison",
+        "watering-delay-timeline",
+    }
+    assert blocks["growth-loop-flow"] == {
+        "caption": "The last connection closes a **reinforcing** loop.",
+        "edges": [
+            {"from": "biomass", "label": "increases", "to": "leaf-area"},
+            {"from": "leaf-area", "label": "increases", "to": "sunlight"},
+            {"from": "sunlight", "label": "fuels", "to": "growth"},
+            {"from": "growth", "label": "adds to", "to": "biomass"},
+        ],
+        "id": "growth-loop-flow",
+        "kind": "flow",
+        "nodes": [
+            {"id": "biomass", "label": "Plant biomass"},
+            {"detail": "More biomass usually means more leaves.", "id": "leaf-area", "label": "Leaf area"},
+            {"id": "sunlight", "label": "Sunlight captured"},
+            {"id": "growth", "label": "New growth"},
+        ],
+        "outcome_ids": ["map-loop"],
+        "source_ids": [],
+        "title": "How plant growth reinforces itself",
+        "type": "diagram",
+    }
+    assert blocks["watering-delay-timeline"] == {
+        "events": [
+            {"id": "water", "label": "Water the bed", "when": "Day 1, morning"},
+            {"id": "surface", "label": "Surface still looks dry", "when": "Day 1, evening"},
+            {
+                "detail": "The delay hides the effect of the first watering.",
+                "id": "roots",
+                "label": "Moisture reaches the roots",
+                "when": "Day 3",
+            },
+            {"id": "recover", "label": "Leaves recover", "when": "Day 4"},
+        ],
+        "id": "watering-delay-timeline",
+        "kind": "timeline",
+        "outcome_ids": ["choose-intervention"],
+        "source_ids": [],
+        "title": "Why watering again too soon overcorrects",
+        "type": "diagram",
+    }
+    raw = re.search(
+        r'<script id="guide-data" type="application/json">(.*?)</script>', document
+    ).group(1)
+    assert '"from_id"' not in raw and '"to_id"' not in raw
+
+
+@pytest.mark.parametrize("fixture", [FIXTURE, DIAGRAMS_FIXTURE], ids=["1.0", "1.2"])
+def test_content_security_policy_string_is_pinned(fixture: Path) -> None:
+    """Diagrams add no CSP directive: the SVG is built by the hashed runtime."""
+    assets = load_runtime_assets()
+    document = assemble_guide_document(
+        normalize_guide(parse_guide(fixture.read_bytes())), assets
+    )
+    csp = re.search(
+        r'<meta http-equiv="Content-Security-Policy" content="([^"]*)">', document
+    ).group(1)
+    assert csp == (
+        "default-src 'none'; img-src 'none'; "
+        f"style-src 'sha256-{sha(assets.css)}'; "
+        f"script-src 'sha256-{sha(assets.javascript)}'; "
+        "connect-src 'none'; font-src 'none'; media-src 'none'; "
+        "object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+    )
+
+
+# --- Diagram block: concept map and comparison (T54) ----------------------
+
+
+CONCEPT_MAP_FIGURE = (
+    '<figure class="block diagram" id="loop-kinds-map" data-diagram-kind="concept_map">'
+    '<figcaption class="diagram-caption">'
+    '<strong class="diagram-title">Kinds of feedback</strong>'
+    "</figcaption>"
+    '<div class="diagram-text" data-role="diagram-text">'
+    '<ul class="diagram-map">'
+    '<li><span class="diagram-label">Feedback loop</span> (central idea)'
+    '<ul class="diagram-map-links">'
+    "<li>can be → Reinforcing loop</li>"
+    "<li>can be → Balancing loop</li>"
+    "</ul></li>"
+    '<li><span class="diagram-label">Reinforcing loop</span>: '
+    '<span class="diagram-detail">Amplifies change in one direction.</span></li>'
+    '<li><span class="diagram-label">Balancing loop</span>: '
+    '<span class="diagram-detail">Pushes a quantity toward a goal or limit.</span>'
+    '<ul class="diagram-map-links">'
+    "<li>overshoots with a → Delay</li>"
+    "</ul></li>"
+    '<li><span class="diagram-label">Delay</span></li>'
+    "</ul>"
+    "</div>"
+    "</figure>"
+)
+
+COMPARISON_FIGURE = (
+    '<figure class="block diagram" id="loop-types-comparison" data-diagram-kind="comparison">'
+    '<figcaption class="diagram-caption">'
+    '<strong class="diagram-title">Reinforcing and balancing loops side by side</strong>'
+    "</figcaption>"
+    '<div class="diagram-text" data-role="diagram-text">'
+    '<table class="diagram-table">'
+    "<thead><tr>"
+    '<th scope="col">Criterion</th>'
+    '<th scope="col">Reinforcing loop</th>'
+    '<th scope="col">Balancing loop</th>'
+    "</tr></thead>"
+    "<tbody>"
+    '<tr><th scope="row">What it does</th>'
+    "<td>Amplifies change in one direction</td>"
+    "<td>Pushes toward a goal or limit</td></tr>"
+    '<tr><th scope="row">Garden example</th>'
+    "<td>More leaves capture more light</td>"
+    "<td>Watering stops once the soil is moist</td></tr>"
+    '<tr><th scope="row">Main risk</th>'
+    "<td>Runaway growth or collapse</td>"
+    "<td><em>Overcorrection</em> when feedback is delayed</td></tr>"
+    "</tbody></table>"
+    "</div>"
+    "</figure>"
+)
+
+
+def test_concept_map_diagram_figure_markup_is_exact() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    assert _figure(document, "loop-kinds-map") == CONCEPT_MAP_FIGURE
+
+
+def test_comparison_diagram_figure_markup_is_exact() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    assert _figure(document, "loop-types-comparison") == COMPARISON_FIGURE
+
+
+def test_concept_map_and_comparison_are_figures_without_interactive_markers() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    for block_id in ("loop-kinds-map", "loop-types-comparison"):
+        figure = _figure(document, block_id)
+        assert "data-interactive" not in figure
+        assert "<details" not in figure and "<svg" not in figure
+        assert "data-diagram-state" not in figure
+    for local_id in ("feedback-loop", "reinforcing", "balancing", "delay", "effect", "example", "risk"):
+        assert f'id="{local_id}"' not in document
+
+
+def test_concept_map_lists_the_hub_first_and_escapes_every_plain_string() -> None:
+    block = Diagram(
+        id="escape-map",
+        kind="concept_map",
+        title="Map <of> & ideas",
+        caption="Hub is **central**",
+        hub="centre",
+        nodes=(
+            DiagramNode("leaf", "Leaf <a>", detail="*Soft* & `code`"),
+            DiagramNode("centre", 'Hub "C"'),
+            DiagramNode("other", "Other & more"),
+        ),
+        edges=(
+            DiagramEdge("centre", "leaf"),
+            DiagramEdge("centre", "other", label="<links>"),
+            DiagramEdge("other", "leaf", label="feeds"),
+        ),
+    )
+    document = assemble_guide_document(_with_blocks(diagrams_guide(), block))
+    assert _figure(document, "escape-map") == (
+        '<figure class="block diagram" id="escape-map" data-diagram-kind="concept_map">'
+        '<figcaption class="diagram-caption">'
+        '<strong class="diagram-title">Map &lt;of&gt; &amp; ideas</strong>'
+        ' <span class="diagram-caption-text">Hub is <strong>central</strong></span>'
+        "</figcaption>"
+        '<div class="diagram-text" data-role="diagram-text">'
+        '<ul class="diagram-map">'
+        '<li><span class="diagram-label">Hub &quot;C&quot;</span> (central idea)'
+        '<ul class="diagram-map-links">'
+        "<li>→ Leaf &lt;a&gt;</li>"
+        "<li>&lt;links&gt; → Other &amp; more</li>"
+        "</ul></li>"
+        '<li><span class="diagram-label">Leaf &lt;a&gt;</span>: '
+        '<span class="diagram-detail"><em>Soft</em> &amp; <code>code</code></span></li>'
+        '<li><span class="diagram-label">Other &amp; more</span>'
+        '<ul class="diagram-map-links">'
+        "<li>feeds → Leaf &lt;a&gt;</li>"
+        "</ul></li>"
+        "</ul>"
+        "</div>"
+        "</figure>"
+    )
+
+
+def test_comparison_escapes_labels_and_renders_inline_cells() -> None:
+    block = Diagram(
+        id="escape-table",
+        kind="comparison",
+        title="A & B",
+        items=(ComparisonItem("a", "Item <a>"), ComparisonItem("b", 'Item "b"')),
+        criteria=(
+            ComparisonCriterion(
+                "cost",
+                "Cost & time",
+                values=(
+                    ComparisonValue("a", "**Low** <cheap>"),
+                    ComparisonValue("b", "See [the outcome](#map-loop)"),
+                ),
+            ),
+        ),
+    )
+    document = assemble_guide_document(_with_blocks(diagrams_guide(), block))
+    assert _figure(document, "escape-table") == (
+        '<figure class="block diagram" id="escape-table" data-diagram-kind="comparison">'
+        '<figcaption class="diagram-caption">'
+        '<strong class="diagram-title">A &amp; B</strong>'
+        "</figcaption>"
+        '<div class="diagram-text" data-role="diagram-text">'
+        '<table class="diagram-table">'
+        '<thead><tr><th scope="col">Criterion</th>'
+        '<th scope="col">Item &lt;a&gt;</th>'
+        '<th scope="col">Item &quot;b&quot;</th></tr></thead>'
+        '<tbody><tr><th scope="row">Cost &amp; time</th>'
+        "<td><strong>Low</strong> &lt;cheap&gt;</td>"
+        '<td>See <a href="#map-loop">the outcome</a></td></tr>'
+        "</tbody></table>"
+        "</div>"
+        "</figure>"
+    )
+
+
+def test_guide_data_embeds_concept_map_and_comparison_as_canonical_dicts() -> None:
+    document = assemble_guide_document(diagrams_guide())
+    payload = json.loads(
+        re.search(
+            r'<script id="guide-data" type="application/json">(.*?)</script>', document
+        ).group(1)
+    )
+    blocks = {
+        b["id"]: b
+        for m in payload["modules"]
+        for s in m["sections"]
+        for b in s["blocks"]
+        if b["type"] == "diagram"
+    }
+    assert blocks["loop-kinds-map"] == {
+        "edges": [
+            {"from": "feedback-loop", "label": "can be", "to": "reinforcing"},
+            {"from": "feedback-loop", "label": "can be", "to": "balancing"},
+            {"from": "balancing", "label": "overshoots with a", "to": "delay"},
+        ],
+        "hub": "feedback-loop",
+        "id": "loop-kinds-map",
+        "kind": "concept_map",
+        "nodes": [
+            {"id": "feedback-loop", "label": "Feedback loop"},
+            {"detail": "Amplifies change in one direction.", "id": "reinforcing", "label": "Reinforcing loop"},
+            {"detail": "Pushes a quantity toward a goal or limit.", "id": "balancing", "label": "Balancing loop"},
+            {"id": "delay", "label": "Delay"},
+        ],
+        "outcome_ids": ["identify-loop"],
+        "source_ids": [],
+        "title": "Kinds of feedback",
+        "type": "diagram",
+    }
+    assert blocks["loop-types-comparison"] == {
+        "criteria": [
+            {
+                "id": "effect",
+                "label": "What it does",
+                "values": {
+                    "balancing": "Pushes toward a goal or limit",
+                    "reinforcing": "Amplifies change in one direction",
+                },
+            },
+            {
+                "id": "example",
+                "label": "Garden example",
+                "values": {
+                    "balancing": "Watering stops once the soil is moist",
+                    "reinforcing": "More leaves capture more light",
+                },
+            },
+            {
+                "id": "risk",
+                "label": "Main risk",
+                "values": {
+                    "balancing": "*Overcorrection* when feedback is delayed",
+                    "reinforcing": "Runaway growth or collapse",
+                },
+            },
+        ],
+        "id": "loop-types-comparison",
+        "items": [
+            {"id": "reinforcing", "label": "Reinforcing loop"},
+            {"id": "balancing", "label": "Balancing loop"},
+        ],
+        "kind": "comparison",
+        "outcome_ids": ["identify-loop"],
+        "source_ids": ["meadows-2008"],
+        "title": "Reinforcing and balancing loops side by side",
+        "type": "diagram",
+    }

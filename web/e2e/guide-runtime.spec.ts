@@ -6,6 +6,7 @@ import type { Server } from "node:http";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { gotoFileUrl } from "./helpers/file-origin";
 
 const ROOT = path.resolve(process.cwd(), "..");
 
@@ -84,7 +85,7 @@ test.describe("guide schema compatibility", () => {
 
     await expect(page.locator("[data-guide-shell]")).toBeHidden();
     await expect(page.locator("[data-guide-status]")).toContainText(
-      "schema 2.0, runtime 1.1",
+      "schema 2.0, runtime 1.2",
     );
   });
 });
@@ -235,8 +236,11 @@ async function gotoSection(page: import("@playwright/test").Page, sectionId: str
 for (const transport of TRANSPORTS) {
   test.describe(`guide runtime via ${transport}`, () => {
     test.beforeEach(async ({ page }) => {
-      const url = transport === "http" ? httpBaseUrl : fileUrl;
-      await page.goto(url, { waitUntil: "load" });
+      // Several tests here reload and read back what the guide stored, so
+      // the file:// guide must not be the page's first file:// document
+      // (see gotoFileUrl).
+      if (transport === "http") await page.goto(httpBaseUrl, { waitUntil: "load" });
+      else await gotoFileUrl(page, fileUrl);
     });
 
     test("renders the deterministic fixture shell and hides the loading status", async ({ page }) => {
@@ -1382,5 +1386,762 @@ test.describe("results page never collides with an authored id (T43)", () => {
     await expect(link).toHaveAttribute("href", `#${pageId}`);
     await link.click();
     await expect(resultsPage).toHaveClass(/is-current/);
+  });
+});
+
+test.describe("diagram rendering: flow and timeline (T53)", () => {
+  const DIAGRAMS_FIXTURE = "tests/fixtures/guides/feedback-loops.diagrams.guide.json";
+  const FLOW = "figure#growth-loop-flow";
+  const TIMELINE = "figure#watering-delay-timeline";
+  const FLOW_DESC =
+    "Flow diagram with 4 steps and 4 connections, 1 of which loops back to an earlier step. " +
+    "Steps in order: Plant biomass; Leaf area; Sunlight captured; New growth.";
+  const TIMELINE_DESC =
+    "Timeline of 4 events, from Day 1, morning (Water the bed) to Day 4 (Leaves recover).";
+  let diagramsHtml: string;
+
+  test.beforeAll(() => {
+    diagramsHtml = assembleFixtureDocument(DIAGRAMS_FIXTURE);
+  });
+
+  async function load(page: import("@playwright/test").Page, html = diagramsHtml) {
+    await page.setContent(html, { waitUntil: "load" });
+    await expect(page.locator("[data-guide-status]")).toBeHidden();
+  }
+
+  async function expectNoSeriousViolations(page: import("@playwright/test").Page) {
+    const results = await new AxeBuilder({ page }).analyze();
+    const serious = results.violations.filter(
+      (v) => v.impact === "serious" || v.impact === "critical",
+    );
+    expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
+  }
+
+  test("the document declares schema 1.2 and runtime 1.2 and boots without errors", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(String(error)));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    await load(page);
+    await expect(page.locator("html")).toHaveAttribute("data-guide-schema", "1.2");
+    await expect(page.locator("html")).toHaveAttribute("data-guide-runtime", "1.2");
+    await expect(page.locator("[data-guide-shell]")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test("flow is drawn as one labelled svg[role=img] with the §10.4 viewBox", async ({ page }) => {
+    await load(page);
+    const figure = page.locator(FLOW);
+    await expect(figure).toHaveAttribute("data-diagram-state", "drawn");
+    const svg = figure.locator("svg");
+    await expect(svg).toHaveCount(1);
+    await expect(svg).toHaveAttribute("role", "img");
+    await expect(svg).toHaveAttribute("focusable", "false");
+    await expect(svg).toHaveClass("diagram-svg diagram-svg--flow");
+    await expect(svg).toHaveAttribute("viewBox", "0 0 261 368");
+    await expect(svg).toHaveAttribute("width", "261");
+    await expect(svg).toHaveAttribute("height", "368");
+    await expect(svg).toHaveAttribute("aria-labelledby", "growth-loop-flow__title");
+    await expect(svg).toHaveAttribute("aria-describedby", "growth-loop-flow__desc");
+    await expect(svg.locator("title#growth-loop-flow__title")).toHaveText(
+      "How plant growth reinforces itself",
+    );
+    await expect(svg.locator("desc#growth-loop-flow__desc")).toHaveText(FLOW_DESC);
+    await expect(svg).toBeVisible();
+    await expect(page.getByRole("img", { name: "How plant growth reinforces itself" })).toHaveCount(1);
+  });
+
+  test("flow draws four nodes, four edges and exactly one back edge with an arrowhead", async ({ page }) => {
+    await load(page);
+    const svg = page.locator(`${FLOW} svg`);
+    await expect(svg.locator("g.diagram-node")).toHaveCount(4);
+    await expect(svg.locator("path.diagram-edge")).toHaveCount(4);
+    await expect(page.locator(".diagram-edge--back")).toHaveCount(1);
+    await expect(svg.locator("path.diagram-edge--back")).toHaveCount(1);
+    await expect(svg.locator("g.diagram-edge-label")).toHaveCount(4);
+    await expect(svg.locator("marker#growth-loop-flow__arrow")).toHaveCount(1);
+    const markerEnds = await svg
+      .locator("path.diagram-edge")
+      .evaluateAll((paths) => paths.map((p) => p.getAttribute("marker-end")));
+    expect(markerEnds).toEqual(Array(4).fill("url(#growth-loop-flow__arrow)"));
+    const labels = await svg
+      .locator("g.diagram-node text")
+      .evaluateAll((nodes) => nodes.map((n) => n.textContent));
+    expect(labels).toEqual(["Plant biomass", "Leaf area", "Sunlight captured", "New growth"]);
+  });
+
+  test("timeline is drawn as a horizontal then a vertical svg with the §10.4 viewBoxes", async ({ page }) => {
+    await load(page);
+    const figure = page.locator(TIMELINE);
+    await expect(figure).toHaveAttribute("data-diagram-state", "drawn");
+    const svgs = figure.locator("svg");
+    await expect(svgs).toHaveCount(2);
+    const horizontal = svgs.nth(0);
+    const vertical = svgs.nth(1);
+    await expect(horizontal).toHaveClass("diagram-svg diagram-svg--timeline-h");
+    await expect(vertical).toHaveClass("diagram-svg diagram-svg--timeline-v");
+    await expect(horizontal).toHaveAttribute("viewBox", "0 0 648 240");
+    await expect(vertical).toHaveAttribute("viewBox", "0 0 360 424");
+    for (const [svg, sfx] of [[horizontal, "-h"], [vertical, "-v"]] as const) {
+      await expect(svg).toHaveAttribute("role", "img");
+      await expect(svg).toHaveAttribute("focusable", "false");
+      await expect(svg).toHaveAttribute("aria-labelledby", `watering-delay-timeline__title${sfx}`);
+      await expect(svg).toHaveAttribute("aria-describedby", `watering-delay-timeline__desc${sfx}`);
+      await expect(svg.locator(`title#watering-delay-timeline__title${sfx}`)).toHaveText(
+        "Why watering again too soon overcorrects",
+      );
+      await expect(svg.locator(`desc#watering-delay-timeline__desc${sfx}`)).toHaveText(TIMELINE_DESC);
+      await expect(svg.locator("circle.diagram-event-marker")).toHaveCount(4);
+      await expect(svg.locator("marker")).toHaveCount(0);
+    }
+    await expect(horizontal.locator("line.diagram-tick")).toHaveCount(4);
+    await expect(vertical.locator("line.diagram-tick")).toHaveCount(0);
+  });
+
+  test("the figure reads figcaption, svg(s), then a closed 'Text version' disclosure holding the text", async ({ page }) => {
+    await load(page);
+    for (const [selector, expected] of [
+      [FLOW, ["figcaption", "svg", "details"]],
+      [TIMELINE, ["figcaption", "svg", "svg", "details"]],
+    ] as const) {
+      const figure = page.locator(selector);
+      const children = await figure.evaluate((el) =>
+        Array.from(el.children).map((c) => c.localName),
+      );
+      expect(children).toEqual(expected);
+      const details = figure.locator(':scope > details[data-role="diagram-text-toggle"]');
+      await expect(details).toHaveCount(1);
+      await expect(details).toHaveClass("diagram-text-toggle");
+      await expect(details).not.toHaveAttribute("open", /.*/);
+      await expect(details.locator(":scope > summary")).toHaveText("Text version");
+      await expect(details.locator(':scope > div[data-role="diagram-text"]')).toHaveCount(1);
+    }
+    await expect(page.locator(`${FLOW} .diagram-connections`)).toBeHidden();
+    await page.locator(`${FLOW} summary`).click();
+    await expect(page.locator(`${FLOW} .diagram-connections`)).toContainText(
+      "New growth → Plant biomass — adds to (loops back)",
+    );
+  });
+
+  test("every id in the document is unique, including marker, title and desc ids", async ({ page }) => {
+    await load(page);
+    const ids = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("[id]")).map((el) => el.id),
+    );
+    const duplicates = ids.filter((id, i) => ids.indexOf(id) !== i);
+    expect(duplicates).toEqual([]);
+    const markerIds = await page
+      .locator("svg marker")
+      .evaluateAll((markers) => markers.map((m) => m.id));
+    expect(markerIds).toContain("growth-loop-flow__arrow");
+    expect(new Set(markerIds).size).toBe(markerIds.length);
+  });
+
+  test("the svgs use no inline style, script, image or foreignObject", async ({ page }) => {
+    await load(page);
+    await expect(page.locator(`${FLOW} svg, ${TIMELINE} svg`)).toHaveCount(3);
+    const offending = await page.evaluate(() =>
+      Array.from(
+        document.querySelectorAll(
+          "figure.diagram svg [style], figure.diagram svg[style], figure.diagram svg style, " +
+            "figure.diagram svg script, figure.diagram svg image, figure.diagram svg foreignObject",
+        ),
+      ).map((el) => el.outerHTML),
+    );
+    expect(offending).toEqual([]);
+  });
+
+  test("two renders of the same guide give identical svg markup", async ({ page }) => {
+    const snapshot = () =>
+      page
+        .locator("figure.diagram svg")
+        .evaluateAll((svgs) => svgs.map((svg) => svg.outerHTML));
+    await load(page);
+    const first = await snapshot();
+    await load(page);
+    const second = await snapshot();
+    expect(first.length).toBeGreaterThanOrEqual(3);
+    expect(second).toEqual(first);
+  });
+
+  test("the horizontal timeline shows on a wide screen and the vertical one at 375px", async ({ page }) => {
+    await load(page);
+    await page.evaluate(() => {
+      location.hash = "#delays-and-leverage";
+    });
+    await expect(page.locator("#delays-and-leverage")).toHaveClass(/is-current/);
+    await expect(page.locator(`${TIMELINE} svg.diagram-svg--timeline-h`)).toBeVisible();
+    await expect(page.locator(`${TIMELINE} svg.diagram-svg--timeline-v`)).toBeHidden();
+
+    await page.setViewportSize({ width: 375, height: 812 });
+    await expect(page.locator(`${TIMELINE} svg.diagram-svg--timeline-v`)).toBeVisible();
+    await expect(page.locator(`${TIMELINE} svg.diagram-svg--timeline-h`)).toBeHidden();
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+
+  test("beforeprint opens closed text versions and afterprint restores them", async ({ page }) => {
+    await load(page);
+    const flowDetails = page.locator(`${FLOW} details[data-role="diagram-text-toggle"]`);
+    const timelineDetails = page.locator(`${TIMELINE} details[data-role="diagram-text-toggle"]`);
+    await expect(flowDetails).toHaveCount(1);
+    await expect(timelineDetails).toHaveCount(1);
+    // A disclosure the learner opened stays open after printing.
+    await timelineDetails.evaluate((el) => el.setAttribute("open", ""));
+
+    await page.evaluate(() => window.dispatchEvent(new Event("beforeprint")));
+    await expect(flowDetails).toHaveAttribute("open", "");
+    await expect(flowDetails).toHaveAttribute("data-print-opened", /.*/);
+    await expect(timelineDetails).toHaveAttribute("open", "");
+    await expect(timelineDetails).not.toHaveAttribute("data-print-opened", /.*/);
+
+    await page.evaluate(() => window.dispatchEvent(new Event("afterprint")));
+    await expect(flowDetails).not.toHaveAttribute("open", /.*/);
+    await expect(flowDetails).not.toHaveAttribute("data-print-opened", /.*/);
+    await expect(timelineDetails).toHaveAttribute("open", "");
+  });
+
+  test("print media hides the disclosure summary", async ({ page }) => {
+    await load(page);
+    await expect(page.locator(`${FLOW} summary`)).toHaveCount(1);
+    await page.emulateMedia({ media: "print" });
+    await expect(page.locator(`${FLOW} summary`)).toBeHidden();
+  });
+
+  test("tampered guide-data (unknown edge target) leaves the text version and no svg while the guide boots", async ({ page }) => {
+    const original = '{"from":"biomass","label":"increases","to":"leaf-area"}';
+    expect(diagramsHtml).toContain(original);
+    const tampered = diagramsHtml.replace(
+      original,
+      '{"from":"biomass","label":"increases","to":"missing-node"}',
+    );
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+    page.on("pageerror", (error) => pageErrors.push(String(error)));
+    await load(page, tampered);
+
+    await expect(page.getByRole("heading", { name: "Thinking in Feedback Loops" })).toBeVisible();
+    await expect(page.locator("[data-guide-shell]")).toBeVisible();
+    const figure = page.locator(FLOW);
+    await expect(figure).toHaveAttribute("data-diagram-state", "text");
+    await expect(figure.locator("svg")).toHaveCount(0);
+    await expect(figure.locator("details")).toHaveCount(0);
+    await expect(figure.locator(':scope > div[data-role="diagram-text"]')).toBeVisible();
+    await expect(figure.locator(".diagram-connections")).toContainText("Plant biomass → Leaf area");
+    // The other diagrams and the interactive blocks still work.
+    await expect(page.locator(TIMELINE)).toHaveAttribute("data-diagram-state", "drawn");
+    await expect(page.locator(`${TIMELINE} svg`)).toHaveCount(2);
+    await expect(page.locator("html")).toHaveClass(/js-enhanced/);
+    // Boot continued past the diagrams: later install steps still ran.
+    await expect(page.locator('[data-role="results-page"]')).toHaveCount(1);
+    expect(pageErrors).toEqual([]);
+    expect(consoleErrors).toContainEqual(
+      expect.stringContaining("guide-runtime: diagram fell back to its text version:"),
+    );
+    expect(consoleErrors.join("\n")).toContain("growth-loop-flow");
+  });
+
+  for (const theme of ["light", "dark"] as const) {
+    test(`diagram sections have no serious or critical accessibility violations (${theme})`, async ({ page }) => {
+      await load(page);
+      await page.locator('[data-role="theme-select"]').selectOption(theme);
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(page.locator(FLOW)).toHaveAttribute("data-diagram-state", "drawn");
+      await expectNoSeriousViolations(page);
+      await page.locator(`${FLOW} summary`).click();
+      await expectNoSeriousViolations(page);
+
+      await page.evaluate(() => {
+        location.hash = "#delays-and-leverage";
+      });
+      await expect(page.locator("#delays-and-leverage")).toHaveClass(/is-current/);
+      await expect(page.locator(`${TIMELINE} svg.diagram-svg--timeline-h`)).toBeVisible();
+      await expectNoSeriousViolations(page);
+    });
+  }
+});
+
+test.describe("diagram rendering: concept map and comparison (T54)", () => {
+  const DIAGRAMS_FIXTURE = "tests/fixtures/guides/feedback-loops.diagrams.guide.json";
+  const MAP = "figure#loop-kinds-map";
+  const TABLE = "figure#loop-types-comparison";
+  const FLOW = "figure#growth-loop-flow";
+  const TIMELINE = "figure#watering-delay-timeline";
+  const MAP_DESC =
+    "Concept map centered on Feedback loop, connected to 3 ideas: Reinforcing loop; Balancing loop; Delay.";
+  // §10.4 for the fixture: k = 3 ring nodes, R = 200, NODE_H = 38, hub centre
+  // (304, 243); ring centres at 12 o'clock, then clockwise.
+  const R3 = 200 * Math.cos(Math.PI / 6);
+  const CENTRES: Record<string, [number, number]> = {
+    "Feedback loop": [304, 243],
+    "Reinforcing loop": [304, 43],
+    "Balancing loop": [304 + R3, 343],
+    Delay: [304 - R3, 343],
+  };
+  // Each edge runs centre to centre, clipped at both box borders.
+  const EDGES: { from: string; to: string; label: string[]; start: [number, number]; end: [number, number] }[] = [
+    { from: "Feedback loop", to: "Reinforcing loop", label: ["can be"], start: [304, 224], end: [304, 62] },
+    {
+      from: "Feedback loop",
+      to: "Balancing loop",
+      label: ["can be"],
+      start: [304 + 0.19 * R3, 262],
+      end: [304 + 0.81 * R3, 324],
+    },
+    {
+      from: "Balancing loop",
+      to: "Delay",
+      label: ["overshoots with", "a"],
+      start: [304 + R3 - 80, 343],
+      end: [304 - R3 + 80, 343],
+    },
+  ];
+  let diagramsHtml: string;
+
+  test.beforeAll(() => {
+    diagramsHtml = assembleFixtureDocument(DIAGRAMS_FIXTURE);
+  });
+
+  async function load(page: import("@playwright/test").Page, html = diagramsHtml) {
+    await page.setContent(html, { waitUntil: "load" });
+    await expect(page.locator("[data-guide-status]")).toBeHidden();
+  }
+
+  async function showComparison(page: import("@playwright/test").Page) {
+    await page.evaluate(() => {
+      location.hash = "#recognize-loop-types";
+    });
+    await expect(page.locator("#recognize-loop-types")).toHaveClass(/is-current/);
+    await expect(page.locator(TABLE)).toBeVisible();
+  }
+
+  async function expectNoSeriousViolations(page: import("@playwright/test").Page) {
+    const results = await new AxeBuilder({ page }).analyze();
+    const serious = results.violations.filter(
+      (v) => v.impact === "serious" || v.impact === "critical",
+    );
+    expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
+  }
+
+  const near = (actual: number, expected: number) =>
+    expect(Math.abs(actual - expected), `${actual} vs ${expected}`).toBeLessThanOrEqual(0.11);
+
+  test("concept map is drawn as one labelled svg[role=img] with the §10.4 viewBox", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(String(error)));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    await load(page);
+    const figure = page.locator(MAP);
+    await expect(figure).toHaveAttribute("data-diagram-state", "drawn");
+    const svg = figure.locator("svg");
+    await expect(svg).toHaveCount(1);
+    await expect(svg).toHaveAttribute("role", "img");
+    await expect(svg).toHaveAttribute("focusable", "false");
+    await expect(svg).toHaveClass("diagram-svg diagram-svg--concept-map");
+    await expect(svg).toHaveAttribute("viewBox", "0 0 608 486");
+    await expect(svg).toHaveAttribute("width", "608");
+    await expect(svg).toHaveAttribute("height", "486");
+    await expect(svg).toHaveAttribute("aria-labelledby", "loop-kinds-map__title");
+    await expect(svg).toHaveAttribute("aria-describedby", "loop-kinds-map__desc");
+    await expect(svg.locator("title#loop-kinds-map__title")).toHaveText("Kinds of feedback");
+    await expect(svg.locator("desc#loop-kinds-map__desc")).toHaveText(MAP_DESC);
+    const firstChildren = await svg.evaluate((el) =>
+      Array.from(el.children).slice(0, 2).map((c) => c.localName),
+    );
+    expect(firstChildren).toEqual(["title", "desc"]);
+    await expect(svg).toBeVisible();
+    await expect(page.getByRole("img", { name: "Kinds of feedback" })).toHaveCount(1);
+    expect(errors).toEqual([]);
+  });
+
+  test("concept map draws the hub at the centre and the ring clockwise from 12 o'clock", async ({ page }) => {
+    await load(page);
+    const svg = page.locator(`${MAP} svg`);
+    const groups = await svg.evaluate((el) =>
+      Array.from(el.querySelectorAll(":scope > g")).map((g) => g.getAttribute("class")),
+    );
+    expect(groups).toEqual(["diagram-edges", "diagram-edge-labels", "diagram-nodes"]);
+    await expect(svg.locator("g.diagram-node")).toHaveCount(4);
+    const hub = svg.locator("g.diagram-node.diagram-node--hub");
+    await expect(hub).toHaveCount(1);
+    await expect(hub).toHaveClass("diagram-node diagram-node--hub");
+    await expect(hub.locator("text.diagram-node-label")).toHaveText("Feedback loop");
+    await expect(page.locator(".diagram-node--hub")).toHaveCount(1);
+    const nodes = await svg.locator("g.diagram-node").evaluateAll((gs) =>
+      gs.map((g) => {
+        const rect = g.querySelector("rect.diagram-node-box")!;
+        const num = (name: string) => Number(rect.getAttribute(name));
+        return {
+          label: g.querySelector("text.diagram-node-label")!.textContent,
+          x: num("x"),
+          y: num("y"),
+          width: num("width"),
+          height: num("height"),
+          rx: rect.getAttribute("rx"),
+        };
+      }),
+    );
+    expect(nodes.map((n) => n.label)).toEqual([
+      "Feedback loop",
+      "Reinforcing loop",
+      "Balancing loop",
+      "Delay",
+    ]);
+    for (const node of nodes) {
+      expect(node.width).toBe(160);
+      expect(node.height).toBe(38);
+      expect(node.rx).toBe("6");
+      const [cx, cy] = CENTRES[node.label!];
+      near(node.x + node.width / 2, cx);
+      near(node.y + node.height / 2, cy);
+    }
+  });
+
+  test("concept map edges carry arrowheads and labels at the clipped segment midpoints", async ({ page }) => {
+    await load(page);
+    const svg = page.locator(`${MAP} svg`);
+    await expect(svg.locator("path.diagram-edge")).toHaveCount(3);
+    await expect(svg.locator("path.diagram-edge--back")).toHaveCount(0);
+    await expect(svg.locator("marker#loop-kinds-map__arrow")).toHaveCount(1);
+    const markerEnds = await svg
+      .locator("path.diagram-edge")
+      .evaluateAll((paths) => paths.map((p) => p.getAttribute("marker-end")));
+    expect(markerEnds).toEqual(Array(3).fill("url(#loop-kinds-map__arrow)"));
+
+    const labels = await svg.locator("g.diagram-edge-label").evaluateAll((gs) =>
+      gs.map((g) => {
+        const bg = g.querySelector("rect.diagram-edge-label-bg")!;
+        const num = (name: string) => Number(bg.getAttribute(name));
+        return {
+          lines: Array.from(g.querySelectorAll("text.diagram-edge-label-text tspan")).map((t) => t.textContent),
+          cx: num("x") + num("width") / 2,
+          cy: num("y") + num("height") / 2,
+          width: num("width"),
+          height: num("height"),
+        };
+      }),
+    );
+    expect(labels.map((l) => l.lines)).toEqual(EDGES.map((e) => e.label));
+    // §10.3 label box: maxLineLen * EDGE_CHAR_W + 8 wide, lines * EDGE_LINE_H + 4 high.
+    expect(labels.map((l) => [l.width, l.height])).toEqual([
+      [50, 19],
+      [50, 19],
+      [113, 34],
+    ]);
+    EDGES.forEach((edge, i) => {
+      near(labels[i].cx, (edge.start[0] + edge.end[0]) / 2);
+      near(labels[i].cy, (edge.start[1] + edge.end[1]) / 2);
+    });
+  });
+
+  test("concept map edge endpoints are clipped at the node box borders", async ({ page }) => {
+    await load(page);
+    const svg = page.locator(`${MAP} svg`);
+    const ds = await svg
+      .locator("path.diagram-edge")
+      .evaluateAll((paths) => paths.map((p) => p.getAttribute("d") ?? ""));
+    expect(ds).toHaveLength(3);
+    ds.forEach((d, i) => {
+      expect(d).toMatch(/^M-?[\d.]+,-?[\d.]+ L-?[\d.]+,-?[\d.]+$/);
+      const [sx, sy, tx, ty] = (d.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+      const edge = EDGES[i];
+      near(sx, edge.start[0]);
+      near(sy, edge.start[1]);
+      near(tx, edge.end[0]);
+      near(ty, edge.end[1]);
+      // Each endpoint sits on its own box border, never inside the box.
+      for (const [[px, py], label] of [
+        [[sx, sy], edge.from],
+        [[tx, ty], edge.to],
+      ] as const) {
+        const [cx, cy] = CENTRES[label];
+        const onVertical = Math.abs(Math.abs(px - cx) - 80) <= 0.11 && Math.abs(py - cy) <= 19.11;
+        const onHorizontal = Math.abs(Math.abs(py - cy) - 19) <= 0.11 && Math.abs(px - cx) <= 80.11;
+        expect(onVertical || onHorizontal, `${label} endpoint (${px}, ${py})`).toBe(true);
+      }
+    });
+  });
+
+  test("concept map reads figcaption, svg, then a closed 'Text version' disclosure", async ({ page }) => {
+    await load(page);
+    const figure = page.locator(MAP);
+    const children = await figure.evaluate((el) => Array.from(el.children).map((c) => c.localName));
+    expect(children).toEqual(["figcaption", "svg", "details"]);
+    const details = figure.locator(':scope > details[data-role="diagram-text-toggle"]');
+    await expect(details).toHaveCount(1);
+    await expect(details).toHaveClass("diagram-text-toggle");
+    await expect(details).not.toHaveAttribute("open", /.*/);
+    await expect(details.locator(":scope > summary")).toHaveText("Text version");
+    await expect(details.locator(':scope > div[data-role="diagram-text"]')).toHaveCount(1);
+    await expect(figure.locator(".diagram-map")).toBeHidden();
+    await details.locator("summary").click();
+    await expect(figure.locator(".diagram-map")).toContainText("overshoots with a → Delay");
+  });
+
+  test("every id in the document stays unique with the concept map drawn", async ({ page }) => {
+    await load(page);
+    await expect(page.locator(MAP)).toHaveAttribute("data-diagram-state", "drawn");
+    const ids = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("[id]")).map((el) => el.id),
+    );
+    expect(ids.filter((id, i) => ids.indexOf(id) !== i)).toEqual([]);
+    for (const id of ["loop-kinds-map__title", "loop-kinds-map__desc", "loop-kinds-map__arrow"]) {
+      expect(ids).toContain(id);
+    }
+    const markerIds = await page.locator("svg marker").evaluateAll((markers) => markers.map((m) => m.id));
+    expect(markerIds).toEqual(expect.arrayContaining(["growth-loop-flow__arrow", "loop-kinds-map__arrow"]));
+    expect(new Set(markerIds).size).toBe(markerIds.length);
+  });
+
+  test("the concept map svg uses no inline style, script, image or foreignObject", async ({ page }) => {
+    await load(page);
+    await expect(page.locator(`${MAP} svg`)).toHaveCount(1);
+    const offending = await page.evaluate(() =>
+      Array.from(
+        document.querySelectorAll(
+          "figure#loop-kinds-map svg [style], figure#loop-kinds-map svg[style], figure#loop-kinds-map svg style, " +
+            "figure#loop-kinds-map svg script, figure#loop-kinds-map svg image, figure#loop-kinds-map svg foreignObject",
+        ),
+      ).map((el) => el.outerHTML),
+    );
+    expect(offending).toEqual([]);
+  });
+
+  test("two renders give identical concept map svg markup", async ({ page }) => {
+    const snapshot = () =>
+      page.locator(`${MAP} svg`).evaluateAll((svgs) => svgs.map((svg) => svg.outerHTML));
+    await load(page);
+    const first = await snapshot();
+    await load(page);
+    const second = await snapshot();
+    expect(first).toHaveLength(1);
+    expect(second).toEqual(first);
+  });
+
+  test("tampered concept-map guide-data (unknown hub) leaves the text version while the guide boots", async ({ page }) => {
+    const original = '"hub":"feedback-loop"';
+    expect(diagramsHtml).toContain(original);
+    const tampered = diagramsHtml.replace(original, '"hub":"missing-node"');
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+    page.on("pageerror", (error) => pageErrors.push(String(error)));
+    await load(page, tampered);
+
+    await expect(page.locator("[data-guide-shell]")).toBeVisible();
+    const figure = page.locator(MAP);
+    await expect(figure).toHaveAttribute("data-diagram-state", "text");
+    await expect(figure.locator("svg")).toHaveCount(0);
+    await expect(figure.locator("details")).toHaveCount(0);
+    await expect(figure.locator(':scope > div[data-role="diagram-text"]')).toBeVisible();
+    await expect(figure.locator(".diagram-map")).toContainText("Feedback loop (central idea)");
+    // The neighbouring flow is still drawn and the comparison is still a table.
+    await expect(page.locator(FLOW)).toHaveAttribute("data-diagram-state", "drawn");
+    await expect(page.locator(TABLE)).toHaveAttribute("data-diagram-state", "table");
+    await expect(page.locator(TIMELINE)).toHaveAttribute("data-diagram-state", "drawn");
+    await expect(page.locator("html")).toHaveClass(/js-enhanced/);
+    await expect(page.locator('[data-role="results-page"]')).toHaveCount(1);
+    expect(pageErrors).toEqual([]);
+    expect(consoleErrors).toContainEqual(
+      expect.stringContaining("guide-runtime: diagram fell back to its text version:"),
+    );
+    expect(consoleErrors.join("\n")).toContain("loop-kinds-map");
+  });
+
+  test("comparison stays the server table: state table, no svg, scoped headers and no disclosure", async ({ page }) => {
+    await load(page);
+    await showComparison(page);
+    const figure = page.locator(TABLE);
+    await expect(figure).toHaveAttribute("data-diagram-state", "table");
+    await expect(figure.locator("svg")).toHaveCount(0);
+    await expect(figure.locator("details")).toHaveCount(0);
+    const children = await figure.evaluate((el) => Array.from(el.children).map((c) => c.localName));
+    expect(children).toEqual(["figcaption", "div"]);
+    const text = figure.locator(':scope > div[data-role="diagram-text"]');
+    await expect(text).toBeVisible();
+    const table = text.locator("table.diagram-table");
+    await expect(table).toBeVisible();
+    const colHeaders = await table
+      .locator('thead th[scope="col"]')
+      .evaluateAll((ths) => ths.map((th) => th.textContent));
+    expect(colHeaders).toEqual(["Criterion", "Reinforcing loop", "Balancing loop"]);
+    const rowHeaders = await table
+      .locator('tbody th[scope="row"]')
+      .evaluateAll((ths) => ths.map((th) => th.textContent));
+    expect(rowHeaders).toEqual(["What it does", "Garden example", "Main risk"]);
+    await expect(table.locator("th:not([scope])")).toHaveCount(0);
+    await expect(table.locator("tbody td")).toHaveCount(6);
+    await expect(table.locator("tbody td em")).toHaveText("Overcorrection");
+    await expect(page.getByRole("columnheader", { name: "Reinforcing loop" })).toHaveCount(1);
+    await expect(page.getByRole("rowheader", { name: "Main risk" })).toHaveCount(1);
+  });
+
+  test("comparison table is styled: scrollable wrapper and tinted row headers", async ({ page }) => {
+    await load(page);
+    await showComparison(page);
+    const text = page.locator(`${TABLE} > div[data-role="diagram-text"]`);
+    await expect(text).toHaveCSS("overflow-x", "auto");
+    const [rowHeaderBg, subtle] = await page.evaluate(() => {
+      const th = document.querySelector('figure#loop-types-comparison th[scope="row"]')!;
+      const probe = document.createElement("div");
+      probe.style.background = "var(--ep-color-surface-subtle)";
+      document.body.appendChild(probe);
+      const expected = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return [getComputedStyle(th).backgroundColor, expected];
+    });
+    expect(rowHeaderBg).toBe(subtle);
+  });
+
+  for (const theme of ["light", "dark"] as const) {
+    test(`concept map and comparison have no serious or critical accessibility violations (${theme})`, async ({ page }) => {
+      await load(page);
+      await page.locator('[data-role="theme-select"]').selectOption(theme);
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(page.locator(MAP)).toHaveAttribute("data-diagram-state", "drawn");
+      await expect(page.locator(`${MAP} svg`)).toBeVisible();
+      await expectNoSeriousViolations(page);
+      await page.locator(`${MAP} summary`).click();
+      await expect(page.locator(`${MAP} .diagram-map`)).toBeVisible();
+      await expectNoSeriousViolations(page);
+
+      await showComparison(page);
+      await expect(page.locator(TABLE)).toHaveAttribute("data-diagram-state", "table");
+      await expectNoSeriousViolations(page);
+    });
+  }
+});
+
+test.describe("Codex round 1 on PR #42: no-JS text version, trimmed runtime limits (T57)", () => {
+  const DIAGRAMS_FIXTURE = "tests/fixtures/guides/feedback-loops.diagrams.guide.json";
+  const DIAGRAM_IDS = ["growth-loop-flow", "loop-kinds-map", "loop-types-comparison", "watering-delay-timeline"];
+  let scratch: string;
+
+  test.beforeAll(() => {
+    scratch = mkdtempSync(path.join(tmpdir(), "ep-t57-"));
+  });
+
+  test.afterAll(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  test("without JavaScript the guide and every diagram's text version are visible, not the loading shell", async ({ browser }) => {
+    const file = path.join(scratch, "no-js.html");
+    writeFileSync(file, assembleFixtureDocument(DIAGRAMS_FIXTURE), "utf8");
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    try {
+      await page.goto(`file://${file}`);
+      await expect(page.locator("html")).not.toHaveClass(/js-enhanced/);
+      await expect(page.locator("[data-guide-shell]")).toBeVisible();
+      await expect(page.locator("[data-guide-status]")).toBeHidden();
+      await expect(page.getByRole("heading", { name: "Thinking in Feedback Loops" })).toBeVisible();
+      for (const id of DIAGRAM_IDS) {
+        const figure = page.locator(`figure#${id}`);
+        await expect(figure).toBeVisible();
+        await expect(figure.locator("svg")).toHaveCount(0);
+        await expect(figure.locator(':scope > div[data-role="diagram-text"]')).toBeVisible();
+      }
+      await expect(page.locator("figure#growth-loop-flow .diagram-connections")).toContainText(
+        "Plant biomass → Leaf area",
+      );
+      // Every section is stacked and readable, like the answer-key print.
+      const sections = page.locator('main section[data-role="guide-section"]');
+      const count = await sections.count();
+      expect(count).toBeGreaterThan(1);
+      for (let i = 0; i < count; i += 1) await expect(sections.nth(i)).toBeVisible();
+      await expect(page.locator('[data-role="kc-explanation"]').first()).toBeVisible();
+      await expect(page.locator('[data-role="answer-marker"]').first()).toBeVisible();
+      await expect(page.locator('[data-role="nav-link"]').first()).toBeVisible();
+      // Controls that only work with JavaScript are not offered.
+      for (const selector of [
+        ".course-controls",
+        ".section-nav-controls",
+        ".section-complete-controls",
+        ".kc-controls",
+        ".wr-controls",
+        ".sc-controls",
+        ".rf-controls",
+        ".reflection-input",
+        '[data-role="kc-choice"]',
+        '[data-role="sc-choice"]',
+        ".nav-toggle",
+      ]) {
+        const nodes = page.locator(selector);
+        const n = await nodes.count();
+        for (let i = 0; i < n; i += 1) await expect(nodes.nth(i), selector).toBeHidden();
+      }
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("padded-but-valid diagram strings are measured and drawn trimmed, not dropped to text", async ({ page }) => {
+    const pad = (s: string) => `  ${s}  `;
+    const title = "T".repeat(110) + " whole ok"; // 119 code points
+    const label = "Plant biomass " + "b".repeat(34); // 48 code points
+    const edge = "increases " + "e".repeat(22); // 32 code points
+    const when = "Day 1, morning " + "w".repeat(17); // 32 code points
+    const guide = JSON.parse(readFileSync(path.join(ROOT, DIAGRAMS_FIXTURE), "utf8"));
+    const blocks = guide.modules.flatMap((m: any) => m.sections).flatMap((s: any) => s.blocks);
+    const flow = blocks.find((b: any) => b.id === "growth-loop-flow");
+    flow.title = pad(title);
+    flow.nodes[0].label = pad(label);
+    flow.edges[0].label = pad(edge);
+    const timeline = blocks.find((b: any) => b.id === "watering-delay-timeline");
+    timeline.title = pad(title);
+    timeline.events[0].when = pad(when);
+    timeline.events[0].label = pad(label);
+    const file = path.join(scratch, "padded.guide.json");
+    writeFileSync(file, JSON.stringify(guide), "utf8");
+    // The Python validator accepts these strings: it measures the trimmed value.
+    const findings = execFileSync(
+      "python3",
+      [
+        "-c",
+        [
+          "from pathlib import Path",
+          "from education_pipeline.guides import validate_guide",
+          `print(len(validate_guide(Path(${JSON.stringify(file)}).read_bytes()).findings), end='')`,
+        ].join(";"),
+      ],
+      { cwd: ROOT, encoding: "utf8" },
+    );
+    expect(findings).toBe("0");
+    const html = assembleFixtureDocument(file);
+    expect(html).toContain(JSON.stringify(pad(label)));
+
+    const consoleErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+    await page.setContent(html, { waitUntil: "load" });
+    await expect(page.locator("[data-guide-status]")).toBeHidden();
+    const figure = page.locator("figure#growth-loop-flow");
+    await expect(figure).toHaveAttribute("data-diagram-state", "drawn");
+    expect(await figure.locator("svg > title").textContent()).toBe(title);
+    const desc = await figure.locator("svg > desc").textContent();
+    expect(desc).toContain(`Steps in order: ${label}; Leaf area;`);
+    const edgeText = await figure.locator("g.diagram-edge-label").first().locator("text").allTextContents();
+    expect(edgeText[0]).toMatch(/^increases/);
+    const timelineFigure = page.locator("figure#watering-delay-timeline");
+    await expect(timelineFigure).toHaveAttribute("data-diagram-state", "drawn");
+    for (const svg of await timelineFigure.locator("svg").all()) {
+      expect(await svg.locator("title").textContent()).toBe(title);
+      expect(await svg.locator("desc").textContent()).toBe(
+        `Timeline of 4 events, from ${when} (${label}) to Day 4 (Leaves recover).`,
+      );
+    }
+    expect(consoleErrors.join("\n")).not.toContain("fell back to its text version");
   });
 });

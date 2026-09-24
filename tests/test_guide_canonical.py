@@ -719,3 +719,240 @@ def test_assemble_guide_rejects_a_skeleton_glossary_id_reused_as_a_module_source
 
     assert shared_id in str(excinfo.value)
     assert "the skeleton" in str(excinfo.value)
+
+
+# --- schema 1.2 diagrams ---------------------------------------------------
+#
+# Spec: docs/superpowers/specs/2026-09-23-diagram-block-design.md §4. The
+# canonical walk stays generic: `json` field metadata renames `from_id` /
+# `to_id`, `json_keyed` turns comparison values into an object keyed by item
+# id, and `omit_empty` drops the kind arrays of other kinds.
+
+DIAGRAMS_FIXTURE = (
+    Path(__file__).parent / "fixtures/guides/feedback-loops.diagrams.guide.json"
+)
+DIAGRAM_IDS = {
+    "flow": "growth-loop-flow",
+    "concept_map": "loop-kinds-map",
+    "comparison": "loop-types-comparison",
+    "timeline": "watering-delay-timeline",
+}
+KIND_KEYS = {
+    "flow": {"nodes", "edges"},
+    "concept_map": {"hub", "nodes", "edges"},
+    "timeline": {"events"},
+    "comparison": {"items", "criteria"},
+}
+PERSONALIZED_EXPECTED_SHA256 = (
+    "03ae218e2d12d3d618eec7598a57214e4d65dabaa39cfff6ad2ecc2e629003ff"
+)
+
+
+def _diagrams_data() -> dict:
+    return json.loads(DIAGRAMS_FIXTURE.read_text(encoding="utf-8"))
+
+
+def _blocks(decoded: dict) -> dict[str, dict]:
+    return {
+        block["id"]: block
+        for module in decoded["modules"]
+        for section in module["sections"]
+        for block in section["blocks"]
+    }
+
+
+def _only_diagram(kind: str) -> dict:
+    """The diagrams fixture with every diagram except ``kind``'s removed."""
+
+    data = _diagrams_data()
+    keep = DIAGRAM_IDS[kind]
+    for module in data["modules"]:
+        for section in module["sections"]:
+            section["blocks"] = [
+                block
+                for block in section["blocks"]
+                if block["type"] != "diagram" or block["id"] == keep
+            ]
+    return data
+
+
+def test_existing_fixture_canonical_bytes_are_unchanged_by_schema_1_2() -> None:
+    # Both pre-1.2 fixtures keep their exact canonical bytes (spec §4,
+    # Migration: "Canonical bytes of every existing guide are unchanged").
+    personalized = normalize_guide(parse_guide(PERSONALIZED_FIXTURE.read_bytes()))
+
+    assert guide_sha256(guide()) == EXPECTED_SHA256
+    assert guide_sha256(personalized) == PERSONALIZED_EXPECTED_SHA256
+
+
+def test_diagrams_fixture_canonical_bytes_round_trip() -> None:
+    canonical = canonical_guide_bytes(
+        normalize_guide(parse_guide(DIAGRAMS_FIXTURE.read_bytes()))
+    )
+
+    assert canonical == canonical_guide_bytes(normalize_guide(parse_guide(canonical)))
+    assert json.loads(canonical)["schema_version"] == "1.2"
+
+
+@pytest.mark.parametrize("kind", sorted(DIAGRAM_IDS))
+def test_each_diagram_kind_round_trips_byte_for_byte(kind: str) -> None:
+    source = json.dumps(_only_diagram(kind), ensure_ascii=False)
+    canonical = canonical_guide_bytes(normalize_guide(parse_guide(source)))
+
+    assert canonical == canonical_guide_bytes(normalize_guide(parse_guide(canonical)))
+    decoded_diagrams = [
+        block for block in _blocks(json.loads(canonical)).values()
+        if block["type"] == "diagram"
+    ]
+    assert [block["kind"] for block in decoded_diagrams] == [kind]
+
+
+@pytest.mark.parametrize("kind", sorted(DIAGRAM_IDS))
+def test_canonical_diagram_has_no_foreign_kind_fields(kind: str) -> None:
+    canonical = canonical_guide_bytes(
+        normalize_guide(parse_guide(DIAGRAMS_FIXTURE.read_bytes()))
+    )
+    block = _blocks(json.loads(canonical))[DIAGRAM_IDS[kind]]
+
+    common = {"id", "type", "kind", "title", "outcome_ids", "source_ids"}
+    optional_present = {"caption"} if kind == "flow" else set()
+    assert set(block) == common | optional_present | KIND_KEYS[kind]
+
+
+def test_canonical_flow_uses_from_and_to_and_matches_the_spec_exactly() -> None:
+    canonical = canonical_guide_bytes(
+        normalize_guide(parse_guide(DIAGRAMS_FIXTURE.read_bytes()))
+    )
+    flow = _blocks(json.loads(canonical))["growth-loop-flow"]
+
+    assert flow == {
+        "caption": "The last connection closes a **reinforcing** loop.",
+        "edges": [
+            {"from": "biomass", "label": "increases", "to": "leaf-area"},
+            {"from": "leaf-area", "label": "increases", "to": "sunlight"},
+            {"from": "sunlight", "label": "fuels", "to": "growth"},
+            {"from": "growth", "label": "adds to", "to": "biomass"},
+        ],
+        "id": "growth-loop-flow",
+        "kind": "flow",
+        "nodes": [
+            {"id": "biomass", "label": "Plant biomass"},
+            {
+                "detail": "More biomass usually means more leaves.",
+                "id": "leaf-area",
+                "label": "Leaf area",
+            },
+            {"id": "sunlight", "label": "Sunlight captured"},
+            {"id": "growth", "label": "New growth"},
+        ],
+        "outcome_ids": ["map-loop"],
+        "source_ids": [],
+        "title": "How plant growth reinforces itself",
+        "type": "diagram",
+    }
+    assert b'"from_id"' not in canonical and b'"to_id"' not in canonical
+
+
+def test_canonical_comparison_values_are_objects_keyed_by_item_id() -> None:
+    canonical = canonical_guide_bytes(
+        normalize_guide(parse_guide(DIAGRAMS_FIXTURE.read_bytes()))
+    )
+    comparison = _blocks(json.loads(canonical))["loop-types-comparison"]
+
+    assert comparison["criteria"][0] == {
+        "id": "effect",
+        "label": "What it does",
+        "values": {
+            "balancing": "Pushes toward a goal or limit",
+            "reinforcing": "Amplifies change in one direction",
+        },
+    }
+    assert comparison["items"] == [
+        {"id": "reinforcing", "label": "Reinforcing loop"},
+        {"id": "balancing", "label": "Balancing loop"},
+    ]
+    assert comparison["source_ids"] == ["meadows-2008"]
+    assert b'"item_id"' not in canonical
+
+
+def test_canonical_diagram_keeps_raw_untrimmed_strings() -> None:
+    data = _diagrams_data()
+    _blocks(data)["growth-loop-flow"]["nodes"][0]["label"] = " Plant biomass "
+
+    canonical = canonical_guide_bytes(
+        normalize_guide(parse_guide(json.dumps(data, ensure_ascii=False)))
+    )
+
+    assert _blocks(json.loads(canonical))["growth-loop-flow"]["nodes"][0][
+        "label"
+    ] == " Plant biomass "
+
+
+def _diagrams_skeleton_json(data: dict) -> str:
+    skeleton = json.loads(json.dumps(data))
+    skeleton["modules"] = [
+        {**{key: value for key, value in module.items() if key != "sections"}, "sections": []}
+        for module in data["modules"]
+    ]
+    return json.dumps(skeleton, ensure_ascii=False)
+
+
+def test_assemble_guide_reconstitutes_the_diagrams_fixture() -> None:
+    from education_pipeline.guides.canonical import assemble_guide
+
+    data = _diagrams_data()
+    order = tuple(module["id"] for module in data["modules"])
+
+    assembled = assemble_guide(
+        _diagrams_skeleton_json(data), _modules_map(data), module_order=order
+    )
+
+    assert assembled == canonical_guide_bytes(
+        normalize_guide(parse_guide(DIAGRAMS_FIXTURE.read_bytes()))
+    )
+
+
+def test_assemble_guide_allows_the_same_local_node_id_in_two_modules() -> None:
+    from education_pipeline.guides.canonical import assemble_guide
+
+    data = _diagrams_data()
+    for index, module in enumerate(data["modules"]):
+        module["sections"][0]["blocks"].append(
+            {
+                "id": f"{module['id']}-steps",
+                "type": "diagram",
+                "kind": "flow",
+                "title": f"Steps for module {index + 1}",
+                "nodes": [
+                    {"id": "start", "label": "Start"},
+                    {"id": "finish", "label": "Finish"},
+                ],
+                "edges": [{"from": "start", "to": "finish"}],
+            }
+        )
+    order = tuple(module["id"] for module in data["modules"])
+
+    assembled = assemble_guide(
+        _diagrams_skeleton_json(data), _modules_map(data), module_order=order
+    )
+
+    assert parse_guide(assembled).ok
+    blocks = _blocks(json.loads(assembled))
+    assert blocks["loop-basics-steps"]["nodes"][0]["id"] == "start"
+    assert blocks["intervention-practice-steps"]["nodes"][0]["id"] == "start"
+
+
+def test_assemble_guide_still_rejects_a_diagram_block_id_reused_across_modules() -> None:
+    from education_pipeline.guides.canonical import AssemblyError, assemble_guide
+
+    data = _diagrams_data()
+    stolen = json.loads(json.dumps(_blocks(data)["growth-loop-flow"]))
+    data["modules"][1]["sections"][0]["blocks"].append(stolen)
+    order = tuple(module["id"] for module in data["modules"])
+
+    with pytest.raises(AssemblyError) as exc_info:
+        assemble_guide(
+            _diagrams_skeleton_json(data), _modules_map(data), module_order=order
+        )
+
+    assert set(exc_info.value.module_ids) == {"loop-basics", "intervention-practice"}

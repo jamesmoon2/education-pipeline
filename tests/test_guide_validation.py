@@ -4,6 +4,8 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
+import pytest
+
 from education_pipeline.guides import normalize_guide, parse_guide
 from education_pipeline.guides.model import GoalExclusion
 from education_pipeline.guides.reports import canonical_report_bytes
@@ -423,6 +425,7 @@ def test_reading_time_constants_are_pinned() -> None:
         "worked_reveal": 90,
         "scenario": 60,
         "reflection": 60,
+        "diagram": 30,
     }
     assert DIFFICULTY_LEVELS == {
         "introductory": 0,
@@ -647,3 +650,383 @@ def test_findings_carry_stage_and_report_schema_bumped():
     payload = report.to_dict()
     assert payload["report_schema_version"] == 3
     assert all("stage" in f for f in payload["findings"])
+
+
+# --- schema 1.2 diagrams (spec §3.1, §5) -----------------------------------
+
+DIAGRAMS_FIXTURE = (
+    Path(__file__).parent / "fixtures/guides/feedback-loops.diagrams.guide.json"
+)
+FLOW = "/modules/0/sections/0/blocks/1"
+CONCEPT_MAP = "/modules/0/sections/0/blocks/3"
+COMPARISON = "/modules/0/sections/1/blocks/0"
+TIMELINE = "/modules/1/sections/0/blocks/1"
+
+DIAGRAM_RULES = {
+    "diagram.duplicate_id": (
+        "blocker",
+        "Give every node, event, item and criterion a unique ID within its diagram.",
+    ),
+    "diagram.unknown_node": ("blocker", "Reference a node declared in the same diagram."),
+    "diagram.text_too_long": ("error", "Shorten the diagram text to its limit."),
+    "diagram.multiline_text": ("error", "Keep every diagram string on one line."),
+    "diagram.self_edge": ("error", "Connect two different nodes."),
+    "diagram.duplicate_edge": ("error", "Remove the repeated edge."),
+    "diagram.isolated_node": ("error", "Connect the node or remove it."),
+    "diagram.disconnected": ("error", "Connect every node to the hub through edges."),
+    "diagram.missing_value": ("error", "Give the criterion a value for every item."),
+    "diagram.unknown_value_key": (
+        "error",
+        "Key comparison values by the diagram's item IDs.",
+    ),
+}
+
+
+def diagrams_guide():
+    return normalize_guide(parse_guide(DIAGRAMS_FIXTURE.read_bytes()))
+
+
+def _with_block(guide_value, block_id: str, change):
+    """Return ``guide_value`` with block ``block_id`` replaced by ``change(block)``."""
+
+    modules = []
+    for module in guide_value.modules:
+        sections = []
+        for section in module.sections:
+            blocks = tuple(
+                change(block) if block.id == block_id else block
+                for block in section.blocks
+            )
+            sections.append(replace(section, blocks=blocks))
+        modules.append(replace(module, sections=tuple(sections)))
+    return replace(guide_value, modules=tuple(modules))
+
+
+def _finding_messages(report) -> dict[tuple[str, str], str]:
+    return {(item.rule_id, item.path): item.message for item in report.findings}
+
+
+def test_diagram_rule_catalog_entries_are_exact() -> None:
+    assert {
+        rule_id: (
+            RULES[rule_id].severity,
+            RULES[rule_id].blocking,
+            RULES[rule_id].waivable,
+            RULES[rule_id].remediation,
+            RULES[rule_id].stage,
+        )
+        for rule_id in DIAGRAM_RULES
+    } == {
+        rule_id: (severity, True, False, remediation, "draft")
+        for rule_id, (severity, remediation) in DIAGRAM_RULES.items()
+    }
+
+
+def test_diagrams_fixture_validates_with_no_findings() -> None:
+    report = validate_guide(diagrams_guide(), phase="final")
+    from_text = validate_guide(DIAGRAMS_FIXTURE.read_text(encoding="utf-8"))
+
+    assert report.findings == ()
+    assert from_text.findings == ()
+    assert report.guide_schema_version == "1.2"
+
+
+def test_parse_time_diagram_diagnostics_keep_their_own_rule_ids() -> None:
+    data = json.loads(DIAGRAMS_FIXTURE.read_text(encoding="utf-8"))
+    flow = data["modules"][0]["sections"][0]["blocks"][1]
+    flow["edges"][3] = {"from": "growth", "to": "growth"}
+    comparison = data["modules"][0]["sections"][1]["blocks"][0]
+    comparison["criteria"][0]["values"]["ghost"] = "Boo"
+
+    report = validate_guide(json.dumps(data))
+
+    assert _finding_messages(report) == {
+        ("diagram.self_edge", f"{FLOW}/edges/3"): "an edge must connect two different nodes",
+        (
+            "diagram.unknown_value_key",
+            f"{COMPARISON}/criteria/0/values/ghost",
+        ): "unknown item ID 'ghost'",
+    }
+    self_edge = next(x for x in report.findings if x.rule_id == "diagram.self_edge")
+    assert self_edge.id == f"diagram.self_edge:{FLOW}/edges/3"
+    assert self_edge.severity == "error" and self_edge.blocking and not self_edge.waivable
+
+
+def _chain_nodes(count: int):
+    from education_pipeline.guides.model import DiagramEdge, DiagramNode
+
+    nodes = tuple(DiagramNode(f"n{i}", f"Node {i}") for i in range(count))
+    edges = tuple(DiagramEdge(f"n{i}", f"n{i + 1}") for i in range(count - 1))
+    return nodes, edges
+
+
+def _in_memory_cases():
+    from education_pipeline.guides.model import (
+        ComparisonCriterion,
+        ComparisonValue,
+        DiagramEdge,
+        DiagramNode,
+        TimelineEvent,
+    )
+
+    def rename_first_node(block):
+        nodes = (replace(block.nodes[0], id="Bad_Id"),) + block.nodes[1:]
+        edges = tuple(
+            replace(
+                edge,
+                from_id="Bad_Id" if edge.from_id == "biomass" else edge.from_id,
+                to_id="Bad_Id" if edge.to_id == "biomass" else edge.to_id,
+            )
+            for edge in block.edges
+        )
+        return replace(block, nodes=nodes, edges=edges)
+
+    def drop_value(block):
+        first = block.criteria[0]
+        return replace(
+            block,
+            criteria=(replace(first, values=first.values[:1]),) + block.criteria[1:],
+        )
+
+    def extra_value(block):
+        first = block.criteria[0]
+        values = first.values + (ComparisonValue("ghost", "Boo"),)
+        return replace(block, criteria=(replace(first, values=values),) + block.criteria[1:])
+
+    return {
+        "cardinality": (
+            "growth-loop-flow",
+            lambda b: replace(b, **dict(zip(("nodes", "edges"), _chain_nodes(13)))),
+            {("schema.cardinality", f"{FLOW}/nodes"): "must contain 2–12 items"},
+        ),
+        "invalid-id": (
+            "growth-loop-flow",
+            rename_first_node,
+            {("schema.invalid_id", f"{FLOW}/nodes/0/id"): "must match ^[a-z][a-z0-9-]{0,63}$"},
+        ),
+        "duplicate-id": (
+            "watering-delay-timeline",
+            lambda b: replace(
+                b, events=b.events[:2] + (replace(b.events[2], id="water"),) + b.events[3:]
+            ),
+            {
+                ("diagram.duplicate_id", f"{TIMELINE}/events/2/id"):
+                    f"duplicates diagram ID first declared at {TIMELINE}/events/0/id"
+            },
+        ),
+        "text-too-long": (
+            "growth-loop-flow",
+            lambda b: replace(b, nodes=(replace(b.nodes[0], label="x" * 49),) + b.nodes[1:]),
+            {("diagram.text_too_long", f"{FLOW}/nodes/0/label"): "must not exceed 48 characters"},
+        ),
+        "multiline": (
+            "loop-kinds-map",
+            lambda b: replace(b, title="Kinds of\nfeedback"),
+            {("diagram.multiline_text", f"{CONCEPT_MAP}/title"): "must be a single line"},
+        ),
+        "unknown-node": (
+            "growth-loop-flow",
+            lambda b: replace(b, edges=b.edges[:3] + (DiagramEdge("growth", "nowhere"),)),
+            {("diagram.unknown_node", f"{FLOW}/edges/3/to"): "unknown node ID 'nowhere'"},
+        ),
+        "unknown-hub": (
+            "loop-kinds-map",
+            lambda b: replace(b, hub="nowhere"),
+            {("diagram.unknown_node", f"{CONCEPT_MAP}/hub"): "unknown node ID 'nowhere'"},
+        ),
+        "self-edge": (
+            "growth-loop-flow",
+            lambda b: replace(b, edges=b.edges[:3] + (DiagramEdge("growth", "growth"),)),
+            {("diagram.self_edge", f"{FLOW}/edges/3"): "an edge must connect two different nodes"},
+        ),
+        "duplicate-edge": (
+            "loop-kinds-map",
+            lambda b: replace(b, edges=b.edges + (DiagramEdge("delay", "balancing"),)),
+            {
+                ("diagram.duplicate_edge", f"{CONCEPT_MAP}/edges/3"):
+                    f"duplicates the edge at {CONCEPT_MAP}/edges/2"
+            },
+        ),
+        "isolated-node": (
+            "growth-loop-flow",
+            lambda b: replace(b, nodes=b.nodes + (DiagramNode("weather", "Weather"),)),
+            {("diagram.isolated_node", f"{FLOW}/nodes/4"): "node 'weather' has no edges"},
+        ),
+        "disconnected": (
+            "loop-kinds-map",
+            lambda b: replace(b, nodes=b.nodes + (DiagramNode("orphan", "Orphan"),)),
+            {
+                ("diagram.disconnected", f"{CONCEPT_MAP}/nodes/4"):
+                    "node 'orphan' is not connected to the hub 'feedback-loop'"
+            },
+        ),
+        "missing-value": (
+            "loop-types-comparison",
+            drop_value,
+            {
+                ("diagram.missing_value", f"{COMPARISON}/criteria/0/values"):
+                    "missing a value for item 'balancing'"
+            },
+        ),
+        "unknown-value-key": (
+            "loop-types-comparison",
+            extra_value,
+            {
+                ("diagram.unknown_value_key", f"{COMPARISON}/criteria/0/values/ghost"):
+                    "unknown item ID 'ghost'"
+            },
+        ),
+        "foreign-events-on-flow": (
+            "growth-loop-flow",
+            lambda b: replace(b, events=(TimelineEvent("e", "Day 1", "Event"),)),
+            {("schema.unknown_field", f"{FLOW}/events"): "unknown field 'events'"},
+        ),
+        "foreign-hub-on-flow": (
+            "growth-loop-flow",
+            lambda b: replace(b, hub="biomass"),
+            {("schema.unknown_field", f"{FLOW}/hub"): "unknown field 'hub'"},
+        ),
+        "foreign-criteria-on-timeline": (
+            "watering-delay-timeline",
+            lambda b: replace(
+                b,
+                criteria=(ComparisonCriterion("c", "Criterion", ()),),
+            ),
+            {("schema.unknown_field", f"{TIMELINE}/criteria"): "unknown field 'criteria'"},
+        ),
+    }
+
+
+IN_MEMORY_CASE_NAMES = (
+    "cardinality",
+    "invalid-id",
+    "duplicate-id",
+    "text-too-long",
+    "multiline",
+    "unknown-node",
+    "unknown-hub",
+    "self-edge",
+    "duplicate-edge",
+    "isolated-node",
+    "disconnected",
+    "missing-value",
+    "unknown-value-key",
+    "foreign-events-on-flow",
+    "foreign-hub-on-flow",
+    "foreign-criteria-on-timeline",
+)
+
+
+
+@pytest.mark.parametrize("case", IN_MEMORY_CASE_NAMES)
+def test_in_memory_guide_triggers_each_dataclass_diagram_rule(case) -> None:
+    block_id, change, expected = _in_memory_cases()[case]
+    changed = _with_block(diagrams_guide(), block_id, change)
+
+    report = validate_guide(changed)
+
+    assert _finding_messages(report) == expected
+    for finding in report.findings:
+        assert finding.id == f"{finding.rule_id}:{finding.path}"
+        assert finding.related_ids == (block_id,)
+        assert finding.blocking
+
+
+@pytest.mark.parametrize("version", ["1.0", "1.1"])
+def test_in_memory_diagram_under_an_older_schema_is_an_unknown_block_type(version) -> None:
+    changed = replace(diagrams_guide(), schema_version=version)
+
+    report = validate_guide(changed)
+
+    assert _finding_messages(report) == {
+        ("schema.unknown_block_type", f"{path}/type"): "unknown block type 'diagram'"
+        for path in (FLOW, CONCEPT_MAP, COMPARISON, TIMELINE)
+    }
+
+
+def test_diagram_finding_ids_are_distinct_per_path() -> None:
+    from education_pipeline.guides.model import DiagramNode
+
+    changed = _with_block(
+        diagrams_guide(),
+        "growth-loop-flow",
+        lambda b: replace(
+            b,
+            nodes=b.nodes + (DiagramNode("rain", "Rain"), DiagramNode("wind", "Wind")),
+        ),
+    )
+
+    findings = [
+        item for item in validate_guide(changed).findings
+        if item.rule_id == "diagram.isolated_node"
+    ]
+
+    assert [item.id for item in findings] == [
+        f"diagram.isolated_node:{FLOW}/nodes/4",
+        f"diagram.isolated_node:{FLOW}/nodes/5",
+    ]
+
+
+def test_diagrams_never_raise_source_missing_for_required_claim() -> None:
+    report = validate_guide(
+        diagrams_guide(), context=ValidationContext(sources_required=True)
+    )
+    paths = {
+        item.path
+        for item in report.findings
+        if item.rule_id == "source.missing_for_required_claim"
+    }
+
+    assert paths  # the rule still runs for rich text and callouts
+    assert not paths & {FLOW, CONCEPT_MAP, COMPARISON, TIMELINE}
+
+
+def test_text_fields_use_json_names_and_keyed_value_paths() -> None:
+    from education_pipeline.guides.validation import _text_fields
+
+    fields_by_path = dict(_text_fields(diagrams_guide()))
+
+    assert fields_by_path[f"{FLOW}/edges/0/from"] == "biomass"
+    assert fields_by_path[f"{FLOW}/edges/0/to"] == "leaf-area"
+    assert fields_by_path[f"{COMPARISON}/criteria/0/values/reinforcing"] == (
+        "Amplifies change in one direction"
+    )
+    assert fields_by_path[f"{COMPARISON}/criteria/2/values/balancing"] == (
+        "*Overcorrection* when feedback is delayed"
+    )
+    assert not [
+        path
+        for path in fields_by_path
+        if "from_id" in path or "to_id" in path or "item_id" in path
+        or "/values/0" in path
+    ]
+
+
+def test_content_scans_reach_every_diagram_string() -> None:
+    changed = _with_block(
+        diagrams_guide(),
+        "loop-types-comparison",
+        lambda b: replace(
+            b,
+            criteria=(
+                replace(
+                    b.criteria[0],
+                    values=(
+                        replace(b.criteria[0].values[0], text="Ask Secret Orchard"),
+                        replace(b.criteria[0].values[1], text="TODO"),
+                    ),
+                ),
+            )
+            + b.criteria[1:],
+        ),
+    )
+
+    report = validate_guide(changed, private_values=["Secret Orchard"])
+    pairs = {(item.rule_id, item.path) for item in report.findings}
+
+    assert (
+        "privacy.exact_private_value",
+        f"{COMPARISON}/criteria/0/values/reinforcing",
+    ) in pairs
+    assert ("content.placeholder", f"{COMPARISON}/criteria/0/values/balancing") in pairs
+    assert "Secret Orchard" not in canonical_report_bytes(report).decode()

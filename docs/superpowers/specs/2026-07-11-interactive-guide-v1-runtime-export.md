@@ -25,6 +25,14 @@ inputs. The runtime reads the embedded JSON, renders only registered component
 types, and rejects unknown schema/runtime combinations before rendering course
 content.
 
+**Versions.** The runtime asset version is `1.2` (`RUNTIME_VERSION` in
+`guide_runtime/__init__.py`). Runtime 1.2 reads guide schema `1.0`, `1.1` and
+`1.2`, and adds diagram rendering (§6a) to runtime 1.1. The exported document
+records both versions (`data-guide-schema`, `data-guide-runtime`); the runtime
+refuses a document whose runtime version is not its own or whose schema is not
+in its supported set. Exports keep the runtime they were built with, so an
+older export is unaffected by a newer runtime.
+
 The first implementation may use browser-native DOM APIs rather than shipping
 the cockpit’s React bundle. This keeps exported guides small and independent of
 the application build system. The runtime should be authored as ordinary source
@@ -43,6 +51,15 @@ The self-contained HTML document includes:
 - application-owned runtime JavaScript;
 - schema/runtime/provenance metadata; and
 - a restrictive content security policy.
+
+A `diagram` block (schema 1.2) is assembled on the server as
+`<figure class="block diagram" id="{block id}" data-diagram-kind="{kind}">`
+holding a `<figcaption>` (title and optional caption) and a complete text
+version in `<div class="diagram-text" data-role="diagram-text">`: an ordered
+list of steps plus a list of connections (loop-back connections marked) for a
+flow, nested lists for a concept map, an ordered list for a timeline, and a
+`<table>` with `<th scope>` headers for a comparison. The figure contains no
+heading elements, form controls or ids other than the block id.
 
 Before embedding JSON, the exporter escapes characters that can terminate or
 recontextualize a script element, including `<`, `>`, `&`, U+2028, and U+2029.
@@ -71,6 +88,9 @@ form-action 'none'
 Exact syntax must be verified in supported browsers when opened from `file:`.
 If a browser does not enforce meta CSP for the local-file context, safe DOM
 construction and the no-generated-code boundary remain mandatory defenses.
+
+Diagram rendering (§6a) leaves this policy unchanged: the SVG is built in the
+page, not loaded, and uses no images.
 
 Runtime CSS and JavaScript hashes are computed deterministically from the exact
 embedded bytes. Export does not use `unsafe-eval`, remote scripts, inline event
@@ -134,6 +154,59 @@ non-disruptively.
 - Clearly states that notes stay in this browser profile for this local file.
 - Print output omits notes.
 - Resetting course data requires confirmation.
+
+## 6a. Diagram rendering (runtime 1.2)
+
+Diagrams are not interactions: they carry no `data-interactive`, record no
+progress and add no focus stop other than the text-version `summary`.
+
+At boot, after the course controls and before the interactive blocks are
+enhanced, the runtime's `Diagrams` module walks every `figure.diagram` in
+document order and looks up its data by block id in the embedded
+`guide-data` (never in the text version). The data is re-checked defensively
+(kind, counts, local ids, label lengths, edge endpoints, hub, comparison
+values). Then:
+
+- **Flow, concept map, timeline:** the runtime inserts an
+  `<svg role="img">` before the text version, with `<title>` (the diagram
+  title) and `<desc>` (a sentence derived from the data, such as the number
+  of steps and connections and the steps in order). The text version moves
+  into a closed `<details class="diagram-text-toggle">` "Text version"
+  disclosure that stays in the DOM. The figure is marked
+  `data-diagram-state="drawn"`.
+- **Comparison:** no SVG. The server table is the rendering; the runtime marks
+  it `data-diagram-state="table"` for styling only.
+- **Failure:** if the data fails the check or drawing throws, any inserted SVG
+  is removed, the text version stays in place outside any disclosure, the figure is marked
+  `data-diagram-state="text"` and the block id is logged to the console. One
+  bad diagram never stops the rest of the guide. Without JavaScript the text
+  version is the diagram (see §15, "Without JavaScript").
+
+Layouts are computed from the data alone, with fixed constants and no DOM
+measurement, so a given guide yields identical SVG markup in a given browser
+engine:
+
+- **Flow:** back edges are found by a depth-first search in document order;
+  the remaining edges are layered by longest path from the sources, layers run
+  top to bottom, nodes in a layer keep document order, and forward edges are
+  straight arrows. Back edges (feedback loops) are dashed curves on the
+  right-hand side.
+- **Concept map:** the hub in the centre, the other nodes on a ring starting
+  at 12 o'clock and running clockwise; edges are straight arrows clipped to
+  the node boxes, with labels at their midpoints.
+- **Timeline:** two SVGs, a horizontal axis with labels alternating above and
+  below, and a vertical list; a CSS media query shows the vertical one on
+  narrow screens.
+
+Labels are wrapped by character count and truncated with an ellipsis past a
+fixed number of lines; the text version is always complete.
+
+Safety: SVG elements are created with `createElementNS` and filled with
+`textContent`. The runtime never uses `innerHTML`, `style` attributes,
+`<style>`, `<image>`, `<foreignObject>` or `<script>` in a diagram. All
+colours come from classes in `runtime.css` over the existing theme tokens, so
+light and dark themes apply unchanged, and a back edge is distinguished by
+dashes and its arrowhead, never by colour alone. Diagrams have no animation.
 
 ## 7. Progress model
 
@@ -319,6 +392,10 @@ default) and learner copy:
   every prompt, choice, and reflection prompt visible. The results page
   and review panels never print, in either mode.
 
+In both modes every diagram's closed "Text version" disclosure opens for
+printing (and closes again afterwards), and diagrams avoid page breaks inside
+the figure.
+
 The chosen mode is a display preference, not progress: it is stored
 alongside theme preference and survives a progress reset.
 
@@ -363,6 +440,22 @@ Custom themes, user CSS, and model-selected styling are deferred.
 If the embedded guide cannot load, the static shell displays a plain-language
 error with schema version, runtime version, and a suggestion to re-export from a
 compatible Education Pipeline version. It never leaves a blank page.
+
+**Without JavaScript.** The guide shell is served `hidden` and only the
+runtime's boot un-hides it, so a browser with JavaScript disabled or blocked
+relies on `runtime.css` instead: under `@media (scripting: none)` it shows the
+shell and hides the "Loading course…" status. No inline style or CSP change is
+involved. The no-JS view reads like the answer-key print: every section is
+stacked in order, the section links jump within the page, knowledge-check
+answer markers and explanations, every worked-reveal step and conclusion, and
+scenario feedback and debriefs are visible, and every diagram shows its
+server-rendered text version (a comparison is its table). Controls that need
+the runtime are hidden: course controls (theme, print mode, progress
+download/restore/reset), section navigation and "Mark section complete", the
+submit/reveal/retry/skip buttons, the choice inputs, and the reflection note
+field with its storage note (reflection prompts and guidance stay). Nothing is
+stored. A browser without the `scripting` media feature shows only the
+loading status, as before.
 
 One malformed optional block must not crash navigation for the entire course in
 development preview. Production export should prevent such content through

@@ -1370,6 +1370,396 @@
   }
 
   // ---------------------------------------------------------------------
+  // Diagrams (schema 1.2): an SVG drawn from guide-data over the server's
+  // complete text version, which stays in the DOM behind a disclosure.
+  // Not an enhancer: a diagram has no interaction and no stored record.
+  // ---------------------------------------------------------------------
+
+  const DIAGRAM_LAYOUT = Object.freeze({
+    MARGIN: 24, NODE_W: 160, NODE_PAD_Y: 10, NODE_LINE_H: 18, NODE_CHARS: 18, NODE_MAX_LINES: 3, COL_GAP: 40,
+    LAYER_GAP: 56, BACK_OFFSET: 32, EDGE_CHARS: 16, EDGE_MAX_LINES: 2, EDGE_LINE_H: 15, EDGE_CHAR_W: 7, R_MIN: 200,
+    RING_GAP: 24, SLOT_W: 150, EVENT_CHARS: 18, EVENT_CHARS_V: 30, EVENT_LINE_H: 16, EVENT_BLOCK_LINES: 5, TICK: 16,
+    MARKER_R: 6, ROW_H: 96, VERT_W: 360,
+  });
+
+  const Diagrams = (() => {
+    const L = DIAGRAM_LAYOUT;
+    const BOUNDS = {
+      flow: { nodes: [2, 12], edges: [1, 16] },
+      concept_map: { nodes: [2, 12], edges: [1, 12] },
+      timeline: { events: [2, 10] },
+      comparison: { items: [2, 4], criteria: [1, 8] },
+    };
+    // An item id may legally be "constructor", which every plain object inherits.
+    const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+    const points = (s) => Array.from(s);
+    // Measured trimmed, as guides/diagrams.py measures len(value.strip()).
+    const isText = (s, limit) => typeof s === "string" && s.trim() !== "" && points(s.trim()).length <= limit;
+    // One decimal, and no DOM measurement anywhere, so a guide always yields the same markup.
+    const fmt = (v) => String(Math.round(v * 10) / 10);
+    let printHooked = false;
+
+    // Defensive re-check of guide-data, which may have been edited by hand.
+    function valid(data, kind) {
+      if (!isPlainObject(data) || data.type !== "diagram" || data.kind !== kind) return false;
+      if (!has(BOUNDS, kind) || !isText(data.title, 120)) return false;
+      const ids = new Set();
+      for (const [name, [min, max]] of Object.entries(BOUNDS[kind])) {
+        const list = data[name];
+        if (!Array.isArray(list) || list.length < min || list.length > max) return false;
+        for (const item of list) {
+          if (!isPlainObject(item)) return false;
+          if (name === "edges") {
+            if (item.label !== undefined && !isText(item.label, 32)) return false;
+            continue;
+          }
+          if (typeof item.id !== "string" || !GUIDE_ID_PATTERN.test(item.id) || ids.has(item.id)) return false;
+          ids.add(item.id);
+          if (!isText(item.label, 48) || (name === "events" && !isText(item.when, 32))) return false;
+        }
+      }
+      if (kind === "comparison") {
+        return data.criteria.every((c) => isPlainObject(c.values) &&
+          data.items.every((item) => has(c.values, item.id) && typeof c.values[item.id] === "string"));
+      }
+      if (kind === "timeline") return true;
+      const nodes = new Set(data.nodes.map((n) => n.id));
+      if (kind === "concept_map" && !nodes.has(data.hub)) return false;
+      return data.edges.every((e) => nodes.has(e.from) && nodes.has(e.to) && e.from !== e.to);
+    }
+
+    // Greedy word wrap in code points; a word wider than a line is cut into
+    // chunks; overflow ends the last kept line in "…".
+    function wrap(value, width, maxLines) {
+      const lines = [];
+      let line = "";
+      for (const word of value.trim().split(/\s+/)) {
+        const chars = points(word);
+        if (line && (chars.length > width || points(line).length + 1 + chars.length > width)) {
+          lines.push(line);
+          line = "";
+        }
+        if (chars.length > width) {
+          for (let i = 0; i < chars.length; i += width) lines.push(chars.slice(i, i + width).join(""));
+        } else line = line ? `${line} ${word}` : word;
+      }
+      if (line) lines.push(line);
+      if (lines.length <= maxLines) return lines;
+      return [...lines.slice(0, maxLines - 1), points(lines[maxLines - 1]).slice(0, width - 1).join("") + "…"];
+    }
+
+    // Attributes are set in the literal's order, fixed in code, so the bytes are too.
+    function svgEl(name, attrs, parent, text) {
+      const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+      for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+      if (text !== undefined) node.textContent = text;
+      if (parent) parent.appendChild(node);
+      return node;
+    }
+
+    // `__` cannot occur in a guide id, so these ids never collide with one.
+    function svgRoot(data, variant, sfx, width, height, desc) {
+      const [w, h, id] = [String(width), String(height), data.id];
+      const svg = svgEl("svg", {
+        class: `diagram-svg diagram-svg--${variant}`, role: "img", focusable: "false", viewBox: `0 0 ${w} ${h}`,
+        width: w, height: h, "aria-labelledby": `${id}__title${sfx}`, "aria-describedby": `${id}__desc${sfx}`,
+      });
+      svgEl("title", { id: `${id}__title${sfx}` }, svg, data.title);
+      svgEl("desc", { id: `${id}__desc${sfx}` }, svg, desc);
+      return svg;
+    }
+
+    // One arrowhead per SVG; its id carries the figure id, so no two figures share one.
+    function arrowDefs(id, sfx) {
+      const defs = svgEl("defs", {});
+      const marker = svgEl("marker", {
+        id: `${id}__arrow${sfx}`, class: "diagram-marker", viewBox: "0 0 10 10", refX: "10", refY: "5",
+        markerWidth: "6", markerHeight: "6", markerUnits: "strokeWidth", orient: "auto-start-reverse",
+      }, defs);
+      svgEl("path", { class: "diagram-arrowhead", d: "M0,0 L10,5 L0,10 z" }, marker);
+      return defs;
+    }
+
+    // `lines` holds strings, or [tspanClass, string] pairs.
+    function textLines(parent, attrs, lines, x, y0, lineH) {
+      const text = svgEl("text", attrs, parent);
+      lines.forEach((line, j) => {
+        const [cls, value] = Array.isArray(line) ? line : [null, line];
+        const pos = { x: fmt(x), y: fmt(y0 + j * lineH) };
+        svgEl("tspan", cls ? { class: cls, ...pos } : pos, text, value);
+      });
+    }
+
+    function drawNode(parent, x, y, nodeH, lines, hub) {
+      const g = svgEl("g", { class: hub ? "diagram-node diagram-node--hub" : "diagram-node" }, parent);
+      const box = { class: "diagram-node-box", x: fmt(x), y: fmt(y), width: fmt(L.NODE_W), height: fmt(nodeH), rx: "6" };
+      svgEl("rect", box, g);
+      const top = y + nodeH / 2 - (lines.length * L.NODE_LINE_H) / 2 + 13;
+      textLines(g, { class: "diagram-node-label", "text-anchor": "middle" }, lines, x + L.NODE_W / 2, top, L.NODE_LINE_H);
+    }
+
+    // Returns the background's bottom-right corner, for the SVG's extent.
+    function drawEdgeLabel(parent, label, px, py) {
+      const lines = wrap(label, L.EDGE_CHARS, L.EDGE_MAX_LINES);
+      const w = Math.max(...lines.map((line) => points(line).length)) * L.EDGE_CHAR_W + 8;
+      const h = lines.length * L.EDGE_LINE_H + 4;
+      const g = svgEl("g", { class: "diagram-edge-label" }, parent);
+      svgEl("rect", {
+        class: "diagram-edge-label-bg", x: fmt(px - w / 2), y: fmt(py - h / 2), width: fmt(w), height: fmt(h), rx: "3",
+      }, g);
+      const top = py - (lines.length * L.EDGE_LINE_H) / 2 + 11;
+      textLines(g, { class: "diagram-edge-label-text", "text-anchor": "middle" }, lines, px, top, L.EDGE_LINE_H);
+      return [px + w / 2, py + h / 2];
+    }
+
+    // Edges a depth-first walk in document order meets while their target is
+    // still on the stack; identical to guides/diagrams.py back_edge_indices.
+    function backEdges(count, links) {
+      const colour = new Array(count).fill("white");
+      const back = new Set();
+      const visit = (u) => {
+        colour[u] = "grey";
+        links.forEach(([from, to], i) => {
+          if (from !== u) return;
+          if (colour[to] === "grey") back.add(i);
+          else if (colour[to] === "white") visit(to);
+        });
+        colour[u] = "black";
+      };
+      for (let u = 0; u < count; u++) if (colour[u] === "white") visit(u);
+      return back;
+    }
+
+    // Longest path from the sources over the forward (acyclic) edges.
+    function ranks(count, forward) {
+      const rank = new Array(count).fill(0);
+      const indegree = new Array(count).fill(0);
+      forward.forEach(([, to]) => (indegree[to] += 1));
+      const done = new Set();
+      while (done.size < count) {
+        const u = indegree.findIndex((d, i) => d === 0 && !done.has(i));
+        if (u < 0) throw new Error("diagram forward edges form a cycle");
+        done.add(u);
+        for (const [from, to] of forward) {
+          if (from === u) [rank[to], indegree[to]] = [Math.max(rank[to], rank[u] + 1), indegree[to] - 1];
+        }
+      }
+      return rank;
+    }
+
+    function drawFlow(data) {
+      const { nodes, edges } = data;
+      const index = new Map(nodes.map((n, i) => [n.id, i]));
+      const links = edges.map((e) => [index.get(e.from), index.get(e.to)]);
+      const back = backEdges(nodes.length, links);
+      const rank = ranks(nodes.length, links.filter((_, i) => !back.has(i)));
+      const lines = nodes.map((n) => wrap(n.label, L.NODE_CHARS, L.NODE_MAX_LINES));
+      const nodeH = 2 * L.NODE_PAD_Y + Math.max(...lines.map((l) => l.length)) * L.NODE_LINE_H;
+      const layers = [];
+      rank.forEach((r, u) => (layers[r] = layers[r] || []).push(u));
+      const layerW = (n) => n * L.NODE_W + (n - 1) * L.COL_GAP;
+      const maxW = Math.max(...layers.map((layer) => layerW(layer.length)));
+      const pos = [];
+      layers.forEach((layer, r) => layer.forEach((u, i) => {
+        const x = L.MARGIN + (maxW - layerW(layer.length)) / 2 + i * (L.NODE_W + L.COL_GAP);
+        pos[u] = { x, y: L.MARGIN + r * (nodeH + L.LAYER_GAP) };
+      }));
+      let [right, bottom] = [0, 0];
+      const grow = ([x, y]) => ([right, bottom] = [Math.max(right, x), Math.max(bottom, y)]);
+      const groups = ["diagram-edges", "diagram-edge-labels", "diagram-nodes"].map((cls) => svgEl("g", { class: cls }));
+      let k = 0;
+      edges.forEach((e, i) => {
+        const [s, t] = [pos[links[i][0]], pos[links[i][1]]];
+        let d, at;
+        if (back.has(i)) {
+          const [sx, sy, tx, ty] = [s.x + L.NODE_W, s.y + nodeH / 2, t.x + L.NODE_W, t.y + nodeH / 2];
+          const cx = L.MARGIN + maxW + L.BACK_OFFSET * ++k;
+          d = `M${fmt(sx)},${fmt(sy)} C${fmt(cx)},${fmt(sy)} ${fmt(cx)},${fmt(ty)} ${fmt(tx)},${fmt(ty)}`;
+          grow([cx, Math.max(sy, ty)]);
+          at = [0.125 * (sx + tx) + 0.75 * cx, (sy + ty) / 2];
+        } else {
+          const [sx, sy, tx, ty] = [s.x + L.NODE_W / 2, s.y + nodeH, t.x + L.NODE_W / 2, t.y];
+          d = `M${fmt(sx)},${fmt(sy)} L${fmt(tx)},${fmt(ty)}`;
+          at = [(sx + tx) / 2, (sy + ty) / 2];
+        }
+        const cls = back.has(i) ? "diagram-edge diagram-edge--back" : "diagram-edge";
+        svgEl("path", { class: cls, d, "marker-end": `url(#${data.id}__arrow)` }, groups[0]);
+        if (typeof e.label === "string") grow(drawEdgeLabel(groups[1], e.label, at[0], at[1]));
+      });
+      pos.forEach(({ x, y }, u) => {
+        drawNode(groups[2], x, y, nodeH, lines[u], false);
+        grow([x + L.NODE_W, y + nodeH]);
+      });
+      const [n, b] = [edges.length, back.size];
+      const desc =
+        `Flow diagram with ${nodes.length} steps and ${n} connection${n === 1 ? "" : "s"}` +
+        `${b ? `, ${b} of which loop${b === 1 ? "s" : ""} back to an earlier step` : ""}. ` +
+        `Steps in order: ${nodes.map((node) => node.label).join("; ")}.`;
+      const svg = svgRoot(data, "flow", "", Math.ceil(right + L.MARGIN), Math.ceil(bottom + L.MARGIN), desc);
+      svg.append(arrowDefs(data.id, ""), ...groups);
+      return [svg];
+    }
+
+    // Two SVGs, horizontal first; runtime.css shows the one that fits the width.
+    function drawTimeline(data) {
+      const events = data.events;
+      const [n, first, last] = [events.length, events[0], events[events.length - 1]];
+      const desc = `Timeline of ${n} events, from ${first.when} (${first.label}) to ${last.when} (${last.label}).`;
+      const blockH = L.EVENT_BLOCK_LINES * L.EVENT_LINE_H;
+      const eventLines = (e, chars) => [
+        ...wrap(e.when, chars, 2).map((line) => ["diagram-event-when", line]),
+        ...wrap(e.label, chars, 3).map((line) => ["diagram-event-label", line]),
+      ];
+      const frame = (svg, x1, y1, x2, y2) => {
+        const axis = svgEl("g", { class: "diagram-axis-group" }, svg);
+        svgEl("line", { class: "diagram-axis", x1: fmt(x1), y1: fmt(y1), x2: fmt(x2), y2: fmt(y2) }, axis);
+        return [axis, svgEl("g", { class: "diagram-event-group" }, svg)];
+      };
+      const marker = (parent, cx, cy) =>
+        svgEl("circle", { class: "diagram-event-marker", cx: fmt(cx), cy: fmt(cy), r: fmt(L.MARKER_R) }, parent);
+
+      const width = 2 * L.MARGIN + n * L.SLOT_W;
+      const axisY = L.MARGIN + blockH + L.TICK;
+      const horizontal = svgRoot(data, "timeline-h", "-h", width, 2 * L.MARGIN + 2 * blockH + 2 * L.TICK, desc);
+      const [axisH, eventsH] = frame(horizontal, L.MARGIN, axisY, width - L.MARGIN, axisY);
+      events.forEach((e, i) => {
+        const [x, dir, lines] = [L.MARGIN + L.SLOT_W / 2 + i * L.SLOT_W, i % 2 ? 1 : -1, eventLines(e, L.EVENT_CHARS)];
+        marker(eventsH, x, axisY);
+        const [y1, y2] = [fmt(axisY + dir * L.MARKER_R), fmt(axisY + dir * L.TICK)];
+        svgEl("line", { class: "diagram-tick", x1: fmt(x), y1, x2: fmt(x), y2 }, axisH);
+        const top = dir < 0 ? axisY - L.TICK - 4 - (lines.length - 1) * L.EVENT_LINE_H : axisY + L.TICK + 14;
+        textLines(eventsH, { "text-anchor": "middle" }, lines, x, top, L.EVENT_LINE_H);
+      });
+
+      const axisX = L.MARGIN + 8;
+      const height = 2 * L.MARGIN + 8 + (n - 1) * L.ROW_H + blockH;
+      const vertical = svgRoot(data, "timeline-v", "-v", L.VERT_W, height, desc);
+      const [, eventsV] = frame(vertical, axisX, L.MARGIN, axisX, height - L.MARGIN);
+      events.forEach((e, i) => {
+        const y = L.MARGIN + 8 + i * L.ROW_H;
+        marker(eventsV, axisX, y);
+        textLines(eventsV, { "text-anchor": "start" }, eventLines(e, L.EVENT_CHARS_V), axisX + 20, y + 5, L.EVENT_LINE_H);
+      });
+      return [horizontal, vertical];
+    }
+
+    // Hub at the centre; the other nodes on a ring from 12 o'clock, clockwise,
+    // with R wide enough that neighbouring ring boxes never touch.
+    function drawConceptMap(data) {
+      const { nodes, edges } = data;
+      const hub = nodes.find((n) => n.id === data.hub);
+      const ring = nodes.filter((n) => n !== hub);
+      const k = ring.length;
+      const lines = new Map(nodes.map((n) => [n.id, wrap(n.label, L.NODE_CHARS, L.NODE_MAX_LINES)]));
+      const nodeH = 2 * L.NODE_PAD_Y + Math.max(...[...lines.values()].map((l) => l.length)) * L.NODE_LINE_H;
+      const r = k <= 1 ? L.R_MIN : Math.max(L.R_MIN, Math.ceil((L.NODE_W + L.RING_GAP) / (2 * Math.sin(Math.PI / k))));
+      const [cx, cy] = [L.MARGIN + r + L.NODE_W / 2, L.MARGIN + r + nodeH / 2];
+      const centre = new Map([[hub.id, [cx, cy]]]);
+      ring.forEach((n, i) => {
+        const theta = -Math.PI / 2 + (2 * Math.PI * i) / k;
+        centre.set(n.id, [cx + r * Math.cos(theta), cy + r * Math.sin(theta)]);
+      });
+      const groups = ["diagram-edges", "diagram-edge-labels", "diagram-nodes"].map((cls) => svgEl("g", { class: cls }));
+      for (const e of edges) {
+        const [[x1, y1], [x2, y2]] = [centre.get(e.from), centre.get(e.to)];
+        const [dx, dy] = [x2 - x1, y2 - y1];
+        // Leave each centre by the part of the segment inside its box.
+        const t = Math.min(L.NODE_W / 2 / Math.abs(dx), nodeH / 2 / Math.abs(dy));
+        const [sx, sy, tx, ty] = [x1 + t * dx, y1 + t * dy, x2 - t * dx, y2 - t * dy];
+        const d = `M${fmt(sx)},${fmt(sy)} L${fmt(tx)},${fmt(ty)}`;
+        svgEl("path", { class: "diagram-edge", d, "marker-end": `url(#${data.id}__arrow)` }, groups[0]);
+        if (typeof e.label === "string") drawEdgeLabel(groups[1], e.label, (sx + tx) / 2, (sy + ty) / 2);
+      }
+      for (const n of [hub, ...ring]) {
+        const [x, y] = centre.get(n.id);
+        drawNode(groups[2], x - L.NODE_W / 2, y - nodeH / 2, nodeH, lines.get(n.id), n === hub);
+      }
+      const desc = `Concept map centered on ${hub.label}, connected to ${k} idea${k === 1 ? "" : "s"}: ` +
+        `${ring.map((n) => n.label).join("; ")}.`;
+      const svg = svgRoot(data, "concept-map", "", 2 * (L.MARGIN + r) + L.NODE_W, 2 * (L.MARGIN + r) + nodeH, desc);
+      svg.append(arrowDefs(data.id, ""), ...groups);
+      return [svg];
+    }
+
+    const LAYOUTS = { flow: drawFlow, concept_map: drawConceptMap, timeline: drawTimeline };
+
+    // A checked diagram with its drawn strings trimmed, so padding a valid
+    // string may carry never reaches the SVG, its title or its description.
+    function trimmed(data) {
+      const tidy = (item, keys) => {
+        const out = { ...item };
+        for (const key of keys) if (typeof out[key] === "string") out[key] = out[key].trim();
+        return out;
+      };
+      const copy = tidy(data, ["title"]);
+      for (const name of ["nodes", "edges", "events"]) {
+        if (Array.isArray(data[name])) copy[name] = data[name].map((item) => tidy(item, ["label", "when"]));
+      }
+      return copy;
+    }
+
+    // The text version moves, unchanged, into a closed disclosure where it stood.
+    function wrapTextVersion(figure, text) {
+      const details = document.createElement("details");
+      details.className = "diagram-text-toggle";
+      details.dataset.role = "diagram-text-toggle";
+      const summary = document.createElement("summary");
+      summary.textContent = "Text version";
+      details.appendChild(summary);
+      figure.insertBefore(details, text);
+      details.appendChild(text);
+    }
+
+    // Print shows every text version; only the ones opened for printing close again.
+    function hookPrint() {
+      if (printHooked) return;
+      printHooked = true;
+      window.addEventListener("beforeprint", () => {
+        for (const details of qsa('details[data-role="diagram-text-toggle"]:not([open])')) {
+          details.open = true;
+          details.dataset.printOpened = "true";
+        }
+      });
+      window.addEventListener("afterprint", () => {
+        for (const details of qsa('details[data-role="diagram-text-toggle"][data-print-opened]')) {
+          details.open = false;
+          delete details.dataset.printOpened;
+        }
+      });
+    }
+
+    function install(guide) {
+      const byId = new Map();
+      const list = (value, key) => (isPlainObject(value) && Array.isArray(value[key]) ? value[key] : []);
+      if (isPlainObject(guide) && guide.schema_version === "1.2") {
+        for (const block of list(guide, "modules").flatMap((m) => list(m, "sections")).flatMap((s) => list(s, "blocks"))) {
+          if (isPlainObject(block) && block.type === "diagram" && typeof block.id === "string") byId.set(block.id, block);
+        }
+      }
+      for (const figure of qsa("figure.diagram")) {
+        const inserted = [];
+        try {
+          const kind = figure.dataset.diagramKind;
+          const text = qs(':scope > [data-role="diagram-text"]', figure);
+          if (!text || !valid(byId.get(figure.id), kind)) throw new Error("invalid diagram");
+          if (kind === "comparison") figure.dataset.diagramState = "table";
+          if (!has(LAYOUTS, kind)) continue;
+          for (const svg of LAYOUTS[kind](trimmed(byId.get(figure.id)))) inserted.push(figure.insertBefore(svg, text));
+          wrapTextVersion(figure, text);
+          figure.dataset.diagramState = "drawn";
+        } catch (error) {
+          inserted.forEach((svg) => svg.remove());
+          figure.dataset.diagramState = "text";
+          console.error("guide-runtime: diagram fell back to its text version:", figure.id);
+        }
+      }
+      hookPrint();
+    }
+
+    return { install };
+  })();
+
+  // ---------------------------------------------------------------------
   // Block dispatch
   // ---------------------------------------------------------------------
 
@@ -1947,11 +2337,11 @@
     try {
       const rawText = dataEl.textContent;
       const guide = JSON.parse(rawText);
-      const supportedSchemas = new Set(["1.0", "1.1"]);
+      const supportedSchemas = new Set(["1.0", "1.1", "1.2"]);
       if (
         !supportedSchemas.has(guide.schema_version) ||
         guide.schema_version !== expectedSchema ||
-        expectedRuntime !== "1.1"
+        expectedRuntime !== "1.2"
       ) {
         throw new Error("unsupported guide schema/runtime version");
       }
@@ -1965,6 +2355,8 @@
 
       document.documentElement.classList.add("js-enhanced");
       enhanceCourseControls(guide);
+      // Never throws: each figure falls back to its text version on its own.
+      Diagrams.install(guide);
       enhanceBlocks();
       // Both read the enhanced blocks, and the first section shown asks the
       // review queue for a panel, so both are ready before Nav boots.
