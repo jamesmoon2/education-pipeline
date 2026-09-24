@@ -6,6 +6,7 @@ import type { Server } from "node:http";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { gotoFileUrl } from "./helpers/file-origin";
 
 const ROOT = path.resolve(process.cwd(), "..");
 
@@ -235,8 +236,11 @@ async function gotoSection(page: import("@playwright/test").Page, sectionId: str
 for (const transport of TRANSPORTS) {
   test.describe(`guide runtime via ${transport}`, () => {
     test.beforeEach(async ({ page }) => {
-      const url = transport === "http" ? httpBaseUrl : fileUrl;
-      await page.goto(url, { waitUntil: "load" });
+      // Several tests here reload and read back what the guide stored, so
+      // the file:// guide must not be the page's first file:// document
+      // (see gotoFileUrl).
+      if (transport === "http") await page.goto(httpBaseUrl, { waitUntil: "load" });
+      else await gotoFileUrl(page, fileUrl);
     });
 
     test("renders the deterministic fixture shell and hides the loading status", async ({ page }) => {

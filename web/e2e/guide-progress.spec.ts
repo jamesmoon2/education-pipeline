@@ -6,6 +6,7 @@ import type { Server } from "node:http";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { gotoFileUrl } from "./helpers/file-origin";
 
 // Progress portability for the exported guide runtime: the carry-over offer
 // made when a re-export moved the storage key, and the download/restore
@@ -434,7 +435,9 @@ test.describe("progress carried over from a previous export", () => {
 
   test("the offer works the same way from a file:// URL", async ({ page }) => {
     await seed(page, { [OLD_KEY]: NEWEST_STATE });
-    await page.goto(fileUrl, { waitUntil: "load" });
+    // Resuming writes the adopted record and reloads, so the guide must not
+    // be the page's first file:// document (see gotoFileUrl).
+    await gotoFileUrl(page, fileUrl);
 
     await expect(page.locator(banner)).toBeVisible();
     await page.getByRole("button", { name: "Resume that progress" }).click();
