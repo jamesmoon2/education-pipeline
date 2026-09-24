@@ -166,3 +166,25 @@ This was a headless Chromium check against the committed export and the
 assembled fixture. The flow's back edge draws as a dashed right-hand curve with
 its label. The comparison is a real table with scoped headers. The timeline
 alternates labels above and below the axis.
+
+## After PR review (Codex round 1 and CI)
+
+### Codex round 1 (T57)
+
+Codex raised two P2 findings on PR #42. Both were verified and fixed in `99c88e7`.
+
+- **No-JS view.** With JavaScript off, a guide showed only "Loading course…".
+  - An `@media (scripting: none)` rule in `runtime.css` now reveals the static guide as an answer-key view and hides the controls that need JavaScript.
+  - The CSP string is unchanged.
+  - Accepted: a browser without the `scripting` media feature still shows only the loading status.
+- **Runtime limits measured untrimmed.** The runtime counted diagram text limits on the raw string, while Python counts the trimmed value. The runtime now measures and draws trimmed text.
+
+### The `file://` progress flake
+
+A Playwright case that predates Phase 5 failed once in CI:
+`guide-progress.spec.ts` "the offer works the same way from a file:// URL".
+
+- **Root cause.** It is a Chromium behaviour, not the runtime. A fresh page sometimes loses every `localStorage` write made by the first `file://` document it opens: about 5% of runs lose the write across a reload, against 0/200 over http. A bare setItem-then-reload page with no guide code reproduces it.
+- **Fix** (`374b0a6`, test-only). A new helper, `web/e2e/helpers/file-origin.ts`, opens a throwaway `file://` document first, so the guide is never the page's first `file://` document.
+- **Evidence.** Before the fix, the case failed 11/300 alone. After it, 0/300, and 396/396 on the guide specs repeated three times with 4 workers.
+- **Real learners.** A learner opening an exported guide from disk could hit the same browser behaviour on the very first reload after resuming progress. This is recorded as a known browser limitation, not worked around in the runtime.
