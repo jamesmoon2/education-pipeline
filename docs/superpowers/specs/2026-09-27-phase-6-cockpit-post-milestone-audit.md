@@ -69,6 +69,28 @@ courses hidden. A sort the user picks on the library page does not change it.
 Escape closes the overlay even when shortcuts are off, because a dialog must
 always be closable.
 
+### Change detection lists directories as well as stats files (T62 design)
+
+- Decision 11 said "stat-only". Finding new topics and jobs needs directory
+  listings (`os.scandir`), and directory mtimes alone miss in-place edits.
+- The shipped rule: no file *content* is ever read. The scan stats every
+  entry in a run tree and every `job.json`, and it skips job logs.
+- The per-job nudge from `JobStore.save` lowers latency only. Correctness
+  rests on the scan.
+
+### Dead peers are found by a liveness check, not the heartbeat (T62 design)
+
+Decision 12 said a heartbeat surfaces a dead peer within one interval. On TCP,
+the first write after the peer closes still succeeds, so a heartbeat needs two
+intervals. Each stream checks its socket for EOF every second instead, and
+the 15 s heartbeat only keeps proxies and the client watchdog alive.
+
+### Six files in T62a, not four (T62a)
+
+Emitting a new error code trips the error-catalog test, and cataloguing it
+trips the troubleshooting-doc test. So `errors.py` and
+`docs/troubleshooting.md` gained an `events_capacity` entry.
+
 ## Accepted limitations
 
 - **Theme select hidden on narrow screens (T60).** It sits inside
@@ -86,3 +108,20 @@ always be closable.
   no `isContentEditable`.
 - **`/` from another page (T61).** It navigates to the library and waits up to
   10 s for "Filter courses" to mount before giving up quietly.
+- **Filesystems whose mtimes can hide a change (T62a).** On coarse or cached
+  mtimes (for example FAT, or some network mounts), or on Windows where
+  `st_ino` is 0, an in-place edit that keeps the same size inside one mtime
+  tick can go unnoticed. The 300 s lifetime reconnect resyncs everything, so
+  staleness is bounded at 5 minutes. Polling had no such gap.
+- **Scan cost grows with job history (T62a).** Every `job.json` is stat'ed on
+  each pass, about 26 ms for 1,500 jobs in this container. The interval
+  stretches to 10× the last pass, so a large workspace slows the scan rather
+  than the daemon.
+- **A plan edit sends `topics`, not `run{t}` (T62 design, manager ruling 3).**
+  A run board open in another tab shows the previous parallelism figure until
+  the next `run{t}` notice or the 5-minute resync.
+- **Symlinked run directories are not followed (T62a).**
+- **A client that stops reading holds a slot (T62a).** A peer that stays
+  connected but stops reading keeps its stream slot until the 300 s lifetime
+  ends it. Loopback socket buffers never fill at notice rates, so the write
+  timeout does not fire first.

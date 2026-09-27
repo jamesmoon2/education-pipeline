@@ -22,6 +22,7 @@ from education_pipeline.config import (
     parse_model_plan,
 )
 from education_pipeline.daemon import lifecycle
+from education_pipeline.daemon.events import EventHub
 from education_pipeline.daemon.jobs import (
     DEFAULT_TIMEOUT_SECONDS,
     JobRunner,
@@ -126,6 +127,10 @@ def serve(
     try:
         config = WorkspaceConfigSource(root)
         store = JobStore(root)
+        # GET /v1/events: every job save nudges the hub (latency only; its
+        # scan sees the save too). job_saved takes only the hub's leaf lock.
+        events = EventHub(root)
+        store.on_saved = lambda job: events.job_saved(job.topic_id)
         runs = RunStore(root)
 
         def _runner_for(job):
@@ -178,6 +183,7 @@ def serve(
             profiles=ProfileStore(root),
             on_shutdown=shutdown.set,
             web_dist=default_web_dist(),
+            events=events,
         )
         # Decision 9: a job the continue route started carries the chain on
         # when it finishes. The hook needs the context, which needs the worker,
@@ -201,6 +207,9 @@ def serve(
         try:
             shutdown.wait()
         finally:
+            # First: open streams are handler threads that server.shutdown()
+            # never signals; close() wakes each one so its socket closes.
+            events.close()
             server.shutdown()
             worker.stop()
             lifecycle.remove_discovery(root)
