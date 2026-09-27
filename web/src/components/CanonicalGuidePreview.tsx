@@ -18,10 +18,21 @@ export interface CanonicalGuidePreviewHandle {
   revealEvidence(evidence: PersonalizationEvidence): boolean;
 }
 
+export interface CanonicalGuidePreviewProps {
+  topicId: string;
+  /** Bumped after a mutation: refetch in place, without remounting the frame. */
+  refreshGeneration?: number;
+  restoreSection?: string | null;
+  onSectionChange?: (id: string) => void;
+}
+
 const CanonicalGuidePreview = forwardRef<
   CanonicalGuidePreviewHandle,
-  { topicId: string }
->(function CanonicalGuidePreview({ topicId }, ref) {
+  CanonicalGuidePreviewProps
+>(function CanonicalGuidePreview(
+  { topicId, refreshGeneration = 0, restoreSection, onSectionChange },
+  ref,
+) {
   const frameRef = useRef<GuidePreviewFrameHandle>(null);
   const generationRef = useRef(0);
   const pendingEvidenceRef = useRef<{
@@ -69,11 +80,16 @@ const CanonicalGuidePreview = forwardRef<
   }, [html, topicId]);
 
   useEffect(() => {
-    let disposed = false;
     setPreview(null);
     setMissing(false);
     setError(null);
     setLoading(true);
+  }, [topicId]);
+
+  useEffect(() => {
+    // A refresh keeps the current document on screen: the frame is keyed by
+    // its HTML, so it reloads only when the rendered guide actually changes.
+    let disposed = false;
 
     getStageContent(topicId, "repair")
       .then((stage) => {
@@ -82,16 +98,27 @@ const CanonicalGuidePreview = forwardRef<
         // newer unapproved response: that would make the cockpit preview less
         // durable than the final/export source it is meant to represent.
         if (stage.approved === null) {
+          setPreview(null);
           setMissing(true);
+          setError(null);
           return null;
         }
         return postGuidePreview(stage.approved);
       })
       .then((result) => {
-        if (!disposed && result) setPreview({ topicId, html: result.html });
+        if (disposed || !result) return;
+        setMissing(false);
+        setError(null);
+        setPreview((current) =>
+          current?.topicId === topicId && current.html === result.html
+            ? current
+            : { topicId, html: result.html },
+        );
       })
       .catch((caught: unknown) => {
         if (!disposed) {
+          setPreview(null);
+          setMissing(false);
           setError(caught instanceof Error ? caught.message : "Guide preview is unavailable.");
         }
       })
@@ -102,7 +129,7 @@ const CanonicalGuidePreview = forwardRef<
     return () => {
       disposed = true;
     };
-  }, [topicId]);
+  }, [topicId, refreshGeneration]);
 
   return (
     <section className="canonical-guide-preview" aria-labelledby="canonical-guide-preview-heading">
@@ -115,7 +142,14 @@ const CanonicalGuidePreview = forwardRef<
       {loading && <p role="status">Loading guide preview…</p>}
       {missing && <p>No approved repair guide is available yet.</p>}
       {error && <p className="error" role="alert">{error}</p>}
-      {html && <GuidePreviewFrame ref={frameRef} html={html} />}
+      {html && (
+        <GuidePreviewFrame
+          ref={frameRef}
+          html={html}
+          restoreSection={restoreSection}
+          onSectionChange={onSectionChange}
+        />
+      )}
     </section>
   );
 });

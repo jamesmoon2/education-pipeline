@@ -55,10 +55,14 @@ function InteractiveGuidePanels({
   status,
   mutationGeneration,
   onStatusChanged,
+  previewSection,
+  onPreviewSectionChange,
 }: {
   status: RunStatus;
   mutationGeneration: number;
   onStatusChanged: () => void;
+  previewSection: string | null;
+  onPreviewSectionChange: (id: string) => void;
 }) {
   const fetchPersonalization = useCallback(
     () => getPersonalization(status.topic_id),
@@ -71,6 +75,8 @@ function InteractiveGuidePanels({
   } = usePolling(fetchPersonalization, 5_000, { events: { run: status.topic_id } });
   const previewRef = useRef<CanonicalGuidePreviewHandle>(null);
   const observedMutationGeneration = useRef(mutationGeneration);
+  // Bumped by each mutation so the preview refetches in place; it no longer
+  // remounts, and its iframe reloads only when the rendered HTML changes.
   const [previewGeneration, setPreviewGeneration] = useState(0);
   const refreshWorkspace = useCallback(() => {
     onStatusChanged();
@@ -118,9 +124,11 @@ function InteractiveGuidePanels({
           )}
         </div>
         <CanonicalGuidePreview
-          key={previewGeneration}
           ref={previewRef}
           topicId={status.topic_id}
+          refreshGeneration={previewGeneration}
+          restoreSection={previewSection}
+          onSectionChange={onPreviewSectionChange}
         />
       </section>
       <section aria-labelledby="validation-heading">
@@ -187,6 +195,10 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
     setContentGeneration((generation) => generation + 1);
   }, [refreshStatus]);
   const start = useAction(refresh);
+  // The last section the reviewer moved to inside the guide preview. Held
+  // here, above anything that can unmount the preview, so a reloaded preview
+  // document is sent back to it.
+  const [previewSection, setPreviewSection] = useState<string | null>(null);
   // `n` opens the stage the run's next action names.
   const navigate = useNavigate();
   const nextStage = status?.topic_id === topicId ? status.next_action.stage : null;
@@ -271,6 +283,8 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
           status={status}
           mutationGeneration={contentGeneration}
           onStatusChanged={refreshStatus}
+          previewSection={previewSection}
+          onPreviewSectionChange={setPreviewSection}
         />
       )}
       <RunPlanPanel topicId={status.topic_id} nextStage={status.next_action.stage} />

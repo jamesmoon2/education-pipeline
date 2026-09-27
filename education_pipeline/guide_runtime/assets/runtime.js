@@ -8,6 +8,8 @@
   const qs = (sel, root) => (root || document).querySelector(sel);
   const qsa = (sel, root) => Array.from((root || document).querySelectorAll(sel));
   const PREVIEW_EVIDENCE_MESSAGE_TYPE = "education-pipeline:preview-evidence";
+  const PREVIEW_POSITION_MESSAGE_TYPE = "education-pipeline:preview-position";
+  const PREVIEW_SHOW_MESSAGE_TYPE = "education-pipeline:preview-show";
   const GUIDE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 
   function isPlainObject(v) {
@@ -753,6 +755,9 @@
     let sections = [];
     let pages = [];
     let current = null;
+    // Told of each change to a different guide section (never the results
+    // page). Only the preview position bridge sets it.
+    let onSectionChange = null;
 
     function collect() {
       sections = qsa('main section[data-role="guide-section"]').map((el) => ({ id: el.id, el }));
@@ -810,7 +815,8 @@
       const opts = options || {};
       const idx = indexOf(id);
       if (idx === -1) return false;
-      if (current && current !== id) maybeAutoCompleteLeaving(current);
+      const changed = current !== id;
+      if (current && changed) maybeAutoCompleteLeaving(current);
       pages.forEach((s) => s.el.classList.toggle("is-current", s.id === id));
       current = id;
       State.setLastSection(id);
@@ -836,6 +842,7 @@
       // (how far back the missed block sits) can change.
       Review.refresh(id);
       Progress.update();
+      if (changed && onSectionChange && isSection(id)) onSectionChange(id);
       return true;
     }
     function next() {
@@ -957,7 +964,18 @@
     function showSection(id) {
       return Boolean(id) && show(id, { focus: false });
     }
-    return { boot, toggleDrawer, revealEvidenceTarget, showSection, next, prev };
+    function isSection(id) {
+      return sectionIndexOf(id) > -1;
+    }
+    // Registers the section-change listener and returns the guide section on
+    // screen now (null on the results page).
+    function watchSections(listener) {
+      onSectionChange = listener;
+      return isSection(current) ? current : null;
+    }
+    return {
+      boot, toggleDrawer, revealEvidenceTarget, showSection, isSection, watchSections, next, prev,
+    };
   })();
 
   // ---------------------------------------------------------------------
@@ -995,6 +1013,29 @@
       if (!target) return;
       Nav.revealEvidenceTarget(target);
     });
+  }
+
+  // The preview reports its guide section to the cockpit (initial true for
+  // the boot position) and shows a section the cockpit names. The opaque
+  // srcDoc origin can only be addressed with "*"; both payloads carry only a
+  // section id the cockpit already holds. Exported guides never post.
+  function installPreviewPositionBridge() {
+    if (document.documentElement.dataset.guideMode !== "preview") return;
+    const report = (id, initial) =>
+      window.parent.postMessage({ type: PREVIEW_POSITION_MESSAGE_TYPE, id, initial }, "*");
+
+    // Installed before the boot report, which the cockpit may answer at once.
+    window.addEventListener("message", (event) => {
+      if (event.source !== window.parent || !isPlainObject(event.data)) return;
+      const keys = Object.keys(event.data).sort();
+      if (keys.length !== 2 || keys.join(",") !== "id,type") return;
+      if (event.data.type !== PREVIEW_SHOW_MESSAGE_TYPE) return;
+      if (typeof event.data.id !== "string" || !GUIDE_ID_PATTERN.test(event.data.id)) return;
+      if (Nav.isSection(event.data.id)) Nav.showSection(event.data.id);
+    });
+
+    const bootSection = Nav.watchSections((id) => report(id, false));
+    if (bootSection) report(bootSection, true);
   }
 
   // ---------------------------------------------------------------------
@@ -2366,6 +2407,7 @@
       Nav.boot();
       installKeyboardPaging();
       installPreviewEvidenceBridge(guide);
+      installPreviewPositionBridge();
       Progress.update();
       // Stands on every load until the learner answers it or genuinely starts
       // this export; Migration.offer decides from the stored record itself.
