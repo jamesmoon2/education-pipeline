@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-guide-schema="1.3" data-guide-runtime="1.3" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-Rh34Gxn6YmsoGTMdGV9PlZVZzMu68dptUpou1DVzc6Q='; script-src 'sha256-qQkvx6wMzEj1rnK4ovSDdeHUsEEDbScjwXHodvkXdjY='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
+<html lang="en" data-guide-schema="1.3" data-guide-runtime="1.3" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-Rh34Gxn6YmsoGTMdGV9PlZVZzMu68dptUpou1DVzc6Q='; script-src 'sha256-ZxEkvKdmYuYtnDQZmoKsZwdBLn7Z2RKhCoWx7yRsVjA='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
  * Derives from the product token system in docs/design-system.md (§4.2):
  * the guide surface reads with Literata on a white surface, interface
  * chrome uses the Plex Sans stack, and status is never color alone.
@@ -1665,7 +1665,7 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
     MARGIN: 24, NODE_W: 160, NODE_PAD_Y: 10, NODE_LINE_H: 18, NODE_CHARS: 18, NODE_MAX_LINES: 3, COL_GAP: 40,
     LAYER_GAP: 56, BACK_OFFSET: 32, EDGE_CHARS: 16, EDGE_MAX_LINES: 2, EDGE_LINE_H: 15, EDGE_CHAR_W: 7, R_MIN: 200,
     RING_GAP: 24, SLOT_W: 150, EVENT_CHARS: 18, EVENT_CHARS_V: 30, EVENT_LINE_H: 16, EVENT_BLOCK_LINES: 5, TICK: 16,
-    MARKER_R: 6, ROW_H: 96, VERT_W: 360, SEQ_W: 136, SEQ_GAP: 48, SEQ_CHARS: 16, SEQ_HEAD: 56, SEQ_ROW_H: 64,
+    MARKER_R: 6, ROW_H: 96, VERT_W: 360, SLOT_CHANNEL_W: 12, SLOT_GAP: 24, SEQ_W: 136, SEQ_GAP: 48, SEQ_CHARS: 16, SEQ_HEAD: 56, SEQ_ROW_H: 64,
     SEQ_TAIL: 28, SEQ_MSG_CHARS: 22, SEQ_BADGE_R: 10,
   });
 
@@ -1864,52 +1864,171 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
       return rank;
     }
 
+    // Layered flow. Ranks are longest paths from the sources over forward
+    // edges; an edge spanning several ranks passes through one narrow channel
+    // slot per rank it crosses, so it never runs through a node. Barycenter
+    // sweeps order each rank to reduce crossings, and nodes are pulled toward
+    // the centres of their neighbours. A graph whose forward edges each span
+    // one rank lays out exactly as the 1.2 runtime drew it.
     function drawFlow(data) {
       const { nodes, edges } = data;
       const index = new Map(nodes.map((n, i) => [n.id, i]));
       const links = edges.map((e) => [index.get(e.from), index.get(e.to)]);
       const back = backEdges(nodes.length, links);
-      const rank = ranks(nodes.length, links.filter((_, i) => !back.has(i)));
+      const forwardIdx = edges.map((_, i) => i).filter((i) => !back.has(i));
+      const rank = ranks(nodes.length, forwardIdx.map((i) => links[i]));
       const lines = nodes.map((n) => wrap(n.label, L.NODE_CHARS, L.NODE_MAX_LINES));
       const nodeH = 2 * L.NODE_PAD_Y + Math.max(...lines.map((l) => l.length)) * L.NODE_LINE_H;
-      const layers = [];
-      rank.forEach((r, u) => (layers[r] = layers[r] || []).push(u));
-      const layerW = (n) => n * L.NODE_W + (n - 1) * L.COL_GAP;
-      const maxW = Math.max(...layers.map((layer) => layerW(layer.length)));
-      const pos = [];
-      layers.forEach((layer, r) => layer.forEach((u, i) => {
-        const x = L.MARGIN + (maxW - layerW(layer.length)) / 2 + i * (L.NODE_W + L.COL_GAP);
-        pos[u] = { x, y: L.MARGIN + r * (nodeH + L.LAYER_GAP) };
-      }));
+
+      // Items: the real nodes, then one channel slot per rank a long edge crosses.
+      const items = nodes.map((_, u) => ({ r: rank[u], w: L.NODE_W, slot: false }));
+      const chains = new Map();
+      for (const i of forwardIdx) {
+        const [s0, t0] = links[i];
+        const chain = [s0];
+        for (let r = rank[s0] + 1; r < rank[t0]; r++) {
+          items.push({ r, w: L.SLOT_CHANNEL_W, slot: true });
+          chain.push(items.length - 1);
+        }
+        chain.push(t0);
+        chains.set(i, chain);
+      }
+      const up = items.map(() => []);
+      const down = items.map(() => []);
+      for (const chain of chains.values()) {
+        for (let k = 0; k + 1 < chain.length; k++) {
+          down[chain[k]].push(chain[k + 1]);
+          up[chain[k + 1]].push(chain[k]);
+        }
+      }
+      const R = Math.max(...rank) + 1;
+      const layers = Array.from({ length: R }, () => []);
+      items.forEach((item, i) => layers[item.r].push(i));
+      const order = new Array(items.length);
+      const renumber = () => layers.forEach((layer) => layer.forEach((i, k) => (order[i] = k)));
+      renumber();
+      const reorder = (layer, nbrs) => {
+        const keyed = layer.map((i) => {
+          const n = nbrs[i];
+          return [n.length ? n.reduce((a, j) => a + order[j], 0) / n.length : order[i], order[i], i];
+        });
+        keyed.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+        layer.splice(0, layer.length, ...keyed.map((k) => k[2]));
+        renumber();
+      };
+      for (let sweep = 0; sweep < 4; sweep++) {
+        for (let r = 1; r < R; r++) reorder(layers[r], up);
+        for (let r = R - 2; r >= 0; r--) reorder(layers[r], down);
+      }
+
+      // X: centre each rank on the widest, then pull toward neighbours.
+      const gap = (a, b) => (items[a].slot || items[b].slot ? L.SLOT_GAP : L.COL_GAP);
+      const widthOf = (layer) => layer.reduce((a, i, k) => a + items[i].w + (k ? gap(layer[k - 1], i) : 0), 0);
+      const maxW = Math.max(...layers.map(widthOf));
+      const left = new Array(items.length);
+      layers.forEach((layer) => {
+        let x = L.MARGIN + (maxW - widthOf(layer)) / 2;
+        layer.forEach((i, k) => {
+          if (k) x += gap(layer[k - 1], i);
+          left[i] = x;
+          x += items[i].w;
+        });
+      });
+      const mid = (i) => left[i] + items[i].w / 2;
+      const settle = (layer, nbrs) => {
+        const want = layer.map((i) => (nbrs[i].length ? nbrs[i].reduce((a, j) => a + mid(j), 0) / nbrs[i].length : mid(i)));
+        const pos = [];
+        layer.forEach((i, k) => {
+          let x = want[k] - items[i].w / 2;
+          if (k) x = Math.max(x, pos[k - 1] + items[layer[k - 1]].w + gap(layer[k - 1], i));
+          pos.push(x);
+        });
+        const shift = layer.reduce((a, i, k) => a + want[k] - (pos[k] + items[i].w / 2), 0) / layer.length;
+        layer.forEach((i, k) => (left[i] = pos[k] + Math.max(0, shift)));
+      };
+      for (let pass = 0; pass < 2; pass++) {
+        for (let r = 1; r < R; r++) settle(layers[r], up);
+        for (let r = R - 2; r >= 0; r--) settle(layers[r], down);
+      }
+      const minLeft = Math.min(...left);
+      for (let i = 0; i < left.length; i++) left[i] += L.MARGIN - minLeft;
+      const rowY = (r) => L.MARGIN + r * (nodeH + L.LAYER_GAP);
+      const rightmost = Math.max(...nodes.map((_, u) => left[u] + L.NODE_W));
+
+      // Ports: a node's forward edges leave (and arrive) spread across its
+      // border in the order of where they go, so branches separate cleanly.
+      const outPort = new Map();
+      const inPort = new Map();
+      const spread = (u, list, map) => {
+        list.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+        list.forEach(([i], j) => map.set(i, left[u] + (L.NODE_W * (j + 1)) / (list.length + 1)));
+      };
+      nodes.forEach((_, u) => {
+        const outs = forwardIdx.filter((i) => links[i][0] === u).map((i) => [i, mid(chains.get(i)[1])]);
+        const ins = forwardIdx.filter((i) => links[i][1] === u).map((i) => [i, mid(chains.get(i).at(-2))]);
+        spread(u, outs, outPort);
+        spread(u, ins, inPort);
+      });
+
       let [right, bottom] = [0, 0];
       const grow = ([x, y]) => ([right, bottom] = [Math.max(right, x), Math.max(bottom, y)]);
       const groups = ["diagram-edges", "diagram-edge-labels", "diagram-nodes"].map((cls) => svgEl("g", { class: cls }));
       const geo = { nodes: [], edges: [] };
       let k = 0;
       edges.forEach((e, i) => {
-        const [s, t] = [pos[links[i][0]], pos[links[i][1]]];
+        const [s0, t0] = links[i];
         let d, at, seg;
         if (back.has(i)) {
-          const [sx, sy, tx, ty] = [s.x + L.NODE_W, s.y + nodeH / 2, t.x + L.NODE_W, t.y + nodeH / 2];
-          const cx = L.MARGIN + maxW + L.BACK_OFFSET * ++k;
+          const [sx, sy, tx, ty] = [left[s0] + L.NODE_W, rowY(rank[s0]) + nodeH / 2, left[t0] + L.NODE_W, rowY(rank[t0]) + nodeH / 2];
+          const cx = rightmost + L.BACK_OFFSET * ++k;
           d = `M${fmt(sx)},${fmt(sy)} C${fmt(cx)},${fmt(sy)} ${fmt(cx)},${fmt(ty)} ${fmt(tx)},${fmt(ty)}`;
           grow([cx, Math.max(sy, ty)]);
           at = [0.125 * (sx + tx) + 0.75 * cx, (sy + ty) / 2];
           seg = { c: [sx, sy, cx, sy, cx, ty, tx, ty] };
         } else {
-          const [sx, sy, tx, ty] = [s.x + L.NODE_W / 2, s.y + nodeH, t.x + L.NODE_W / 2, t.y];
-          d = `M${fmt(sx)},${fmt(sy)} L${fmt(tx)},${fmt(ty)}`;
-          at = [(sx + tx) / 2, (sy + ty) / 2];
-          seg = { l: [sx, sy, tx, ty] };
+          const chain = chains.get(i);
+          const [sx, sy] = [outPort.get(i), rowY(rank[s0]) + nodeH];
+          const [tx, ty] = [inPort.get(i), rowY(rank[t0])];
+          if (chain.length === 2) {
+            d = `M${fmt(sx)},${fmt(sy)} L${fmt(tx)},${fmt(ty)}`;
+            at = [(sx + tx) / 2, (sy + ty) / 2];
+            seg = { l: [sx, sy, tx, ty] };
+          } else {
+            // Down through each channel slot: across its rank row, then on.
+            const pts = [[sx, sy]];
+            for (const slot of chain.slice(1, -1)) {
+              const x = mid(slot);
+              pts.push([x, rowY(items[slot].r)], [x, rowY(items[slot].r) + nodeH]);
+              grow([left[slot] + items[slot].w, 0]);
+            }
+            pts.push([tx, ty]);
+            const parts = [`M${fmt(pts[0][0])},${fmt(pts[0][1])}`];
+            const cubics = [];
+            for (let j = 1; j < pts.length; j++) {
+              const [[x0, y0], [x1, y1]] = [pts[j - 1], pts[j]];
+              if (x0 === x1) {
+                parts.push(`L${fmt(x1)},${fmt(y1)}`);
+                cubics.push([x0, y0, x0, y0, x1, y1, x1, y1]);
+              } else {
+                const my = (y0 + y1) / 2;
+                parts.push(`C${fmt(x0)},${fmt(my)} ${fmt(x1)},${fmt(my)} ${fmt(x1)},${fmt(y1)}`);
+                cubics.push([x0, y0, x0, my, x1, my, x1, y1]);
+              }
+            }
+            d = parts.join(" ");
+            at = [(pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2];
+            seg = { cs: cubics };
+          }
         }
         const cls = back.has(i) ? "diagram-edge diagram-edge--back" : "diagram-edge";
         const el = svgEl("path", { class: cls, d, "marker-end": `url(#${data.id}__arrow)` }, groups[0]);
         if (typeof e.label === "string") grow(drawEdgeLabel(groups[1], e.label, at[0], at[1]));
-        geo.edges.push({ from: links[i][0], to: links[i][1], label: e.label, seg, el });
+        geo.edges.push({ from: s0, to: t0, label: e.label, seg, el });
       });
-      pos.forEach(({ x, y }, u) => {
+      nodes.forEach((node, u) => {
+        const [x, y] = [left[u], rowY(rank[u])];
         const el = drawNode(groups[2], x, y, nodeH, lines[u], false);
-        geo.nodes.push({ el, label: nodes[u].label, detail: nodes[u].detail });
+        geo.nodes.push({ el, label: node.label, detail: node.detail });
         grow([x + L.NODE_W, y + nodeH]);
       });
       const [n, b] = [edges.length, back.size];
@@ -2434,19 +2553,20 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
     // Arc-length sampling of a straight or cubic edge, from layout geometry.
     function sampler(seg) {
       const pts = [];
-      if (seg.l) {
-        const [x1, y1, x2, y2] = seg.l;
-        pts.push([x1, y1], [x2, y2]);
-      } else {
-        const [x0, y0, x1, y1, x2, y2, x3, y3] = seg.c;
-        for (let i = 0; i <= 48; i++) {
+      const cubic = ([x0, y0, x1, y1, x2, y2, x3, y3], first) => {
+        for (let i = first ? 0 : 1; i <= 48; i++) {
           const [t, u] = [i / 48, 1 - i / 48];
           pts.push([
             u * u * u * x0 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * x3,
             u * u * u * y0 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y3,
           ]);
         }
-      }
+      };
+      if (seg.l) {
+        const [x1, y1, x2, y2] = seg.l;
+        pts.push([x1, y1], [x2, y2]);
+      } else if (seg.cs) seg.cs.forEach((c, j) => cubic(c, j === 0));
+      else cubic(seg.c, true);
       const cum = [0];
       for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
       const length = cum[cum.length - 1] || 1;

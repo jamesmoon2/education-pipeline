@@ -121,6 +121,20 @@ are legal (a client may ask twice).
   description.
 - CSP unchanged: animation is attribute/CSSOM updates from the hashed runtime.
 
+## Flow layout: long edges and crossings
+
+The first real 1.3 course (an AWS primer, eight modules) showed the 1.2
+flow layout's accepted limitation at scale: every decision tree had an edge
+that skipped a rank and was drawn straight through the nodes between. Runtime
+1.3 routes such an edge through one narrow channel slot per rank it crosses
+(Sugiyama-style dummy nodes), orders each rank with four barycenter sweeps,
+pulls nodes toward their neighbours' centres, and spreads a node's forward
+edges across its border in the order of their destinations. A graph whose
+forward edges each span one rank, and whose nodes have at most one forward
+edge in and out, lays out exactly as before (the 1.2 fixture's geometry and
+`viewBox` are unchanged); a new e2e test samples every edge path and fails if
+it enters a node box it does not connect.
+
 ## Non-goals
 
 Model-authored animation timing, arbitrary 3D scenes, and shader code. A

@@ -23,6 +23,21 @@ function assemble(fixture: string): string {
   return execFileSync("python3", ["-c", script], { cwd: ROOT, encoding: "utf8" });
 }
 
+// A flow whose edges skip layers (a→c spans two ranks, a→d three).
+function skipLayerFlowHtml(): string {
+  const script = [
+    "import json, sys",
+    "from education_pipeline.guides import parse_guide, normalize_guide",
+    "from education_pipeline.guides.document import assemble_guide_document",
+    `d=json.load(open('${MOTION_FIXTURE}'))`,
+    "b=[x for m in d['modules'] for s in m['sections'] for x in s['blocks'] if x['id']=='growth-loop-flow'][0]",
+    "b['nodes']=[{'id':k,'label':k.upper()+' step'} for k in ('a','b','c','d')]",
+    "b['edges']=[{'from':'a','to':'b'},{'from':'b','to':'c'},{'from':'a','to':'c','label':'skips b'},{'from':'c','to':'d'},{'from':'a','to':'d','label':'skips two'}]",
+    "sys.stdout.write(assemble_guide_document(normalize_guide(parse_guide(json.dumps(d)))))",
+  ].join("\n");
+  return execFileSync("python3", ["-c", script], { cwd: ROOT, encoding: "utf8" });
+}
+
 let motionHtml: string;
 let diagramsHtml: string;
 
@@ -212,6 +227,32 @@ test.describe("motion diagrams (schema 1.3)", () => {
       );
     };
     expect(await markup()).toEqual(await markup());
+  });
+
+  test("an edge that skips layers is routed around the nodes it passes", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await load(page, skipLayerFlowHtml());
+    const crossings = await page.evaluate(() => {
+      const svg = document.querySelector("figure#growth-loop-flow svg")!;
+      const boxes = Array.from(svg.querySelectorAll("g.diagram-node rect")).map((r) => {
+        const [x, y, w, h] = ["x", "y", "width", "height"].map((k) => Number(r.getAttribute(k)));
+        return { x, y, w, h, label: r.parentElement!.textContent };
+      });
+      const hits: string[] = [];
+      Array.from(svg.querySelectorAll("path.diagram-edge")).forEach((path, i) => {
+        const p = path as SVGPathElement;
+        const total = p.getTotalLength();
+        for (let s = 0; s <= total; s += 2) {
+          const { x, y } = p.getPointAtLength(s);
+          for (const b of boxes) {
+            if (x > b.x + 2 && x < b.x + b.w - 2 && y > b.y + 2 && y < b.y + b.h - 2) hits.push(`edge ${i} crosses ${b.label}`);
+          }
+        }
+      });
+      return Array.from(new Set(hits));
+    });
+    expect(crossings).toEqual([]);
+    await expect(page.locator("figure#growth-loop-flow path.diagram-edge")).toHaveCount(5);
   });
 
   test("a schema 1.2 guide never moves", async ({ page }) => {
