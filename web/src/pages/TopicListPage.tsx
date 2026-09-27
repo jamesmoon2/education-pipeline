@@ -79,8 +79,10 @@ function formatActivity(stamp: string | null): string {
 }
 
 export default function TopicListPage() {
-  const { data, error, refresh } = usePolling(getTopics, 10_000);
-  const { data: profileData } = usePolling(getProfiles, 30_000);
+  const { data, error, refresh } = usePolling(getTopics, 10_000, {
+    events: { run: "*", topics: true },
+  });
+  const { data: profileData } = usePolling(getProfiles, 30_000, { events: { topics: true } });
   const [importKind, setImportKind] = useState<"topic" | "profile" | null>(null);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");

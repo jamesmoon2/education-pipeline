@@ -42,6 +42,9 @@ vi.mock("./api/client", async () => {
     api: vi.fn(),
     getJobs: vi.fn(),
     getTopics: vi.fn(),
+    // T62b: App now owns an EventsProvider; its stream never answers here,
+    // so the shell polls exactly as it did before.
+    openEventStream: vi.fn(() => new Promise(() => {})),
   };
 });
 
