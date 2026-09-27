@@ -12,6 +12,16 @@ workspace lock and ``DaemonContext._chain_lock``, so nothing done under
 ``_lock`` touches a socket or the filesystem, calls out, or takes another
 lock. ``_scan_lock`` is taken only by ``subscribe`` and scan passes (never on
 a worker path), always before ``_lock``.
+
+Stats. Every fingerprint record comes from ``os.stat(path,
+follow_symlinks=False)``, never ``DirEntry.stat()``. On Windows the latter is
+the FindFirstFileW/FindNextFileW copy of the metadata held in the parent
+directory's index, which NTFS updates lazily and which carries ``st_ino`` 0,
+so an untouched entry could read differently from one pass to the next. On
+POSIX ``DirEntry.stat(follow_symlinks=False)`` is an ``lstat`` anyway, so the
+authoritative stat costs the same. The listing's type flags
+(``is_dir``/``is_symlink``) are still trusted: a path's type is fixed when it
+is created, and a replaced entry shows up in its record on the next pass.
 """
 
 from __future__ import annotations
@@ -68,20 +78,18 @@ def _listing(path: str) -> list[os.DirEntry]:
         return []
 
 
-def _record(rel: str, entry: os.DirEntry) -> tuple | None:
-    try:
-        st = entry.stat(follow_symlinks=False)
-    except OSError:
-        return None
-    return (rel, st.st_mtime_ns, st.st_size, st.st_ino)
-
-
 def _record_path(rel: str, path: str) -> tuple | None:
     try:
         st = os.stat(path, follow_symlinks=False)
     except OSError:
         return None
     return (rel, st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _record(rel: str, entry: os.DirEntry) -> tuple | None:
+    """The authoritative lstat, not the listing's copy (module docstring)."""
+
+    return _record_path(rel, entry.path)
 
 
 def _is_real_dir(entry: os.DirEntry) -> bool:
