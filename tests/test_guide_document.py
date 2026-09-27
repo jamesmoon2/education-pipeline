@@ -229,13 +229,13 @@ def test_document_accepts_1_1_but_embeds_only_the_public_projection() -> None:
     assert "Synthetic deferred objective." not in document
 
 
-def test_runtime_version_is_1_2_for_phase_5_diagrams() -> None:
+def test_runtime_version_is_1_3_for_motion_diagrams() -> None:
     assets = load_runtime_assets()
-    assert assets.version == "1.2"
-    assert RUNTIME_VERSION == "1.2"
-    assert SUPPORTED_SCHEMA_VERSIONS == frozenset({"1.0", "1.1", "1.2"})
+    assert assets.version == "1.3"
+    assert RUNTIME_VERSION == "1.3"
+    assert SUPPORTED_SCHEMA_VERSIONS == frozenset({"1.0", "1.1", "1.2", "1.3"})
     document = assemble_guide_document(guide(), assets)
-    assert 'data-guide-runtime="1.2"' in document
+    assert 'data-guide-runtime="1.3"' in document
 
 
 # --- Diagram block (schema 1.2, T53) --------------------------------------
@@ -314,7 +314,7 @@ TIMELINE_FIGURE = (
 def test_diagrams_fixture_assembles_as_schema_1_2() -> None:
     document = assemble_guide_document(diagrams_guide())
     assert 'data-guide-schema="1.2"' in document
-    assert 'data-guide-runtime="1.2"' in document
+    assert 'data-guide-runtime="1.3"' in document
     assert document.count('<figure class="block diagram"') == 4
     for block_id, kind in (
         ("growth-loop-flow", "flow"),

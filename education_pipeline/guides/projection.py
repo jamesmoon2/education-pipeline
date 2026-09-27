@@ -126,12 +126,17 @@ def _project_block(block) -> list[str]:
 def _project_diagram(block: Diagram) -> list[str]:
     """The diagram's text version: title, kind label, the kind's body, caption."""
 
-    lines = ["", f"#### {block.title}", "", f"*{KIND_LABELS[block.kind]}*", ""]
+    label = f"*{KIND_LABELS[block.kind]}*"
+    if block.motion:
+        label += f" · motion: {block.motion}"
+    lines = ["", f"#### {block.title}", "", label, ""]
     body = {
         "flow": _project_flow,
         "concept_map": _project_concept_map,
         "timeline": _project_timeline,
         "comparison": _project_comparison,
+        "sequence": _project_sequence,
+        "stack": _project_stack,
     }[block.kind]
     lines += body(block)
     if block.caption:
@@ -185,6 +190,25 @@ def _project_timeline(block: Diagram) -> list[str]:
     return [
         _with_detail(f"{n}. {event.when} — {event.label}", event.detail)
         for n, event in enumerate(block.events, 1)
+    ]
+
+
+def _project_sequence(block: Diagram) -> list[str]:
+    labels = {actor.id: actor.label for actor in block.actors}
+    lines = ["Participants:", ""]
+    lines += [_with_detail(f"- {actor.label}", actor.detail) for actor in block.actors]
+    lines += ["", "Messages, in order:", ""]
+    for n, message in enumerate(block.messages, 1):
+        source = labels.get(message.from_id, message.from_id)
+        target = labels.get(message.to_id, message.to_id)
+        lines.append(_with_detail(f"{n}. {source} → {target} — {message.label}", message.detail))
+    return lines
+
+
+def _project_stack(block: Diagram) -> list[str]:
+    return ["Layers, top to bottom:", ""] + [
+        _with_detail(f"{n}. {layer.label}", layer.detail)
+        for n, layer in enumerate(block.layers, 1)
     ]
 
 

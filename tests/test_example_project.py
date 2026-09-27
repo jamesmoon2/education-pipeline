@@ -187,24 +187,25 @@ def _blocks_by_section(guide: dict) -> dict[tuple[str, str], list[dict]]:
     }
 
 
-def test_example_guide_is_schema_1_2() -> None:
-    """New runs default to 1.2 (diagram spec decision 3); the example is a
-    plain new run, so its contract, skeleton, assembled draft and repair
-    response all carry 1.2."""
+def test_example_guide_is_schema_1_3() -> None:
+    """New runs default to 1.3 (motion diagrams); the example is a plain new
+    run, so its contract, skeleton, assembled draft and repair response all
+    carry 1.3, and its flow diagram declares motion."""
 
     assert json.loads(SKELETON_RESPONSE.read_text(encoding="utf-8"))[
         "schema_version"
-    ] == "1.2"
-    assert json.loads(_assembled_draft_bytes())["schema_version"] == "1.2"
+    ] == "1.3"
+    assert json.loads(_assembled_draft_bytes())["schema_version"] == "1.3"
     repair = json.loads(
         (RESPONSES_DIR / "repair.guide.json").read_text(encoding="utf-8")
     )
-    assert repair["schema_version"] == "1.2"
+    assert repair["schema_version"] == "1.3"
     spec_text = (RESPONSES_DIR / "spec.md").read_text(encoding="utf-8")
-    assert '"guide_schema_version": "1.2"' in spec_text
+    assert '"guide_schema_version": "1.3"' in spec_text
     html = EXPORT_HTML.read_text(encoding="utf-8")
-    assert 'data-guide-schema="1.2"' in html
-    assert 'data-guide-runtime="1.2"' in html
+    assert 'data-guide-schema="1.3"' in html
+    assert 'data-guide-runtime="1.3"' in html
+    assert 'id="growth-loop-flow" data-diagram-kind="flow" data-diagram-motion="flow"' in html
 
 
 def test_example_guide_carries_a_flow_and_a_comparison_diagram() -> None:

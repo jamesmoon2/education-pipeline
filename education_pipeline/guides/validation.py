@@ -20,6 +20,7 @@ from .diagrams import diagram_findings
 from .model import (
     DEFAULT_GUIDE_SCHEMA_VERSION,
     DIAGRAM_SCHEMA_VERSIONS,
+    MOTION_SCHEMA_VERSIONS,
     Callout,
     Diagram,
     Guide,
@@ -185,6 +186,7 @@ RULES = {
     "diagram.disconnected": Rule("error", True, False, "Connect every node to the hub through edges.", "draft"),
     "diagram.missing_value": Rule("error", True, False, "Give the criterion a value for every item.", "draft"),
     "diagram.unknown_value_key": Rule("error", True, False, "Key comparison values by the diagram's item IDs.", "draft"),
+    "diagram.invalid_motion": Rule("error", True, False, "Use a motion listed for the diagram's kind, or omit motion.", "draft"),
 }
 
 _PLACEHOLDER = re.compile(r"\b(?:todo|tbd|lorem ipsum|insert (?:text|content) here)\b", re.I)
@@ -440,9 +442,12 @@ def _diagram_block_findings(schema_version: str, block: Diagram, path: str) -> l
 
     if schema_version not in DIAGRAM_SCHEMA_VERSIONS:
         return [_finding("schema.unknown_block_type", f"{path}/type", "unknown block type 'diagram'", "", (block.id,))]
+    motion_allowed = schema_version in MOTION_SCHEMA_VERSIONS
     return [
         _finding(code, finding_path, message, "", (block.id,))
-        for code, finding_path, message in diagram_findings(block, path)
+        for code, finding_path, message in diagram_findings(
+            block, path, motion_allowed=motion_allowed
+        )
     ]
 
 

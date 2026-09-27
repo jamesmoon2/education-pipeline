@@ -43,6 +43,7 @@ from education_pipeline.runs import (
 )
 
 GUIDE_V1_2_CONTENT_TYPE = "application/vnd.education-pipeline.guide+json;version=1.2"
+GUIDE_V1_3_CONTENT_TYPE = "application/vnd.education-pipeline.guide+json;version=1.3"
 
 
 def _create_legacy_run(tmp_path: Path, topic_id: str = "systems-thinking") -> RunStore:
@@ -1069,13 +1070,13 @@ def test_run_store_creates_run_directories(tmp_path: Path) -> None:
     assert manifest["events"] == []
     assert manifest["content_contract"] == {
         "kind": "interactive_guide",
-        "schema_version": "1.2",
+        "schema_version": "1.3",
     }
-    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_2()
+    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_3()
     draft = store.stage_paths("systems-thinking", "draft")
     assert draft.response_path.name == "draft.response.json"
     assert draft.approved_path.name == "draft.json"
-    assert draft.content_type == GUIDE_V1_2_CONTENT_TYPE
+    assert draft.content_type == GUIDE_V1_3_CONTENT_TYPE
 
 
 def test_explicit_legacy_create_writes_legacy_contract(tmp_path: Path) -> None:
@@ -4259,22 +4260,32 @@ def test_legacy_run_untouched_by_guide_validation(tmp_path: Path) -> None:
 # --- Wave 4 Slice C: new-run default flip and explicit legacy path ----------
 
 
-def test_create_run_default_is_interactive_guide_v1_2(tmp_path: Path) -> None:
+def test_create_run_default_is_interactive_guide_v1_3(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
     store.create_run("systems-thinking")
 
     manifest = store.read_manifest("systems-thinking")
     assert manifest["content_contract"] == {
         "kind": "interactive_guide",
-        "schema_version": "1.2",
+        "schema_version": "1.3",
     }
-    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_2()
+    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_3()
     draft = store.stage_paths("systems-thinking", "draft")
     assert draft.response_path.suffix == ".json"
     assert draft.approved_path.name == "draft.json"
-    assert draft.content_type == GUIDE_V1_2_CONTENT_TYPE
+    assert draft.content_type == GUIDE_V1_3_CONTENT_TYPE
     repair = store.stage_paths("systems-thinking", "repair")
-    assert repair.content_type == GUIDE_V1_2_CONTENT_TYPE
+    assert repair.content_type == GUIDE_V1_3_CONTENT_TYPE
+
+
+def test_interactive_guide_v1_3_contract_factory() -> None:
+    assert ContentContract.interactive_guide_v1_3() == ContentContract(
+        kind="interactive_guide", schema_version="1.3"
+    )
+    assert ContentContract.interactive_guide_v1_3().to_manifest() == {
+        "kind": "interactive_guide",
+        "schema_version": "1.3",
+    }
 
 
 def test_interactive_guide_v1_2_contract_factory() -> None:
@@ -4298,7 +4309,7 @@ def test_unsupported_content_contract_message_names_every_guide_schema(tmp_path:
 
     assert str(excinfo.value).endswith(
         "supported contracts are legacy_markdown and interactive_guide schemas "
-        "'1.0', '1.1' and '1.2'"
+        "'1.0', '1.1', '1.2' and '1.3'"
     )
 
 
@@ -4306,13 +4317,13 @@ def test_implicit_write_spec_prompt_creates_guide_v1_run(tmp_path: Path) -> None
     store = RunStore(tmp_path)
     result = store.write_spec_prompt("systems-thinking", title="Systems Thinking")
 
-    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_2()
+    assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_3()
     prompt_text = result.prompt_path.read_text(encoding="utf-8")
     assert "education-pipeline-contract+json" in prompt_text
-    assert '"guide_schema_version": "1.2"' in prompt_text
+    assert '"guide_schema_version": "1.3"' in prompt_text
     assert store.read_manifest("systems-thinking")["content_contract"] == {
         "kind": "interactive_guide",
-        "schema_version": "1.2",
+        "schema_version": "1.3",
     }
 
 
@@ -4357,11 +4368,11 @@ def test_mixed_workspace_legacy_and_guide_v1_progress_independently(tmp_path: Pa
 
     runs = RunStore(tmp_path)
     runs.create_run("legacy-topic", content_contract=ContentContract.legacy_markdown())
-    runs.create_run("guide-topic")  # default → interactive_guide 1.2
+    runs.create_run("guide-topic")  # default → interactive_guide 1.3
 
     assert runs.list_run_ids() == ("guide-topic", "legacy-topic")
     assert runs.content_contract("legacy-topic") == ContentContract.legacy_markdown()
-    assert runs.content_contract("guide-topic") == ContentContract.interactive_guide_v1_2()
+    assert runs.content_contract("guide-topic") == ContentContract.interactive_guide_v1_3()
 
     # Drive legacy fully to finalized while guide sits mid-lifecycle.
     _drive_all_stages_to_approved(runs, "legacy-topic", repair_body="# Legacy Topic\n")
@@ -4401,7 +4412,7 @@ def _create_profiled_default_run(root: Path) -> RunStore:
     return runs
 
 
-def test_new_runs_select_1_2_with_or_without_profile_and_existing_manifests_are_immutable(
+def test_new_runs_select_1_3_with_or_without_profile_and_existing_manifests_are_immutable(
     tmp_path: Path,
 ) -> None:
     profiled = _create_profiled_default_run(tmp_path / "profiled")
@@ -4409,15 +4420,15 @@ def test_new_runs_select_1_2_with_or_without_profile_and_existing_manifests_are_
     plain = RunStore(tmp_path / "plain")
     plain.create_run("systems-thinking")
     for store in (profiled, plain):
-        assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_2()
+        assert store.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_3()
         assert store.read_manifest("systems-thinking")["content_contract"] == {
             "kind": "interactive_guide",
-            "schema_version": "1.2",
+            "schema_version": "1.3",
         }
         draft = store.stage_paths("systems-thinking", "draft")
         repair = store.stage_paths("systems-thinking", "repair")
-        assert draft.content_type == GUIDE_V1_2_CONTENT_TYPE
-        assert repair.content_type == GUIDE_V1_2_CONTENT_TYPE
+        assert draft.content_type == GUIDE_V1_3_CONTENT_TYPE
+        assert repair.content_type == GUIDE_V1_3_CONTENT_TYPE
     assert GUIDE_V1_CONTENT_TYPE.endswith("version=1.0")
 
     # An existing 1.0 or 1.1 manifest is untouched by a later profile attach
@@ -4446,22 +4457,22 @@ def test_new_runs_select_1_2_with_or_without_profile_and_existing_manifests_are_
         ).read_bytes() == manifest_before
 
 
-def test_profiled_prompt_and_response_contract_propagate_schema_1_2(tmp_path: Path) -> None:
+def test_profiled_prompt_and_response_contract_propagate_schema_1_3(tmp_path: Path) -> None:
     runs = _create_profiled_default_run(tmp_path)
     spec = runs.write_topic_spec_prompt("systems-thinking")
     spec_text = spec.prompt_path.read_text(encoding="utf-8")
-    assert '"guide_schema_version": "1.2"' in spec_text
-    assert "- Target guide source schema: `1.2`." in spec_text
+    assert '"guide_schema_version": "1.3"' in spec_text
+    assert "- Target guide source schema: `1.3`." in spec_text
     assert "goal-001" in spec_text
 
     spec.response_path.write_text(
-        _guide_spec_response(dict(VALID_SPEC_CONTRACT, guide_schema_version="1.2")),
+        _guide_spec_response(dict(VALID_SPEC_CONTRACT, guide_schema_version="1.3")),
         encoding="utf-8",
     )
     runs.approve_stage("systems-thinking", "spec")
     outline = runs.write_outline_prompt("systems-thinking")
     assert "goal-001" in outline.prompt_path.read_text(encoding="utf-8")
-    assert runs.stage_paths("systems-thinking", "draft").content_type == GUIDE_V1_2_CONTENT_TYPE
+    assert runs.stage_paths("systems-thinking", "draft").content_type == GUIDE_V1_3_CONTENT_TYPE
 
 
 def test_profiled_prompt_and_response_contract_propagate_schema_1_1(tmp_path: Path) -> None:
@@ -5124,12 +5135,13 @@ _RUN_CONTRACTS = {
     "1.0": ContentContract.interactive_guide_v1,
     "1.1": ContentContract.interactive_guide_v1_1,
     "1.2": lambda: ContentContract.interactive_guide_v1_2(),
+    "1.3": lambda: ContentContract.interactive_guide_v1_3(),
 }
 
 _OTHER_SUPPORTED_VERSIONS = tuple(
     (run_version, declared)
-    for run_version in ("1.0", "1.1", "1.2")
-    for declared in ("1.0", "1.1", "1.2")
+    for run_version in ("1.0", "1.1", "1.2", "1.3")
+    for declared in ("1.0", "1.1", "1.2", "1.3")
     if declared != run_version
 )
 

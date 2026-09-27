@@ -2536,3 +2536,151 @@ def test_blueprint_with_no_diagram_kinds_adds_no_blueprint_line() -> None:
     text = _compile_every_guide_v1_prompt("1.2", None, blueprint)["draft"]
 
     assert _diagram_guidance_section(text) == "\n".join(_DIAGRAM_GUIDANCE_LINES)
+
+
+# --- Schema 1.3 (diagram motion, sequence and stack) -------------------------
+#
+# Spec: docs/superpowers/specs/2026-09-27-motion-diagrams-design.md §6. The
+# 1.2 prompts keep their bytes; a 1.3 prompt carries the motion-era schema
+# reference, the motion guidance on the two section-authoring prompts, and a
+# visual plan request on the outline.
+
+# Recorded from the 1.2 compilers at b171864. These must never move.
+_GUIDE_V1_2_BYTE_IDENTITY_SHA256: dict[str, dict[str, str]] = {
+    "1.2/no-profile/no-blueprint": {
+        "spec": "c724301baf0568b0a285194f27e2d52378b2378115ee12ef9c14d0594c8d3bc7",
+        "outline": "6c6a7b251879bc454eb34a2285a77a003cbc566122ace26d93463973da630b7b",
+        "draft": "c996055471c9cecedd9b2cdec6d0e57cebc38830dea09a4f3f6adaa8d5ca2291",
+        "skeleton": "33f80deb4750cb5612bcf1231c0cf8782362fc49b6a340951716b7e479b1636c",
+        "module_draft": "747c500fc6648fb69f245657fc65989b282361e99706e30b65b219675e92f942",
+        "qa": "05889b44560fd17fc4b78607801e8efbe5c0ef5348b2ea1e62388ba56a150a04",
+        "factcheck": "e6e4321e15ba74a2fedaafe777e227f2ee9692081091ea85cfc4a69276ef28d5",
+        "repair": "de491b1fd36029a7cf06b4317cad424f7b556595b3f5412f5ba657a367ae9828",
+        "module_repair": "0dfdc983c8746bc20672f79884b26d7bdc421ee3655d9e332c803d64e69547a4",
+        "section_repair": "a51d0d6968296ab6a374be9ef1ea4e04c766d8124f2c6f9d6a15de3be1df3d3f",
+    },
+    "1.2/no-profile/blueprint": {
+        "spec": "42d71ef63214a408fff6de9510472d22c78bc98e749e8db0d68ca5d60ab5477b",
+        "outline": "324f89c6489c0886731693b8917f47a5e9fbcf6a438ea804b61d310da9110be0",
+        "draft": "99fdfcb7fc041511e80ccdc46b2066305f92c43945f6c79f6541204e7bd66e2b",
+        "skeleton": "0b03f8dcf090f424c64b93b48a5d9063fd5c0893d15372486b62ec05615dcd80",
+        "module_draft": "f25b3833c3fb947f67758cf1d24c1657f4259e5cd9187b84a1063c56095bca6d",
+        "qa": "13f8fc265741731c171d5d123bf4e607190d23c2a9f01e2ffd349337f9d7dc4e",
+        "factcheck": "626017e74666f04a3060b64c5c622cf0ef7123a6d036c82f1fb15cce6444b057",
+        "repair": "3cfa698d8603016084509ea81bb74a7b11306a7dc8e95ab33ba3f7e0e07b18a9",
+        "module_repair": "cc5b7d138ac7cd2099cbcc66aa9138dd2c92aac55b0508bef797169f99f86d72",
+        "section_repair": "50ad99462bd562ce4e69629276ab52a05861babdc1e55520bc1a1b9a65538f2f",
+    },
+    "1.2/profile/no-blueprint": {
+        "spec": "505bda5bd2bbf64fd6cd994985b98dc2f1364db9307b148e0d33ebc5c7a19bf3",
+        "outline": "0ac061513f298e2367c8e9f91182de981880c40d652b94738d90069a6dab7c3c",
+        "draft": "021f08f4a072852a71641f170fc5a7b142fa016b5e0030bfdc64afe223e623f6",
+        "skeleton": "fa387083223b56279f006683b51cc41cc651bfbc9b38b4d5657b1a5e9a5ee7da",
+        "module_draft": "47193733cf76780be5a1046d40625ba93b8e7e1f62eeba39cb8370f222fec137",
+        "qa": "895f79cb8fe865133966bc0b985422791808266863753101e7c6cd0ed73c140f",
+        "factcheck": "6f690bd0fd498b02bc8f2c6c29814c5ea41831fa7bd20ca7ea8b9fe4ea43a25d",
+        "repair": "c8e242f9a5b9a73be25baac5a2801c33e9c732b70b00753d0b57cf404109e3fe",
+        "module_repair": "c8cecd0a75a93d24b9ed4f3fe1b22d5a4acf647a6af66878c17e1531098c3d3d",
+        "section_repair": "3fb51270e7937cd898c789c26d7c1d522b3a422937718b36ddb35f109a1929b7",
+    },
+    "1.2/profile/blueprint": {
+        "spec": "2b3458a064942f5a48ff1844cab97c7845833429cc1e5b4647fde32e4260e719",
+        "outline": "5b18b8bae7ec95b2e2497d4c28b9dae66ad6a33a1e95002c9819e70c6de5e4bc",
+        "draft": "900b63c8cca1060f3b2a6d450268b6d2a38623532d5c5b02c819a8948a700b24",
+        "skeleton": "ea04d31633e85791c52ce7383e357b22c373e98fdd85f78ff7c77683d19a55f6",
+        "module_draft": "b050efbda6fe53167197238128c5ddd804089ad493d05e79a4e5964adab12faa",
+        "qa": "e8f11823ee956c8a85a75f32ae831be57938fe5ce8a87d73c25d632f5f61879a",
+        "factcheck": "4633c015ebba62951e24aedeff52c0c82e5e52d9dfecbf7ebd647d763623d02a",
+        "repair": "8cc0b5fef5461ec1e4a3935a8b9d1396bfc36f1fe46ae894a0e52ef753a39306",
+        "module_repair": "a0252ec5feb9e839a5b34bdfce6950080bbd37b84ce8dbcae35eb9d28a245c55",
+        "section_repair": "3439c6e529301a075598ff73aa4b5d4fb2abe5437abfef6e6b2e35c6b2df6691",
+    },
+}
+
+_CASES_1_2 = tuple(
+    ("1.2", with_profile, with_blueprint)
+    for with_profile in (False, True)
+    for with_blueprint in (False, True)
+)
+
+
+@pytest.mark.parametrize(
+    "version, with_profile, with_blueprint",
+    _CASES_1_2,
+    ids=[_matrix_key(*case) for case in _CASES_1_2],
+)
+def test_guide_v1_prompts_for_1_2_are_byte_identical_to_pre_motion_base(
+    version: str, with_profile: bool, with_blueprint: bool
+) -> None:
+    texts = _compile_matrix_case(version, with_profile, with_blueprint)
+    expected = _GUIDE_V1_2_BYTE_IDENTITY_SHA256[_matrix_key(version, with_profile, with_blueprint)]
+    for stage in _GUIDE_V1_STAGES:
+        assert _sha256_text(texts[stage]) == expected[stage], stage
+
+
+_MOTION_REFERENCE_MARKERS = (
+    "  - `diagram` (never interactive): `kind`, `title`, optional `caption`, `motion`, "
+    "`outcome_ids`, `source_ids`, plus the fields of its kind:",
+    "    - `sequence`: `actors` (2-6 participants of `{id, label, detail?}`, drawn left to right) "
+    "and `messages` (1-16 of `{from, to, label, detail?}`, in the order they happen); every "
+    "actor sends or receives at least one message.",
+    "    - `stack`: `layers` (2-6 of `{id, label, detail?}`, listed top first), drawn as "
+    "three-dimensional slabs, one resting on the next.",
+    "    - `motion` (optional): `flow` on a `flow` or `stack`; `step` on a `flow`, `timeline`, "
+    "`sequence` or `stack`; `rotate` on a `concept_map` or `stack`. A `comparison` has no motion.",
+    "    - A diagram is data, never drawing instructions: never supply coordinates, sizes, "
+    "colors, timings, SVG, CSS, or code; the maintained runtime draws and animates it.",
+)
+
+
+@pytest.mark.parametrize("stage", _SCHEMA_REFERENCE_STAGES)
+def test_1_3_prompts_carry_the_motion_era_schema_reference(stage: str) -> None:
+    text = _compile_every_guide_v1_prompt("1.3")[stage]
+    for marker in _MOTION_REFERENCE_MARKERS:
+        assert text.count(marker) == 1, (stage, marker)
+    assert "seven registered block types" in text
+    # The 1.2 reference's first and last lines are replaced, not repeated.
+    assert _DIAGRAM_SCHEMA_REFERENCE_LINES[0] not in text
+    assert _DIAGRAM_SCHEMA_REFERENCE_LINES[-1] not in text
+
+
+@pytest.mark.parametrize("stage", _GUIDANCE_STAGES)
+def test_1_3_section_authoring_prompts_carry_motion_guidance(stage: str) -> None:
+    text = _compile_every_guide_v1_prompt("1.3", _MATRIX_PROFILE, get_blueprint(_MATRIX_BLUEPRINT_ID))[stage]
+
+    assert "\n## Diagram Guidance\n" in text
+    assert "\n### Motion\n" in text
+    assert "- `step` turns a diagram into a guided walkthrough" in text
+    assert "- `flow` keeps things moving along every connection" in text
+    assert "- `rotate` turns a `concept_map` ring around its hub" in text
+    assert "- Use `sequence` when participants exchange messages in order" in text
+    assert "- Use `stack` for layers that rest on one another" in text
+    # The 1.2 "no module needs a diagram" restraint is replaced by the
+    # stronger 1.3 bar; the blueprint and profile lines still follow.
+    assert "- No module needs a diagram." not in text
+    assert _blueprint_kinds_line(get_blueprint(_MATRIX_BLUEPRINT_ID)) in text
+    assert _FREQUENCY_LINES["frequent"] in text
+    assert text.index("### Motion") < text.index("## Private Personalization Instructions")
+
+
+@pytest.mark.parametrize("stage", ("skeleton", "qa", "factcheck", "repair", "module_repair", "section_repair"))
+def test_1_3_motion_guidance_stays_on_the_section_authoring_prompts(stage: str) -> None:
+    assert "### Motion" not in _compile_every_guide_v1_prompt("1.3")[stage]
+
+
+def test_1_3_outline_asks_for_a_visual_plan_and_1_2_does_not() -> None:
+    outline_1_3 = _compile_every_guide_v1_prompt("1.3")["outline"]
+    outline_1_2 = _compile_every_guide_v1_prompt("1.2")["outline"]
+
+    assert "\n## Visual Plan\n" in outline_1_3
+    assert "its `motion` (`flow`, `step` or `rotate`)" in outline_1_3
+    assert "Visual Plan" not in outline_1_2
+
+
+def test_1_3_goal_lines_follow_the_profile_like_1_2() -> None:
+    plain = _compile_every_guide_v1_prompt("1.3")["draft"]
+    profiled = _compile_every_guide_v1_prompt("1.3", _MATRIX_PROFILE)["draft"]
+
+    assert "permits optional `serves_goals`" not in plain
+    assert "- Source schema 1.3 permits optional `serves_goals` arrays" in profiled
+    assert "- Target guide source schema: `1.3`." in profiled

@@ -91,10 +91,10 @@ def _findings(block, base: str = BASE) -> dict[tuple[str, str], str]:
 def test_schema_version_sets_are_named_features() -> None:
     from education_pipeline.guides import model
 
-    assert model.SUPPORTED_GUIDE_SCHEMA_VERSIONS == frozenset({"1.0", "1.1", "1.2"})
-    assert model.ANNOTATION_SCHEMA_VERSIONS == frozenset({"1.1", "1.2"})
-    assert model.DIAGRAM_SCHEMA_VERSIONS == frozenset({"1.2"})
-    assert model.LATEST_GUIDE_SCHEMA_VERSION == "1.2"
+    assert model.SUPPORTED_GUIDE_SCHEMA_VERSIONS == frozenset({"1.0", "1.1", "1.2", "1.3"})
+    assert model.ANNOTATION_SCHEMA_VERSIONS == frozenset({"1.1", "1.2", "1.3"})
+    assert model.DIAGRAM_SCHEMA_VERSIONS == frozenset({"1.2", "1.3"})
+    assert model.LATEST_GUIDE_SCHEMA_VERSION == "1.3"
     # "Assumed when a source does not name one" -- must stay 1.0.
     assert model.DEFAULT_GUIDE_SCHEMA_VERSION == "1.0"
     assert model.DIAGRAM_KINDS == ("flow", "concept_map", "comparison", "timeline")
@@ -155,6 +155,8 @@ def test_kind_labels_are_exact() -> None:
         "concept_map": "Concept map",
         "comparison": "Comparison",
         "timeline": "Timeline",
+        "sequence": "Sequence diagram",
+        "stack": "Layer stack",
     }
 
 

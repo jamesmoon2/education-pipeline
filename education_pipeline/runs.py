@@ -202,6 +202,10 @@ class ContentContract:
     def interactive_guide_v1_2(cls) -> ContentContract:
         return cls(kind="interactive_guide", schema_version="1.2")
 
+    @classmethod
+    def interactive_guide_v1_3(cls) -> ContentContract:
+        return cls(kind="interactive_guide", schema_version="1.3")
+
     def to_manifest(self) -> dict[str, str]:
         value = {"kind": self.kind}
         if self.schema_version is not None:
@@ -468,7 +472,7 @@ class RunStore(
     ) -> Path:
         """Create the run directory tree and initialize a manifest if needed.
 
-        Newly created manifests default to interactive-guide schema ``1.2``
+        Newly created manifests default to interactive-guide schema ``1.3``
         (with or without an attached profile) when ``content_contract`` is
         omitted; existing manifests keep their recorded version. Pass
         :meth:`ContentContract.legacy_markdown` for an explicit legacy Markdown
@@ -500,7 +504,7 @@ class RunStore(
                 requested = (
                     content_contract
                     if content_contract is not None
-                    else ContentContract.interactive_guide_v1_2()
+                    else ContentContract.interactive_guide_v1_3()
                 )
                 _validate_content_contract(requested)
                 manifest = {
@@ -2293,10 +2297,12 @@ def _validate_content_contract(contract: ContentContract) -> None:
         return
     if contract == ContentContract.interactive_guide_v1_2():
         return
+    if contract == ContentContract.interactive_guide_v1_3():
+        return
     raise ConfigError(
         "unsupported content contract "
         f"{contract.kind!r} schema {contract.schema_version!r}; supported contracts are "
-        "legacy_markdown and interactive_guide schemas '1.0', '1.1' and '1.2'"
+        "legacy_markdown and interactive_guide schemas '1.0', '1.1', '1.2' and '1.3'"
     )
 
 
@@ -2307,6 +2313,8 @@ def _guide_content_type(schema_version: str | None) -> str:
         return "application/vnd.education-pipeline.guide+json;version=1.1"
     if schema_version == "1.2":
         return "application/vnd.education-pipeline.guide+json;version=1.2"
+    if schema_version == "1.3":
+        return "application/vnd.education-pipeline.guide+json;version=1.3"
     raise ConfigError(f"unsupported interactive guide schema {schema_version!r}")
 
 

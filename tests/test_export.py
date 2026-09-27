@@ -197,10 +197,10 @@ def _export_diagrams_run(tmp_path: Path):
     return runs, runs.export_run(topic_id), topic_id
 
 
-def test_diagram_export_sidecar_records_runtime_1_2(tmp_path: Path) -> None:
+def test_diagram_export_sidecar_records_runtime_1_3(tmp_path: Path) -> None:
     runs, exported, topic_id = _export_diagrams_run(tmp_path)
     sidecar = json.loads(runs.export_report_path(topic_id).read_text(encoding="utf-8"))
-    assert sidecar["export"]["runtime_version"] == "1.2"
+    assert sidecar["export"]["runtime_version"] == "1.3"
     assert 'data-diagram-kind="flow"' in exported.read_text(encoding="utf-8")
 
 

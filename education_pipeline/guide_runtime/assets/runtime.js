@@ -1423,6 +1423,8 @@
     MARKER_R: 6, ROW_H: 96, VERT_W: 360,
   });
 
+  const DIAGRAM_SCHEMAS = new Set(["1.2", "1.3"]);
+
   const Diagrams = (() => {
     const L = DIAGRAM_LAYOUT;
     const BOUNDS = {
@@ -1772,7 +1774,7 @@
     function install(guide) {
       const byId = new Map();
       const list = (value, key) => (isPlainObject(value) && Array.isArray(value[key]) ? value[key] : []);
-      if (isPlainObject(guide) && guide.schema_version === "1.2") {
+      if (isPlainObject(guide) && DIAGRAM_SCHEMAS.has(guide.schema_version)) {
         for (const block of list(guide, "modules").flatMap((m) => list(m, "sections")).flatMap((s) => list(s, "blocks"))) {
           if (isPlainObject(block) && block.type === "diagram" && typeof block.id === "string") byId.set(block.id, block);
         }
@@ -2378,11 +2380,11 @@
     try {
       const rawText = dataEl.textContent;
       const guide = JSON.parse(rawText);
-      const supportedSchemas = new Set(["1.0", "1.1", "1.2"]);
+      const supportedSchemas = new Set(["1.0", "1.1", "1.2", "1.3"]);
       if (
         !supportedSchemas.has(guide.schema_version) ||
         guide.schema_version !== expectedSchema ||
-        expectedRuntime !== "1.2"
+        expectedRuntime !== "1.3"
       ) {
         throw new Error("unsupported guide schema/runtime version");
       }

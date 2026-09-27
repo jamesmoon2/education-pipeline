@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import resources
 
-RUNTIME_VERSION = "1.2"
-SUPPORTED_SCHEMA_VERSIONS = frozenset({"1.0", "1.1", "1.2"})
+RUNTIME_VERSION = "1.3"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"1.0", "1.1", "1.2", "1.3"})
 
 
 @dataclass(frozen=True)

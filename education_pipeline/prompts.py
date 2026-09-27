@@ -14,6 +14,7 @@ from education_pipeline.guides.model import (
     DEFAULT_GUIDE_SCHEMA_VERSION,
     DIAGRAM_KINDS,
     DIAGRAM_SCHEMA_VERSIONS,
+    MOTION_SCHEMA_VERSIONS,
     SUPPORTED_GUIDE_SCHEMA_VERSIONS,
     Guide,
     Module,
@@ -709,6 +710,24 @@ _DIAGRAM_SCHEMA_REFERENCE_LINES = (
     "colors, SVG, or CSS.",
 )
 
+#: The schema 1.3 diagram reference: the 1.2 reference with ``motion`` and the
+#: ``sequence`` and ``stack`` kinds (motion-diagrams spec §6).
+_MOTION_DIAGRAM_SCHEMA_REFERENCE_LINES = (
+    "  - `diagram` (never interactive): `kind`, `title`, optional `caption`, `motion`, "
+    "`outcome_ids`, `source_ids`, plus the fields of its kind:",
+    *_DIAGRAM_SCHEMA_REFERENCE_LINES[1:5],
+    "    - `sequence`: `actors` (2-6 participants of `{id, label, detail?}`, drawn left to right) "
+    "and `messages` (1-16 of `{from, to, label, detail?}`, in the order they happen); every "
+    "actor sends or receives at least one message.",
+    "    - `stack`: `layers` (2-6 of `{id, label, detail?}`, listed top first), drawn as "
+    "three-dimensional slabs, one resting on the next.",
+    "    - `motion` (optional): `flow` on a `flow` or `stack`; `step` on a `flow`, `timeline`, "
+    "`sequence` or `stack`; `rotate` on a `concept_map` or `stack`. A `comparison` has no motion.",
+    *_DIAGRAM_SCHEMA_REFERENCE_LINES[5:7],
+    "    - A diagram is data, never drawing instructions: never supply coordinates, sizes, "
+    "colors, timings, SVG, CSS, or code; the maintained runtime draws and animates it.",
+)
+
 #: Schema 1.2 line rewrites (spec §8.2), applied in order to each versioned line.
 #: Each is idempotent, so versioning an already-versioned block is a no-op.
 _DIAGRAM_LINE_REWRITES = (
@@ -724,7 +743,9 @@ _DIAGRAM_LINE_REWRITES = (
 _REFLECTION_REFERENCE_PREFIX = "  - `reflection`:"
 
 
-def _diagram_versioned_lines(lines: tuple[str, ...]) -> tuple[str, ...]:
+def _diagram_versioned_lines(
+    lines: tuple[str, ...], reference: tuple[str, ...] = _DIAGRAM_SCHEMA_REFERENCE_LINES
+) -> tuple[str, ...]:
     out: list[str] = []
     for index, line in enumerate(lines):
         for old, new in _DIAGRAM_LINE_REWRITES:
@@ -732,14 +753,16 @@ def _diagram_versioned_lines(lines: tuple[str, ...]) -> tuple[str, ...]:
         out.append(line)
         if line.startswith(_REFLECTION_REFERENCE_PREFIX):
             following = lines[index + 1] if index + 1 < len(lines) else None
-            if following != _DIAGRAM_SCHEMA_REFERENCE_LINES[0]:
-                out.extend(_DIAGRAM_SCHEMA_REFERENCE_LINES)
+            if following != reference[0]:
+                out.extend(reference)
     return tuple(out)
 
 
 def _versioned_lines(lines: tuple[str, ...], guide_schema_version: str) -> tuple[str, ...]:
     version = _guide_schema_version(guide_schema_version)
     versioned = tuple(line.replace('"1.0"', f'"{version}"') for line in lines)
+    if version in MOTION_SCHEMA_VERSIONS:
+        return _diagram_versioned_lines(versioned, _MOTION_DIAGRAM_SCHEMA_REFERENCE_LINES)
     if version in DIAGRAM_SCHEMA_VERSIONS:
         return _diagram_versioned_lines(versioned)
     return versioned
@@ -941,6 +964,11 @@ def compile_guide_v1_outline_prompt(
     personalization_suffix = (
         ("", *personalization_lines) if personalization_lines else ()
     )
+    visual_plan = (
+        ("", *_MOTION_OUTLINE_VISUAL_PLAN_LINES)
+        if guide_schema_version in MOTION_SCHEMA_VERSIONS
+        else ()
+    )
     return _compile_upstream_prompt(
         stage="outline",
         pre_topic_lines=_blueprint_contract_lines(blueprint, "outline_lines"),
@@ -953,6 +981,7 @@ def compile_guide_v1_outline_prompt(
             *_OUTLINE_OUTPUT_AND_QUALITY_LINES,
             "",
             *_GUIDE_OUTLINE_CONTRACT_LINES,
+            *visual_plan,
             *personalization_suffix,
         ),
         topic=topic,
@@ -995,6 +1024,64 @@ _DIAGRAM_GUIDANCE_LINES = (
     "read, and keep it small: short labels, with longer explanation in `detail` or in the prose.",
     "- Give every diagram a `title` that says what it shows; the learner-facing text "
     "alternative is derived from the title and the data.",
+)
+
+#: Schema 1.3 diagram guidance (motion-diagrams spec §6): every kind, a
+#: stronger bar for drawing than 1.2's, and when each motion teaches.
+_MOTION_DIAGRAM_GUIDANCE_LINES = (
+    "## Diagram Guidance",
+    "Diagrams, and the motion in them, are among the strongest teaching tools this guide has. A "
+    "`diagram` shows structure that the surrounding prose explains; it never replaces the "
+    "explanation and never counts as an interaction.",
+    "- Use `flow` for a process, a pipeline, or a chain of causes, including a loop that feeds "
+    "back into an earlier step.",
+    "- Use `sequence` when participants exchange messages in order -- a request and its "
+    "response, a hand-off between people or systems -- so the learner sees who talks to whom, "
+    "and when.",
+    "- Use `stack` for layers that rest on one another: levels of abstraction, tiers of a "
+    "system, a division of responsibility.",
+    "- Use `concept_map` for one central idea and the ideas directly related to it, with a "
+    "short verb phrase on each connection.",
+    "- Use `comparison` to contrast two to four options against the same criteria.",
+    "- Use `timeline` when the order of events or phases in time is the point.",
+    "- Wherever a module teaches a structure that is easier to see than to read -- a process, "
+    "an exchange, layers, a set of options -- draw it; most modules of a technical or "
+    "procedural course deserve at least one diagram. Keep each one small: short labels, with "
+    "longer explanation in `detail` or in the prose.",
+    "- Give every diagram a `title` that says what it shows; the learner-facing text "
+    "alternative is derived from the title and the data.",
+    "",
+    "### Motion",
+    "Motion shows what a still picture cannot: which way things travel, the order in which "
+    "they happen, what repeats, and what sits behind what. Set `motion` whenever it teaches one "
+    "of those, and never for decoration.",
+    "- `step` turns a diagram into a guided walkthrough: the learner plays, pauses and steps "
+    "through its parts in document order, and each step is narrated from its label and "
+    "`detail`. Use it for procedures, request-and-response exchanges and causal chains where "
+    "order is the lesson, and give each node, message, event or layer a `detail` that says "
+    "what happens at that step and why.",
+    "- `flow` keeps things moving along every connection in its direction, loops included, or "
+    "down through every layer of a stack and back up. Use it for pipelines, data paths and "
+    "feedback loops, where the point is that work keeps flowing and where it goes.",
+    "- `rotate` turns a `concept_map` ring around its hub, or a `stack` in three dimensions. "
+    "Use it on a concept map only when the ideas around the hub form a cycle that repeats, and "
+    "on a stack when seeing the layers as physical slabs, one resting on the next, is the point.",
+    "- Order the elements so the motion tells the story: nodes and edges in the order work "
+    "happens, messages in the order they are sent, layers from the top (closest to the user) "
+    "down.",
+    "- The picture and its text version must be complete without motion: the runtime honors "
+    "the learner's reduced-motion setting and pause controls, so never rely on motion to carry "
+    "information that the labels, `detail` and prose do not.",
+)
+
+#: Schema 1.3 outline request: plan the diagrams the draft will build.
+_MOTION_OUTLINE_VISUAL_PLAN_LINES = (
+    "## Visual Plan",
+    "In each module's outline entry, add a line naming the diagram or diagrams that will carry "
+    "its core structure: the kind (`flow`, `sequence`, `stack`, `concept_map`, `comparison` or "
+    "`timeline`), what it shows, and -- where movement shows direction, order, repetition or "
+    "depth -- its `motion` (`flow`, `step` or `rotate`). The draft stage builds these "
+    "diagrams, so plan the ones that teach, never decoration.",
 )
 
 #: Spec §8.4: fixed keyword map from free-text visual-aid preferences to kinds.
@@ -1103,11 +1190,17 @@ def _diagram_frequency_bucket(value: str | None) -> str | None:
 
 
 def _diagram_guidance_lines(
-    blueprint: Blueprint | None, profile: LearnerProfile | None
+    blueprint: Blueprint | None,
+    profile: LearnerProfile | None,
+    guide_schema_version: str = "1.2",
 ) -> tuple[str, ...]:
     """Fixed diagram guidance; no profile or blueprint string is ever echoed."""
 
-    lines = list(_DIAGRAM_GUIDANCE_LINES)
+    lines = list(
+        _MOTION_DIAGRAM_GUIDANCE_LINES
+        if guide_schema_version in MOTION_SCHEMA_VERSIONS
+        else _DIAGRAM_GUIDANCE_LINES
+    )
     if blueprint is not None and blueprint.diagram_kinds:
         lines.append(
             f"- The {blueprint.title} blueprint most often benefits from these kinds: "
@@ -1146,7 +1239,7 @@ def _guide_authoring_output_lines(
     )
     guidance: tuple[str, ...] = ()
     if diagram_guidance and guide_schema_version in DIAGRAM_SCHEMA_VERSIONS:
-        guidance = ("", *_diagram_guidance_lines(blueprint, profile))
+        guidance = ("", *_diagram_guidance_lines(blueprint, profile, guide_schema_version))
     return (
         *_guide_json_output_lines(
             lines, guide_schema_version, profile_present=profile is not None

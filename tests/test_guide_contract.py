@@ -137,7 +137,7 @@ def test_extract_spec_contract_unsupported_version_message_names_every_supported
         extract_spec_contract(_spec_markdown(contract))
 
     assert str(excinfo.value) == (
-        "spec contract guide_schema_version must be one of ['1.0', '1.1', '1.2'], got '2.0'"
+        "spec contract guide_schema_version must be one of ['1.0', '1.1', '1.2', '1.3'], got '2.0'"
     )
 
 

@@ -1,4 +1,4 @@
-"""Pure integrity rules for the schema 1.2 ``diagram`` block.
+"""Pure integrity rules for the ``diagram`` block (schema 1.2, and 1.3's motion).
 
 One implementation of the rules serves the parser (after a diagram's raw shape
 checked clean) and validation (for ``Guide`` values built in memory). Every
@@ -11,7 +11,7 @@ from collections import deque
 import re
 from typing import Iterator
 
-from .model import Diagram
+from .model import MOTION_DIAGRAM_KINDS, Diagram
 
 ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 
@@ -20,6 +20,8 @@ KIND_LABELS = {
     "concept_map": "Concept map",
     "comparison": "Comparison",
     "timeline": "Timeline",
+    "sequence": "Sequence diagram",
+    "stack": "Layer stack",
 }
 
 #: The fields each kind requires; any other kind field is foreign to it.
@@ -28,8 +30,24 @@ KIND_FIELDS: dict[str, tuple[str, ...]] = {
     "concept_map": ("hub", "nodes", "edges"),
     "timeline": ("events",),
     "comparison": ("items", "criteria"),
+    "sequence": ("actors", "messages"),
+    "stack": ("layers",),
 }
-ALL_KIND_FIELDS = ("hub", "nodes", "edges", "events", "items", "criteria")
+ALL_KIND_FIELDS = (
+    "hub", "nodes", "edges", "events", "items", "criteria", "actors", "messages", "layers",
+)
+
+#: The ``motion`` values each kind accepts (schema 1.3): only the ones whose
+#: movement shows something the kind's picture has -- direction along
+#: connections, an order of parts, or a turn.
+MOTIONS_BY_KIND: dict[str, tuple[str, ...]] = {
+    "flow": ("flow", "step"),
+    "concept_map": ("rotate",),
+    "comparison": (),
+    "timeline": ("step",),
+    "sequence": ("step",),
+    "stack": ("flow", "step", "rotate"),
+}
 
 #: Inclusive (minimum, maximum) element counts per kind array.
 ARRAY_BOUNDS: dict[str, dict[str, tuple[int, int]]] = {
@@ -37,6 +55,8 @@ ARRAY_BOUNDS: dict[str, dict[str, tuple[int, int]]] = {
     "concept_map": {"nodes": (2, 12), "edges": (1, 12)},
     "timeline": {"events": (2, 10)},
     "comparison": {"items": (2, 4), "criteria": (1, 8)},
+    "sequence": {"actors": (2, 6), "messages": (1, 16)},
+    "stack": {"layers": (2, 6)},
 }
 
 TITLE_LIMIT = 120
@@ -50,10 +70,18 @@ LINE_BREAKS = ("\n", "\r", " ", " ")
 Finding = tuple[str, str, str]
 
 
-def diagram_findings(block: Diagram, base: str) -> tuple[Finding, ...]:
-    """Return every ``(code, absolute_path, message)`` rule failure of ``block``."""
+def diagram_findings(
+    block: Diagram, base: str, *, motion_allowed: bool = True
+) -> tuple[Finding, ...]:
+    """Return every ``(code, absolute_path, message)`` rule failure of ``block``.
 
-    if block.kind not in KIND_FIELDS:
+    ``motion_allowed`` is false for a schema without motion (1.2): its kinds
+    and ``motion`` field are then refused as the parser refuses them.
+    """
+
+    if block.kind not in KIND_FIELDS or (
+        not motion_allowed and block.kind in MOTION_DIAGRAM_KINDS
+    ):
         return (("schema.invalid_value", f"{base}/kind", "invalid diagram kind"),)
     own = KIND_FIELDS[block.kind]
     return (
@@ -61,8 +89,33 @@ def diagram_findings(block: Diagram, base: str) -> tuple[Finding, ...]:
         *_local_ids(block, base, own),
         *_texts(block, base),
         *_edge_rules(block, base),
+        *_message_rules(block, base),
         *_value_keys(block, base),
+        *_motion(block, base, motion_allowed),
         *_foreign_fields(block, base, own),
+    )
+
+
+def _motion(block: Diagram, base: str, motion_allowed: bool) -> Iterator[Finding]:
+    if block.motion is None:
+        return
+    path = f"{base}/motion"
+    if not motion_allowed:
+        yield ("schema.unknown_field", path, "unknown field 'motion'")
+        return
+    choices = MOTIONS_BY_KIND[block.kind]
+    if block.motion in choices:
+        return
+    if not choices:
+        yield ("diagram.invalid_motion", path, f"a {block.kind} diagram has no motion")
+        return
+    quoted = [repr(choice) for choice in choices]
+    listed = quoted[0] if len(quoted) == 1 else f"{', '.join(quoted[:-1])} or {quoted[-1]}"
+    kind = KIND_LABELS[block.kind].lower()
+    yield (
+        "diagram.invalid_motion",
+        path,
+        f"motion {block.motion!r} is not available for a {kind}; use {listed}",
     )
 
 
@@ -105,7 +158,7 @@ def _cardinality(block: Diagram, base: str) -> Iterator[Finding]:
 
 def _local_ids(block: Diagram, base: str, own: tuple[str, ...]) -> Iterator[Finding]:
     first: dict[str, str] = {}
-    for name in ("nodes", "events", "items", "criteria"):
+    for name in ("nodes", "events", "items", "criteria", "actors", "layers"):
         if name not in own:
             continue
         for index, element in enumerate(getattr(block, name)):
@@ -133,6 +186,17 @@ def _text_limits(block: Diagram, base: str) -> Iterator[tuple[str, str | None, i
             yield f"{base}/nodes/{i}/detail", node.detail, DETAIL_LIMIT
         for i, edge in enumerate(block.edges):
             yield f"{base}/edges/{i}/label", edge.label, SHORT_LIMIT
+    elif block.kind == "sequence":
+        for i, actor in enumerate(block.actors):
+            yield f"{base}/actors/{i}/label", actor.label, LABEL_LIMIT
+            yield f"{base}/actors/{i}/detail", actor.detail, DETAIL_LIMIT
+        for i, message in enumerate(block.messages):
+            yield f"{base}/messages/{i}/label", message.label, LABEL_LIMIT
+            yield f"{base}/messages/{i}/detail", message.detail, DETAIL_LIMIT
+    elif block.kind == "stack":
+        for i, layer in enumerate(block.layers):
+            yield f"{base}/layers/{i}/label", layer.label, LABEL_LIMIT
+            yield f"{base}/layers/{i}/detail", layer.detail, DETAIL_LIMIT
     elif block.kind == "timeline":
         for i, event in enumerate(block.events):
             yield f"{base}/events/{i}/when", event.when, SHORT_LIMIT
@@ -185,6 +249,27 @@ def _edge_rules(block: Diagram, base: str) -> Iterator[Finding]:
         yield from _isolated_nodes(block, base)
     else:
         yield from _hub_rules(block, base, node_ids)
+
+
+def _message_rules(block: Diagram, base: str) -> Iterator[Finding]:
+    if block.kind != "sequence":
+        return
+    actor_ids = {actor.id for actor in block.actors}
+    for i, message in enumerate(block.messages):
+        path = f"{base}/messages/{i}"
+        for end, ref in (("from", message.from_id), ("to", message.to_id)):
+            if ref not in actor_ids:
+                yield ("diagram.unknown_node", f"{path}/{end}", f"unknown actor ID {ref!r}")
+        if message.from_id == message.to_id:
+            yield ("diagram.self_edge", path, "a message must connect two different actors")
+    touched = {end for m in block.messages for end in (m.from_id, m.to_id)}
+    for i, actor in enumerate(block.actors):
+        if actor.id not in touched:
+            yield (
+                "diagram.isolated_node",
+                f"{base}/actors/{i}",
+                f"actor {actor.id!r} sends and receives no message",
+            )
 
 
 def _isolated_nodes(block: Diagram, base: str) -> Iterator[Finding]:

@@ -275,7 +275,7 @@ def test_schema_1_1_fixture_round_trips_with_annotations() -> None:
     assert guide.course.goal_exclusions[0].reason == "Synthetic deferred objective."
 
 
-@pytest.mark.parametrize("version", ["0.9", "1.3", "2.0", 1.1, None, [], {}])
+@pytest.mark.parametrize("version", ["0.9", "1.4", "2.0", 1.1, None, [], {}])
 def test_unknown_or_non_string_schema_versions_fail(version) -> None:
     data = fixture_data()
     data["schema_version"] = version
@@ -759,11 +759,11 @@ def test_normalization_keeps_raw_diagram_strings_untrimmed() -> None:
 
 
 def test_unsupported_version_message_names_every_supported_version() -> None:
-    result = parse_data({**fixture_data(), "schema_version": "1.3"})
+    result = parse_data({**fixture_data(), "schema_version": "1.4"})
 
     assert diagnostics_by_pair(result)[
         ("schema.unsupported_version", "/schema_version")
-    ] == "supported schema versions are exactly '1.0', '1.1' and '1.2'"
+    ] == "supported schema versions are exactly '1.0', '1.1', '1.2' and '1.3'"
 
 
 def test_schema_1_2_without_diagrams_parses_and_allows_goal_annotations() -> None:

@@ -547,12 +547,12 @@ def test_create_command_defaults_to_interactive_guide(
     ws = tmp_path / "ws"
     assert _run(ws, "create", "systems-thinking") == 0
     out = capsys.readouterr().out
-    assert "created run systems-thinking (interactive_guide 1.2)" in out
+    assert "created run systems-thinking (interactive_guide 1.3)" in out
     runs = RunStore(ws)
-    assert runs.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_2()
+    assert runs.content_contract("systems-thinking") == ContentContract.interactive_guide_v1_3()
     assert runs.read_manifest("systems-thinking")["content_contract"] == {
         "kind": "interactive_guide",
-        "schema_version": "1.2",
+        "schema_version": "1.3",
     }
 
 

@@ -31,6 +31,7 @@
           "id": "growth-loop-flow",
           "type": "diagram",
           "kind": "flow",
+          "motion": "flow",
           "title": "How plant growth reinforces itself",
           "caption": "The last connection closes a **reinforcing** loop.",
           "outcome_ids": [

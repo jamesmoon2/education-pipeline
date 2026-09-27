@@ -1,7 +1,7 @@
 # Interactive Guides (guide v1)
 
 This page documents the interactive-guide workflow delivered by the
-`interactive_guide` content contract (guide schema 1.0, 1.1 and 1.2): what the
+`interactive_guide` content contract (guide schema 1.0, 1.1, 1.2 and 1.3): what the
 pipeline produces, where artifacts live, how validation findings and waivers
 gate finalization, and what the exported guide does (and does not) share.
 
@@ -20,12 +20,13 @@ create → spec → outline → draft → (draft validation) → qa → factchec
 
 - `education-pipeline create <topic>` starts a guide run; pass
   `--legacy-markdown` to start a legacy Markdown run instead.
-- **New runs use guide schema 1.2**, with or without a learner profile. 1.2
-  is 1.1 (optional personalization annotations) plus the `diagram` block
+- **New runs use guide schema 1.3**, with or without a learner profile. 1.3
+  is 1.2 — 1.1 (optional personalization annotations) plus the `diagram`
+  block — with diagram motion and the `sequence` and `stack` kinds, all
   described below.
-- **Existing runs keep their version.** A guide run pinned to schema 1.0 or
-  1.1 keeps producing the same prompts byte for byte and never gains
-  diagrams; a draft or repair response that declares a different schema
+- **Existing runs keep their version.** A guide run pinned to schema 1.0,
+  1.1 or 1.2 keeps producing the same prompts byte for byte (1.0 and 1.1
+  never gain diagrams; 1.2 never gains motion); a draft or repair response that declares a different schema
   version than the run's contract cannot be approved.
 - **Legacy runs are untouched.** A manifest without a `content_contract` field
   is read as legacy Markdown; opening the upgraded tools never mutates or
@@ -39,7 +40,7 @@ create → spec → outline → draft → (draft validation) → qa → factchec
 Each run directory records its contract in `manifest.json` under
 `content_contract` (kind `interactive_guide`, content type
 `application/vnd.education-pipeline.guide+json;version=<schema>`, for example
-`version=1.2` for a new run). Stage artifacts
+`version=1.3` for a new run). Stage artifacts
 keep the standard layout, with format-aware suffixes:
 
 ```text
@@ -77,16 +78,17 @@ reads `assemble` until it has. Back these up with the
 rest of the run directory; a whole guide written straight to
 `responses/draft.response.json` keeps working and wins over the units.
 
-## Diagrams (schema 1.2)
+## Diagrams (schema 1.2 and 1.3)
 
-A guide on schema 1.2 can include `diagram` blocks: small structured pictures
+A guide on schema 1.2 or later can include `diagram` blocks: small structured pictures
 that sit between the other blocks of a section. A diagram is JSON data — the
 model supplies labels and connections, never SVG, coordinates, colours or
 sizes — and the maintained runtime computes the layout, so the same guide
 draws the same picture every time. Diagrams are optional; no rule requires
-one.
+one, though schema 1.3 prompts ask for one wherever a module teaches a
+structure that is easier to see than to read.
 
-There are four kinds:
+Schema 1.2 has four kinds, and 1.3 adds two more:
 
 | Kind | Data | Drawn as |
 | --- | --- | --- |
@@ -94,6 +96,22 @@ There are four kinds:
 | `concept_map` | a `hub` node, 2–12 `nodes` and 1–12 `edges` | The hub in the centre, the other ideas on a ring around it. Every node must connect to the hub. |
 | `timeline` | 2–10 `events`, each with `when` and `label` | One horizontal axis in the given order, or a vertical list on narrow screens. |
 | `comparison` | 2–4 `items` (columns) and 1–8 `criteria` (rows) | A table with a value for every item in every row. |
+| `sequence` (1.3) | 2–6 `actors` and 1–16 `messages` (`from`, `to`, `label`, optional `detail`) | Participants side by side with lifelines; numbered messages travel between them in order. Every actor sends or receives a message. |
+| `stack` (1.3) | 2–6 `layers`, top first | Three-dimensional slabs, one resting on the next — drawn with WebGL where the browser supports it, and as an SVG otherwise. |
+
+**Motion (schema 1.3).** A diagram may set `motion` to say what movement
+means for it; the runtime decides how anything moves:
+
+| `motion` | Kinds | What the learner sees |
+| --- | --- | --- |
+| `flow` | `flow`, `stack` | Particles travel every connection in its direction (loops keep circulating), or down through every layer and back. |
+| `step` | `flow`, `timeline`, `sequence`, `stack` | A guided walkthrough: Play/Pause, Step and Restart controls, one connection, event, message or layer at a time, each step narrated from its label and `detail` in a live region. |
+| `rotate` | `concept_map`, `stack` | The concept map's ring turns around its hub; the stack turns in 3D. |
+
+Any other pairing is the `diagram.invalid_motion` error. The picture is
+complete without motion — nothing is hidden at rest — so every moving
+diagram has a pause control, nothing moves on its own under the
+reduced-motion setting, and motion runs only while the figure is on screen.
 
 Every diagram has a `title`, and may have a `caption`, `outcome_ids` and
 `source_ids`. The limits are validation errors, not warnings:
@@ -128,7 +146,7 @@ data with safe DOM calls and styled only by the runtime's own stylesheet and
 theme tokens (light and dark). Guides still cannot contain images, and the
 export's content security policy (`default-src 'none'; img-src 'none'` with
 hashed runtime styles and script) is the same as before. New exports carry
-runtime 1.2, which reads guides on schema 1.0, 1.1 and 1.2; older exports keep
+runtime 1.3, which reads guides on schema 1.0, 1.1, 1.2 and 1.3; older exports keep
 the runtime they were built with, and learner progress is unaffected.
 
 ## Validation findings and waivers

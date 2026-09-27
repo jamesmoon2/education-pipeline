@@ -273,14 +273,27 @@ def _diagram_body(b: Diagram, ids: frozenset[str]) -> str:
         )
         return (f'<table class="diagram-table"><thead><tr><th scope="col">Criterion</th>{head}</tr></thead>'
                 f"<tbody>{rows}</tbody></table>")
+    if b.kind == "sequence":
+        names = {a.id: a.label for a in b.actors}
+        actors = "".join(f'<li><span class="diagram-label">{esc(a.label)}</span>{_diagram_detail(a.detail, ids)}</li>' for a in b.actors)
+        messages = "".join(
+            f"<li>{esc(names[m.from_id])} → {esc(names[m.to_id])} — {esc(m.label)}{_diagram_detail(m.detail, ids)}</li>"
+            for m in b.messages
+        )
+        return (f'<p class="diagram-list-label">Participants</p><ul class="diagram-actors">{actors}</ul>'
+                f'<p class="diagram-list-label">Messages, in order</p><ol class="diagram-messages">{messages}</ol>')
+    if b.kind == "stack":
+        layers = "".join(f'<li><span class="diagram-label">{esc(x.label)}</span>{_diagram_detail(x.detail, ids)}</li>' for x in b.layers)
+        return f'<p class="diagram-list-label">Layers, top to bottom</p><ol class="diagram-layers">{layers}</ol>'
     raise GuideDocumentError(f"unsupported diagram kind: {b.kind!r}")
 
 
 def _diagram_block(b: Diagram, ids: frozenset[str]) -> str:
     esc = html.escape
     caption = f' <span class="diagram-caption-text">{_inline(b.caption, ids)}</span>' if b.caption else ""
+    motion = f' data-diagram-motion="{esc(b.motion)}"' if b.motion else ""
     return (
-        f'<figure class="block diagram" id="{esc(b.id)}" data-diagram-kind="{esc(b.kind)}">'
+        f'<figure class="block diagram" id="{esc(b.id)}" data-diagram-kind="{esc(b.kind)}"{motion}>'
         f'<figcaption class="diagram-caption"><strong class="diagram-title">{esc(b.title)}</strong>{caption}</figcaption>'
         f'<div class="diagram-text" data-role="diagram-text">{_diagram_body(b, ids)}</div>'
         f"</figure>"

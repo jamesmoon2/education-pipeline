@@ -8,20 +8,33 @@ from typing import TypeAlias
 #: Every Interactive Guide schema version this codebase reads and writes. One
 #: definition, so a new version is added in one place instead of in each
 #: parser, contract check, prompt compiler and run-content contract.
-SUPPORTED_GUIDE_SCHEMA_VERSIONS = frozenset({"1.0", "1.1", "1.2"})
+SUPPORTED_GUIDE_SCHEMA_VERSIONS = frozenset({"1.0", "1.1", "1.2", "1.3"})
 
 #: Schema versions that allow the source-only goal annotations
 #: (``serves_goals`` / ``goal_exclusions``).
-ANNOTATION_SCHEMA_VERSIONS = frozenset({"1.1", "1.2"})
+ANNOTATION_SCHEMA_VERSIONS = frozenset({"1.1", "1.2", "1.3"})
 
 #: Schema versions that allow the ``diagram`` block.
-DIAGRAM_SCHEMA_VERSIONS = frozenset({"1.2"})
+DIAGRAM_SCHEMA_VERSIONS = frozenset({"1.2", "1.3"})
+
+#: Schema versions that allow a diagram's ``motion`` and the kinds in
+#: ``MOTION_DIAGRAM_KINDS``.
+MOTION_SCHEMA_VERSIONS = frozenset({"1.3"})
 
 #: The newest schema version this codebase writes.
-LATEST_GUIDE_SCHEMA_VERSION = "1.2"
+LATEST_GUIDE_SCHEMA_VERSION = "1.3"
 
-#: Diagram kinds, in the order used everywhere a kind list is printed.
+#: The schema 1.2 diagram kinds, in the order used everywhere a kind list is
+#: printed.
 DIAGRAM_KINDS = ("flow", "concept_map", "comparison", "timeline")
+
+#: The diagram kinds schema 1.3 adds.
+MOTION_DIAGRAM_KINDS = ("sequence", "stack")
+
+#: The values of a diagram's ``motion``: things travel along the connections
+#: (``flow``), the parts play one at a time in order (``step``), or the
+#: picture turns (``rotate``). The runtime decides how each one looks.
+DIAGRAM_MOTIONS = ("flow", "step", "rotate")
 
 #: The schema version assumed when a run, a prompt or an unparseable source
 #: does not name one.
@@ -158,6 +171,14 @@ class DiagramEdge:
 
 
 @dataclass(frozen=True)
+class SequenceMessage:
+    from_id: str = field(metadata={"json": "from"})
+    to_id: str = field(metadata={"json": "to"})
+    label: str = ""
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
 class TimelineEvent:
     id: str
     when: str
@@ -209,6 +230,15 @@ class Diagram:
     )
     outcome_ids: tuple[str, ...] = ()
     source_ids: tuple[str, ...] = ()
+    #: Schema 1.3 only (``MOTION_SCHEMA_VERSIONS``).
+    motion: str | None = None
+    #: ``sequence`` participants, left to right.
+    actors: tuple[DiagramNode, ...] = field(default=(), metadata={"omit_empty": True})
+    messages: tuple[SequenceMessage, ...] = field(
+        default=(), metadata={"omit_empty": True}
+    )
+    #: ``stack`` layers, top first.
+    layers: tuple[DiagramNode, ...] = field(default=(), metadata={"omit_empty": True})
 
 
 Block: TypeAlias = (

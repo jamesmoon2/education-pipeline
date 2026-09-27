@@ -513,6 +513,19 @@ def _guide_locations(guide: Guide) -> dict[GuideReference, _ResolvedLocation]:
     return locations
 
 
+#: Diagram fields schema 1.3 added. Left out of a fingerprint while unset, so
+#: every location fingerprinted before 1.3 keeps its value.
+_UNSET_OMITTED_FINGERPRINT_FIELDS = frozenset({"motion", "actors", "messages", "layers"})
+
+
+def _fingerprint_dict(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in pairs
+        if not (key in _UNSET_OMITTED_FINGERPRINT_FIELDS and value in (None, ()))
+    }
+
+
 def _resolved_location_fingerprint(
     reference: GuideReference,
     resolved: _ResolvedLocation,
@@ -521,7 +534,7 @@ def _resolved_location_fingerprint(
         "id": reference.id,
         "kind": reference.kind,
         "path": resolved.path,
-        "value": asdict(resolved.value),
+        "value": asdict(resolved.value, dict_factory=_fingerprint_dict),
     }
     canonical = json.dumps(
         payload,

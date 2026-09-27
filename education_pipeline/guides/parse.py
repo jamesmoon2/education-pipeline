@@ -12,6 +12,8 @@ from .diagrams import KIND_FIELDS, diagram_findings
 from .model import (
     ANNOTATION_SCHEMA_VERSIONS,
     DIAGRAM_SCHEMA_VERSIONS,
+    MOTION_DIAGRAM_KINDS,
+    MOTION_SCHEMA_VERSIONS,
     SUPPORTED_GUIDE_SCHEMA_VERSIONS,
     Callout,
     Choice,
@@ -21,6 +23,7 @@ from .model import (
     Diagram,
     DiagramEdge,
     DiagramNode,
+    SequenceMessage,
     TimelineEvent,
     Course,
     GoalExclusion,
@@ -64,6 +67,9 @@ DIAGRAM_ELEMENT_SPECS: dict[str, tuple[set[str], set[str]]] = {
     "events": ({"id", "when", "label"}, {"detail"}),
     "items": ({"id", "label"}, set()),
     "criteria": ({"id", "label", "values"}, set()),
+    "actors": ({"id", "label"}, {"detail"}),
+    "messages": ({"from", "to", "label"}, {"detail"}),
+    "layers": ({"id", "label"}, {"detail"}),
 }
 
 
@@ -245,13 +251,16 @@ def _check_root(c: _Checker, root: dict[str, Any], *, skeleton: bool = False) ->
         c.error(
             "schema.unsupported_version",
             "/schema_version",
-            "supported schema versions are exactly '1.0', '1.1' and '1.2'",
+            "supported schema versions are exactly '1.0', '1.1', '1.2' and '1.3'",
         )
     annotations_allowed = (
         isinstance(schema_version, str) and schema_version in ANNOTATION_SCHEMA_VERSIONS
     )
     diagrams_allowed = (
         isinstance(schema_version, str) and schema_version in DIAGRAM_SCHEMA_VERSIONS
+    )
+    motion_allowed = (
+        isinstance(schema_version, str) and schema_version in MOTION_SCHEMA_VERSIONS
     )
     _check_course(c, root.get("course"), "/course", annotations_allowed)
     _check_outcomes(c, root.get("outcomes"), "/outcomes", annotations_allowed)
@@ -262,6 +271,7 @@ def _check_root(c: _Checker, root: dict[str, Any], *, skeleton: bool = False) ->
         annotations_allowed,
         skeleton=skeleton,
         diagrams_allowed=diagrams_allowed,
+        motion_allowed=motion_allowed,
     )
     _check_glossary(c, root.get("glossary"), "/glossary")
     _check_sources(c, root.get("sources"), "/sources")
@@ -465,6 +475,7 @@ def _check_modules(
     *,
     skeleton: bool = False,
     diagrams_allowed: bool = False,
+    motion_allowed: bool = False,
 ) -> None:
     modules = c.array(value, path, 1)
     if modules is None:
@@ -517,11 +528,17 @@ def _check_modules(
                         block,
                         f"{sp}/blocks/{k}",
                         diagrams_allowed=diagrams_allowed,
+                        motion_allowed=motion_allowed,
                     )
 
 
 def _check_block(
-    c: _Checker, value: Any, path: str, *, diagrams_allowed: bool = False
+    c: _Checker,
+    value: Any,
+    path: str,
+    *,
+    diagrams_allowed: bool = False,
+    motion_allowed: bool = False,
 ) -> None:
     if not isinstance(value, dict):
         c.error("schema.invalid_type", path, "must be an object")
@@ -569,7 +586,7 @@ def _check_block(
         ),
     }
     required, optional = (
-        _diagram_spec(value.get("kind"))
+        _diagram_spec(value.get("kind"), motion_allowed)
         if block_type == DIAGRAM_BLOCK_TYPE
         else specs[block_type]
     )
@@ -619,39 +636,51 @@ def _check_block(
     elif block_type == "scenario":
         _check_scenario(c, block, path)
     elif block_type == DIAGRAM_BLOCK_TYPE:
-        _check_diagram(c, block, path, errors_before)
+        _check_diagram(c, block, path, errors_before, motion_allowed)
 
 
-def _valid_diagram_kind(kind: Any) -> bool:
-    return isinstance(kind, str) and kind in KIND_FIELDS
+def _valid_diagram_kind(kind: Any, motion_allowed: bool) -> bool:
+    return (
+        isinstance(kind, str)
+        and kind in KIND_FIELDS
+        and (motion_allowed or kind not in MOTION_DIAGRAM_KINDS)
+    )
 
 
-def _diagram_spec(kind: Any) -> tuple[set[str], set[str]]:
+def _diagram_spec(kind: Any, motion_allowed: bool) -> tuple[set[str], set[str]]:
     """Required and optional keys of a diagram block of ``kind``.
 
     A bad ``kind`` makes every kind field optional so it yields exactly one
-    ``invalid diagram kind`` diagnostic and no cascade.
+    ``invalid diagram kind`` diagnostic and no cascade. ``motion`` is a key
+    only where the schema has motion.
     """
 
     common = {"id", "type", "kind", "title"}
-    if _valid_diagram_kind(kind):
-        return common | set(KIND_FIELDS[kind]), {"caption"}
+    optional = {"caption", "motion"} if motion_allowed else {"caption"}
+    if _valid_diagram_kind(kind, motion_allowed):
+        return common | set(KIND_FIELDS[kind]), optional
     all_kind_fields = {name for names in KIND_FIELDS.values() for name in names}
-    return common, {"caption"} | all_kind_fields
+    return common, optional | all_kind_fields
 
 
 def _check_diagram(
-    c: _Checker, block: dict[str, Any], path: str, errors_before: int
+    c: _Checker,
+    block: dict[str, Any],
+    path: str,
+    errors_before: int,
+    motion_allowed: bool = False,
 ) -> None:
     """Shape-check a diagram's raw dict, then apply the pure diagram rules."""
 
     kind = block.get("kind")
-    if not _valid_diagram_kind(kind):
+    if not _valid_diagram_kind(kind, motion_allowed):
         if "kind" in block:
             c.error("schema.invalid_value", f"{path}/kind", "invalid diagram kind")
         return
     if "caption" in block:
         c.text(block["caption"], f"{path}/caption", markdown=True)
+    if "motion" in block:
+        c.text(block["motion"], f"{path}/motion")
     if "hub" in block:
         c.text(block["hub"], f"{path}/hub")
     for name in KIND_FIELDS[kind]:
@@ -672,7 +701,7 @@ def _check_diagram(
                 )
     if len(c.errors) == errors_before:
         for code, finding_path, message in diagram_findings(
-            _normalize_block(block), path
+            _normalize_block(block), path, motion_allowed=motion_allowed
         ):
             c.error(code, finding_path, message)
 
@@ -1074,6 +1103,21 @@ def _normalize_diagram(item: Mapping[str, Any], common: dict[str, Any]) -> Diagr
         kind=item["kind"],
         title=item["title"],
         caption=item.get("caption"),
+        motion=item.get("motion"),
+        actors=tuple(
+            DiagramNode(id=x["id"], label=x["label"], detail=x.get("detail"))
+            for x in item.get("actors", ())
+        ),
+        messages=tuple(
+            SequenceMessage(
+                from_id=x["from"], to_id=x["to"], label=x["label"], detail=x.get("detail")
+            )
+            for x in item.get("messages", ())
+        ),
+        layers=tuple(
+            DiagramNode(id=x["id"], label=x["label"], detail=x.get("detail"))
+            for x in item.get("layers", ())
+        ),
         hub=item.get("hub"),
         nodes=tuple(
             DiagramNode(id=x["id"], label=x["label"], detail=x.get("detail"))
