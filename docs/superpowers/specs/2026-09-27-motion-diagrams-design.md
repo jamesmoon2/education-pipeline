@@ -113,7 +113,9 @@ are legal (a client may ask twice).
   exactly where the SVG labels point): `rotate` turns it on a turntable,
   `flow` streams particles down through the layers and back up, `step` lifts
   each layer in turn. No WebGL → the SVG stays, with the same motion done in
-  2D where it applies.
+  2D where it applies. The WebGL context is created only when the figure
+  comes within 200px of the viewport, so a long guide (or a page embedding
+  several guides) never exceeds the browser's live-context limit.
 - **Accessibility:** every moving figure has a visible pause control (WCAG
   2.2.2); nothing autoplays under `prefers-reduced-motion: reduce`; motion
   starts only when the figure is on screen and stops when it leaves; the
