@@ -1,6 +1,7 @@
 import { Link, NavLink, Route, Routes } from "react-router-dom";
 import BuildFreshnessBanner from "./components/BuildFreshnessBanner";
 import GlobalJobActivity from "./components/GlobalJobActivity";
+import ShortcutsProvider, { ShortcutsButton } from "./components/ShortcutsProvider";
 import NewRunPage from "./pages/NewRunPage";
 import RunBoardPage from "./pages/RunBoardPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -10,6 +11,14 @@ import ProfilesPage from "./pages/ProfilesPage";
 import ProfileEditorPage from "./pages/ProfileEditorPage";
 
 export default function App() {
+  return (
+    <ShortcutsProvider>
+      <AppShell />
+    </ShortcutsProvider>
+  );
+}
+
+function AppShell() {
   return (
     <div className="app-shell">
       <header className="app-rail">
@@ -36,6 +45,7 @@ export default function App() {
           <strong>Stored on this device</strong>
           Courses, profiles, and runs live in your local workspace.
         </p>
+        <ShortcutsButton />
       </header>
       <main className="workspace">
         <BuildFreshnessBanner />

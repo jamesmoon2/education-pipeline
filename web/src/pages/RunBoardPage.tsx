@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { ApiRequestError, getJobs, getPersonalization, getRunStatus, postAdvance } from "../api/client";
 import type { Job, RunStatus } from "../api/types";
 import AuditControls from "../components/AuditControls";
@@ -14,6 +14,7 @@ import PersonalizationPanel from "../components/PersonalizationPanel";
 import PipelineStepper from "../components/PipelineStepper";
 import PrimaryAction from "../components/PrimaryAction";
 import RunPlanPanel from "../components/RunPlanPanel";
+import { usePageShortcut } from "../components/ShortcutsProvider";
 import ValidationFindingsPanel, { NO_FINDINGS } from "../components/ValidationFindingsPanel";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
@@ -182,6 +183,13 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
     setContentGeneration((generation) => generation + 1);
   }, [refreshStatus]);
   const start = useAction(refresh);
+  // `n` opens the stage the run's next action names.
+  const navigate = useNavigate();
+  const nextStage = status?.topic_id === topicId ? status.next_action.stage : null;
+  usePageShortcut(
+    "open-next-stage",
+    nextStage ? () => navigate(`/topics/${topicId}/stages/${nextStage}`) : null,
+  );
 
   if (error instanceof ApiRequestError && error.status === 404) {
     return (

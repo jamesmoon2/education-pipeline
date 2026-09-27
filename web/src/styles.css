@@ -1356,3 +1356,89 @@ pre.log-tail { max-height: none; font-size: 0.8125rem; color: var(--ep-color-tex
 .approval-delta { margin: var(--ep-space-3) 0; }
 .approval-delta h3 { margin: 0 0 var(--ep-space-1); font-size: 1rem; }
 .approval-delta .diff { max-height: 24rem; overflow-y: auto; margin: 0; }
+
+/* ----------------------------- keyboard shortcuts (appended; do not reorder) */
+/* T61: the rail's "Keyboard shortcuts" button, the `?` overlay dialog, and
+   the polite notice `r` shows when no course needs review. The button sits
+   after the rail footer rather than inside it, so it stays reachable when
+   the footer is hidden below 48rem. */
+.rail-shortcuts {
+  align-self: flex-start;
+  border-color: var(--ep-color-rail-border);
+  background: transparent;
+  color: var(--ep-color-rail-muted);
+  font-size: 0.8125rem;
+}
+.rail-shortcuts:hover:not(:disabled) {
+  background: var(--ep-color-rail-hover);
+  color: var(--ep-color-rail-text);
+}
+.rail-footer + .rail-shortcuts { margin-top: calc(var(--ep-space-3) - var(--ep-space-8)); }
+@media (max-width: 48rem) {
+  .rail-footer + .rail-shortcuts { margin-top: 0; }
+}
+
+.shortcuts-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: var(--ep-space-4);
+  background: color-mix(in srgb, var(--ep-color-rail) 55%, transparent);
+}
+.shortcuts-dialog {
+  width: min(100%, 32rem);
+  max-height: calc(100vh - 2 * var(--ep-space-4));
+  overflow-y: auto;
+  padding: var(--ep-space-6);
+  border: 1px solid var(--ep-color-border);
+  border-radius: var(--ep-radius-dialog);
+  background: var(--ep-color-surface);
+  color: var(--ep-color-text);
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--ep-color-text) 25%, transparent);
+}
+/* Focus lands on the dialog itself (tabindex=-1), not on a control. */
+.shortcuts-dialog:focus { outline: none; }
+.shortcuts-dialog h2 { margin: 0 0 var(--ep-space-4); font-size: 1.375rem; }
+.shortcuts-list { display: grid; gap: var(--ep-space-2); margin: 0 0 var(--ep-space-4); }
+.shortcuts-list > div {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: var(--ep-space-3);
+  align-items: baseline;
+}
+.shortcuts-list dt,
+.shortcuts-list dd { margin: 0; }
+.shortcuts-dialog kbd {
+  display: inline-block;
+  min-width: 1.75em;
+  padding: 0 var(--ep-space-1);
+  border: 1px solid var(--ep-color-border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--ep-radius-control);
+  background: var(--ep-color-surface-subtle);
+  color: var(--ep-color-text);
+  font-family: var(--ep-font-technical);
+  font-size: 0.875em;
+  text-align: center;
+}
+.shortcuts-switch { display: flex; align-items: center; gap: var(--ep-space-2); }
+.shortcuts-dialog .field-help { margin: var(--ep-space-1) 0 0; font-size: 0.875rem; }
+.shortcuts-actions { margin: var(--ep-space-4) 0 0; text-align: right; }
+
+.shortcuts-announcer {
+  position: fixed;
+  bottom: var(--ep-space-4);
+  left: 50%;
+  z-index: 10;
+  transform: translateX(-50%);
+}
+.shortcuts-notice {
+  margin: 0;
+  padding: var(--ep-space-3) var(--ep-space-4);
+  border-left: 3px solid var(--ep-color-accent);
+  border-radius: var(--ep-radius-control);
+  background: var(--ep-color-surface);
+  box-shadow: 0 6px 24px color-mix(in srgb, var(--ep-color-text) 22%, transparent);
+}
