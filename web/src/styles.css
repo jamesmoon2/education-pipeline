@@ -1356,3 +1356,43 @@ pre.log-tail { max-height: none; font-size: 0.8125rem; color: var(--ep-color-tex
 .approval-delta { margin: var(--ep-space-3) 0; }
 .approval-delta h3 { margin: 0 0 var(--ep-space-1); font-size: 1rem; }
 .approval-delta .diff { max-height: 24rem; overflow-y: auto; margin: 0; }
+
+/* ------------------------ error fallbacks and theme select (appended; T60) */
+/* The rail footer is a block now (storage note + theme select). */
+.rail-footer > p { margin: 0; }
+.theme-toggle { margin-top: var(--ep-space-3); }
+.theme-toggle label {
+  display: block;
+  margin-bottom: var(--ep-space-1);
+  color: var(--ep-color-rail-text);
+  font-size: 0.875rem;
+}
+.theme-toggle select { width: 100%; padding: 0.3rem 0.5rem; font-size: 0.875rem; }
+
+/* Route-level and app-level error boundary fallbacks. */
+.error-fallback {
+  max-width: 42rem;
+  margin: var(--ep-space-3) 0;
+  padding: var(--ep-space-4) var(--ep-space-6);
+  border-left: 3px solid var(--ep-color-danger);
+  background: var(--ep-color-danger-soft);
+  color: var(--ep-color-text);
+}
+.error-fallback h1,
+.error-fallback h2 { margin: 0 0 var(--ep-space-2); font-size: 1.375rem; }
+.error-fallback details { margin: var(--ep-space-3) 0; font-size: 0.875rem; }
+.error-fallback summary { cursor: pointer; font-weight: 600; }
+.error-fallback pre {
+  margin: var(--ep-space-2) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--ep-font-technical);
+}
+.error-fallback-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ep-space-4);
+  margin: var(--ep-space-4) 0 0;
+}
+.app-error { max-width: 48rem; margin: 0 auto; padding: var(--ep-space-12) var(--ep-space-4); }
