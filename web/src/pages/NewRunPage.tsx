@@ -116,7 +116,7 @@ export default function NewRunPage() {
   }, [step, profileId, mode, id, title, brief, audience, goals, toml,
     selectedBlueprint, timeBudget, createdId, attached, pristine]);
 
-  const { data: profileData } = usePolling(getProfiles, 30_000);
+  const { data: profileData } = usePolling(getProfiles, 30_000, { events: { topics: true } });
   const profiles = profileData?.profiles ?? [];
 
   useEffect(() => {

@@ -69,8 +69,8 @@ function StageViewerForRoute({
     [topicId, stage],
   );
   const fetchRun = useCallback(() => getRunStatus(topicId), [topicId]);
-  const { data, error, refresh } = usePolling(fetchContent, 5_000);
-  const { data: run } = usePolling(fetchRun, 5_000);
+  const { data, error, refresh } = usePolling(fetchContent, 5_000, { events: { run: topicId } });
+  const { data: run } = usePolling(fetchRun, 5_000, { events: { run: topicId } });
   const requestedTab = searchParams.get("tab");
   const [tab, setTab] = useState<Tab>(
     TABS.includes(requestedTab as Tab) ? (requestedTab as Tab) : "prompt",

@@ -5,6 +5,7 @@ import GlobalJobActivity from "./components/GlobalJobActivity";
 import RouteErrorFallback from "./components/RouteErrorFallback";
 import ShortcutsProvider, { ShortcutsButton } from "./components/ShortcutsProvider";
 import ThemeToggle from "./components/ThemeToggle";
+import { EventsProvider } from "./hooks/useEvents";
 import NewRunPage from "./pages/NewRunPage";
 import RunBoardPage from "./pages/RunBoardPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -14,10 +15,13 @@ import ProfilesPage from "./pages/ProfilesPage";
 import ProfileEditorPage from "./pages/ProfileEditorPage";
 
 export default function App() {
+  // One events stream per tab, shared by the rail and every route.
   return (
-    <ShortcutsProvider>
-      <AppShell />
-    </ShortcutsProvider>
+    <EventsProvider>
+      <ShortcutsProvider>
+        <AppShell />
+      </ShortcutsProvider>
+    </EventsProvider>
   );
 }
 

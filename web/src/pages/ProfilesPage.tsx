@@ -5,7 +5,7 @@ import ErrorNotice from "../components/ErrorNotice";
 import ProfileDraftPanel from "../components/ProfileDraftPanel";
 
 export default function ProfilesPage() {
-  const { data, error, refresh } = usePolling(getProfiles, 30_000);
+  const { data, error, refresh } = usePolling(getProfiles, 30_000, { events: { topics: true } });
   if (error) return <ErrorNotice prefix="Failed to load profiles" error={error} onRetry={refresh} />;
   if (!data) return <p>Loading profiles…</p>;
   return (

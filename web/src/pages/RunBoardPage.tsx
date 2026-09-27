@@ -68,7 +68,7 @@ function InteractiveGuidePanels({
     data: personalization,
     error,
     refresh: refreshPersonalization,
-  } = usePolling(fetchPersonalization, 5_000);
+  } = usePolling(fetchPersonalization, 5_000, { events: { run: status.topic_id } });
   const previewRef = useRef<CanonicalGuidePreviewHandle>(null);
   const observedMutationGeneration = useRef(mutationGeneration);
   const [previewGeneration, setPreviewGeneration] = useState(0);
@@ -161,7 +161,9 @@ function InteractiveGuidePanels({
 
 function RunBoardForTopic({ topicId }: { topicId: string }) {
   const fetchStatus = useCallback(() => getRunStatus(topicId), [topicId]);
-  const { data: status, error, refresh: refreshStatus } = usePolling(fetchStatus, 5_000);
+  const { data: status, error, refresh: refreshStatus } = usePolling(fetchStatus, 5_000, {
+    events: { run: topicId },
+  });
   // Single poll of the jobs endpoint, held here at the board level. JobsPanel
   // used to run its own identical poll for its table, doubling this request
   // stream; it now takes this payload (and error) as props instead, so there
@@ -169,7 +171,9 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
   // the board (action area and stage row) on the same cadence the Jobs table
   // below renders from.
   const fetchJobs = useCallback(() => getJobs(topicId), [topicId]);
-  const { data: jobsData, error: jobsError, refresh: refreshJobs } = usePolling(fetchJobs, 2_000);
+  const { data: jobsData, error: jobsError, refresh: refreshJobs } = usePolling(fetchJobs, 2_000, {
+    events: { run: topicId }, // every job save under the topic also sends run{topicId}
+  });
   // While the jobs poll is failing, usePolling keeps its last payload; a job
   // that terminated during the outage would stay presented as "Running…" in
   // the action area and on its stepper node. Treat the snapshot as unusable
