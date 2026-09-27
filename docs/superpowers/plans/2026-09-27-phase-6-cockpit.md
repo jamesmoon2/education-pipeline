@@ -61,7 +61,7 @@ About the Playwright count: the first baseline run passed 155 of 162, because th
 - **T62a runs once the review is folded in.** It is Python only and disjoint from the web threads, so it may overlap T60 and T61.
 - **T62b follows the T61 merge**, because it adds a provider in `App.tsx`.
 - **T63 follows T62b.** Both touch `RunBoardPage.tsx` and the preview components.
-- **T62 and T63 run in the phase checkout, not in worktrees.** The e2e daemon imports `education_pipeline` from the editable install, which points at the main checkout.
+- **Worktrees are fully isolated, e2e included.** The e2e helper spawns `python3 -m education_pipeline.daemon` with `cwd` set to the checkout root (`web/e2e/helpers/daemon.ts:48-49`), so each worktree's e2e runs that worktree's Python.
 
 ## Decisions settled at open
 
