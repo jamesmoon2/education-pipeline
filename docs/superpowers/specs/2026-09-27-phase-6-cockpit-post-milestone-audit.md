@@ -29,10 +29,11 @@ Parallel work:
 
 Mutations:
 
-- 40 were tried across green steps and addenda, and all were caught: T60 8,
+- 35 were tried across green steps and addenda, and all were caught: T60 8,
   T61 5, T62a 5, T62b 6 plus 3 on the toast fix, and T63 8.
 - Each red writer also ran its tests against a throwaway implementation out
   of tree: T60 8 breakages, T61 5, T62a 11, T62b 33 mutants.
+- The CI round-1 Windows fix added 2 more, both caught, for 37 in the phase.
 
 | Gate | Baseline at open (`6675b40`) | At close (`26126b7`) |
 | --- | --- | --- |
