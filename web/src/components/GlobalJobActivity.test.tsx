@@ -278,15 +278,34 @@ describe("GlobalJobActivity toasts", () => {
   });
 
   it("forgets a job the payload drops, so its reappearance is history, not news", async () => {
-    vi.mocked(getJobs)
-      .mockResolvedValueOnce({ jobs: [makeJob("j1", "running")] })
-      .mockResolvedValueOnce({ jobs: [] })
-      .mockResolvedValue({ jobs: [makeJob("j1", "succeeded")] });
-    renderActivity();
+    // Fake time, advanced one 30 ms interval at a time: the poll count is a
+    // function of the time advanced, not of how fast a loaded machine runs
+    // the real-timer chain.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(getJobs)
+        .mockResolvedValueOnce({ jobs: [makeJob("j1", "running")] })
+        .mockResolvedValueOnce({ jobs: [] })
+        .mockResolvedValue({ jobs: [makeJob("j1", "succeeded")] });
+      renderActivity();
 
-    await waitFor(() => expect(getJobs).toHaveBeenCalledTimes(4));
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Job notifications")).not.toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(getJobs).toHaveBeenCalledTimes(1);
+      // j1 was observed active, so only the drop can explain a missing toast.
+      expect(screen.getByLabelText("Active jobs")).toBeInTheDocument();
+      for (const calls of [2, 3, 4]) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(30);
+        });
+        expect(getJobs).toHaveBeenCalledTimes(calls);
+      }
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Job notifications")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("never toasts a job first seen in a terminal state", async () => {
