@@ -37,7 +37,7 @@ from pathlib import Path
 import pytest
 
 from conftest import symlink_or_skip
-from education_pipeline.atomic_io import atomic_write_text
+from education_pipeline.atomic_io import atomic_write_bytes, atomic_write_text
 from education_pipeline.daemon.jobs import Job, JobStore
 from test_server import _raw_get, server_with_context  # noqa: F401 (fixture)
 
@@ -83,10 +83,16 @@ def _set_mtime(path: Path, mtime_ns: int) -> None:
 
 
 def _replace_same_size_with_new_mtime(path: Path) -> None:
-    """An atomic replace that keeps the size, with an explicitly moved mtime."""
+    """An atomic replace that keeps the size, with an explicitly moved mtime.
+
+    Bytes in, bytes out: ``_write`` / ``_append`` write in text mode, so on
+    Windows each line ends in CRLF on disk, and a text round-trip (``read_text``
+    folds CRLF to LF, ``atomic_write_text`` writes LF verbatim) would shrink
+    the file by a byte a line.
+    """
 
     old = os.stat(path)
-    atomic_write_text(path, path.read_text(encoding="utf-8"))
+    atomic_write_bytes(path, path.read_bytes())
     assert os.stat(path).st_size == old.st_size
     _set_mtime(path, old.st_mtime_ns + 3_000_000_000)
 
