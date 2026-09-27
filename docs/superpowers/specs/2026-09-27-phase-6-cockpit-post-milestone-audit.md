@@ -10,7 +10,40 @@
 
 ## Closeout disposition
 
-(Written at phase close.)
+The phase ran as five map threads: T60, T61, T62a, T62b and T63. T62 was split
+before any code was written. Around them ran the T62 design note and its
+adversarial review, one found-bug fix (rail toast contrast), one flaky unit
+test fixed at its source, and two characterization test addenda (T60 and T63).
+Each addendum pinned behaviour that an implementer had reported as unpinned.
+
+Every behaviour change followed strict TDD. One Opus subagent wrote the
+failing tests and a different Opus subagent made them pass without editing
+tests. The manager reviewed diffs, checked each red set before green started,
+and ruled on every open question.
+
+Parallel work:
+
+- T60 and T61 ran in parallel worktrees.
+- T62a ran alongside the T62b red step.
+- T63 followed T62b, because both touch `RunBoardPage` and the preview.
+
+Mutations:
+
+- 40 were tried across green steps and addenda, and all were caught: T60 8,
+  T61 5, T62a 5, T62b 6 plus 3 on the toast fix, and T63 8.
+- Each red writer also ran its tests against a throwaway implementation out
+  of tree: T60 8 breakages, T61 5, T62a 11, T62b 33 mutants.
+
+| Gate | Baseline at open (`6675b40`) | At close (`26126b7`) |
+| --- | --- | --- |
+| pytest | 2619 passed, 1 skipped | 2667 passed, 1 skipped |
+| vitest | 634 | 938 |
+| Playwright full suite | 162 | 176 |
+
+Code under `education_pipeline/` and `web/src`, tests excluded, changed by
++2292 / −165 across 30 files. `runtime.js` grew from 2383 to 2425 lines.
+The largest new modules are `daemon/events.py` (456 lines), the cockpit's
+`hooks/useEvents.tsx` (292) and `ShortcutsProvider.tsx` (385).
 
 ## Decisions that departed from or refined the map text
 
@@ -105,6 +138,13 @@ intermittent axe failure. The fix is one line: `.toast` now takes
 `GlobalJobActivity.test.tsx` counted polls on real timers against `waitFor`'s
 1 s default. It now advances fake timers. The timeout was not lengthened.
 
+### The results page stays out of the preview bridge (T63)
+
+The page's fallback id `results_page` fails `GUIDE_ID_PATTERN`, and the page
+is not a guide section. The runtime never reports it, and it ignores a
+preview-show that names it. A reload restores the last real section instead.
+Two e2e cases pin both gates.
+
 ## Accepted limitations
 
 - **Theme select hidden on narrow screens (T60).** It sits inside
@@ -148,3 +188,15 @@ intermittent axe failure. The fix is one line: `.toast` now takes
   it.
 - **React `act()` warnings in two unit tests (T62b).** They dispatch
   `visibilitychange` outside `act`, so they log warnings. They do not fail.
+- **The preview is refreshed by mutations only (T63, manager ruling 2).** An
+  out-of-process change to the approved guide (for example, a CLI approve)
+  leaves the preview showing the previous HTML until the reviewer's next
+  cockpit mutation. This is unchanged from before the phase. Now that the
+  position survives a reload, making the preview driven by notices is a cheap
+  follow-up.
+- **No loading line on refresh (T63).** A refetch no longer shows "Loading
+  guide preview…". On a refetch error, or when there is no approved repair,
+  the preview is cleared, as the remount used to do.
+- **A remounted board restores nothing (T63).** The remembered section lives
+  in run-board page state, so navigating away from the board and back starts
+  the preview at its boot section.

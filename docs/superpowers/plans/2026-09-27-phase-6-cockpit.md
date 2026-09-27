@@ -52,7 +52,7 @@ About the Playwright count: the first baseline run passed 155 of 162, because th
 | T61 | Keyboard shortcuts | The key map in decision 4 works, under the rules in decisions 5–8. A `?` overlay lists the keys and carries an on/off switch. A new `keyboard.spec.ts` walks library → course → stage by keyboard, proves typing in inputs triggers nothing, proves `a` never approves, and runs axe with the overlay open. The pure key resolver has unit tests. | - [x] |
 | T62a | Events endpoint (daemon) | `GET /v1/events` behaves as decisions 9–12 and the design note describe. Server tests cover Host and token rejection, the `hello` and `change` frames, a CLI-style out-of-process write being noticed, coalescing, the stream cap, heartbeat and lifetime, and shutdown releasing streams. | - [ ] |
 | T62b | Events in the cockpit | One stream per tab, owned at App level. A `useEvents` hook and `usePolling` integration mean pollers stop while the stream is up and resume when it is down. A vitest proves that one change notice costs the board at most one request per mounted resource it names, and zero requests when idle. e2e: a board updates after a CLI-side change with the stream up. | - [x] |
-| T63 | Preview bridge, both ways | The runtime reports the current section in preview mode only. The run board stops remounting the preview on unrelated mutations, and it restores the reviewer's section when the guide HTML does change. The schema and origin rules are decisions 15–16. e2e covers the round trip in the real cockpit iframe and proves an exported guide posts nothing. The example export is rebuilt. | - [ ] |
+| T63 | Preview bridge, both ways | The runtime reports the current section in preview mode only. The run board stops remounting the preview on unrelated mutations, and it restores the reviewer's section when the guide HTML does change. The schema and origin rules are decisions 15–16. e2e covers the round trip in the real cockpit iframe and proves an exported guide posts nothing. The example export is rebuilt. | - [x] |
 
 ## Order and parallelism between threads
 
@@ -322,4 +322,54 @@ About the Playwright count: the first baseline run passed 155 of 162, because th
     - **Red:** `cockpit-shell.spec.ts:146` raises a success and an error toast deterministically. It routes `/v1/events` to 404 and serves `/v1/jobs` from a test flag. At 1280×1600 it asserts that every node gets an axe verdict and that there are no contrast violations: 10/10 failed in light and 10/10 passed in dark.
     - **Green:** one line, `color: var(--ep-color-text)` inside `.toast`. 3 mutations were caught, `cockpit-shell` passed 30/30, and `personalization` passed 30/30 (it had failed about 1 in 8).
   - **Gates on the merge:** pytest 2667 passed, 1 skipped; `--help` clean; build clean; vitest 928; **full Playwright 168/168** in 1.6 min (3.8 min at baseline, on a contended run).
+- **T63** landed in a worktree after T62b (red `3704b40`, green `34c78f9`, tests `7ab0329`, merged `26126b7`).
+  - **Manager rulings at red:**
+    1. The results page stays out of the bridge. Its fallback id `results_page` fails `GUIDE_ID_PATTERN`, and it is not a guide section.
+    2. The preview stays refreshed by mutations, not by events notices. T62b pins it as a resource that notices do not drive.
+  - **Changes:** 4 production files, +163 / −11, plus the regenerated example export (`guide.html` and `guide.report.json`).
+    - **`runtime.js`** (+44 net, to 2425 lines). `Nav.show` reports a change to a different real section. `isSection` and `watchSections` are new. `installPreviewPositionBridge` does nothing outside `data-guide-mode="preview"`. It installs its preview-show listener before the boot report, with the evidence listener's guard style: source `window.parent`, the exact key set `{id,type}`, the id pattern, and a real section. `RUNTIME_VERSION` stays 1.2.
+    - **`GuidePreviewFrame.tsx`.** A layout-effect listener accepts only `event.source === iframe.contentWindow`, with a non-null `contentWindow`. It sends `onSectionChange` for reports that are not initial. It answers an initial report that differs from `restoreSection` with preview-show and `"*"`. The iframe is still keyed by its HTML.
+    - **`CanonicalGuidePreview.tsx`** refetches on `refreshGeneration` without clearing the document.
+    - **`RunBoardPage.tsx`** drops the `key={previewGeneration}` remount. The remembered section is state in `RunBoardForTopic`.
+  - **Tests.**
+    - **Red:** 10 vitest cases, 4 runtime e2e cases in `guide-runtime.spec.ts` and 2 cockpit e2e cases in the new `preview-bridge.spec.ts`. Each negative case is paired with a positive control, so no case passes vacuously.
+    - The cockpit e2e keeps the preview through "Run final validation" and "Finalize". A revised repair is approved out of process, which changes the HTML, and the frame restores to the reviewer's section.
+    - The exported-guide guard covers the fixture export and the committed example.
+    - **Characterization addendum:** 2 e2e cases pin ruling 1, which the implementer reported as unpinned (removing either gate passed every test). The results page, reached by either learner route, is never reported. A preview-show naming `results` is ignored, and a frame-side counter proves the page never became current, even briefly.
+  - **Mutations:** 8, all caught.
+    - Green (6): the frame's source check dropped, positions posted outside preview mode, the remount key restored, preview-show accepting any id inside a section, the runtime's `window.parent` check dropped, and the preview cleared on each refresh.
+    - Addendum (2): the report's `isSection` gate removed, and preview-show's `isSection` gate removed.
+  - **Repeats:** `preview-bridge.spec.ts` 20/20, the runtime bridge tests 100/100, and the addendum 20/20.
+  - **Gates on the merge:** pytest 2667 passed, 1 skipped; `--help` clean; `build_example.py` leaves the tree clean; build clean; vitest 938; **full Playwright 176/176**.
+
+## Phase closeout
+
+Five map threads (T62 split into T62a and T62b), plus the T62 design note and its review, one found-bug fix (rail toast contrast), one flaky test fixed at its source, and two characterization addenda (T60, T63), on `claude/gifted-davinci-slrab7`.
+
+- T60 and T61 ran in parallel worktrees and merged in that order. `App.tsx` and `styles.css` conflicted as planned.
+- T62a (Python only) ran in a worktree alongside the T62b red step. The phase branch was merged into T62b before its green step, so its e2e ran against the real endpoint.
+- T63 followed T62b.
+
+Final gate on the branch head (`26126b7`):
+
+| Gate | Result |
+| --- | --- |
+| pytest (Python 3.11) | 2667 passed, 1 skipped (baseline 2619) |
+| `python3 -m education_pipeline --help` | clean |
+| `python3 scripts/build_example.py` | no diff |
+| `npm run build` | clean |
+| vitest | 938 (baseline 634) |
+| Playwright full suite | 176/176 (baseline 162) |
+
+The diff against `main` at `6675b40` is 66 files, +10376 / −181, most of it tests. Production code under `education_pipeline/` and `web/src` changed by +2292 / −165 across 30 files. `runtime.js` went from 2383 to 2425 lines.
+
+Shape after the phase:
+
+- **Resilience.** A route that throws shows a recoverable fallback while the rail keeps working. A throw in the rail itself gets a last-resort reload.
+- **Theme.** The cockpit has its own theme choice (system, light or dark), stamped before first render and kept per browser.
+- **Keyboard.** `?`, `/`, `n`, `r` and `a`, with the documented conflict rules. Approving by keyboard takes two keys. An on/off switch meets WCAG 2.1.4.
+- **Events.** One authenticated `text/event-stream` per tab replaces the pollers while it is up. A board idle for 30 s makes 0 requests, against 29 with polling. Polling remains the fallback. The stream carries notices only, never course content. Change detection sees CLI writes from other processes.
+- **Preview.** The preview reports the reviewer's section, survives unrelated refreshes without reloading, and restores the section when the guide HTML changes.
+
+Departures and accepted limitations are in the audit ledger.
 
