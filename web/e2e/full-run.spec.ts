@@ -238,6 +238,12 @@ test("guide run drafts module by module through the paste loop", async ({ page }
   await page.getByRole("button", { name: "Paste skeleton response" }).click();
   await page.getByLabel("Response for skeleton").fill(skeletonText);
   await page.getByRole("button", { name: "Save" }).click();
+  // Each paste editor closes itself once its save has landed; until then it
+  // stays open with its "Save" disabled. The module rows below can appear
+  // before that -- the events stream refreshes the board as soon as the
+  // daemon writes the module prompts, while the skeleton's POST is still in
+  // flight -- so wait for the skeleton editor itself to close.
+  await expect(page.getByLabel("Response for skeleton")).toBeHidden();
 
   // Ingesting the skeleton response through the unit route auto-writes the
   // per-module prompts (design decision 9), so no Advance is needed here:
@@ -249,12 +255,14 @@ test("guide run drafts module by module through the paste loop", async ({ page }
   await firstModulePaste.waitFor();
 
   // One module at a time: DraftProgressPanel's "Save" button is not
-  // per-row-qualified, so only one row's paste editor is open at once (it
-  // closes itself on a successful save).
+  // per-row-qualified, so each row's save must land (its editor closes)
+  // before the next row's editor opens -- otherwise the previous row's
+  // disabled "Save" is still on screen beside the new one.
   for (const module of fixture.modules) {
     await page.getByRole("button", { name: `Paste response for ${module.title}` }).click();
     await page.getByLabel(`Response for ${module.title}`).fill(JSON.stringify(module));
     await page.getByRole("button", { name: "Save" }).click();
+    await expect(page.getByLabel(`Response for ${module.title}`)).toBeHidden();
   }
 
   // The last module's ingest assembles the draft automatically; approve the
