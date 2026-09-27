@@ -636,4 +636,86 @@ describe("NewRunPage draft persistence", () => {
     expect(await screen.findByText("RUN BOARD DESTINATION")).toBeInTheDocument();
     expect(sessionStorage.getItem(NEW_RUN_DRAFT_KEY)).toBeNull();
   });
+
+  it("Start over returns a restored Paste-TOML draft to Describe it with no TOML", async () => {
+    saveNewRunDraft(makeDraft({ mode: "toml", id: "", title: "", toml: 'id = "pasted"' }));
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [] });
+    renderWizard();
+
+    await screen.findByRole("status");
+    expect(screen.getByRole("radio", { name: "Paste TOML" })).toBeChecked();
+    expect(screen.getByLabelText("Topic TOML")).toHaveValue('id = "pasted"');
+    await userEvent.click(screen.getByRole("button", { name: "Start over" }));
+
+    // Mode and TOML are draft fields too: the reset wizard is pristine, so the
+    // persistence mirror re-saves nothing.
+    expect(await screen.findByRole("heading", { name: "Learner" })).toBeInTheDocument();
+    expect(sessionStorage.getItem(NEW_RUN_DRAFT_KEY)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByRole("radio", { name: "Describe it" })).toBeChecked();
+    await userEvent.click(screen.getByRole("radio", { name: "Paste TOML" }));
+    expect(screen.getByLabelText("Topic TOML")).toHaveValue("");
+  });
+});
+
+// Continue at the topic step awaits the blueprint fetch before moving on, and
+// the move is to the blueprint step itself (an absolute step), not "one step
+// further than wherever the wizard is when the fetch settles".
+describe("NewRunPage blueprint step entry", () => {
+  it("lands on the blueprint step, not past it, when Continue is double-clicked", async () => {
+    const pending: Array<(payload: BlueprintsPayload) => void> = [];
+    vi.mocked(recommendBlueprints).mockImplementation(
+      () =>
+        new Promise<BlueprintsPayload>((resolve) => {
+          pending.push(resolve);
+        }),
+    );
+    const user = userEvent.setup();
+    await renderAtTopicStep();
+    await user.type(screen.getByLabelText("Topic id"), "dbl");
+    await user.type(screen.getByLabelText("Title"), "Double");
+
+    await user.dblClick(screen.getByRole("button", { name: "Continue" }));
+    expect(recommendBlueprints).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("heading", { name: "Topic and brief" })).toBeInTheDocument();
+
+    await act(async () => {
+      for (const resolve of pending) resolve(blueprintsPayload);
+    });
+
+    expect(screen.getByRole("heading", { name: "Choose a blueprint" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Model plan" })).toBeNull();
+    expect(screen.getByRole("radio", { name: /Conceptual foundations/ })).toBeChecked();
+    expect(loadNewRunDraft()?.step).toBe("blueprint");
+  });
+
+  it("lands on the blueprint step when Back is clicked before the blueprint fetch settles", async () => {
+    let resolveBlueprints!: (payload: BlueprintsPayload) => void;
+    vi.mocked(recommendBlueprints).mockImplementation(
+      () =>
+        new Promise<BlueprintsPayload>((resolve) => {
+          resolveBlueprints = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    await renderAtTopicStep();
+    await user.type(screen.getByLabelText("Topic id"), "slow");
+    await user.type(screen.getByLabelText("Title"), "Slow");
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    // The fetch is in flight and the topic step's Back is still live.
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("heading", { name: "Learner" })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveBlueprints(blueprintsPayload);
+    });
+
+    // The settled Continue still lands on the blueprint step it asked for,
+    // not one step past Learner (the topic step).
+    expect(screen.getByRole("heading", { name: "Choose a blueprint" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Topic and brief" })).toBeNull();
+    expect(screen.getByRole("radio", { name: /Conceptual foundations/ })).toBeChecked();
+    expect(loadNewRunDraft()?.step).toBe("blueprint");
+  });
 });
