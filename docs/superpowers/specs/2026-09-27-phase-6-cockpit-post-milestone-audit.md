@@ -91,6 +91,20 @@ Emitting a new error code trips the error-catalog test, and cataloguing it
 trips the troubleshooting-doc test. So `errors.py` and
 `docs/troubleshooting.md` gained an `events_capacity` entry.
 
+### Rail toast contrast fixed as a found bug (T62b)
+
+This was not map scope. Rail toasts had set a white background without a text
+colour, inside a rail whose text colour is near-white, so they were unreadable
+in the light theme. It predates the phase. It is fixed with its own red/green
+pair inside T62b's branch before the merge, so the phase head never carried an
+intermittent axe failure. The fix is one line: `.toast` now takes
+`--ep-color-text`.
+
+### A flaky unit test fixed at its source (T62b)
+
+`GlobalJobActivity.test.tsx` counted polls on real timers against `waitFor`'s
+1 s default. It now advances fake timers. The timeout was not lengthened.
+
 ## Accepted limitations
 
 - **Theme select hidden on narrow screens (T60).** It sits inside
@@ -125,3 +139,12 @@ trips the troubleshooting-doc test. So `errors.py` and
   connected but stops reading keeps its stream slot until the 300 s lifetime
   ends it. Loopback socket buffers never fill at notice rates, so the write
   timeout does not fire first.
+- **A shown tab can fetch twice (T62b, manager ruling 2).** When a hidden tab
+  is shown again, each poller fetches once on the resume and once on the new
+  stream's `hello`.
+- **A notice in the same chunk as `hello` is dropped (T62b).** A notice that
+  arrives in the same network chunk as `hello`, before React re-renders, is
+  not delivered on its own. The `hello` resync, which starts after it, covers
+  it.
+- **React `act()` warnings in two unit tests (T62b).** They dispatch
+  `visibilitychange` outside `act`, so they log warnings. They do not fail.

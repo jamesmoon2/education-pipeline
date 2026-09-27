@@ -51,7 +51,7 @@ About the Playwright count: the first baseline run passed 155 of 162, because th
 | T60 | Error boundary, theme toggle, wizard reducer | A route-level boundary keeps the rail usable and offers "Try again" and "Back to the library". An app-level boundary offers "Reload". A theme select (system, light or dark) stamps or clears `data-theme` and persists per browser. `NewRunPage` form and lifecycle state live in one pure reducer, and the existing NewRunPage unit tests and the new-run and blueprints e2e pass with zero edits. There are unit tests for each part and one e2e case for theme persistence and axe in dark. | - [x] |
 | T61 | Keyboard shortcuts | The key map in decision 4 works, under the rules in decisions 5–8. A `?` overlay lists the keys and carries an on/off switch. A new `keyboard.spec.ts` walks library → course → stage by keyboard, proves typing in inputs triggers nothing, proves `a` never approves, and runs axe with the overlay open. The pure key resolver has unit tests. | - [x] |
 | T62a | Events endpoint (daemon) | `GET /v1/events` behaves as decisions 9–12 and the design note describe. Server tests cover Host and token rejection, the `hello` and `change` frames, a CLI-style out-of-process write being noticed, coalescing, the stream cap, heartbeat and lifetime, and shutdown releasing streams. | - [ ] |
-| T62b | Events in the cockpit | One stream per tab, owned at App level. A `useEvents` hook and `usePolling` integration mean pollers stop while the stream is up and resume when it is down. A vitest proves that one change notice costs the board at most one request per mounted resource it names, and zero requests when idle. e2e: a board updates after a CLI-side change with the stream up. | - [ ] |
+| T62b | Events in the cockpit | One stream per tab, owned at App level. A `useEvents` hook and `usePolling` integration mean pollers stop while the stream is up and resume when it is down. A vitest proves that one change notice costs the board at most one request per mounted resource it names, and zero requests when idle. e2e: a board updates after a CLI-side change with the stream up. | - [x] |
 | T63 | Preview bridge, both ways | The runtime reports the current section in preview mode only. The run board stops remounting the preview on unrelated mutations, and it restores the reviewer's section when the guide HTML does change. The schema and origin rules are decisions 15–16. e2e covers the round trip in the real cockpit iframe and proves an exported guide posts nothing. The example export is rebuilt. | - [ ] |
 
 ## Order and parallelism between threads
@@ -296,3 +296,30 @@ About the Playwright count: the first baseline run passed 155 of 162, because th
   - **Evidence:** the two new files passed 5 runs in a row and 4 concurrent copies.
   - **Curl smoke on a real daemon:** 401 without a token or with a wrong one. With the token, 200 with the three headers and a byte-exact `hello`. An append to `topics/demo.toml` sent `topics`, then `run{demo}`.
   - **Gates on the merge:** pytest 2667 passed, 1 skipped; `--help` clean; build clean; vitest 808; e2e `smoke`, `approve-continue` and `full-run` 7/7.
+- **T62b** landed in a parallel worktree (flake fix `18191e4`, red `2aba908`, phase merged in at `e3db87c`, green `9b10ace`, fix red `b6cdd93`, fix green `aeaac55`, merged `03dafac`).
+  - **Changes:** 11 non-test files, +423 / −21.
+    - New `hooks/useEvents.tsx` (292 lines). It holds `createSseParser`, `EventsProvider` (the reconnect table, the 15 s pre-hello and 3× heartbeat idle watchdogs, hidden-tab drop and `<html data-events>`) and `useEvents`.
+    - `usePolling.ts` +84 / −6: an optional `{events}` filter, held in a ref. While the stream is up the chain stops. The poller then fetches once per `hello` and once per matching notice, with one fetch in flight and one queued, and a failed fetch re-arms the interval until one succeeds.
+    - `client.ts` +20: `openEventStream`, which sends the memoized `X-EP-Token` and clears the memo only on 401.
+    - `App.tsx` gains `EventsProvider`, and seven call sites each change by 1–6 lines.
+    - `JobLogView` is unchanged.
+  - **Flake fixed at the source first.** `GlobalJobActivity.test.tsx` "forgets a job the payload drops" now advances fake timers one 30 ms interval at a time. Under 4 and 8 CPU hogs it failed 1/20 and 2/20 before the change, and 0/20 at both loads after it.
+  - **Tests.**
+    - **Red:** 120 cases.
+      - `useEvents.test.tsx` 45 (the parser, including CRLF split across chunks; the reconnect table with exact jittered delays; the watchdogs; hidden tabs).
+      - `usePolling.events.test.tsx` 14.
+      - `RunBoardPage.events.test.tsx` 9 (the budget test).
+      - `callSites.events.test.tsx` 40 (8 call sites × idle and 4 notice kinds).
+      - `App.events.test.tsx` 3 and `client.test.ts` +9.
+      - `e2e/events.spec.ts`: a CLI-side change updates an open board, with the counting window starting after the resync lands.
+    - Existing assertions were not changed. The only edit to an existing test is a never-settling `openEventStream` stub in `AppShell.test.tsx`'s module mock.
+    - The red writer ran the cases against a throwaway implementation: 33 mutants were each caught.
+  - **Mutations (green):** 6, all caught: polling while up, no resync on `hello`, a 401 keeping the token memo, the filter compared by identity, no backoff reset after a long-lived stream, and a chunk-final CR not swallowing the next LF.
+  - **Measured on a real daemon:** a run board idle for 30 s made **0** `/v1` requests with the stream up. With `/v1/events` forced to 404 it made **29** (`/v1/jobs` 20, `/v1/runs/{t}` 6, `/v1/topics` 3).
+  - **Bug found on the way, fixed red/green.** Rail toasts were unreadable in the light theme: `#eef1f6` text on white, contrast 1.13. `.app-rail` sets a light text colour for the dark rail, and `.toast` set a white background without resetting `color`.
+    - The bug predates the phase. It surfaced as `personalization.spec.ts:382` failing axe about 1 run in 8, because the job-save nudge lets the rail catch a short audit job while it is active and toast it. The 5 s poll almost never did.
+    - At the default 720 px viewport, axe marks the toast "incomplete" rather than failing it, which is why the failure was intermittent.
+    - **Red:** `cockpit-shell.spec.ts:146` raises a success and an error toast deterministically. It routes `/v1/events` to 404 and serves `/v1/jobs` from a test flag. At 1280×1600 it asserts that every node gets an axe verdict and that there are no contrast violations: 10/10 failed in light and 10/10 passed in dark.
+    - **Green:** one line, `color: var(--ep-color-text)` inside `.toast`. 3 mutations were caught, `cockpit-shell` passed 30/30, and `personalization` passed 30/30 (it had failed about 1 in 8).
+  - **Gates on the merge:** pytest 2667 passed, 1 skipped; `--help` clean; build clean; vitest 928; **full Playwright 168/168** in 1.6 min (3.8 min at baseline, on a contended run).
+
