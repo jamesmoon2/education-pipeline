@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-guide-schema="1.3" data-guide-runtime="1.3" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-Rh34Gxn6YmsoGTMdGV9PlZVZzMu68dptUpou1DVzc6Q='; script-src 'sha256-ZxEkvKdmYuYtnDQZmoKsZwdBLn7Z2RKhCoWx7yRsVjA='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
+<html lang="en" data-guide-schema="1.3" data-guide-runtime="1.3" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-Rh34Gxn6YmsoGTMdGV9PlZVZzMu68dptUpou1DVzc6Q='; script-src 'sha256-OSprBeiSW26+N520PA4iYQ8HgDT3sjar/aF3vsJGBRQ='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
  * Derives from the product token system in docs/design-system.md (§4.2):
  * the guide surface reads with Literata on a white surface, interface
  * chrome uses the Plex Sans stack, and status is never color alone.
@@ -2993,15 +2993,22 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
       stage.style.width = `${geo.width}px`;
       const fallback = svgStackView(geo, svg);
       let current = fallback;
-      let gl = null;
-      try {
-        gl = webglStackView(geo, stage);
-      } catch (error) {
-        console.error("guide-runtime: stack drawn without WebGL:", error);
-        gl = null;
-      }
       let last = stackState(geo.layers.length, {});
-      if (gl) {
+      let tried = false;
+      figure.dataset.diagramRender = "svg";
+      // WebGL starts only when the stack nears the screen: a guide may hold
+      // several stacks, and browsers cap how many contexts stay alive. Until
+      // then the SVG, drawn from the same projection, is the picture.
+      const upgrade = () => {
+        if (tried) return;
+        tried = true;
+        let gl = null;
+        try {
+          gl = webglStackView(geo, stage);
+        } catch (error) {
+          console.error("guide-runtime: stack drawn without WebGL:", error);
+        }
+        if (!gl) return;
         current = gl;
         figure.dataset.diagramRender = "webgl";
         gl.onLost = () => {
@@ -3020,7 +3027,15 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
           if (scheme.addEventListener) scheme.addEventListener("change", repaint);
         }
         requestAnimationFrame(resize);
-      } else figure.dataset.diagramRender = "svg";
+      };
+      if (typeof window.IntersectionObserver === "function") {
+        const observer = new IntersectionObserver((entries) => {
+          if (!entries.some((entry) => entry.isIntersecting)) return;
+          observer.disconnect();
+          upgrade();
+        }, { rootMargin: "200px" });
+        observer.observe(stage);
+      } else upgrade();
       return (state) => {
         last = state;
         current.render(state);

@@ -2748,15 +2748,22 @@
       stage.style.width = `${geo.width}px`;
       const fallback = svgStackView(geo, svg);
       let current = fallback;
-      let gl = null;
-      try {
-        gl = webglStackView(geo, stage);
-      } catch (error) {
-        console.error("guide-runtime: stack drawn without WebGL:", error);
-        gl = null;
-      }
       let last = stackState(geo.layers.length, {});
-      if (gl) {
+      let tried = false;
+      figure.dataset.diagramRender = "svg";
+      // WebGL starts only when the stack nears the screen: a guide may hold
+      // several stacks, and browsers cap how many contexts stay alive. Until
+      // then the SVG, drawn from the same projection, is the picture.
+      const upgrade = () => {
+        if (tried) return;
+        tried = true;
+        let gl = null;
+        try {
+          gl = webglStackView(geo, stage);
+        } catch (error) {
+          console.error("guide-runtime: stack drawn without WebGL:", error);
+        }
+        if (!gl) return;
         current = gl;
         figure.dataset.diagramRender = "webgl";
         gl.onLost = () => {
@@ -2775,7 +2782,15 @@
           if (scheme.addEventListener) scheme.addEventListener("change", repaint);
         }
         requestAnimationFrame(resize);
-      } else figure.dataset.diagramRender = "svg";
+      };
+      if (typeof window.IntersectionObserver === "function") {
+        const observer = new IntersectionObserver((entries) => {
+          if (!entries.some((entry) => entry.isIntersecting)) return;
+          observer.disconnect();
+          upgrade();
+        }, { rootMargin: "200px" });
+        observer.observe(stage);
+      } else upgrade();
       return (state) => {
         last = state;
         current.render(state);

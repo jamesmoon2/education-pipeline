@@ -175,6 +175,11 @@ test.describe("motion diagrams (schema 1.3)", () => {
   test("a stack keeps its SVG as the image and adds a WebGL canvas when it can", async ({ page }) => {
     await load(page);
     const figure = page.locator("figure#garden-bed-stack");
+    // Off screen, no WebGL context exists yet: the SVG is the picture.
+    await expect(figure).toHaveAttribute("data-diagram-render", "svg");
+    await expect(figure.locator("canvas")).toHaveCount(0);
+    await reveal(page, "figure#garden-bed-stack");
+    await page.waitForTimeout(300);
     const svg = figure.locator("svg.diagram-svg--stack");
     await expect(svg).toHaveAttribute("role", "img");
     await expect(svg.locator("desc")).toHaveText(
