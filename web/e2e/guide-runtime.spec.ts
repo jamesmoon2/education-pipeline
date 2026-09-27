@@ -462,6 +462,90 @@ test.describe("preview position bridge", () => {
     ).toEqual([]);
     await topLevel.close();
   });
+
+  // The results page is not a guide section, so it stays out of the bridge in
+  // both directions: moving onto it is never reported, and the cockpit cannot
+  // name it. (A guide that authors its own `results` section moves the page to
+  // `results_page`, which GUIDE_ID_PATTERN already rejects on the way in.)
+  test("never reports the results page, by either learner route, and still reports the section after it", async ({
+    page,
+  }) => {
+    await mountSandboxedFrames(page, { preview: previewDocumentHtml });
+    const frame = page.frameLocator('iframe[title="preview"]');
+    const results = frame.locator("#results");
+    await expect(frame.locator("#feedback-foundations")).toHaveClass(/is-current/);
+    await expect.poll(() => received(page)).toEqual([position("feedback-foundations", true)]);
+
+    // The header's "See your results" link.
+    await frame.locator('[data-role="results-summary"] a[href="#results"]').click();
+    await expect(results).toHaveClass(/is-current/);
+    await expect(results).toHaveAttribute("data-role", "results-page");
+
+    // Positive control, and what makes the silence above observable: the
+    // frame posts in order, so a report of the results page would already
+    // sit ahead of this one.
+    await results.locator('[data-role="prev-section"]').click();
+    await expect(frame.locator("#garden-decision")).toHaveClass(/is-current/);
+    await expect
+      .poll(() => received(page))
+      .toEqual([position("feedback-foundations", true), position("garden-decision", false)]);
+
+    // Next from the last guide section.
+    await frame.locator('#garden-decision [data-role="next-section"]').click();
+    await expect(results).toHaveClass(/is-current/);
+    await results.locator('[data-role="prev-section"]').click();
+    await expect(frame.locator("#garden-decision")).toHaveClass(/is-current/);
+    await expect
+      .poll(() => received(page))
+      .toEqual([
+        position("feedback-foundations", true),
+        position("garden-decision", false),
+        position("garden-decision", false),
+      ]);
+  });
+
+  test("ignores preview-show naming the results page from window.parent, then shows the section named next", async ({
+    page,
+  }) => {
+    await mountSandboxedFrames(page, { preview: previewDocumentHtml });
+    const frame = page.frameLocator('iframe[title="preview"]');
+    const iframe = page.locator('iframe[title="preview"]');
+    await expect(frame.locator("#feedback-foundations")).toHaveClass(/is-current/);
+    await expect(frame.locator("#results")).toHaveAttribute("data-role", "results-page");
+
+    // Every time the results page is current, even briefly between two
+    // messages, is counted inside the frame.
+    const content = await (await iframe.elementHandle())!.contentFrame();
+    await content!.evaluate(() => {
+      const w = window as unknown as { __resultsShown: number };
+      w.__resultsShown = 0;
+      const resultsPage = document.getElementById("results")!;
+      new MutationObserver((records) => {
+        for (const record of records) {
+          if (/\bis-current\b/.test(`${record.oldValue ?? ""} ${resultsPage.className}`)) {
+            w.__resultsShown += 1;
+          }
+        }
+      }).observe(resultsPage, { attributes: true, attributeFilter: ["class"], attributeOldValue: true });
+    });
+
+    // One parent, one frame: the two messages arrive in order, so once the
+    // section (the positive control) is current, the results message has
+    // been handled.
+    await iframe.evaluate((element, show) => {
+      const target = (element as HTMLIFrameElement).contentWindow;
+      target?.postMessage({ type: show, id: "results" }, "*");
+      target?.postMessage({ type: show, id: "garden-decision" }, "*");
+    }, SHOW);
+    await expect(frame.locator("#garden-decision")).toHaveClass(/is-current/);
+    await expect(frame.locator("#results")).not.toHaveClass(/is-current/);
+    expect(
+      await content!.evaluate(() => (window as unknown as { __resultsShown: number }).__resultsShown),
+    ).toBe(0);
+    await expect
+      .poll(() => received(page))
+      .toEqual([position("feedback-foundations", true), position("garden-decision", false)]);
+  });
 });
 
 // The runtime shows one section at a time, so tests must open the section
