@@ -269,3 +269,30 @@ About the Playwright count: the first baseline run passed 155 of 162, because th
   - **Gates on the merge:** pytest 2619 passed, 1 skipped; `--help` clean; build clean; vitest 808; e2e `keyboard`, `cockpit-shell`, `smoke`, `approve-continue`, `library`, `editor` and `new-run` 15/15. axe is clean with the overlay open.
   - **Found on the way:** `GlobalJobActivity.test.tsx:287` polls every 30 ms on real timers and waits for four calls inside `waitFor`'s 1 s default. It failed once while four agents were loading the machine, and passed alone. The root cause is a count that depends on wall-clock throughput. The fix is fake-timer advancement, not a longer timeout, and it is assigned to T62b's red step, which rewrites that component's polling.
   - **Unreproduced:** one pytest failure in T61's worktree under the same load was not captured, and T61 changes no Python. Three later full runs were clean. Every gate run since then uses `-rf`, so a recurrence will be named.
+- **T62 design** (`a7c0774` draft, `2359ee4` reviewed). An Opus writer drafted `docs/superpowers/specs/2026-09-27-events-endpoint-design.md` from decisions 9–14, and a second Opus reviewed it adversarially against `server.py`, `read_api.py` and `jobs.py`, editing in place (33 marks and a review record).
+  - **Blocker 1, fixed:** the budget test as written could never pass, because the note's own 45 s idle watchdog would restart the stream. The budget test now sends a keepalive every 15 s.
+  - **Blocker 2, fixed:** skipping job directories that the nudge had already announced could drop a later non-save change under `jobs/`, and it made correctness depend on the nudge. The scan now stats every `job.json`.
+  - **Should-fixes:** topic edits also notify `run{t}`, because run status reads the topic file live. The scanner re-checks its generation under `_scan_lock`. The hub lock is a written leaf-lock rule. The handler's `try` opens right after `subscribe`. Fingerprint tests must be portable to the macOS and Windows CI.
+  - **Manager rulings:** keep `MAX_STREAMS = 4`, which is under the browser's 6-per-host limit; a hidden tab drops its stream; the parallelism figure may lag a plan edit (ledger).
+- **T62a** landed in a parallel worktree (red `037a972`, green `22d5866`, merged `651a151`).
+  - **Changes:** 6 non-test files, +534.
+    - New module `daemon/events.py` (456 lines): `EventHub`, the pure `workspace_fingerprint` and `diff_fingerprints`, `encode_frame` and `pump`.
+    - `server.py` +50: `_events_stream` as the first arm of `_api_get_routes`, so it is reached only after `_host_ok` and `_authed`, with the 503 `events_capacity` envelope at the cap.
+    - `daemon/__init__.py` +9: the hub is wired, and `events.close()` runs first on shutdown.
+    - `jobs.py` +11: `JobStore.on_saved`. A failing hook logs its type and never fails a save.
+    - The `events_capacity` entry in `errors.py` and a row in `docs/troubleshooting.md`, which the existing catalog and doc tests require. The note had missed these two files.
+  - **Values:** `MAX_STREAMS` 4, heartbeat 15 s, lifetime 300 s, a 1 s peer-liveness check (a per-stream `selectors` poll, which avoids `select`'s 1024-descriptor limit), a scan every 1 s stretched to 10× the last pass, and `TCP_NODELAY` on stream sockets only.
+  - **Locks:** `_scan_lock` is always taken before `_lock`. `_lock` is a leaf: no I/O, logging or other lock under it. The manager checked that the scan's filesystem pass runs outside `_lock`.
+  - **Tests.**
+    - **Red:** 48 cases in `tests/test_events.py` and `tests/test_events_endpoint.py`. 45 failed on import and 3 on missing hooks, routes or catalog. Every auth-rejection case (bad Host, missing or wrong token, query-string token, other methods, absolute form) asserts that `subscribe` is never called, so an unauthenticated connection never takes a slot or a thread.
+    - The red writer ran them against a throwaway prototype out of tree: 11 mutations were caught, and the files ran 8 times in a row plus 6 concurrent runs under CPU load.
+    - **Correction to the review record:** `//v1/events` is collapsed to `/v1/events` by the stdlib, rather than getting a 404. The test asserts only that it never streams without the token.
+  - **Mutations (green):** 5, all caught.
+    - Route before `_authed`: 2 tests, which time out because the unauthenticated client gets a live stream.
+    - Coalescing dropped: 1.
+    - `unsubscribe` outside `finally`: 3.
+    - `job.json` not stat'ed: 1.
+    - `events.close()` removed from `serve()`: 2.
+  - **Evidence:** the two new files passed 5 runs in a row and 4 concurrent copies.
+  - **Curl smoke on a real daemon:** 401 without a token or with a wrong one. With the token, 200 with the three headers and a byte-exact `hello`. An append to `topics/demo.toml` sent `topics`, then `run{demo}`.
+  - **Gates on the merge:** pytest 2667 passed, 1 skipped; `--help` clean; build clean; vitest 808; e2e `smoke`, `approve-continue` and `full-run` 7/7.
