@@ -242,6 +242,18 @@ describe("wizardReducer: restore note and Start over", () => {
     expect(after.createError).toBeNull();
     expect(after.creating).toBe(false);
   });
+
+  it("startOver returns a Paste-TOML draft to Describe it with no pasted TOML", () => {
+    // The fixture above is already in describe mode with empty TOML, so it
+    // cannot tell a reset mode/toml from a kept one; this draft can.
+    const before = initWizardState(
+      makeDraft({ step: "plan", mode: "toml", toml: 'id = "pasted"\ntitle = "Pasted"' }),
+    );
+    const after = wizardReducer(before, { type: "startOver" });
+    expect(after.mode).toBe("describe");
+    expect(after.toml).toBe("");
+    expect(wizardDraft(after)).toEqual(DEFAULT_DRAFT);
+  });
 });
 
 describe("wizardReducer: course creation lifecycle", () => {
