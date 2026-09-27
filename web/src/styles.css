@@ -311,6 +311,7 @@ code, pre, .technical {
   padding: var(--ep-space-3) var(--ep-space-4);
   border-radius: var(--ep-radius-control);
   background: var(--ep-color-surface);
+  color: var(--ep-color-text);
   box-shadow: 0 6px 24px color-mix(in srgb, var(--ep-color-text) 22%, transparent);
 }
 .toast p { margin: 0; }
