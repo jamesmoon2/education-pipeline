@@ -36,8 +36,7 @@ BYTES_PER_TOKEN = 4
 #: borrow a familiar name.
 PRICE_TABLE: dict[str, float] = {
     # claude-code provider (argv_model of the shipped catalog's options)
-    "claude-fable-5": 30.0,
-    "claude-opus-4-8": 30.0,
+    "claude-opus-5-5": 24.0,
     "claude-sonnet-5": 6.0,
     "claude-haiku-4-5": 1.5,
     # codex provider

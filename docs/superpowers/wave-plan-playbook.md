@@ -42,9 +42,9 @@ reference example is
    the next manager needs nothing else.
 3. Commit the plan-document update.
 4. **Print to the terminal for the human:**
-   - the recommended **manager model for the next wave** (Opus or Fable) and
-     **effort level**, with a one-sentence rationale tied to that wave's
-     difficulty;
+   - the **effort level** for the next wave's manager, with a one-sentence
+     rationale tied to that wave's difficulty (the manager model is pinned:
+     always Opus 5.5, `claude-opus-5-5`);
    - the **verbatim kickoff prompt** for the next wave.
 5. Stop. Never start the next wave in the same session.
 

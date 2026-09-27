@@ -7,25 +7,17 @@ label = "Claude Code"
 description = "Run stages through the Claude Code CLI installed on this machine."
 
 [[providers.models]]
-id = "fable-5"
-label = "Fable 5"
-description = "Deepest reasoning for course design; slowest and most expensive."
+id = "opus-5-5"
+label = "Opus 5.5"
+description = "Deepest reasoning and strongest long-form writing; the premium model for every design and content stage."
 quality = "premium"
 default_effort = "high"
-argv_model = "claude-fable-5"
-
-[[providers.models]]
-id = "opus-4-8"
-label = "Opus 4.8"
-description = "Strong long-form writing and revision; the workhorse for content stages."
-quality = "premium"
-default_effort = "high"
-argv_model = "claude-opus-4-8"
+argv_model = "claude-opus-5-5"
 
 [[providers.models]]
 id = "sonnet-5"
 label = "Sonnet 5"
-description = "Near-Opus quality at lower cost; good balance for most stages."
+description = "Strong quality at lower cost; good balance for lighter stages."
 quality = "strong"
 default_effort = "medium"
 argv_model = "claude-sonnet-5"
@@ -84,14 +76,14 @@ label = "Max quality"
 description = "The strongest model at every step. Slowest and most expensive."
 
 [presets.stages.claude-code]
-profile = { model = "opus-4-8", effort = "medium" }
-spec = { model = "fable-5", effort = "high" }
-outline = { model = "fable-5", effort = "high" }
-draft = { model = "opus-4-8", effort = "high" }
-qa = { model = "opus-4-8", effort = "medium" }
-factcheck = { model = "opus-4-8", effort = "high" }
-repair = { model = "opus-4-8", effort = "high" }
-audit = { model = "opus-4-8", effort = "high" }
+profile = { model = "opus-5-5", effort = "medium" }
+spec = { model = "opus-5-5", effort = "high" }
+outline = { model = "opus-5-5", effort = "high" }
+draft = { model = "opus-5-5", effort = "high" }
+qa = { model = "opus-5-5", effort = "medium" }
+factcheck = { model = "opus-5-5", effort = "high" }
+repair = { model = "opus-5-5", effort = "high" }
+audit = { model = "opus-5-5", effort = "high" }
 
 [presets.stages.codex]
 profile = { model = "sol", effort = "medium" }
@@ -110,13 +102,13 @@ description = "Deep design where it counts, fast models for mechanical steps."
 
 [presets.stages.claude-code]
 profile = { model = "sonnet-5", effort = "medium" }
-spec = { model = "fable-5", effort = "high" }
-outline = { model = "opus-4-8", effort = "high" }
-draft = { model = "opus-4-8", effort = "medium" }
+spec = { model = "opus-5-5", effort = "high" }
+outline = { model = "opus-5-5", effort = "high" }
+draft = { model = "opus-5-5", effort = "medium" }
 qa = { model = "haiku-4-5", effort = "medium" }
-factcheck = { model = "opus-4-8", effort = "medium" }
-repair = { model = "opus-4-8", effort = "medium" }
-audit = { model = "opus-4-8", effort = "medium" }
+factcheck = { model = "opus-5-5", effort = "medium" }
+repair = { model = "opus-5-5", effort = "medium" }
+audit = { model = "opus-5-5", effort = "medium" }
 
 [presets.stages.codex]
 profile = { model = "terra", effort = "medium" }

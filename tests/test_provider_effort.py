@@ -58,7 +58,7 @@ def _plan(stage: str = "draft", provider: str = "claude-code", effort: str | Non
 
 def test_claude_code_build_invocation_includes_effort_flag_when_set():
     runner = get_runner("claude-code")
-    option = ModelOption(id="premium", label="Premium", argv_model="claude-opus-4-8")
+    option = ModelOption(id="premium", label="Premium", argv_model="claude-opus-5-5")
     inv = runner.build_invocation(option, _plan(effort="high"), Path("/ws/prompt.md"))
     assert "--effort" in inv.argv
     assert inv.argv[inv.argv.index("--effort") + 1] == "high"
@@ -66,7 +66,7 @@ def test_claude_code_build_invocation_includes_effort_flag_when_set():
 
 def test_claude_code_build_invocation_omits_effort_flag_when_none():
     runner = get_runner("claude-code")
-    option = ModelOption(id="premium", label="Premium", argv_model="claude-opus-4-8")
+    option = ModelOption(id="premium", label="Premium", argv_model="claude-opus-5-5")
     inv = runner.build_invocation(option, _plan(effort=None), Path("/ws/prompt.md"))
     assert "--effort" not in inv.argv
 

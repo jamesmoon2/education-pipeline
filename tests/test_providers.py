@@ -62,14 +62,14 @@ def test_claude_build_invocation_composes_model_and_extra_args():
     option = ModelOption(
         id="premium",
         label="Premium",
-        argv_model="claude-opus-4-8",
+        argv_model="claude-opus-5-5",
         extra_args=("--reasoning", "high"),
     )
     inv = runner.build_invocation(option, _plan(), Path("/ws/prompt.md"))
     assert inv.argv[0] == "claude"
     assert "-p" in inv.argv
     assert "--output-format" in inv.argv and "json" in inv.argv
-    assert inv.argv[inv.argv.index("--model") + 1] == "claude-opus-4-8"
+    assert inv.argv[inv.argv.index("--model") + 1] == "claude-opus-5-5"
     # tools disabled and prompt fed via stdin
     assert inv.argv[inv.argv.index("--tools") + 1] == ""
     # --tools only governs built-ins; strict MCP mode (with no --mcp-config)
@@ -86,7 +86,7 @@ def test_claude_build_invocation_never_uses_plan_mode():
     never via --permission-mode plan."""
 
     runner = get_runner("claude-code")
-    option = ModelOption(id="premium", label="Premium", argv_model="claude-opus-4-8")
+    option = ModelOption(id="premium", label="Premium", argv_model="claude-opus-5-5")
     inv = runner.build_invocation(option, _plan(), Path("/ws/prompt.md"))
     assert "plan" not in inv.argv
     assert "--permission-mode" not in inv.argv

@@ -76,11 +76,11 @@ def test_preset_missing_factcheck_backfills_from_repair() -> None:
     """Pre-feature catalogs omit factcheck preset rows; parser copies the repair row."""
     stages = _full_stage_map()
     del stages["factcheck"]
-    stages["repair"] = {"model": "opus-4-8", "effort": "high"}
+    stages["repair"] = {"model": "opus-5-5", "effort": "high"}
     data = _catalog_data_with_preset({"id": "p", "stages": {"claude-code": stages}})
     catalog = parse_model_catalog(data)
     assert catalog.presets[0].stages["claude-code"]["factcheck"] == PresetStage(
-        model="opus-4-8", effort="high"
+        model="opus-5-5", effort="high"
     )
 
 
@@ -329,7 +329,7 @@ def test_model_option_parses_argv_model_and_extra_args():
                     "models": [
                         {
                             "id": "premium",
-                            "argv_model": "claude-opus-4-8",
+                            "argv_model": "claude-opus-5-5",
                             "extra_args": ["--reasoning", "high"],
                             "note": "kept in metadata",
                         }
@@ -339,7 +339,7 @@ def test_model_option_parses_argv_model_and_extra_args():
         }
     )
     option = catalog.providers["claude-code"].models["premium"]
-    assert option.argv_model == "claude-opus-4-8"
+    assert option.argv_model == "claude-opus-5-5"
     assert option.extra_args == ("--reasoning", "high")
     assert option.metadata == {"note": "kept in metadata"}
 
@@ -690,7 +690,7 @@ def _catalog_data_with_preset(preset: dict) -> dict:
                 "id": "claude-code",
                 "label": "Claude Code",
                 "models": [
-                    {"id": "opus-4-8", "label": "Opus 4.8", "quality": "premium"},
+                    {"id": "opus-5-5", "label": "Opus 5.5", "quality": "premium"},
                     {"id": "haiku-4-5", "label": "Haiku 4.5", "quality": "fast"},
                 ],
             }
@@ -699,7 +699,7 @@ def _catalog_data_with_preset(preset: dict) -> dict:
     }
 
 
-def _full_stage_map(model: str = "opus-4-8") -> dict:
+def _full_stage_map(model: str = "opus-5-5") -> dict:
     return {stage: {"model": model} for stage in PRESET_STAGES}
 
 
@@ -769,13 +769,13 @@ def test_preset_rejects_missing_stage() -> None:
 
 def test_preset_rejects_unknown_stage_and_bad_effort() -> None:
     stages = _full_stage_map()
-    stages["finalize"] = {"model": "opus-4-8"}
+    stages["finalize"] = {"model": "opus-5-5"}
     data = _catalog_data_with_preset({"id": "p", "stages": {"claude-code": stages}})
     with pytest.raises(ConfigError, match="unknown stage"):
         parse_model_catalog(data)
 
     stages = _full_stage_map()
-    stages["spec"] = {"model": "opus-4-8", "effort": "turbo"}
+    stages["spec"] = {"model": "opus-5-5", "effort": "turbo"}
     data = _catalog_data_with_preset({"id": "p", "stages": {"claude-code": stages}})
     with pytest.raises(ConfigError, match="effort"):
         parse_model_catalog(data)
@@ -785,10 +785,9 @@ def test_example_catalog_ships_real_models_and_three_presets() -> None:
     catalog = load_model_catalog(EXAMPLE_CATALOG_PATH)
     claude = catalog.providers["claude-code"]
     assert {m.id for m in claude.models.values()} == {
-        "fable-5", "opus-4-8", "sonnet-5", "haiku-4-5",
+        "opus-5-5", "sonnet-5", "haiku-4-5",
     }
-    assert claude.models["fable-5"].argv_model == "claude-fable-5"
-    assert claude.models["opus-4-8"].argv_model == "claude-opus-4-8"
+    assert claude.models["opus-5-5"].argv_model == "claude-opus-5-5"
     assert claude.models["sonnet-5"].argv_model == "claude-sonnet-5"
     assert claude.models["haiku-4-5"].argv_model == "claude-haiku-4-5"
     codex = catalog.providers["codex"]
@@ -802,6 +801,32 @@ def test_example_catalog_ships_real_models_and_three_presets() -> None:
     ]
     for preset in catalog.presets:
         assert set(preset.stages) == {"claude-code", "codex"}
+
+
+def test_example_catalog_pins_opus_5_5_for_every_premium_claude_stage() -> None:
+    """Opus 5.5 is the only premium Claude model: no Fable, no older Opus."""
+
+    catalog = load_model_catalog(EXAMPLE_CATALOG_PATH)
+    claude = catalog.providers["claude-code"]
+    premium = {m.id for m in claude.models.values() if m.quality == "premium"}
+    assert premium == {"opus-5-5"}
+    for preset in catalog.presets:
+        for stage_name, stage in preset.stages["claude-code"].items():
+            assert "fable" not in stage.model, (preset.id, stage_name)
+            assert not stage.model.startswith("opus-") or stage.model == "opus-5-5", (
+                preset.id,
+                stage_name,
+            )
+    max_quality = {p.id: p for p in catalog.presets}["max-quality"].stages["claude-code"]
+    assert {stage.model for stage in max_quality.values()} == {"opus-5-5"}
+
+
+def test_example_plan_pins_opus_5_5_wherever_it_uses_opus() -> None:
+    catalog = load_model_catalog(EXAMPLE_CATALOG_PATH)
+    plan = load_model_plan(EXAMPLE_PLAN_PATH, catalog)
+    models = {plan.stage(name).model for name in PRESET_STAGES}
+    assert not any("fable" in model for model in models)
+    assert {model for model in models if model.startswith("opus")} == {"opus-5-5"}
 
 
 def test_example_plan_defaults_to_claude_code_balanced() -> None:

@@ -7,17 +7,17 @@ effort = "medium"
 
 [stages.spec]
 recommendation = "strong_contract_design"
-model = "fable-5"
+model = "opus-5-5"
 effort = "high"
 
 [stages.outline]
 recommendation = "premium_reasoning"
-model = "opus-4-8"
+model = "opus-5-5"
 effort = "high"
 
 [stages.draft]
 recommendation = "strong_longform_generation"
-model = "opus-4-8"
+model = "opus-5-5"
 effort = "medium"
 # Optional per-stage cap on provider run time, in seconds (default: 1800):
 # timeout_seconds = 3600
@@ -29,15 +29,15 @@ effort = "medium"
 
 [stages.factcheck]
 recommendation = "strong_adversarial_check"
-model = "opus-4-8"
+model = "opus-5-5"
 effort = "medium"
 
 [stages.repair]
 recommendation = "strong_or_premium_repair"
-model = "opus-4-8"
+model = "opus-5-5"
 effort = "medium"
 
 [stages.audit]
 recommendation = "strong_personalization_audit"
-model = "opus-4-8"
+model = "opus-5-5"
 effort = "medium"

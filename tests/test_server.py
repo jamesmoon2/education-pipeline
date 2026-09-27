@@ -3326,7 +3326,7 @@ def test_hand_edited_plan_toml_is_reflected_by_get_config_plan(tmp_path):
                 'provider = "claude-code"',
                 "",
                 "[stages.draft]",
-                'model = "opus-4-8"',
+                'model = "opus-5-5"',
                 'effort = "high"',
                 "",
             ]
@@ -3343,7 +3343,7 @@ def test_hand_edited_plan_toml_is_reflected_by_get_config_plan(tmp_path):
         assert payload["plan_sha256"] == expected_sha256
         stages = {s["stage"]: s for s in payload["stages"]}
         assert stages["draft"]["provider"] == "claude-code"
-        assert stages["draft"]["model"] == "opus-4-8"
+        assert stages["draft"]["model"] == "opus-5-5"
         assert stages["draft"]["effort"] == "high"
         # Untouched stages keep their built-in defaults (recommendation-only,
         # no explicit model), proving the hand edit was merged, not replacing
@@ -3376,7 +3376,7 @@ def test_put_config_plan_round_trips_through_hand_editable_toml(tmp_path):
                 "base_sha256": base_sha256,
                 "provider": "claude-code",
                 "stages": {
-                    "draft": {"model": "opus-4-8", "effort": "high"},
+                    "draft": {"model": "opus-5-5", "effort": "high"},
                     "qa": {"provider": "codex", "model": "luna"},
                 },
             },
@@ -3388,7 +3388,7 @@ def test_put_config_plan_round_trips_through_hand_editable_toml(tmp_path):
         assert plan_file.exists()
         raw = tomllib.loads(plan_file.read_text(encoding="utf-8"))
         assert raw["provider"] == "claude-code"
-        assert raw["stages"]["draft"]["model"] == "opus-4-8"
+        assert raw["stages"]["draft"]["model"] == "opus-5-5"
         assert raw["stages"]["draft"]["effort"] == "high"
         assert raw["stages"]["qa"]["provider"] == "codex"
         assert raw["stages"]["qa"]["model"] == "luna"
@@ -3400,7 +3400,7 @@ def test_put_config_plan_round_trips_through_hand_editable_toml(tmp_path):
         reparsed = load_model_plan(plan_file, catalog)
         assert reparsed.provider == "claude-code"
         draft = reparsed.stage("draft")
-        assert draft.model == "opus-4-8"
+        assert draft.model == "opus-5-5"
         assert draft.effort == "high"
         qa = reparsed.stage("qa")
         assert qa.provider == "codex"
@@ -3570,7 +3570,7 @@ def test_get_run_plan_degrades_stage_when_stored_override_invalidated_by_catalog
                     "id": "claude-code",
                     "models": [
                         {"id": "balanced", "argv_model": "claude-sonnet-5"},
-                        {"id": "premium", "argv_model": "claude-opus-5"},
+                        {"id": "premium", "argv_model": "claude-opus-5-5"},
                     ],
                 },
             ]
