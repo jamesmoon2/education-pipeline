@@ -496,6 +496,98 @@ def test_notice_order_topics_jobs_then_runs(tmp_path, make_hub):
     assert hub.wait(sub, 0) == [TOPICS, JOBS, RUN("a"), RUN("b")]
 
 
+class _ListingCopyEntry:
+    """A ``DirEntry`` whose ``stat()`` is the directory listing's copy, as on Windows.
+
+    There ``os.scandir`` fills each entry's lstat from FindFirstFileW /
+    FindNextFileW data -- the copy of the metadata kept in the *parent's*
+    index, which NTFS updates lazily -- with ``st_ino`` 0. This copy lags: the
+    first read of a path predates its last write (mtime 2 s earlier, a file's
+    size 0) and later reads are current. Everything else is the real entry's.
+    """
+
+    def __init__(self, entry: os.DirEntry, seen: set[str]) -> None:
+        self._entry = entry
+        self._seen = seen
+
+    def __getattr__(self, name):
+        return getattr(self._entry, name)
+
+    def __fspath__(self):
+        return os.fspath(self._entry)
+
+    def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+        st = self._entry.stat(follow_symlinks=follow_symlinks)
+        if follow_symlinks and self._entry.is_symlink():
+            return st  # the one case where Windows does make a system call
+        fields = {name: getattr(st, name) for name in dir(st) if name.startswith("st_")}
+        fields["st_ino"] = 0
+        if self._entry.path not in self._seen:
+            self._seen.add(self._entry.path)
+            fields["st_mtime_ns"] = st.st_mtime_ns - 2_000_000_000
+            fields["st_mtime"] = fields["st_mtime_ns"] / 1e9
+            if not self._entry.is_dir(follow_symlinks=False):
+                fields["st_size"] = 0
+        # The tuple view: mode, ino, dev, nlink, uid, gid, size, then whole-second
+        # atime, mtime, ctime; the dict fills the named-only fields.
+        head = [fields[name] for name in ("st_mode", "st_ino", "st_dev", "st_nlink")]
+        head += [fields[name] for name in ("st_uid", "st_gid", "st_size")]
+        head += [st[7], int(fields["st_mtime"]), st[9]]
+        return os.stat_result(head, fields)
+
+
+def test_fingerprint_does_not_trust_the_listings_stat_copy(tmp_path, monkeypatch):
+    """Windows CI: untouched runs came up as changes between two scans.
+
+    ``DirEntry.stat()`` there is the parent listing's lazily updated copy
+    (``_ListingCopyEntry``), so the fingerprint must stat each entry itself.
+    """
+
+    root = _workspace(tmp_path)
+    _write(root / "runs" / "a" / "inputs" / "profile.toml", 'id = "p"\n')
+    _write(root / "runs" / "g" / "draft" / "module-1.prompt.md", "module one\n")
+    store = JobStore(root)
+    job = store.create("a", "draft", "manual", None, None)
+    store.save(job)
+    store.log_path("a", job.id).write_text("log line\n", encoding="utf-8")
+
+    events = _events()
+    real_scandir = os.scandir
+    seen: set[str] = set()
+
+    class _Listing(list):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def close(self):
+            return None
+
+    def listing_copy_scandir(path="."):
+        if not os.path.abspath(os.fspath(path)).startswith(os.path.abspath(root)):
+            return real_scandir(path)
+        with real_scandir(path) as entries:
+            return _Listing(_ListingCopyEntry(entry, seen) for entry in entries)
+
+    monkeypatch.setattr(events.os, "scandir", listing_copy_scandir)
+
+    # Nothing changed on disk, so nothing is noticed.
+    before = _fp(root)
+    after = _fp(root)
+    assert _diff(before, after) == []
+
+    # Control: real changes still come through, and only those.
+    before = after
+    job.status = "running"  # the record grows by one byte
+    store.save(job)
+    manifest_b = root / "runs" / "b" / "manifest.json"
+    _set_mtime(manifest_b, os.stat(manifest_b).st_mtime_ns + 3_000_000_000)
+    _append(root / "runs" / "g" / "draft" / "module-1.prompt.md", "and a longer line\n")
+    assert _diff(before, _fp(root)) == [JOBS, RUN("a"), RUN("b"), RUN("g")]
+
+
 # ---------------------------------------------------------------------------
 # The hub (§4)
 # ---------------------------------------------------------------------------
