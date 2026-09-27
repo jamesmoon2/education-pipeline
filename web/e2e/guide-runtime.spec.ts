@@ -85,7 +85,7 @@ test.describe("guide schema compatibility", () => {
 
     await expect(page.locator("[data-guide-shell]")).toBeHidden();
     await expect(page.locator("[data-guide-status]")).toContainText(
-      "schema 2.0, runtime 1.2",
+      "schema 2.0, runtime 1.3",
     );
   });
 });
@@ -1742,7 +1742,7 @@ test.describe("diagram rendering: flow and timeline (T53)", () => {
     expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
   }
 
-  test("the document declares schema 1.2 and runtime 1.2 and boots without errors", async ({ page }) => {
+  test("the document declares schema 1.2 and runtime 1.3 and boots without errors", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(String(error)));
     page.on("console", (message) => {
@@ -1750,7 +1750,7 @@ test.describe("diagram rendering: flow and timeline (T53)", () => {
     });
     await load(page);
     await expect(page.locator("html")).toHaveAttribute("data-guide-schema", "1.2");
-    await expect(page.locator("html")).toHaveAttribute("data-guide-runtime", "1.2");
+    await expect(page.locator("html")).toHaveAttribute("data-guide-runtime", "1.3");
     await expect(page.locator("[data-guide-shell]")).toBeVisible();
     expect(errors).toEqual([]);
   });

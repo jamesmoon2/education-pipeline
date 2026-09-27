@@ -162,6 +162,50 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
 .diagram-table th[scope="row"]{background:var(--ep-color-surface-subtle)}
 .diagram[data-diagram-state="table"] .diagram-text{overflow-x:auto}
 @media(max-width:40rem){.diagram-svg--timeline-h{display:none}.diagram-svg--timeline-v{display:block}}
+/* Diagram motion (schema 1.3). Motion only adds travel, highlight and turning;
+ * the still picture is complete, and every moving figure can be paused. */
+.diagram-motion{pointer-events:none}
+.diagram[data-motion-state="idle"] .diagram-motion .diagram-particle{visibility:hidden}
+.diagram-motion .is-hidden{visibility:hidden}
+.diagram-particle-halo{fill:var(--ep-color-accent);opacity:.2}
+.diagram-particle-core{fill:var(--ep-color-accent)}
+.diagram-particle.is-reply .diagram-particle-halo,.diagram-particle.is-reply .diagram-particle-core{fill:var(--ep-color-success)}
+.diagram-token .diagram-particle-halo{opacity:.28}
+.diagram-token .diagram-particle-core{stroke:var(--ep-color-surface);stroke-width:1.5}
+.diagram-node .diagram-node-box{transition:fill .25s ease,stroke-width .25s ease}
+.diagram-node.is-current .diagram-node-box{fill:var(--ep-color-accent-soft);stroke-width:3}
+.diagram-node.is-visited .diagram-node-box{stroke-width:2.25}
+.diagram-edge.is-active,.diagram-message.is-active .diagram-edge{stroke:var(--ep-color-accent);stroke-width:2.5}
+.diagram-event-marker.is-current{stroke:var(--ep-color-accent-soft);stroke-width:8}
+.diagram-event-marker.is-visited{stroke:var(--ep-color-accent-soft);stroke-width:3}
+.diagram-svg text.is-current tspan{fill:var(--ep-color-accent)}
+.diagram-lifeline{stroke:var(--ep-color-border);stroke-width:1.5;stroke-dasharray:4 5}
+.diagram-message-label{fill:var(--ep-color-text);font-size:12.5px}
+.diagram-message-badge{fill:var(--ep-color-surface);stroke:var(--ep-color-accent);stroke-width:1.5}
+.diagram-message-number{fill:var(--ep-color-accent);font-size:11px;font-weight:700}
+.diagram-message.is-active .diagram-message-badge{fill:var(--ep-color-accent)}
+.diagram-message.is-active .diagram-message-number{fill:var(--ep-color-accent-contrast)}
+.diagram-message.is-active .diagram-message-label{font-weight:600}
+.diagram-stage{position:relative;max-width:100%;margin:.75rem 0}
+.diagram-stage>.diagram-svg{width:100%;margin:0}
+.diagram-stack-canvas{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+.diagram-stack-top{fill:var(--ep-color-accent-soft);stroke:var(--ep-color-accent);stroke-width:1.5;stroke-linejoin:round}
+.diagram-stack-side{stroke:var(--ep-color-accent);stroke-width:1.2;stroke-linejoin:round}
+.diagram-stack-side--lit{fill:var(--ep-color-surface)}
+.diagram-stack-side--mid{fill:var(--ep-color-surface-subtle)}
+.diagram-stack-side--shade{fill:var(--ep-color-border)}
+.diagram-stack-layer.is-current .diagram-stack-top{fill:var(--ep-color-accent)}
+.diagram-stack-layer.is-dimmed{opacity:.45}
+.diagram-stack-leader{stroke:var(--ep-color-text-muted);stroke-width:1}
+.diagram-stack-dot{fill:var(--ep-color-accent)}
+.diagram-stack-label{fill:var(--ep-color-text);font-size:14px;font-weight:600}
+.diagram-stack-label.is-current tspan{fill:var(--ep-color-accent)}
+.diagram[data-diagram-render="webgl"] .diagram-stack-layers{display:none}
+.diagram-motion-controls{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:.25rem 0 .75rem;font-family:var(--ep-font-interface);font-size:.9rem}
+.diagram-motion-controls button{font:inherit;font-weight:600;min-height:2.25rem;padding:.3rem .85rem;border:1px solid var(--ep-color-accent);border-radius:.375rem;background:var(--ep-color-surface);color:var(--ep-color-accent);cursor:pointer}
+.diagram-motion-controls button[data-role="diagram-step-toggle"],.diagram-motion-controls button[data-role="diagram-motion-toggle"]{background:var(--ep-color-accent);color:var(--ep-color-accent-contrast)}
+.diagram-step-status{flex-basis:100%;margin:.2rem 0 0;min-height:1.6em;color:var(--ep-color-text);line-height:1.5}
+.diagram-step-status:empty{display:none}
 @media print{
   .guide-nav,.skip-link,.course-controls,.progress-migration,.section-nav-controls,.section-complete-controls,
   .kc-controls,.wr-controls,.sc-controls,.rf-controls,.reflection-input,.nav-toggle,
@@ -170,6 +214,8 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
   .block{break-inside:avoid}
   .diagram-text-toggle>summary{display:none}
   .diagram{break-inside:avoid}
+  .diagram-motion-controls,.diagram-motion,.diagram-stack-canvas{display:none!important}
+  .diagram[data-diagram-render="webgl"] .diagram-stack-layers{display:inline}
   .course-header{padding:0;border:0;background:none}
   .js-enhanced main section[data-role="guide-section"]{display:block!important}
   .js-enhanced .block.knowledge_check .choice-feedback,

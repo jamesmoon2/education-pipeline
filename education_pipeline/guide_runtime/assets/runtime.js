@@ -1411,19 +1411,22 @@
   }
 
   // ---------------------------------------------------------------------
-  // Diagrams (schema 1.2): an SVG drawn from guide-data over the server's
-  // complete text version, which stays in the DOM behind a disclosure.
-  // Not an enhancer: a diagram has no interaction and no stored record.
+  // Diagrams (schema 1.2; motion, sequence and stack since 1.3): an SVG drawn
+  // from guide-data over the server's complete text version, which stays in
+  // the DOM behind a disclosure. Not an enhancer: a diagram records nothing.
   // ---------------------------------------------------------------------
 
   const DIAGRAM_LAYOUT = Object.freeze({
     MARGIN: 24, NODE_W: 160, NODE_PAD_Y: 10, NODE_LINE_H: 18, NODE_CHARS: 18, NODE_MAX_LINES: 3, COL_GAP: 40,
     LAYER_GAP: 56, BACK_OFFSET: 32, EDGE_CHARS: 16, EDGE_MAX_LINES: 2, EDGE_LINE_H: 15, EDGE_CHAR_W: 7, R_MIN: 200,
     RING_GAP: 24, SLOT_W: 150, EVENT_CHARS: 18, EVENT_CHARS_V: 30, EVENT_LINE_H: 16, EVENT_BLOCK_LINES: 5, TICK: 16,
-    MARKER_R: 6, ROW_H: 96, VERT_W: 360,
+    MARKER_R: 6, ROW_H: 96, VERT_W: 360, SEQ_W: 136, SEQ_GAP: 48, SEQ_CHARS: 16, SEQ_HEAD: 56, SEQ_ROW_H: 64,
+    SEQ_TAIL: 28, SEQ_MSG_CHARS: 22, SEQ_BADGE_R: 10,
   });
 
   const DIAGRAM_SCHEMAS = new Set(["1.2", "1.3"]);
+  // Schema 1.3 adds a diagram's `motion` and the sequence and stack kinds.
+  const MOTION_SCHEMAS = new Set(["1.3"]);
 
   const Diagrams = (() => {
     const L = DIAGRAM_LAYOUT;
@@ -1432,6 +1435,14 @@
       concept_map: { nodes: [2, 12], edges: [1, 12] },
       timeline: { events: [2, 10] },
       comparison: { items: [2, 4], criteria: [1, 8] },
+      sequence: { actors: [2, 6], messages: [1, 16] },
+      stack: { layers: [2, 6] },
+    };
+    const MOTION_KINDS = new Set(["sequence", "stack"]);
+    // Mirrors guides/diagrams.py MOTIONS_BY_KIND.
+    const MOTIONS = {
+      flow: ["flow", "step"], concept_map: ["rotate"], comparison: [], timeline: ["step"],
+      sequence: ["step"], stack: ["flow", "step", "rotate"],
     };
     // An item id may legally be "constructor", which every plain object inherits.
     const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
@@ -1443,9 +1454,10 @@
     let printHooked = false;
 
     // Defensive re-check of guide-data, which may have been edited by hand.
-    function valid(data, kind) {
+    function valid(data, kind, motionEra) {
       if (!isPlainObject(data) || data.type !== "diagram" || data.kind !== kind) return false;
       if (!has(BOUNDS, kind) || !isText(data.title, 120)) return false;
+      if (!motionEra && MOTION_KINDS.has(kind)) return false;
       const ids = new Set();
       for (const [name, [min, max]] of Object.entries(BOUNDS[kind])) {
         const list = data[name];
@@ -1454,6 +1466,10 @@
           if (!isPlainObject(item)) return false;
           if (name === "edges") {
             if (item.label !== undefined && !isText(item.label, 32)) return false;
+            continue;
+          }
+          if (name === "messages") {
+            if (!isText(item.label, 48)) return false;
             continue;
           }
           if (typeof item.id !== "string" || !GUIDE_ID_PATTERN.test(item.id) || ids.has(item.id)) return false;
@@ -1465,10 +1481,20 @@
         return data.criteria.every((c) => isPlainObject(c.values) &&
           data.items.every((item) => has(c.values, item.id) && typeof c.values[item.id] === "string"));
       }
-      if (kind === "timeline") return true;
+      if (kind === "timeline" || kind === "stack") return true;
+      if (kind === "sequence") {
+        const actors = new Set(data.actors.map((a) => a.id));
+        return data.messages.every((m) => actors.has(m.from) && actors.has(m.to) && m.from !== m.to);
+      }
       const nodes = new Set(data.nodes.map((n) => n.id));
       if (kind === "concept_map" && !nodes.has(data.hub)) return false;
       return data.edges.every((e) => nodes.has(e.from) && nodes.has(e.to) && e.from !== e.to);
+    }
+
+    // The declared motion when this guide and kind allow it; anything else draws still.
+    function motionOf(data, kind, motionEra) {
+      return motionEra && typeof data.motion === "string" && has(MOTIONS, kind) && MOTIONS[kind].includes(data.motion)
+        ? data.motion : null;
     }
 
     // Greedy word wrap in code points; a word wider than a line is cut into
@@ -1531,17 +1557,20 @@
         const pos = { x: fmt(x), y: fmt(y0 + j * lineH) };
         svgEl("tspan", cls ? { class: cls, ...pos } : pos, text, value);
       });
+      return text;
     }
 
-    function drawNode(parent, x, y, nodeH, lines, hub) {
-      const g = svgEl("g", { class: hub ? "diagram-node diagram-node--hub" : "diagram-node" }, parent);
+    function drawNode(parent, x, y, nodeH, lines, hub, extraClass) {
+      const cls = `diagram-node${hub ? " diagram-node--hub" : ""}${extraClass ? ` ${extraClass}` : ""}`;
+      const g = svgEl("g", { class: cls }, parent);
       const box = { class: "diagram-node-box", x: fmt(x), y: fmt(y), width: fmt(L.NODE_W), height: fmt(nodeH), rx: "6" };
       svgEl("rect", box, g);
       const top = y + nodeH / 2 - (lines.length * L.NODE_LINE_H) / 2 + 13;
       textLines(g, { class: "diagram-node-label", "text-anchor": "middle" }, lines, x + L.NODE_W / 2, top, L.NODE_LINE_H);
+      return g;
     }
 
-    // Returns the background's bottom-right corner, for the SVG's extent.
+    // Returns the background's bottom-right corner, for the SVG's extent, and the label group.
     function drawEdgeLabel(parent, label, px, py) {
       const lines = wrap(label, L.EDGE_CHARS, L.EDGE_MAX_LINES);
       const w = Math.max(...lines.map((line) => points(line).length)) * L.EDGE_CHAR_W + 8;
@@ -1552,7 +1581,7 @@
       }, g);
       const top = py - (lines.length * L.EDGE_LINE_H) / 2 + 11;
       textLines(g, { class: "diagram-edge-label-text", "text-anchor": "middle" }, lines, px, top, L.EDGE_LINE_H);
-      return [px + w / 2, py + h / 2];
+      return [px + w / 2, py + h / 2, g];
     }
 
     // Edges a depth-first walk in document order meets while their target is
@@ -1610,27 +1639,32 @@
       let [right, bottom] = [0, 0];
       const grow = ([x, y]) => ([right, bottom] = [Math.max(right, x), Math.max(bottom, y)]);
       const groups = ["diagram-edges", "diagram-edge-labels", "diagram-nodes"].map((cls) => svgEl("g", { class: cls }));
+      const geo = { nodes: [], edges: [] };
       let k = 0;
       edges.forEach((e, i) => {
         const [s, t] = [pos[links[i][0]], pos[links[i][1]]];
-        let d, at;
+        let d, at, seg;
         if (back.has(i)) {
           const [sx, sy, tx, ty] = [s.x + L.NODE_W, s.y + nodeH / 2, t.x + L.NODE_W, t.y + nodeH / 2];
           const cx = L.MARGIN + maxW + L.BACK_OFFSET * ++k;
           d = `M${fmt(sx)},${fmt(sy)} C${fmt(cx)},${fmt(sy)} ${fmt(cx)},${fmt(ty)} ${fmt(tx)},${fmt(ty)}`;
           grow([cx, Math.max(sy, ty)]);
           at = [0.125 * (sx + tx) + 0.75 * cx, (sy + ty) / 2];
+          seg = { c: [sx, sy, cx, sy, cx, ty, tx, ty] };
         } else {
           const [sx, sy, tx, ty] = [s.x + L.NODE_W / 2, s.y + nodeH, t.x + L.NODE_W / 2, t.y];
           d = `M${fmt(sx)},${fmt(sy)} L${fmt(tx)},${fmt(ty)}`;
           at = [(sx + tx) / 2, (sy + ty) / 2];
+          seg = { l: [sx, sy, tx, ty] };
         }
         const cls = back.has(i) ? "diagram-edge diagram-edge--back" : "diagram-edge";
-        svgEl("path", { class: cls, d, "marker-end": `url(#${data.id}__arrow)` }, groups[0]);
+        const el = svgEl("path", { class: cls, d, "marker-end": `url(#${data.id}__arrow)` }, groups[0]);
         if (typeof e.label === "string") grow(drawEdgeLabel(groups[1], e.label, at[0], at[1]));
+        geo.edges.push({ from: links[i][0], to: links[i][1], label: e.label, seg, el });
       });
       pos.forEach(({ x, y }, u) => {
-        drawNode(groups[2], x, y, nodeH, lines[u], false);
+        const el = drawNode(groups[2], x, y, nodeH, lines[u], false);
+        geo.nodes.push({ el, label: nodes[u].label, detail: nodes[u].detail });
         grow([x + L.NODE_W, y + nodeH]);
       });
       const [n, b] = [edges.length, back.size];
@@ -1640,7 +1674,7 @@
         `Steps in order: ${nodes.map((node) => node.label).join("; ")}.`;
       const svg = svgRoot(data, "flow", "", Math.ceil(right + L.MARGIN), Math.ceil(bottom + L.MARGIN), desc);
       svg.append(arrowDefs(data.id, ""), ...groups);
-      return [svg];
+      return { svgs: [svg], geo };
     }
 
     // Two SVGs, horizontal first; runtime.css shows the one that fits the width.
@@ -1660,30 +1694,37 @@
       };
       const marker = (parent, cx, cy) =>
         svgEl("circle", { class: "diagram-event-marker", cx: fmt(cx), cy: fmt(cy), r: fmt(L.MARKER_R) }, parent);
+      const geo = { events, views: [] };
 
       const width = 2 * L.MARGIN + n * L.SLOT_W;
       const axisY = L.MARGIN + blockH + L.TICK;
       const horizontal = svgRoot(data, "timeline-h", "-h", width, 2 * L.MARGIN + 2 * blockH + 2 * L.TICK, desc);
       const [axisH, eventsH] = frame(horizontal, L.MARGIN, axisY, width - L.MARGIN, axisY);
+      const viewH = { svg: horizontal, start: [L.MARGIN, axisY], stops: [] };
       events.forEach((e, i) => {
         const [x, dir, lines] = [L.MARGIN + L.SLOT_W / 2 + i * L.SLOT_W, i % 2 ? 1 : -1, eventLines(e, L.EVENT_CHARS)];
-        marker(eventsH, x, axisY);
+        const el = marker(eventsH, x, axisY);
         const [y1, y2] = [fmt(axisY + dir * L.MARKER_R), fmt(axisY + dir * L.TICK)];
         svgEl("line", { class: "diagram-tick", x1: fmt(x), y1, x2: fmt(x), y2 }, axisH);
         const top = dir < 0 ? axisY - L.TICK - 4 - (lines.length - 1) * L.EVENT_LINE_H : axisY + L.TICK + 14;
-        textLines(eventsH, { "text-anchor": "middle" }, lines, x, top, L.EVENT_LINE_H);
+        const text = textLines(eventsH, { "text-anchor": "middle" }, lines, x, top, L.EVENT_LINE_H);
+        viewH.stops.push({ at: [x, axisY], marker: el, text });
       });
+      geo.views.push(viewH);
 
       const axisX = L.MARGIN + 8;
       const height = 2 * L.MARGIN + 8 + (n - 1) * L.ROW_H + blockH;
       const vertical = svgRoot(data, "timeline-v", "-v", L.VERT_W, height, desc);
       const [, eventsV] = frame(vertical, axisX, L.MARGIN, axisX, height - L.MARGIN);
+      const viewV = { svg: vertical, start: [axisX, L.MARGIN], stops: [] };
       events.forEach((e, i) => {
         const y = L.MARGIN + 8 + i * L.ROW_H;
-        marker(eventsV, axisX, y);
-        textLines(eventsV, { "text-anchor": "start" }, eventLines(e, L.EVENT_CHARS_V), axisX + 20, y + 5, L.EVENT_LINE_H);
+        const el = marker(eventsV, axisX, y);
+        const text = textLines(eventsV, { "text-anchor": "start" }, eventLines(e, L.EVENT_CHARS_V), axisX + 20, y + 5, L.EVENT_LINE_H);
+        viewV.stops.push({ at: [axisX, y], marker: el, text });
       });
-      return [horizontal, vertical];
+      geo.views.push(viewV);
+      return { svgs: [horizontal, vertical], geo };
     }
 
     // Hub at the centre; the other nodes on a ring from 12 o'clock, clockwise,
@@ -1698,33 +1739,174 @@
       const r = k <= 1 ? L.R_MIN : Math.max(L.R_MIN, Math.ceil((L.NODE_W + L.RING_GAP) / (2 * Math.sin(Math.PI / k))));
       const [cx, cy] = [L.MARGIN + r + L.NODE_W / 2, L.MARGIN + r + nodeH / 2];
       const centre = new Map([[hub.id, [cx, cy]]]);
+      const angle = new Map();
       ring.forEach((n, i) => {
         const theta = -Math.PI / 2 + (2 * Math.PI * i) / k;
+        angle.set(n.id, theta);
         centre.set(n.id, [cx + r * Math.cos(theta), cy + r * Math.sin(theta)]);
       });
       const groups = ["diagram-edges", "diagram-edge-labels", "diagram-nodes"].map((cls) => svgEl("g", { class: cls }));
+      const geo = { cx, cy, r, nodeH, hub: hub.id, angle, centre, edges: [], nodes: new Map() };
       for (const e of edges) {
-        const [[x1, y1], [x2, y2]] = [centre.get(e.from), centre.get(e.to)];
-        const [dx, dy] = [x2 - x1, y2 - y1];
-        // Leave each centre by the part of the segment inside its box.
-        const t = Math.min(L.NODE_W / 2 / Math.abs(dx), nodeH / 2 / Math.abs(dy));
-        const [sx, sy, tx, ty] = [x1 + t * dx, y1 + t * dy, x2 - t * dx, y2 - t * dy];
+        const [sx, sy, tx, ty] = clipSegment(centre.get(e.from), centre.get(e.to), nodeH);
         const d = `M${fmt(sx)},${fmt(sy)} L${fmt(tx)},${fmt(ty)}`;
-        svgEl("path", { class: "diagram-edge", d, "marker-end": `url(#${data.id}__arrow)` }, groups[0]);
-        if (typeof e.label === "string") drawEdgeLabel(groups[1], e.label, (sx + tx) / 2, (sy + ty) / 2);
+        const el = svgEl("path", { class: "diagram-edge", d, "marker-end": `url(#${data.id}__arrow)` }, groups[0]);
+        const label = typeof e.label === "string" ? drawEdgeLabel(groups[1], e.label, (sx + tx) / 2, (sy + ty) / 2)[2] : null;
+        geo.edges.push({ from: e.from, to: e.to, el, label, mid: [(sx + tx) / 2, (sy + ty) / 2] });
       }
       for (const n of [hub, ...ring]) {
         const [x, y] = centre.get(n.id);
-        drawNode(groups[2], x - L.NODE_W / 2, y - nodeH / 2, nodeH, lines.get(n.id), n === hub);
+        geo.nodes.set(n.id, drawNode(groups[2], x - L.NODE_W / 2, y - nodeH / 2, nodeH, lines.get(n.id), n === hub));
       }
       const desc = `Concept map centered on ${hub.label}, connected to ${k} idea${k === 1 ? "" : "s"}: ` +
         `${ring.map((n) => n.label).join("; ")}.`;
       const svg = svgRoot(data, "concept-map", "", 2 * (L.MARGIN + r) + L.NODE_W, 2 * (L.MARGIN + r) + nodeH, desc);
       svg.append(arrowDefs(data.id, ""), ...groups);
-      return [svg];
+      return { svgs: [svg], geo };
     }
 
-    const LAYOUTS = { flow: drawFlow, concept_map: drawConceptMap, timeline: drawTimeline };
+    // Leave each centre by the part of the segment inside its box.
+    function clipSegment([x1, y1], [x2, y2], nodeH) {
+      const [dx, dy] = [x2 - x1, y2 - y1];
+      const t = Math.min(L.NODE_W / 2 / Math.abs(dx), nodeH / 2 / Math.abs(dy));
+      return [x1 + t * dx, y1 + t * dy, x2 - t * dx, y2 - t * dy];
+    }
+
+    // Participants side by side, each with a lifeline; messages top to bottom
+    // in order, numbered on the sender's lifeline, arrow to the receiver.
+    function drawSequence(data) {
+      const { actors, messages } = data;
+      const n = actors.length;
+      const index = new Map(actors.map((a, i) => [a.id, i]));
+      const lines = actors.map((a) => wrap(a.label, L.SEQ_CHARS, L.NODE_MAX_LINES));
+      const boxH = 2 * L.NODE_PAD_Y + Math.max(...lines.map((l) => l.length)) * L.NODE_LINE_H;
+      const laneX = (i) => L.MARGIN + L.SEQ_W / 2 + i * (L.SEQ_W + L.SEQ_GAP);
+      const rowY = (k) => L.MARGIN + boxH + L.SEQ_HEAD + k * L.SEQ_ROW_H;
+      const bottom = rowY(messages.length - 1) + L.SEQ_TAIL;
+      const width = 2 * L.MARGIN + n * L.SEQ_W + (n - 1) * L.SEQ_GAP;
+      const desc = `Sequence diagram with ${n} participants and ${messages.length} message${messages.length === 1 ? "" : "s"}: ` +
+        messages.map((m, k) => `${k + 1}. ${actors[index.get(m.from)].label} to ${actors[index.get(m.to)].label}: ${m.label}`).join("; ") + ".";
+      const svg = svgRoot(data, "sequence", "", width, bottom + L.MARGIN, desc);
+      const groups = ["diagram-lifelines", "diagram-messages", "diagram-nodes"].map((cls) => svgEl("g", { class: cls }));
+      const geo = { actors: [], messages: [] };
+      actors.forEach((a, i) => {
+        const x = laneX(i);
+        svgEl("line", { class: "diagram-lifeline", x1: fmt(x), y1: fmt(L.MARGIN + boxH), x2: fmt(x), y2: fmt(bottom) }, groups[0]);
+        const box = { class: "diagram-node-box", x: fmt(x - L.SEQ_W / 2), y: fmt(L.MARGIN), width: fmt(L.SEQ_W), height: fmt(boxH), rx: "6" };
+        const g = svgEl("g", { class: "diagram-node diagram-actor" }, groups[2]);
+        svgEl("rect", box, g);
+        const top = L.MARGIN + boxH / 2 - (lines[i].length * L.NODE_LINE_H) / 2 + 13;
+        textLines(g, { class: "diagram-node-label", "text-anchor": "middle" }, lines[i], x, top, L.NODE_LINE_H);
+        geo.actors.push({ el: g, label: a.label, detail: a.detail });
+      });
+      messages.forEach((m, k) => {
+        const [from, to, y] = [index.get(m.from), index.get(m.to), rowY(k)];
+        const [x1, x2] = [laneX(from), laneX(to)];
+        const dir = x2 > x1 ? 1 : -1;
+        const g = svgEl("g", { class: "diagram-message" }, groups[1]);
+        const sx = x1 + dir * L.SEQ_BADGE_R;
+        svgEl("path", {
+          class: "diagram-edge diagram-message-arrow", d: `M${fmt(sx)},${fmt(y)} L${fmt(x2)},${fmt(y)}`,
+          "marker-end": `url(#${data.id}__arrow)`,
+        }, g);
+        const msgLines = wrap(m.label, L.SEQ_MSG_CHARS, 2);
+        const midX = (x1 + x2) / 2;
+        textLines(g, { class: "diagram-message-label", "text-anchor": "middle" }, msgLines, midX,
+          y - 8 - (msgLines.length - 1) * L.EDGE_LINE_H, L.EDGE_LINE_H);
+        svgEl("circle", { class: "diagram-message-badge", cx: fmt(x1), cy: fmt(y), r: fmt(L.SEQ_BADGE_R) }, g);
+        svgEl("text", { class: "diagram-message-number", x: fmt(x1), y: fmt(y + 4), "text-anchor": "middle" }, g, String(k + 1));
+        geo.messages.push({ el: g, from, to, x1: sx, x2, y, label: m.label, detail: m.detail });
+      });
+      svg.append(arrowDefs(data.id, ""), ...groups);
+      return { svgs: [svg], geo };
+    }
+
+    // ---- Stack: layers as slabs under one orthographic projection, shared by
+    // the SVG drawing and the WebGL rendering so both put every slab centre in
+    // the same place. World y is up; a layer's slab is centred on the y axis.
+    const STACK = Object.freeze({
+      W: 200, D: 130, T: 18, GAP: 60, YAW: (-35 * Math.PI) / 180, PITCH: (28 * Math.PI) / 180,
+      LABEL_GAP: 44, LABEL_CHARS: 24, LABEL_LINE_H: 17, LABEL_CHAR_W: 7.6,
+    });
+    const STACK_RADIUS = Math.hypot(STACK.W / 2, STACK.D / 2);
+
+    function stackFrame(count) {
+      const p = STACK.PITCH;
+      const cx = L.MARGIN + STACK_RADIUS;
+      const cy0 = L.MARGIN + (STACK.T / 2) * Math.cos(p) + STACK_RADIUS * Math.sin(p);
+      const layerY = (i) => -i * STACK.GAP;
+      const lowest = layerY(count - 1) - STACK.T / 2;
+      const bottom = cy0 - (lowest * Math.cos(p) - STACK_RADIUS * Math.sin(p));
+      return { cx, cy0, layerY, bottom };
+    }
+
+    // World point -> [svgX, svgY, depth] at a yaw; depth grows toward the viewer.
+    function stackProject(f, yaw, [x, y, z]) {
+      const [cy, sy, cp, sp] = [Math.cos(yaw), Math.sin(yaw), Math.cos(STACK.PITCH), Math.sin(STACK.PITCH)];
+      const x1 = x * cy + z * sy;
+      const z1 = -x * sy + z * cy;
+      return [f.cx + x1, f.cy0 - (y * cp - z1 * sp), y * sp + z1 * cp];
+    }
+
+    // The visible faces of layer `i`'s slab at a yaw: four sides (hidden when
+    // facing away) then the top, as polygon point strings and a shade.
+    const STACK_SIDES = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+    function stackFaces(f, i, yaw, lift) {
+      const [hw, hd, ht] = [STACK.W / 2, STACK.D / 2, STACK.T / 2];
+      const y = f.layerY(i) + (lift || 0);
+      const corner = (sx, sz, top) => stackProject(f, yaw, [sx * hw, y + (top ? ht : -ht), sz * hd]);
+      const ring = [[1, 1], [1, -1], [-1, -1], [-1, 1]];
+      const pts = (list) => list.map(([px, py]) => `${fmt(px)},${fmt(py)}`).join(" ");
+      const sides = STACK_SIDES.map(([nx, nz]) => {
+        const facing = -nx * Math.sin(yaw) + nz * Math.cos(yaw);
+        const across = nx !== 0 ? [[nx, 1], [nx, -1]] : [[1, nz], [-1, nz]];
+        const quad = [corner(...across[0], true), corner(...across[1], true), corner(...across[1], false), corner(...across[0], false)];
+        const light = nx * Math.cos(yaw) * -0.5 + facing * 0.8;
+        return { points: pts(quad), visible: facing > 1e-6, shade: light > 0.55 ? "lit" : light > 0.15 ? "mid" : "shade" };
+      });
+      return { sides, top: pts(ring.map(([sx, sz]) => corner(sx, sz, true))) };
+    }
+
+    function drawStack(data) {
+      const layers = data.layers;
+      const n = layers.length;
+      const f = stackFrame(n);
+      const labelX = f.cx + STACK_RADIUS + STACK.LABEL_GAP;
+      const labelLines = layers.map((layer) => wrap(layer.label, STACK.LABEL_CHARS, 2));
+      const longest = Math.max(...labelLines.flat().map((line) => points(line).length));
+      const width = Math.ceil(labelX + longest * STACK.LABEL_CHAR_W + L.MARGIN);
+      const height = Math.ceil(f.bottom + L.MARGIN);
+      const desc = `Layer stack of ${n} layers, from top to bottom: ${layers.map((layer) => layer.label).join("; ")}.`;
+      const svg = svgRoot(data, "stack", "", width, height, desc);
+      const slabs = svgEl("g", { class: "diagram-stack-layers" }, svg);
+      const labels = svgEl("g", { class: "diagram-stack-labels" }, svg);
+      const geo = { frame: f, layers: [], width, height };
+      // Bottom first, so each slab above paints over the ones below it.
+      const els = [];
+      for (let i = n - 1; i >= 0; i--) {
+        const g = svgEl("g", { class: "diagram-stack-layer" }, slabs);
+        const faces = stackFaces(f, i, STACK.YAW, 0);
+        const sides = faces.sides.map((side) => svgEl("polygon", {
+          class: `diagram-stack-side diagram-stack-side--${side.shade}`, points: side.points,
+          visibility: side.visible ? "visible" : "hidden",
+        }, g));
+        const top = svgEl("polygon", { class: "diagram-stack-top", points: faces.top }, g);
+        els[i] = { el: g, sides, top };
+      }
+      layers.forEach((layer, i) => {
+        const [, yc] = stackProject(f, STACK.YAW, [0, f.layerY(i) + STACK.T / 2, 0]);
+        const lead = f.cx + STACK_RADIUS + 8;
+        svgEl("line", { class: "diagram-stack-leader", x1: fmt(lead), y1: fmt(yc), x2: fmt(labelX - 8), y2: fmt(yc) }, labels);
+        svgEl("circle", { class: "diagram-stack-dot", cx: fmt(lead), cy: fmt(yc), r: "3" }, labels);
+        const lines = labelLines[i];
+        const text = textLines(labels, { class: "diagram-stack-label", "text-anchor": "start" }, lines, labelX,
+          yc + 5 - ((lines.length - 1) * STACK.LABEL_LINE_H) / 2, STACK.LABEL_LINE_H);
+        geo.layers.push({ ...els[i], text, label: layer.label, detail: layer.detail });
+      });
+      return { svgs: [svg], geo };
+    }
+
+    const LAYOUTS = { flow: drawFlow, concept_map: drawConceptMap, timeline: drawTimeline, sequence: drawSequence, stack: drawStack };
 
     // A checked diagram with its drawn strings trimmed, so padding a valid
     // string may carry never reaches the SVG, its title or its description.
@@ -1735,7 +1917,7 @@
         return out;
       };
       const copy = tidy(data, ["title"]);
-      for (const name of ["nodes", "edges", "events"]) {
+      for (const name of ["nodes", "edges", "events", "actors", "messages", "layers"]) {
         if (Array.isArray(data[name])) copy[name] = data[name].map((item) => tidy(item, ["label", "when"]));
       }
       return copy;
@@ -1751,6 +1933,7 @@
       details.appendChild(summary);
       figure.insertBefore(details, text);
       details.appendChild(text);
+      return details;
     }
 
     // Print shows every text version; only the ones opened for printing close again.
@@ -1771,9 +1954,756 @@
       });
     }
 
+    // -------------------------------------------------------------------
+    // Motion (schema 1.3). One animation loop drives every moving figure
+    // while it is on screen. Motion never hides anything the still picture
+    // shows; every moving figure can be paused, and under reduced motion
+    // nothing moves until the learner asks.
+    // -------------------------------------------------------------------
+
+    const MOTION = Object.freeze({
+      PARTICLE_SPEED: 64, PARTICLE_GAP: 38, TRAVEL: 1.15, DWELL_MIN: 2.4, DWELL_MAX: 7, DWELL_PER_WORD: 0.24,
+      ROTATE_PERIOD: 48, STACK_TURN_PERIOD: 26, STACK_FLOW_SPEED: 70, STACK_FLOW_GAP: 36,
+    });
+    const reducedMotion = () => typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const ease = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+
+    // Guide text may carry the inline Markdown subset; narration is plain.
+    function plain(markdown) {
+      if (typeof markdown !== "string") return "";
+      return markdown.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[*_`]+/g, "").trim();
+    }
+
+    const Loop = (() => {
+      const running = new Set();
+      let last = null;
+      let scheduled = false;
+      // Exactly one frame is ever pending: an item that re-adds itself while
+      // ticking must not schedule a second one.
+      function frame(now) {
+        const dt = last === null ? 0 : Math.min(0.1, Math.max(0, (now - last) / 1000));
+        last = now;
+        for (const item of Array.from(running)) {
+          try {
+            item.tick(dt);
+          } catch (error) {
+            running.delete(item);
+            console.error("guide-runtime: diagram motion stopped:", error);
+          }
+        }
+        if (running.size) requestAnimationFrame(frame);
+        else {
+          scheduled = false;
+          last = null;
+        }
+      }
+      return {
+        add(item) {
+          running.add(item);
+          if (!scheduled) {
+            scheduled = true;
+            requestAnimationFrame(frame);
+          }
+        },
+        remove(item) {
+          running.delete(item);
+        },
+      };
+    })();
+
+    const Visibility = (() => {
+      const watched = new Map();
+      const observer = typeof window.IntersectionObserver === "function"
+        ? new IntersectionObserver((entries) => {
+          for (const entry of entries) {
+            const item = watched.get(entry.target);
+            if (item) item.setVisible(entry.isIntersecting);
+          }
+        }, { rootMargin: "64px" })
+        : null;
+      return {
+        watch(element, item) {
+          if (!observer) return item.setVisible(true);
+          watched.set(element, item);
+          observer.observe(element);
+        },
+      };
+    })();
+
+    function controlBar(figure, before) {
+      const bar = document.createElement("div");
+      bar.className = "diagram-motion-controls";
+      bar.dataset.role = "diagram-motion-controls";
+      figure.insertBefore(bar, before);
+      return bar;
+    }
+
+    function controlButton(bar, role, text) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.role = role;
+      button.textContent = text;
+      bar.appendChild(button);
+      return button;
+    }
+
+    // Continuous motion (flow particles, a turning ring or stack): a time
+    // that advances while playing and visible, and one Pause/Play control.
+    function continuous(figure, before, render) {
+      const bar = controlBar(figure, before);
+      const toggle = controlButton(bar, "diagram-motion-toggle", "");
+      const item = { t: 0, playing: !reducedMotion(), visible: false, started: false };
+      const label = () => (toggle.textContent = item.playing ? "Pause motion" : "Play motion");
+      const sync = () => {
+        if (item.visible && item.playing) Loop.add(item);
+        else Loop.remove(item);
+        figure.dataset.motionState = item.playing ? "playing" : item.started ? "paused" : "idle";
+      };
+      item.tick = (dt) => {
+        item.started = true;
+        item.t += dt;
+        render(item.t);
+      };
+      item.setVisible = (visible) => {
+        item.visible = visible;
+        sync();
+      };
+      toggle.addEventListener("click", () => {
+        item.playing = !item.playing;
+        if (item.playing) item.started = true;
+        label();
+        sync();
+      });
+      render(0);
+      label();
+      sync();
+      Visibility.watch(figure, item);
+      return item;
+    }
+
+    // A guided walkthrough: each step travels, arrives, and dwells long enough
+    // to read its narration. Autoplays once when first seen (never under
+    // reduced motion); Pause, Next step and Restart are always available.
+    function walkthrough(figure, before, steps, show) {
+      const bar = controlBar(figure, before);
+      const toggle = controlButton(bar, "diagram-step-toggle", "");
+      const next = controlButton(bar, "diagram-step-next", "Next step");
+      const restart = controlButton(bar, "diagram-step-restart", "Restart");
+      const status = document.createElement("p");
+      status.className = "diagram-step-status";
+      status.dataset.role = "diagram-step-status";
+      status.setAttribute("role", "status");
+      status.setAttribute("aria-live", "off");
+      bar.appendChild(status);
+      const n = steps.length;
+      const item = { index: -1, phase: "rest", elapsed: 0, playing: false, visible: false, seen: false, done: false };
+      const dwell = (i) => Math.min(MOTION.DWELL_MAX, Math.max(MOTION.DWELL_MIN,
+        1.2 + steps[i].narration.split(/\s+/).length * MOTION.DWELL_PER_WORD));
+      const label = () => {
+        toggle.textContent = item.playing ? "Pause walkthrough" : item.done ? "Replay walkthrough" : "Play walkthrough";
+      };
+      const sync = () => {
+        const moving = item.phase === "travel" || (item.phase === "dwell" && item.playing);
+        if (item.visible && moving) Loop.add(item);
+        else Loop.remove(item);
+        figure.dataset.motionState = item.phase === "rest" ? (item.done ? "done" : "idle") : item.playing ? "playing" : "paused";
+        figure.dataset.motionStep = String(item.index + 1);
+        label();
+      };
+      const begin = (i) => {
+        item.index = i;
+        item.phase = "travel";
+        item.elapsed = 0;
+        item.done = false;
+        status.textContent = `Step ${i + 1} of ${n}: ${steps[i].narration}`;
+        show(i, 0, false);
+        if (reducedMotion()) arrive();
+      };
+      const arrive = () => {
+        item.phase = "dwell";
+        item.elapsed = 0;
+        show(item.index, 1, true);
+      };
+      const finish = () => {
+        item.index = -1;
+        item.phase = "rest";
+        item.playing = false;
+        item.done = true;
+        show(-1, 0, false);
+        status.textContent = `Walkthrough complete: ${n} step${n === 1 ? "" : "s"}. Choose Replay walkthrough to watch it again.`;
+      };
+      const advance = () => (item.index + 1 < n ? begin(item.index + 1) : finish());
+      item.tick = (dt) => {
+        item.elapsed += dt;
+        if (item.phase === "travel") {
+          const p = Math.min(1, item.elapsed / MOTION.TRAVEL);
+          show(item.index, ease(p), false);
+          if (p >= 1) arrive();
+        } else if (item.phase === "dwell" && item.playing && item.elapsed >= dwell(item.index)) {
+          advance();
+        }
+        sync();
+      };
+      item.setVisible = (visible) => {
+        item.visible = visible;
+        if (visible && !item.seen) {
+          item.seen = true;
+          if (!reducedMotion()) {
+            item.playing = true;
+            begin(0);
+          }
+        }
+        sync();
+      };
+      const byLearner = () => status.setAttribute("aria-live", "polite");
+      toggle.addEventListener("click", () => {
+        byLearner();
+        if (item.playing) item.playing = false;
+        else {
+          item.playing = true;
+          if (item.phase === "rest") begin(0);
+          else if (item.phase === "dwell" && item.elapsed >= dwell(item.index)) advance();
+        }
+        sync();
+      });
+      next.addEventListener("click", () => {
+        byLearner();
+        item.playing = false;
+        if (item.phase === "travel") arrive();
+        else advance();
+        sync();
+      });
+      restart.addEventListener("click", () => {
+        byLearner();
+        item.playing = true;
+        begin(0);
+        sync();
+      });
+      show(-1, 0, false);
+      sync();
+      Visibility.watch(figure, item);
+      return item;
+    }
+
+    // Arc-length sampling of a straight or cubic edge, from layout geometry.
+    function sampler(seg) {
+      const pts = [];
+      if (seg.l) {
+        const [x1, y1, x2, y2] = seg.l;
+        pts.push([x1, y1], [x2, y2]);
+      } else {
+        const [x0, y0, x1, y1, x2, y2, x3, y3] = seg.c;
+        for (let i = 0; i <= 48; i++) {
+          const [t, u] = [i / 48, 1 - i / 48];
+          pts.push([
+            u * u * u * x0 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * x3,
+            u * u * u * y0 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y3,
+          ]);
+        }
+      }
+      const cum = [0];
+      for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+      const length = cum[cum.length - 1] || 1;
+      const at = (s) => {
+        const d = Math.max(0, Math.min(1, s)) * length;
+        let i = 1;
+        while (i < cum.length - 1 && cum[i] < d) i++;
+        const f = (d - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
+        return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f];
+      };
+      return { length, at };
+    }
+
+    function motionLayer(svg) {
+      return svgEl("g", { class: "diagram-motion", "aria-hidden": "true" }, svg);
+    }
+
+    function particle(layer, cls) {
+      const g = svgEl("g", { class: cls || "diagram-particle" }, layer);
+      svgEl("circle", { class: "diagram-particle-halo", r: "7" }, g);
+      svgEl("circle", { class: "diagram-particle-core", r: "3" }, g);
+      return g;
+    }
+
+    const place = (el, [x, y], opacity) => {
+      el.setAttribute("transform", `translate(${fmt(x)},${fmt(y)})`);
+      if (opacity !== undefined) el.setAttribute("opacity", String(Math.round(opacity * 100) / 100));
+    };
+    const fade = (s) => Math.max(0, Math.min(1, s / 0.12, (1 - s) / 0.12));
+    const setClass = (el, cls, on) => el && el.classList.toggle(cls, Boolean(on));
+
+    function flowStream(figure, before, svg, geo) {
+      const layer = motionLayer(svg);
+      const dots = [];
+      for (const edge of geo.edges) {
+        const path = sampler(edge.seg);
+        const count = Math.max(1, Math.round(path.length / MOTION.PARTICLE_GAP));
+        for (let k = 0; k < count; k++) dots.push({ path, phase: k / count, el: particle(layer) });
+      }
+      return continuous(figure, before, (t) => {
+        for (const dot of dots) {
+          const s = (dot.phase + (t * MOTION.PARTICLE_SPEED) / dot.path.length) % 1;
+          place(dot.el, dot.path.at(s), fade(s));
+        }
+      });
+    }
+
+    function flowSteps(figure, before, svg, geo) {
+      const layer = motionLayer(svg);
+      const token = particle(layer, "diagram-token");
+      const paths = geo.edges.map((edge) => sampler(edge.seg));
+      const steps = geo.edges.map((edge) => {
+        const [from, to] = [geo.nodes[edge.from], geo.nodes[edge.to]];
+        const detail = plain(to.detail);
+        return { narration: `${from.label} → ${to.label}${edge.label ? ` (${edge.label})` : ""}.${detail ? ` ${detail}` : ""}` };
+      });
+      return walkthrough(figure, before, steps, (i, p, arrived) => {
+        geo.edges.forEach((edge, k) => setClass(edge.el, "is-active", k === i));
+        const current = i < 0 ? -1 : arrived ? geo.edges[i].to : geo.edges[i].from;
+        const visited = new Set();
+        for (let k = 0; k <= i; k++) visited.add(geo.edges[k].from);
+        for (let k = 0; k < i; k++) visited.add(geo.edges[k].to);
+        geo.nodes.forEach((node, u) => {
+          setClass(node.el, "is-current", u === current);
+          setClass(node.el, "is-visited", i >= 0 && u !== current && visited.has(u));
+        });
+        setClass(token, "is-hidden", i < 0);
+        if (i >= 0) place(token, paths[i].at(p));
+      });
+    }
+
+    function conceptRotate(figure, before, geo) {
+      const omega = (2 * Math.PI) / MOTION.ROTATE_PERIOD;
+      return continuous(figure, before, (t) => {
+        const centre = new Map([[geo.hub, [geo.cx, geo.cy]]]);
+        for (const [id, theta] of geo.angle) {
+          const [x, y] = [geo.cx + geo.r * Math.cos(theta + omega * t), geo.cy + geo.r * Math.sin(theta + omega * t)];
+          centre.set(id, [x, y]);
+          const [x0, y0] = geo.centre.get(id);
+          geo.nodes.get(id).setAttribute("transform", `translate(${fmt(x - x0)},${fmt(y - y0)})`);
+        }
+        for (const edge of geo.edges) {
+          const [sx, sy, tx, ty] = clipSegment(centre.get(edge.from), centre.get(edge.to), geo.nodeH);
+          edge.el.setAttribute("d", `M${fmt(sx)},${fmt(sy)} L${fmt(tx)},${fmt(ty)}`);
+          if (edge.label) {
+            edge.label.setAttribute("transform", `translate(${fmt((sx + tx) / 2 - edge.mid[0])},${fmt((sy + ty) / 2 - edge.mid[1])})`);
+          }
+        }
+      });
+    }
+
+    function timelineSteps(figure, before, geo) {
+      const heads = geo.views.map((view) => {
+        const head = particle(motionLayer(view.svg), "diagram-token");
+        return head;
+      });
+      const steps = geo.events.map((event) => {
+        const detail = plain(event.detail);
+        return { narration: `${event.when}: ${event.label}.${detail ? ` ${detail}` : ""}` };
+      });
+      return walkthrough(figure, before, steps, (i, p, arrived) => {
+        geo.views.forEach((view, v) => {
+          view.stops.forEach((stop, k) => {
+            setClass(stop.marker, "is-current", k === i && arrived);
+            setClass(stop.marker, "is-visited", i >= 0 && k < i);
+            setClass(stop.text, "is-current", k === i);
+          });
+          setClass(heads[v], "is-hidden", i < 0);
+          if (i >= 0) {
+            const from = i === 0 ? view.start : view.stops[i - 1].at;
+            const to = view.stops[i].at;
+            place(heads[v], [from[0] + (to[0] - from[0]) * p, from[1] + (to[1] - from[1]) * p]);
+          }
+        });
+      });
+    }
+
+    function sequenceSteps(figure, before, svg, geo) {
+      const token = particle(motionLayer(svg), "diagram-token");
+      const steps = geo.messages.map((m) => {
+        const detail = plain(m.detail);
+        return { narration: `${geo.actors[m.from].label} → ${geo.actors[m.to].label}: ${m.label}.${detail ? ` ${detail}` : ""}` };
+      });
+      return walkthrough(figure, before, steps, (i, p, arrived) => {
+        geo.messages.forEach((m, k) => {
+          setClass(m.el, "is-active", k === i);
+          setClass(m.el, "is-visited", i >= 0 && k < i);
+        });
+        geo.actors.forEach((actor, a) => {
+          const m = geo.messages[i];
+          setClass(actor.el, "is-current", i >= 0 && (arrived ? m.to === a : m.from === a));
+        });
+        setClass(token, "is-hidden", i < 0);
+        if (i >= 0) {
+          const m = geo.messages[i];
+          place(token, [m.x1 + (m.x2 - m.x1) * p, m.y]);
+        }
+      });
+    }
+
+    // ---- Stack rendering: WebGL where available, the SVG otherwise. Both
+    // take the same state: a yaw, optional flow particles, optional step.
+    function stackState(n, overrides) {
+      return { yaw: STACK.YAW, flow: null, step: -1, lift: 0, ...overrides };
+    }
+
+    // Requests go down one column and replies come back up another.
+    function stackParticles(geo, t) {
+      const f = geo.frame;
+      const top = f.layerY(0) + 70;
+      const low = f.layerY(geo.layers.length - 1) - 70;
+      const span = top - low;
+      const out = [];
+      const columns = [[-26, 12, -1, 0], [-4, -22, -1, 0.5], [30, 6, 1, 0.25]];
+      const count = Math.max(2, Math.round(span / MOTION.STACK_FLOW_GAP));
+      for (const [x, z, dir, offset] of columns) {
+        for (let k = 0; k < count; k++) {
+          const s = (k / count + offset + (t * MOTION.STACK_FLOW_SPEED) / span) % 1;
+          out.push({ pos: [x, dir < 0 ? top - s * span : low + s * span, z], up: dir > 0, alpha: fade(s) });
+        }
+      }
+      return out;
+    }
+
+    function svgStackView(geo, svg) {
+      const f = geo.frame;
+      let layer = null;
+      let dots = [];
+      return {
+        kind: "svg",
+        render(state) {
+          geo.layers.forEach((entry, i) => {
+            const lifted = state.step === i ? state.lift : 0;
+            const faces = stackFaces(f, i, state.yaw, lifted);
+            faces.sides.forEach((side, k) => {
+              entry.sides[k].setAttribute("points", side.points);
+              entry.sides[k].setAttribute("visibility", side.visible ? "visible" : "hidden");
+              entry.sides[k].setAttribute("class", `diagram-stack-side diagram-stack-side--${side.shade}`);
+            });
+            entry.top.setAttribute("points", faces.top);
+            setClass(entry.el, "is-current", state.step === i);
+            setClass(entry.el, "is-dimmed", state.step >= 0 && state.step !== i);
+            setClass(entry.text, "is-current", state.step === i);
+          });
+          if (state.flow !== null) {
+            const list = stackParticles(geo, state.flow);
+            if (!layer) layer = motionLayer(svg);
+            while (dots.length < list.length) dots.push(particle(layer));
+            list.forEach((p, k) => {
+              const [x, y] = stackProject(f, state.yaw, p.pos);
+              place(dots[k], [x, y], p.alpha);
+              setClass(dots[k], "is-reply", p.up);
+            });
+          }
+        },
+      };
+    }
+
+    function cssColor(name, fallback) {
+      const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(raw);
+      if (hex) {
+        const h = hex[1].length === 3 ? hex[1].replace(/./g, "$&$&") : hex[1];
+        return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+      }
+      const rgb = /^rgba?\(([^)]+)\)$/i.exec(raw);
+      if (rgb) return rgb[1].split(",").slice(0, 3).map((v) => parseFloat(v) / 255);
+      return fallback;
+    }
+    const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+
+    const GL_SLAB_VS = "attribute vec3 aPos;attribute vec3 aNrm;uniform mat4 uView;uniform vec3 uScale;uniform vec3 uOffset;" +
+      "uniform mat3 uNrmM;varying vec3 vN;varying vec3 vObj;void main(){vN=uNrmM*aNrm;vObj=aPos;" +
+      "gl_Position=uView*vec4(aPos*uScale+uOffset,1.0);}";
+    const GL_SLAB_FS = "precision mediump float;uniform vec3 uSide;uniform vec3 uTop;uniform vec3 uGlowC;uniform float uGlow;" +
+      "uniform float uAlpha;varying vec3 vN;varying vec3 vObj;void main(){vec3 n=normalize(vN);" +
+      "float d=max(dot(n,normalize(vec3(-0.35,0.8,0.5))),0.0);float top=step(0.49,vObj.y);" +
+      "float rim=top*smoothstep(0.42,0.5,max(abs(vObj.x),abs(vObj.z)));vec3 base=mix(uSide,uTop,top);" +
+      "base*=1.0-0.07*vObj.z*top;vec3 c=base*(0.6+0.4*d)+uGlowC*(uGlow*0.5+rim*0.28);gl_FragColor=vec4(c*uAlpha,uAlpha);}";
+    const GL_LINE_VS = "attribute vec3 aPos;uniform mat4 uView;uniform vec3 uScale;uniform vec3 uOffset;" +
+      "void main(){vec4 p=uView*vec4(aPos*uScale+uOffset,1.0);p.z-=0.002;gl_Position=p;}";
+    const GL_LINE_FS = "precision mediump float;uniform vec4 uColor;void main(){gl_FragColor=vec4(uColor.rgb*uColor.a,uColor.a);}";
+    const GL_POINT_VS = "attribute vec3 aPos;attribute vec2 aMeta;uniform mat4 uView;uniform float uSize;varying vec2 vMeta;" +
+      "void main(){vMeta=aMeta;gl_Position=uView*vec4(aPos,1.0);gl_Position.z=-0.99;gl_PointSize=uSize;}";
+    const GL_POINT_FS = "precision mediump float;uniform vec3 uDown;uniform vec3 uUp;varying vec2 vMeta;void main(){" +
+      "vec2 q=gl_PointCoord*2.0-1.0;float r=dot(q,q);float halo=exp(-r*3.2)*0.45;float core=exp(-r*26.0);" +
+      "vec3 c=mix(uDown,uUp,vMeta.x);vec3 col=(c*halo+mix(c,vec3(1.0),0.5)*core)*vMeta.y;" +
+      "gl_FragColor=vec4(col,min(1.0,(halo+core)*vMeta.y));}";
+
+    function glProgram(gl, vs, fs) {
+      const compile = (type, source) => {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+        return shader;
+      };
+      const program = gl.createProgram();
+      gl.attachShader(program, compile(gl.VERTEX_SHADER, vs));
+      gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fs));
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+      const loc = (name) => gl.getUniformLocation(program, name);
+      return { program, loc, attr: (name) => gl.getAttribLocation(program, name) };
+    }
+
+    // A unit box: 6 faces x 2 triangles, with face normals; and its 12 edges.
+    function unitBox() {
+      const faces = [
+        [[0, 1, 0], [[-1, 1, -1], [-1, 1, 1], [1, 1, 1], [1, 1, -1]]],
+        [[0, -1, 0], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]]],
+        [[1, 0, 0], [[1, -1, -1], [1, 1, -1], [1, 1, 1], [1, -1, 1]]],
+        [[-1, 0, 0], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1]]],
+        [[0, 0, 1], [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]]],
+        [[0, 0, -1], [[-1, -1, -1], [-1, 1, -1], [1, 1, -1], [1, -1, -1]]],
+      ];
+      const tris = [];
+      for (const [n, q] of faces) {
+        for (const i of [0, 1, 2, 0, 2, 3]) tris.push(...q[i].map((v) => v / 2), ...n);
+      }
+      const edges = [];
+      const c = (x, y, z) => [x / 2, y / 2, z / 2];
+      for (const y of [-1, 1]) {
+        edges.push(...c(-1, y, -1), ...c(1, y, -1), ...c(1, y, -1), ...c(1, y, 1));
+        edges.push(...c(1, y, 1), ...c(-1, y, 1), ...c(-1, y, 1), ...c(-1, y, -1));
+      }
+      for (const [x, z] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) edges.push(...c(x, -1, z), ...c(x, 1, z));
+      return { tris: new Float32Array(tris), edges: new Float32Array(edges) };
+    }
+
+    // The orthographic view as a column-major matrix: world -> clip, in the
+    // SVG's own units, so a slab centre lands exactly where the SVG puts it.
+    function stackViewMatrix(geo, yaw) {
+      const f = geo.frame;
+      const [W, H, ZR] = [geo.width, geo.height, 2000];
+      const [cy, sy, cp, sp] = [Math.cos(yaw), Math.sin(yaw), Math.cos(STACK.PITCH), Math.sin(STACK.PITCH)];
+      const rows = [
+        [(2 * cy) / W, 0, (2 * sy) / W, (2 * f.cx) / W - 1],
+        [(2 / H) * sy * sp, (2 / H) * cp, -(2 / H) * cy * sp, 1 - (2 * f.cy0) / H],
+        [(sy * cp) / ZR, -sp / ZR, -(cy * cp) / ZR, 0],
+        [0, 0, 0, 1],
+      ];
+      const m = new Float32Array(16);
+      for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) m[c * 4 + r] = rows[r][c];
+      const nrm = new Float32Array([cy, sy * sp, -sy * cp, 0, cp, sp, sy, -cy * sp, cy * cp]);
+      return { m, nrm };
+    }
+
+    function webglStackView(geo, stage) {
+      const canvas = document.createElement("canvas");
+      canvas.className = "diagram-stack-canvas";
+      canvas.setAttribute("aria-hidden", "true");
+      let gl = null;
+      try {
+        gl = canvas.getContext("webgl", { alpha: true, antialias: true, premultipliedAlpha: true, preserveDrawingBuffer: true });
+      } catch (error) {
+        gl = null;
+      }
+      if (!gl) return null;
+      const slab = glProgram(gl, GL_SLAB_VS, GL_SLAB_FS);
+      const line = glProgram(gl, GL_LINE_VS, GL_LINE_FS);
+      const dot = glProgram(gl, GL_POINT_VS, GL_POINT_FS);
+      const box = unitBox();
+      const triBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, triBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, box.tris, gl.STATIC_DRAW);
+      const edgeBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, edgeBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, box.edges, gl.STATIC_DRAW);
+      const dotBuf = gl.createBuffer();
+      stage.appendChild(canvas);
+      let size = [0, 0];
+      let lastState = stackState(geo.layers.length, {});
+      const view = {
+        kind: "webgl",
+        canvas,
+        lost: false,
+        resize() {
+          const rect = stage.getBoundingClientRect();
+          const dpr = Math.min(3, window.devicePixelRatio || 1);
+          const next = [Math.max(1, Math.round(rect.width * dpr)), Math.max(1, Math.round(rect.height * dpr))];
+          if (next[0] !== size[0] || next[1] !== size[1]) {
+            size = next;
+            [canvas.width, canvas.height] = next;
+            view.render(lastState);
+          }
+        },
+        render(state) {
+          lastState = state;
+          if (view.lost || !size[0]) return;
+          const n = geo.layers.length;
+          const accent = cssColor("--ep-color-accent", [0.19, 0.34, 0.64]);
+          const soft = cssColor("--ep-color-accent-soft", [0.9, 0.93, 0.98]);
+          const surface = cssColor("--ep-color-surface", [1, 1, 1]);
+          const success = cssColor("--ep-color-success", [0.28, 0.44, 0.36]);
+          const { m, nrm } = stackViewMatrix(geo, state.yaw);
+          const particles = state.flow !== null ? stackParticles(geo, state.flow) : [];
+          gl.viewport(0, 0, size[0], size[1]);
+          gl.clearColor(0, 0, 0, 0);
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+          gl.enable(gl.DEPTH_TEST);
+          gl.depthFunc(gl.LEQUAL);
+          gl.enable(gl.CULL_FACE);
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+          const f = geo.frame;
+          for (let i = n - 1; i >= 0; i--) {
+            const depth = n === 1 ? 0 : i / (n - 1);
+            const topColor = mix(mix(surface, soft, 0.85), accent, 0.1 + 0.32 * depth);
+            const sideColor = mix(topColor, accent, 0.35);
+            const lift = state.step === i ? state.lift : 0;
+            const offset = [0, f.layerY(i) + lift, 0];
+            const scale = [STACK.W, STACK.T, STACK.D];
+            let glow = state.step === i ? 0.9 : 0;
+            for (const p of particles) glow += 0.55 * p.alpha * Math.exp(-Math.pow(p.pos[1] - offset[1], 2) / 90);
+            const alpha = state.step >= 0 && state.step !== i ? 0.5 : 0.94;
+            gl.useProgram(slab.program);
+            gl.bindBuffer(gl.ARRAY_BUFFER, triBuf);
+            const aPos = slab.attr("aPos");
+            const aNrm = slab.attr("aNrm");
+            gl.enableVertexAttribArray(aPos);
+            gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 24, 0);
+            gl.enableVertexAttribArray(aNrm);
+            gl.vertexAttribPointer(aNrm, 3, gl.FLOAT, false, 24, 12);
+            gl.uniformMatrix4fv(slab.loc("uView"), false, m);
+            gl.uniformMatrix3fv(slab.loc("uNrmM"), false, nrm);
+            gl.uniform3fv(slab.loc("uScale"), scale);
+            gl.uniform3fv(slab.loc("uOffset"), offset);
+            gl.uniform3fv(slab.loc("uSide"), sideColor);
+            gl.uniform3fv(slab.loc("uTop"), topColor);
+            gl.uniform3fv(slab.loc("uGlowC"), accent);
+            gl.uniform1f(slab.loc("uGlow"), Math.min(1, glow));
+            gl.uniform1f(slab.loc("uAlpha"), alpha);
+            gl.drawArrays(gl.TRIANGLES, 0, 36);
+            gl.disableVertexAttribArray(aNrm);
+            gl.useProgram(line.program);
+            gl.bindBuffer(gl.ARRAY_BUFFER, edgeBuf);
+            const lPos = line.attr("aPos");
+            gl.enableVertexAttribArray(lPos);
+            gl.vertexAttribPointer(lPos, 3, gl.FLOAT, false, 12, 0);
+            gl.uniformMatrix4fv(line.loc("uView"), false, m);
+            gl.uniform3fv(line.loc("uScale"), scale);
+            gl.uniform3fv(line.loc("uOffset"), offset);
+            gl.uniform4fv(line.loc("uColor"), [...accent, alpha * 0.95]);
+            gl.drawArrays(gl.LINES, 0, 24);
+          }
+          if (particles.length) {
+            const data = new Float32Array(particles.length * 5);
+            particles.forEach((p, k) => data.set([...p.pos, p.up ? 1 : 0, p.alpha], k * 5));
+            gl.disable(gl.DEPTH_TEST);
+            gl.useProgram(dot.program);
+            gl.bindBuffer(gl.ARRAY_BUFFER, dotBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+            const pPos = dot.attr("aPos");
+            const pMeta = dot.attr("aMeta");
+            gl.enableVertexAttribArray(pPos);
+            gl.vertexAttribPointer(pPos, 3, gl.FLOAT, false, 20, 0);
+            gl.enableVertexAttribArray(pMeta);
+            gl.vertexAttribPointer(pMeta, 2, gl.FLOAT, false, 20, 12);
+            gl.uniformMatrix4fv(dot.loc("uView"), false, m);
+            gl.uniform1f(dot.loc("uSize"), (size[0] / geo.width) * 30);
+            gl.uniform3fv(dot.loc("uDown"), accent);
+            gl.uniform3fv(dot.loc("uUp"), success);
+            gl.drawArrays(gl.POINTS, 0, particles.length);
+            gl.disableVertexAttribArray(pMeta);
+          }
+        },
+      };
+      canvas.addEventListener("webglcontextlost", (event) => {
+        event.preventDefault();
+        view.lost = true;
+        if (view.onLost) view.onLost();
+      });
+      return view;
+    }
+
+    // Draws a stack's picture (WebGL when it can) and returns a render(state)
+    // that motion drives; the SVG is always kept as the accessible image.
+    function stackRenderer(figure, svg, geo) {
+      const stage = document.createElement("div");
+      stage.className = "diagram-stage";
+      svg.parentNode.insertBefore(stage, svg);
+      stage.appendChild(svg);
+      stage.style.width = `${geo.width}px`;
+      const fallback = svgStackView(geo, svg);
+      let current = fallback;
+      let gl = null;
+      try {
+        gl = webglStackView(geo, stage);
+      } catch (error) {
+        console.error("guide-runtime: stack drawn without WebGL:", error);
+        gl = null;
+      }
+      let last = stackState(geo.layers.length, {});
+      if (gl) {
+        current = gl;
+        figure.dataset.diagramRender = "webgl";
+        gl.onLost = () => {
+          gl.canvas.remove();
+          current = fallback;
+          figure.dataset.diagramRender = "svg";
+          current.render(last);
+        };
+        const resize = () => gl.resize();
+        if (typeof window.ResizeObserver === "function") new ResizeObserver(resize).observe(stage);
+        else window.addEventListener("resize", resize);
+        const repaint = () => current.render(last);
+        new MutationObserver(repaint).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+        if (typeof window.matchMedia === "function") {
+          const scheme = window.matchMedia("(prefers-color-scheme: dark)");
+          if (scheme.addEventListener) scheme.addEventListener("change", repaint);
+        }
+        requestAnimationFrame(resize);
+      } else figure.dataset.diagramRender = "svg";
+      return (state) => {
+        last = state;
+        current.render(state);
+      };
+    }
+
+    function stackMotion(figure, before, svg, geo, motion) {
+      const render = stackRenderer(figure, svg, geo);
+      const n = geo.layers.length;
+      if (motion === "rotate") {
+        const omega = (2 * Math.PI) / MOTION.STACK_TURN_PERIOD;
+        return continuous(figure, before, (t) => render(stackState(n, { yaw: STACK.YAW + omega * t })));
+      }
+      if (motion === "flow") {
+        return continuous(figure, before, (t) => render(stackState(n, {
+          yaw: STACK.YAW + 0.22 * Math.sin((2 * Math.PI * t) / 18), flow: t,
+        })));
+      }
+      if (motion === "step") {
+        const steps = geo.layers.map((layer) => {
+          const detail = plain(layer.detail);
+          return { narration: `${layer.label}.${detail ? ` ${detail}` : ""}` };
+        });
+        return walkthrough(figure, before, steps, (i, p, arrived) =>
+          render(stackState(n, { step: i, lift: i >= 0 ? 14 * (arrived ? 1 : p) : 0 })));
+      }
+      render(stackState(n, {}));
+      return null;
+    }
+
+    function animate(figure, kind, motion, drawn, before) {
+      const [svg] = drawn.svgs;
+      if (kind === "stack") return stackMotion(figure, before, svg, drawn.geo, motion);
+      if (!motion) return null;
+      figure.dataset.motionState = "idle";
+      if (kind === "flow") {
+        return motion === "flow" ? flowStream(figure, before, svg, drawn.geo) : flowSteps(figure, before, svg, drawn.geo);
+      }
+      if (kind === "concept_map") return conceptRotate(figure, before, drawn.geo);
+      if (kind === "timeline") return timelineSteps(figure, before, drawn.geo);
+      if (kind === "sequence") return sequenceSteps(figure, before, svg, drawn.geo);
+      return null;
+    }
+
     function install(guide) {
       const byId = new Map();
       const list = (value, key) => (isPlainObject(value) && Array.isArray(value[key]) ? value[key] : []);
+      const motionEra = isPlainObject(guide) && MOTION_SCHEMAS.has(guide.schema_version);
       if (isPlainObject(guide) && DIAGRAM_SCHEMAS.has(guide.schema_version)) {
         for (const block of list(guide, "modules").flatMap((m) => list(m, "sections")).flatMap((s) => list(s, "blocks"))) {
           if (isPlainObject(block) && block.type === "diagram" && typeof block.id === "string") byId.set(block.id, block);
@@ -1784,12 +2714,22 @@
         try {
           const kind = figure.dataset.diagramKind;
           const text = qs(':scope > [data-role="diagram-text"]', figure);
-          if (!text || !valid(byId.get(figure.id), kind)) throw new Error("invalid diagram");
+          const data = byId.get(figure.id);
+          if (!text || !valid(data, kind, motionEra)) throw new Error("invalid diagram");
           if (kind === "comparison") figure.dataset.diagramState = "table";
           if (!has(LAYOUTS, kind)) continue;
-          for (const svg of LAYOUTS[kind](trimmed(byId.get(figure.id)))) inserted.push(figure.insertBefore(svg, text));
-          wrapTextVersion(figure, text);
+          const drawn = LAYOUTS[kind](trimmed(data));
+          for (const svg of drawn.svgs) inserted.push(figure.insertBefore(svg, text));
+          const details = wrapTextVersion(figure, text);
           figure.dataset.diagramState = "drawn";
+          try {
+            animate(figure, kind, motionOf(data, kind, motionEra), drawn, details);
+          } catch (error) {
+            // Motion is an enhancement: the drawn picture stands without it.
+            for (const bar of qsa(':scope > [data-role="diagram-motion-controls"]', figure)) bar.remove();
+            delete figure.dataset.motionState;
+            console.error("guide-runtime: diagram motion unavailable:", figure.id, error);
+          }
         } catch (error) {
           inserted.forEach((svg) => svg.remove());
           figure.dataset.diagramState = "text";

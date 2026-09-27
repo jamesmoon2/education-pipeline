@@ -2684,3 +2684,40 @@ def test_1_3_goal_lines_follow_the_profile_like_1_2() -> None:
     assert "permits optional `serves_goals`" not in plain
     assert "- Source schema 1.3 permits optional `serves_goals` arrays" in profiled
     assert "- Target guide source schema: `1.3`." in profiled
+
+
+def test_1_3_spec_knows_the_visual_vocabulary_and_1_2_does_not() -> None:
+    """A 1.3 spec plans visuals the runtime can draw and animate, instead of
+    ruling out animation because guide JSON cannot carry scripts."""
+
+    spec_1_3 = _compile_every_guide_v1_prompt("1.3")["spec"]
+    spec_1_2 = _compile_every_guide_v1_prompt("1.2")["spec"]
+
+    assert "\n## Visual Capabilities\n" in spec_1_3
+    assert "`stack` (layers, drawn as 3D slabs with WebGL)" in spec_1_3
+    assert "`step` (a learner-controlled, narrated walkthrough of the parts in order)" in spec_1_3
+    assert "only these pairings exist: `step` on a `flow`, `timeline`, `sequence` or `stack`" in spec_1_3
+    assert spec_1_3.index("## Visual Capabilities") < spec_1_3.index("## Machine-Readable Course Contract")
+    assert "Visual Capabilities" not in spec_1_2
+
+
+@pytest.mark.parametrize("stage", _SCHEMA_REFERENCE_STAGES)
+def test_1_3_schema_reference_states_every_enumerated_value(stage: str) -> None:
+    """The 1.3 reference names the values the parser enforces, and its
+    example no longer shows the invalid difficulty `beginner`."""
+
+    text = _compile_every_guide_v1_prompt("1.3")[stage]
+    assert "`difficulty` (`introductory`, `intermediate`, `advanced` or `mixed`)" in text
+    assert (
+        "`callout`: `kind` (`key-idea`, `connection`, `example`, `warning`, `misconception` "
+        "or `source-note`), `markdown`, optional `title`." in text
+    )
+    assert "`mode` (`single` or `multiple`)" in text
+    assert "`quality` (`best`, `reasonable`, `weak` or `harmful`; exactly one `best`)" in text
+    assert '"beginner"' not in text
+
+
+def test_1_3_structural_examples_use_a_valid_difficulty() -> None:
+    for stage in ("draft", "skeleton"):
+        text = _compile_every_guide_v1_prompt("1.3")[stage]
+        assert '"difficulty": "introductory"' in text, stage

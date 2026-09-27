@@ -758,11 +758,44 @@ def _diagram_versioned_lines(
     return tuple(out)
 
 
+#: Schema 1.3 rewrites: the reference names every value the parser enforces,
+#: and the structural examples stop showing the invalid difficulty `beginner`.
+_ENUMERATED_VALUE_REWRITES = (
+    (
+        "`estimated_minutes`, `difficulty`, ",
+        "`estimated_minutes`, `difficulty` (`introductory`, `intermediate`, `advanced` or `mixed`), ",
+    ),
+    (
+        "  - `callout`: `kind`, `markdown`, optional `title`.",
+        "  - `callout`: `kind` (`key-idea`, `connection`, `example`, `warning`, `misconception` "
+        "or `source-note`), `markdown`, optional `title`.",
+    ),
+    ("`outcome_ids`, `mode`, `prompt`", "`outcome_ids`, `mode` (`single` or `multiple`), `prompt`"),
+    (
+        "`choices` (`id`, `label`, `quality`, `feedback`)",
+        "`choices` (`id`, `label`, `quality` (`best`, `reasonable`, `weak` or `harmful`; exactly "
+        "one `best`), `feedback`)",
+    ),
+    ('"difficulty": "beginner"', '"difficulty": "introductory"'),
+)
+
+
+def _enumerated_lines(lines: tuple[str, ...]) -> tuple[str, ...]:
+    out = []
+    for line in lines:
+        for old, new in _ENUMERATED_VALUE_REWRITES:
+            line = line.replace(old, new)
+        out.append(line)
+    return tuple(out)
+
+
 def _versioned_lines(lines: tuple[str, ...], guide_schema_version: str) -> tuple[str, ...]:
     version = _guide_schema_version(guide_schema_version)
     versioned = tuple(line.replace('"1.0"', f'"{version}"') for line in lines)
     if version in MOTION_SCHEMA_VERSIONS:
-        return _diagram_versioned_lines(versioned, _MOTION_DIAGRAM_SCHEMA_REFERENCE_LINES)
+        return _diagram_versioned_lines(
+            _enumerated_lines(versioned), _MOTION_DIAGRAM_SCHEMA_REFERENCE_LINES
+        )
     if version in DIAGRAM_SCHEMA_VERSIONS:
         return _diagram_versioned_lines(versioned)
     return versioned
@@ -919,6 +952,11 @@ def compile_guide_v1_spec_prompt(
     personalization_suffix = (
         ("", *personalization_lines) if personalization_lines else ()
     )
+    visual_capabilities = (
+        (*_MOTION_SPEC_VISUAL_CAPABILITY_LINES, "")
+        if guide_schema_version in MOTION_SCHEMA_VERSIONS
+        else ()
+    )
     lines = [
         *_SPEC_HEADER_LINES,
         "",
@@ -927,6 +965,7 @@ def compile_guide_v1_spec_prompt(
         "",
         *_SPEC_OUTPUT_AND_QUALITY_LINES,
         "",
+        *visual_capabilities,
         *_guide_spec_contract_lines(guide_schema_version),
         *_blueprint_spec_contract_requirement_lines(blueprint),
         *personalization_suffix,
@@ -1072,6 +1111,26 @@ _MOTION_DIAGRAM_GUIDANCE_LINES = (
     "- The picture and its text version must be complete without motion: the runtime honors "
     "the learner's reduced-motion setting and pause controls, so never rely on motion to carry "
     "information that the labels, `detail` and prose do not.",
+)
+
+#: Schema 1.3 spec context: what the runtime can draw and animate, so the
+#: spec plans visuals in that vocabulary instead of ruling animation out.
+_MOTION_SPEC_VISUAL_CAPABILITY_LINES = (
+    "## Visual Capabilities",
+    "The exported guide's maintained runtime draws diagrams from plain data and animates them, "
+    "so plan visuals in this vocabulary rather than as static frames:",
+    "- Kinds: `flow` (processes, pipelines and loops), `sequence` (participants exchanging "
+    "messages in order), `stack` (layers, drawn as 3D slabs with WebGL), `concept_map`, "
+    "`comparison` and `timeline`.",
+    "- Motion: `step` (a learner-controlled, narrated walkthrough of the parts in order), `flow` "
+    "(things travelling along every connection or through every layer), and `rotate` (a ring "
+    "turning around its hub, or a stack turning in 3D).",
+    "- Each diagram has at most one motion, and only these pairings exist: `step` on a `flow`, "
+    "`timeline`, `sequence` or `stack`; `flow` on a `flow` or `stack`; `rotate` on a "
+    "`concept_map` or `stack`. A `comparison` never moves.",
+    "- The course never contains code, markup or animation timings: the draft declares a kind "
+    "and a motion as data, and the runtime draws, animates and narrates it, with pause controls, "
+    "reduced-motion support and a complete text version.",
 )
 
 #: Schema 1.3 outline request: plan the diagrams the draft will build.
