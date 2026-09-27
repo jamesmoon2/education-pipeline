@@ -3,6 +3,7 @@ import BuildFreshnessBanner from "./components/BuildFreshnessBanner";
 import ErrorBoundary from "./components/ErrorBoundary";
 import GlobalJobActivity from "./components/GlobalJobActivity";
 import RouteErrorFallback from "./components/RouteErrorFallback";
+import ShortcutsProvider, { ShortcutsButton } from "./components/ShortcutsProvider";
 import ThemeToggle from "./components/ThemeToggle";
 import NewRunPage from "./pages/NewRunPage";
 import RunBoardPage from "./pages/RunBoardPage";
@@ -13,6 +14,14 @@ import ProfilesPage from "./pages/ProfilesPage";
 import ProfileEditorPage from "./pages/ProfileEditorPage";
 
 export default function App() {
+  return (
+    <ShortcutsProvider>
+      <AppShell />
+    </ShortcutsProvider>
+  );
+}
+
+function AppShell() {
   const location = useLocation();
   return (
     <div className="app-shell">
@@ -43,6 +52,7 @@ export default function App() {
           </p>
           <ThemeToggle />
         </div>
+        <ShortcutsButton />
       </header>
       <main className="workspace">
         <BuildFreshnessBanner />
