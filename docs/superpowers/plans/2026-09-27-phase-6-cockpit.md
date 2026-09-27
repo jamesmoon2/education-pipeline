@@ -48,8 +48,8 @@ About the Playwright count: the first baseline run passed 155 of 162, because th
 
 | ID | Thread | Exit criteria | Status |
 | --- | --- | --- | --- |
-| T60 | Error boundary, theme toggle, wizard reducer | A route-level boundary keeps the rail usable and offers "Try again" and "Back to the library". An app-level boundary offers "Reload". A theme select (system, light or dark) stamps or clears `data-theme` and persists per browser. `NewRunPage` form and lifecycle state live in one pure reducer, and the existing NewRunPage unit tests and the new-run and blueprints e2e pass with zero edits. There are unit tests for each part and one e2e case for theme persistence and axe in dark. | - [ ] |
-| T61 | Keyboard shortcuts | The key map in decision 4 works, under the rules in decisions 5–8. A `?` overlay lists the keys and carries an on/off switch. A new `keyboard.spec.ts` walks library → course → stage by keyboard, proves typing in inputs triggers nothing, proves `a` never approves, and runs axe with the overlay open. The pure key resolver has unit tests. | - [ ] |
+| T60 | Error boundary, theme toggle, wizard reducer | A route-level boundary keeps the rail usable and offers "Try again" and "Back to the library". An app-level boundary offers "Reload". A theme select (system, light or dark) stamps or clears `data-theme` and persists per browser. `NewRunPage` form and lifecycle state live in one pure reducer, and the existing NewRunPage unit tests and the new-run and blueprints e2e pass with zero edits. There are unit tests for each part and one e2e case for theme persistence and axe in dark. | - [x] |
+| T61 | Keyboard shortcuts | The key map in decision 4 works, under the rules in decisions 5–8. A `?` overlay lists the keys and carries an on/off switch. A new `keyboard.spec.ts` walks library → course → stage by keyboard, proves typing in inputs triggers nothing, proves `a` never approves, and runs axe with the overlay open. The pure key resolver has unit tests. | - [x] |
 | T62a | Events endpoint (daemon) | `GET /v1/events` behaves as decisions 9–12 and the design note describe. Server tests cover Host and token rejection, the `hello` and `change` frames, a CLI-style out-of-process write being noticed, coalescing, the stream cap, heartbeat and lifetime, and shutdown releasing streams. | - [ ] |
 | T62b | Events in the cockpit | One stream per tab, owned at App level. A `useEvents` hook and `usePolling` integration mean pollers stop while the stream is up and resume when it is down. A vitest proves that one change notice costs the board at most one request per mounted resource it names, and zero requests when idle. e2e: a board updates after a CLI-side change with the stream up. | - [ ] |
 | T63 | Preview bridge, both ways | The runtime reports the current section in preview mode only. The run board stops remounting the preview on unrelated mutations, and it restores the reviewer's section when the guide HTML does change. The schema and origin rules are decisions 15–16. e2e covers the round trip in the real cockpit iframe and proves an exported guide posts nothing. The example export is rebuilt. | - [ ] |
@@ -237,3 +237,35 @@ About the Playwright count: the first baseline run passed 155 of 162, because th
 ## Closeout log
 
 (One entry per thread as it lands: commits, diff size, red/green counts, mutations, gates, accepted limitations.)
+
+- **T60** landed in a parallel worktree (red `c9af03d`, green `05b6835`, tests `d75d6fd`, merged `1bbc316`).
+  - **Changes:** 10 production files, +528 / −109.
+    - New: `ErrorBoundary.tsx`, `RouteErrorFallback.tsx`, `AppErrorFallback.tsx`, `ThemeToggle.tsx`, `lib/theme.ts` and `lib/newRunWizard.ts`.
+    - `App.tsx` wraps `<Routes>` in the boundary keyed by pathname.
+    - `main.tsx` stamps the stored theme before `createRoot` and wraps `<App/>` in the last-resort boundary.
+    - `NewRunPage.tsx` goes from 22 `useState` to one `useReducer` plus the five remote-data states.
+    - `styles.css` +40, appended.
+  - **Tests.**
+    - **Red:** 98 vitest cases and 1 e2e case, across 9 files. They fail on missing modules, missing elements, or the source guard counting 22 `useState` calls against at most 5. The red writer checked the tests against a throwaway implementation, which passed all 98 and was caught by 8 deliberate breakages.
+    - **Green:** it edited no tests.
+    - **Characterization addendum:** a separate test writer added 4 cases, because the implementer reported that three behaviour-changing mutants passed every test. They pin `startOver` clearing a pasted TOML draft back to "Describe it", and landing on the blueprint step after a double-click or a Back-during-load. The page's original step change was absolute. All 4 pass against the pre-refactor page (`c9af03d`) too, so the refactor's "no behaviour change" claim rests on evidence.
+  - **Mutations:** 8, all caught.
+    - Green: the boundary ignoring `resetKey` (3 failures), "system" stamping light (5), `startOver` keeping the title (3), `createFailure` dropping the retry markers (2), and `main.tsx` skipping the theme (1).
+    - Addendum: `startOver` keeping `toml`, keeping `mode`, and a relative `next` in place of `goToStep("blueprint")`.
+  - **Gates on the merge:** pytest 2619 passed, 1 skipped; `--help` clean; build clean; vitest 738; e2e `cockpit-shell`, `new-run`, `blueprints` and `smoke` 10/10. The implementer also ran the full Playwright suite in the worktree: 163/163.
+  - **Accepted:** see the ledger (the theme select is hidden below 48rem, a possible light flash before the script runs, no cross-tab sync, and render errors only).
+- **T61** landed in a parallel worktree (red `a16fb9c`, green `6c4578a`, merged `bbaf70f`).
+  - **Changes:** 8 production files, +658 / −27.
+    - `lib/shortcuts.ts` (pure `resolveShortcut`, `nextCourseNeedingReview`, `nextActionHref`, `compareLibraryOrder`).
+    - `components/ShortcutsProvider.tsx` (one bubble-phase listener, `usePageShortcut`, the overlay, the rail button and the live region).
+    - Page registrations: `a` in `PrimaryAction.tsx` and `StageViewerPage.tsx`, `n` in `RunBoardPage.tsx` and `StageViewerPage.tsx`.
+    - `TopicListPage.tsx` now imports the shared deep-link and library-order helpers instead of keeping local copies. This is pure code motion.
+    - `styles.css` +86, appended.
+  - **Tests.**
+    - **Red:** 72 cases (41 resolver, 10 provider, 19 App, 2 e2e). Each "does nothing" case also proves the key acts somewhere else, so none of them pass vacuously. The red writer checked them against a throwaway implementation, and 5 deliberate breakages were caught.
+    - **Green:** it edited no tests.
+  - **Mutations:** 5, all caught: dropping the editable-target check (8 failures), `a` clicking on the run board, `a` clicking on the stage viewer, ignoring the enabled flag (4), and a capture-phase listener (1).
+  - **Merge:** `App.tsx` and `styles.css` conflicted with T60, as planned. The resolution keeps both import sets and both appended CSS blocks. The shortcuts button goes after T60's rail-footer `div`. `useLocation` moves into the new inner `AppShell`, where the route boundary now renders.
+  - **Gates on the merge:** pytest 2619 passed, 1 skipped; `--help` clean; build clean; vitest 808; e2e `keyboard`, `cockpit-shell`, `smoke`, `approve-continue`, `library`, `editor` and `new-run` 15/15. axe is clean with the overlay open.
+  - **Found on the way:** `GlobalJobActivity.test.tsx:287` polls every 30 ms on real timers and waits for four calls inside `waitFor`'s 1 s default. It failed once while four agents were loading the machine, and passed alone. The root cause is a count that depends on wall-clock throughput. The fix is fake-timer advancement, not a longer timeout, and it is assigned to T62b's red step, which rewrites that component's polling.
+  - **Unreproduced:** one pytest failure in T61's worktree under the same load was not captured, and T61 changes no Python. Three later full runs were clean. Every gate run since then uses `-rf`, so a recurrence will be named.

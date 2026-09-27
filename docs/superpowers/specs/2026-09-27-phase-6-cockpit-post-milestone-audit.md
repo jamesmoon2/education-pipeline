@@ -44,6 +44,45 @@ the workspace directly from another process (`cli.py:120`), so a notification
 bus inside the daemon would miss those writes. Notices come from a stat-only
 fingerprint scan that runs only while a stream is open.
 
+### The route fallback is its own component (T60)
+
+- The plan named one `ErrorBoundary` in two placements. The route fallback UI
+  lives in `RouteErrorFallback.tsx`, and the app-level UI in
+  `AppErrorFallback.tsx`, which keeps the `App.tsx` diff small.
+- The theme select has a visible "Theme" label bound by `htmlFor`, rather than
+  an `aria-label`. Its accessible name is the same.
+
+### The shortcuts button sits after the rail footer, not inside it (T61)
+
+- Decision 7 put the "Keyboard shortcuts" button "in the rail footer". It is a
+  DOM sibling that follows `.rail-footer` instead.
+- `.rail-footer` is `display: none` below 48rem, so a button inside it would
+  vanish on narrow screens. The on/off switch would then be unreachable there
+  once shortcuts were turned off.
+- At 600px the button shows in the top bar.
+
+### `r` follows the library's default order (T61)
+
+"Library order" means the default view: newest activity first, with archived
+courses hidden. A sort the user picks on the library page does not change it.
+`r` also skips approvals that name no stage, as `GlobalJobActivity` does.
+Escape closes the overlay even when shortcuts are off, because a dialog must
+always be closable.
+
 ## Accepted limitations
 
-(Added per thread.)
+- **Theme select hidden on narrow screens (T60).** It sits inside
+  `.rail-footer`, which is hidden below 48rem (`styles.css:353`). An explicit
+  choice is still applied at boot.
+- **Possible light flash before the script runs (T60).** The theme is stamped
+  by the module script before the first React render. There is no inline
+  `<script>` in `index.html`, so an explicit dark choice can show the default
+  background for one frame while the bundle loads.
+- **No cross-tab theme sync (T60).** Another open tab picks up a change on its
+  next load.
+- **Render errors only (T60).** React boundaries do not see errors in event
+  handlers or async code. `ErrorNotice` already covers API failures.
+- **contentEditable is unit-tested only as a plain object (T61).** jsdom has
+  no `isContentEditable`.
+- **`/` from another page (T61).** It navigates to the library and waits up to
+  10 s for "Filter courses" to mount before giving up quietly.
