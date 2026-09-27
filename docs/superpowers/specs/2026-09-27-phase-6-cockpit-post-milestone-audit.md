@@ -163,10 +163,14 @@ Two e2e cases pin both gates.
 - **`/` from another page (T61).** It navigates to the library and waits up to
   10 s for "Filter courses" to mount before giving up quietly.
 - **Filesystems whose mtimes can hide a change (T62a).** On coarse or cached
-  mtimes (for example FAT, or some network mounts), or on Windows where
-  `st_ino` is 0, an in-place edit that keeps the same size inside one mtime
-  tick can go unnoticed. The 300 s lifetime reconnect resyncs everything, so
-  staleness is bounded at 5 minutes. Polling had no such gap.
+  mtimes (for example FAT, or some network mounts), an in-place edit that
+  keeps the same size inside one mtime tick can go unnoticed. The 300 s
+  lifetime reconnect resyncs everything, so staleness is bounded at 5
+  minutes. Polling had no such gap. Windows is not a special case: records
+  come from `os.stat(path, follow_symlinks=False)`, which there returns the
+  real file index as `st_ino` and live timestamps, not the directory
+  listing's lazily updated copy (`DirEntry.stat()`, with `st_ino` 0) that
+  once made untouched runs look changed on the windows-latest CI job.
 - **Scan cost grows with job history (T62a).** Every `job.json` is stat'ed on
   each pass, about 26 ms for 1,500 jobs in this container. The interval
   stretches to 10× the last pass, so a large workspace slows the scan rather
