@@ -264,3 +264,23 @@ fixed before the next push, and neither was re-run.
 Gates on the fixed head `17007a3`: pytest 2668 passed, 1 skipped; `--help`
 clean; build clean; vitest 938; full Playwright 176/176.
 
+## CI round 2 on PR #43
+
+On `c02d0ee`, 9 of 10 checks were green, including e2e, which confirms the
+paste-loop fix. Windows pytest dropped from 14 failures to 2.
+
+- **The remaining 2 were a test-helper portability bug.**
+  - `_replace_same_size_with_new_mtime` read text and wrote text back.
+  - The helpers `_write` and `_append` write in text mode, so on Windows each
+    `\n` is stored as `\r\n`.
+  - `read_text()` folds those back to `\n`, and `atomic_write_text` writes
+    `\n` verbatim. The file shrank by one byte per line, 38 → 36 and 43 → 40,
+    so the helper's own "same size" precondition failed before the code under
+    test ran.
+- **Fix** (`7349263`, test only). The helper copies bytes with
+  `atomic_write_bytes(path, path.read_bytes())`.
+- **Evidence.** A Linux simulation that forces CRLF on every text-mode write
+  in both events test files fails exactly the two CI tests with the old
+  helper, and passes all 49 with the new one.
+- **Sweep.** No other test depends on size after a text-mode write.
+
