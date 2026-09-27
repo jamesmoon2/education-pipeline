@@ -150,6 +150,10 @@ class JobStore:
     def __init__(self, root: str | Path, *, lock_timeout_seconds: float = 5.0) -> None:
         self.root = Path(root)
         self.lock_timeout_seconds = lock_timeout_seconds
+        #: Called with the job after each successful save (``serve()`` wires
+        #: the events hub's latency-only nudge here). It runs under whatever
+        #: locks the caller holds, so it must be quick and lock-leaf.
+        self.on_saved: Callable[[Job], None] | None = None
 
     def lock(self):
         """The workspace advisory lock, for admitting or starting a job.
@@ -214,6 +218,13 @@ class JobStore:
             self._job_json(job.topic_id, job.id),
             json.dumps(job.to_dict(), indent=2),
         )
+        hook = self.on_saved
+        if hook is None:
+            return
+        try:
+            hook(job)
+        except Exception as exc:  # noqa: BLE001 - a hook must never fail a save
+            logger.warning("job save hook failed: %s", type(exc).__name__)
 
     def load(self, topic_id: str, job_id: str) -> Job:
         return Job.from_dict(_read_job_record(self._job_json(topic_id, job_id)))
