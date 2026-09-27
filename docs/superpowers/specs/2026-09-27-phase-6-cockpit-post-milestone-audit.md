@@ -204,3 +204,63 @@ Two e2e cases pin both gates.
 - **A remounted board restores nothing (T63).** The remembered section lives
   in run-board page state, so navigating away from the board and back starts
   the preview at its boot section.
+
+## After PR review (CI round 1 on PR #43)
+
+The first CI run on `7db0a44` failed two checks. Both were root-caused and
+fixed before the next push, and neither was re-run.
+
+### `test (windows-latest, py3.12)`: 14 events tests (fixed red/green)
+
+- **Symptom.** Topics nobody touched showed up as `run` changes between two
+  fingerprint scans. Ubuntu passed.
+- **Root cause.** `_record` built each record from `os.scandir`'s
+  `DirEntry.stat()`.
+  - On Windows, CPython fills that from the `WIN32_FIND_DATAW` listing
+    (`Modules/posixmodule.c`, `DirEntry_from_find_data`). The listing is the
+    copy of the metadata held in the parent directory's index, and NTFS
+    updates it lazily. Microsoft's FindFirstFile documentation warns that it
+    "may not be current".
+  - A directory created just before the baseline scan could therefore report
+    a stale timestamp once and the live one on the next pass.
+  - On POSIX, `DirEntry.stat()` is an `lstat` anyway.
+- **Red** (`bd02e74`). `test_fingerprint_does_not_trust_the_listings_stat_copy`
+  reproduces the Windows behaviour on Linux: `scandir` entries whose first
+  `stat()` is stale. It failed with the CI pattern. A positive control in the
+  same test checks that real changes are still reported.
+- **Green** (`8d3d9bd`). Every record now comes from
+  `os.stat(path, follow_symlinks=False)`, which costs the same on POSIX.
+  - Mutations: going back to `entry.stat` was caught, and so was
+    `follow_symlinks=True`.
+  - Side effect: records now carry the real file index on Windows, so the
+    `st_ino = 0` limitation above no longer applies.
+
+### `e2e (guide + mixed-run acceptance)`: `full-run.spec.ts:155` (test race, fixed in the test)
+
+- **Symptom.** A strict-mode violation in the module paste loop: two "Save"
+  buttons, one of them disabled.
+- **Root cause.** Each paste editor keeps its Save disabled until its request
+  lands, then closes. The spec opened the next editor straight after
+  clicking Save. There are two ways in:
+  - **A, predates the PR.** A module save is still in flight when the next
+    module's editor opens. Holding the module POST for 300 ms fails it 5/5 at
+    the PR head and 5/5 at the merge base `6675b40`.
+  - **B, new with the events stream.** The module rows appear from a notice
+    while the skeleton's own POST is still in flight. Holding the skeleton
+    POST for 1.5 s fails it 5/5 at the PR head and 0/5 at the base.
+  - Under load, the burst of refetches after a notice raised the median
+    module-POST latency from 64 ms to 116 ms on one CPU. That widened path A.
+- **Why the product is right.** Two open editors, one of them saving, is
+  intended: the rows are independent, and the daemon serializes the writes.
+- **Fix** (`f585de2`, test only). The spec waits for each editor to close
+  before moving on. It uses no sleep and no longer timeout.
+- **Evidence.** Both held-response variants now pass 10/10. Unloaded and
+  loaded runs gave 0/40, the loaded full suite passed 176/176, and the merged
+  head passed 10/10 on repeat.
+- **Observed, not acted on.** At the merge base only, a heavily loaded
+  40-run probe twice timed out waiting for a paste editor to open. It never
+  reproduced at the PR head.
+
+Gates on the fixed head `17007a3`: pytest 2668 passed, 1 skipped; `--help`
+clean; build clean; vitest 938; full Playwright 176/176.
+
