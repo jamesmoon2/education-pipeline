@@ -223,6 +223,247 @@ test.describe("preview evidence message bridge", () => {
   });
 });
 
+// T63 (plan decisions 15-18): the preview reports its section to the cockpit
+// and shows a section the cockpit names. Both messages exist only in preview
+// mode; the frame is an opaque-origin srcDoc, so identity is checked by
+// event.source, never by origin, and the parent can only address it with "*".
+test.describe("preview position bridge", () => {
+  const POSITION = "education-pipeline:preview-position";
+  const SHOW = "education-pipeline:preview-show";
+
+  interface Received {
+    from: string | null;
+    keys: string[];
+    data: unknown;
+  }
+
+  // A parent page with one sandboxed srcDoc frame per document. Every message
+  // the parent receives is recorded with the title of the frame whose
+  // contentWindow sent it (null for any other source). With `answerInitial`,
+  // the parent answers a frame's boot report with preview-show from inside
+  // its message handler, the way the cockpit restores a reloaded preview.
+  async function mountSandboxedFrames(
+    page: import("@playwright/test").Page,
+    frames: Record<string, string>,
+    answerInitial: string | null = null,
+  ) {
+    await page.setContent(
+      Object.keys(frames)
+        .map(
+          (title) =>
+            `<iframe title="${title}" sandbox="allow-scripts" style="width:1000px;height:700px"></iframe>`,
+        )
+        .join(""),
+    );
+    await page.evaluate(
+      ({ answer, position, show }) => {
+        const w = window as unknown as { __received: unknown[] };
+        w.__received = [];
+        window.addEventListener("message", (event) => {
+          const frame = Array.from(document.querySelectorAll("iframe")).find(
+            (element) => element.contentWindow === event.source,
+          );
+          const data = event.data as Record<string, unknown> | null;
+          w.__received.push({
+            from: frame ? frame.title : null,
+            keys: data && typeof data === "object" ? Object.keys(data).sort() : [],
+            data,
+          });
+          if (
+            answer &&
+            frame &&
+            data &&
+            data.type === position &&
+            data.initial === true
+          ) {
+            frame.contentWindow?.postMessage({ type: show, id: answer }, "*");
+          }
+        });
+      },
+      { answer: answerInitial, position: POSITION, show: SHOW },
+    );
+    for (const [title, html] of Object.entries(frames)) {
+      await page.locator(`iframe[title="${title}"]`).evaluate((element, doc) => {
+        (element as HTMLIFrameElement).srcdoc = doc;
+      }, html);
+    }
+  }
+
+  const received = (page: import("@playwright/test").Page) =>
+    page.evaluate(() => (window as unknown as { __received: Received[] }).__received);
+
+  const position = (id: string, initial: boolean, from = "preview") => ({
+    from,
+    keys: ["id", "initial", "type"],
+    data: { type: POSITION, id, initial },
+  });
+
+  test("reports the boot section with initial true, then every section change with initial false", async ({
+    page,
+  }) => {
+    await mountSandboxedFrames(page, { preview: previewDocumentHtml });
+    const frame = page.frameLocator('iframe[title="preview"]');
+    await expect(frame.locator("#feedback-foundations")).toHaveClass(/is-current/);
+    await expect.poll(() => received(page)).toEqual([position("feedback-foundations", true)]);
+
+    // Next/Previous.
+    await frame.locator('#feedback-foundations [data-role="next-section"]').click();
+    await expect(frame.locator("#recognize-loop-types")).toHaveClass(/is-current/);
+    await expect
+      .poll(() => received(page))
+      .toEqual([position("feedback-foundations", true), position("recognize-loop-types", false)]);
+
+    // A cockpit evidence reveal moves the section too, so it is reported.
+    await page.locator('iframe[title="preview"]').evaluate((element) => {
+      (element as HTMLIFrameElement).contentWindow?.postMessage(
+        { type: "education-pipeline:preview-evidence", kind: "module", id: "intervention-practice" },
+        "*",
+      );
+    });
+    await expect(frame.locator("#delays-and-leverage")).toHaveClass(/is-current/);
+    await expect
+      .poll(() => received(page))
+      .toEqual([
+        position("feedback-foundations", true),
+        position("recognize-loop-types", false),
+        position("delays-and-leverage", false),
+      ]);
+  });
+
+  test("shows the section window.parent names, including in answer to the boot report", async ({
+    page,
+  }) => {
+    await mountSandboxedFrames(page, { preview: previewDocumentHtml }, "garden-decision");
+    const frame = page.frameLocator('iframe[title="preview"]');
+    const iframe = page.locator('iframe[title="preview"]');
+
+    // The boot report is answered from inside the parent's handler, so the
+    // runtime's listener must already be installed when it reports.
+    await expect(frame.locator("#garden-decision")).toHaveClass(/is-current/);
+    await expect(frame.locator("#feedback-foundations")).not.toHaveClass(/is-current/);
+
+    await iframe.evaluate((element, show) => {
+      (element as HTMLIFrameElement).contentWindow?.postMessage(
+        { type: show, id: "recognize-loop-types" },
+        "*",
+      );
+    }, SHOW);
+    await expect(frame.locator("#recognize-loop-types")).toHaveClass(/is-current/);
+    await expect(frame.locator("#garden-decision")).not.toHaveClass(/is-current/);
+    await expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
+  });
+
+  test("ignores malformed, unknown, non-section, wrong-type and non-parent preview-show messages", async ({
+    page,
+  }) => {
+    await page.setContent(previewDocumentHtml, { waitUntil: "load" });
+    const first = page.locator("#feedback-foundations");
+    const target = page.locator("#garden-decision");
+    await expect(first).toHaveClass(/is-current/);
+
+    await page.evaluate((show) => {
+      const dispatch = (data: unknown, source: MessageEventSource | null = window) =>
+        window.dispatchEvent(new MessageEvent("message", { source, data }));
+      dispatch({ type: show, id: "missing-section" }); // unknown id
+      dispatch({ type: show, id: "Not A Guide ID" }); // fails GUIDE_ID_PATTERN
+      dispatch({ type: show, id: "garden-decision", extra: true }); // extra key
+      dispatch({ type: show, id: "garden-decision", initial: false }); // extra key
+      dispatch({ type: show }); // missing id
+      dispatch({ id: "garden-decision" }); // missing type
+      dispatch({ type: show, id: 42 }); // id not a string
+      dispatch({ type: "education-pipeline:preview-position", id: "garden-decision" }); // wrong type
+      dispatch({ type: "education-pipeline:preview-evidence", id: "garden-decision" }); // wrong type
+      dispatch({ type: `${show}x`, id: "garden-decision" }); // wrong type
+      dispatch("garden-decision"); // not an object
+      dispatch(null);
+      dispatch({ type: show, id: "intervention-practice" }); // a module, not a section
+      dispatch({ type: show, id: "identify-loop" }); // an outcome, not a section
+      dispatch({ type: show, id: "pest-density-scenario" }); // a block inside the target
+      dispatch({ type: show, id: "guide-main" }); // a DOM id, not a section
+      dispatch({ type: show, id: "garden-decision" }, null); // not window.parent
+      dispatch({ type: show, id: "garden-decision" }, new MessageChannel().port1); // not window.parent
+    }, SHOW);
+
+    await expect(first).toHaveClass(/is-current/);
+    await expect(target).not.toHaveClass(/is-current/);
+
+    // The same message from window.parent (itself, at the top level) is shown.
+    await page.evaluate((show) => {
+      window.dispatchEvent(
+        new MessageEvent("message", { source: window, data: { type: show, id: "garden-decision" } }),
+      );
+    }, SHOW);
+    await expect(target).toHaveClass(/is-current/);
+    await expect(first).not.toHaveClass(/is-current/);
+  });
+
+  test("an exported guide never posts and ignores preview-show; the same guide in preview mode reports", async ({
+    page,
+    context,
+  }) => {
+    const exampleExportHtml = readFileSync(
+      path.join(ROOT, "examples/feedback-loops/export/guide.html"),
+      "utf8",
+    );
+    expect(exampleExportHtml).toContain('data-guide-mode="export"');
+    await mountSandboxedFrames(page, {
+      preview: previewDocumentHtml,
+      export: documentHtml,
+      example: exampleExportHtml,
+    });
+
+    for (const title of ["preview", "export", "example"]) {
+      const frame = page.frameLocator(`iframe[title="${title}"]`);
+      const firstSection = frame.locator('section[data-role="guide-section"]').first();
+      await expect(firstSection).toHaveClass(/is-current/);
+      await firstSection.locator('[data-role="next-section"]').click();
+      await expect(firstSection).not.toHaveClass(/is-current/);
+    }
+    for (const title of ["export", "example"]) {
+      await page.locator(`iframe[title="${title}"]`).evaluate((element, show) => {
+        (element as HTMLIFrameElement).contentWindow?.postMessage(
+          { type: show, id: "garden-decision" },
+          "*",
+        );
+      }, SHOW);
+    }
+
+    // Control: the harness hears the preview frame's reports.
+    await expect
+      .poll(async () => (await received(page)).filter((message) => message.from === "preview").length)
+      .toBe(2);
+    await page.waitForTimeout(500);
+    expect((await received(page)).filter((message) => message.from !== "preview")).toEqual([]);
+    await expect(
+      page.frameLocator('iframe[title="export"]').locator("#recognize-loop-types"),
+    ).toHaveClass(/is-current/);
+
+    // At the top level, window.parent is the guide's own window: an exported
+    // guide never calls postMessage on it at all.
+    const topLevel = await context.newPage();
+    await topLevel.addInitScript(() => {
+      const w = window as unknown as { __posted: unknown[] };
+      w.__posted = [];
+      const original = window.postMessage.bind(window);
+      window.postMessage = ((...args: Parameters<Window["postMessage"]>) => {
+        w.__posted.push(args[0]);
+        return original(...(args as [unknown, string]));
+      }) as Window["postMessage"];
+      window.addEventListener("message", (event) => w.__posted.push(event.data));
+    });
+    await topLevel.goto(httpBaseUrl);
+    const firstSection = topLevel.locator("#feedback-foundations");
+    await expect(firstSection).toHaveClass(/is-current/);
+    await firstSection.locator('[data-role="next-section"]').click();
+    await expect(topLevel.locator("#recognize-loop-types")).toHaveClass(/is-current/);
+    await topLevel.waitForTimeout(500);
+    expect(
+      await topLevel.evaluate(() => (window as unknown as { __posted: unknown[] }).__posted),
+    ).toEqual([]);
+    await topLevel.close();
+  });
+});
+
 // The runtime shows one section at a time, so tests must open the section
 // that owns the block they exercise. Uses the fragment router (a tested
 // navigation path in itself).
