@@ -35,6 +35,7 @@ import {
   putDraftUnitResponse,
   postDraftAssemble,
   postContinue,
+  openEventStream,
 } from "./client";
 import { metadataNumber } from "./types";
 import type { LearnerProfile } from "./types";
@@ -1138,5 +1139,125 @@ describe("per-module drafting client (T25)", () => {
     expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({
       parallelism: 3,
     });
+  });
+});
+
+// T62b (plan decision 9; design note §5-6): the events stream uses the one
+// auth rule every /v1 route uses — the memoized X-EP-Token header. No query
+// token (it would reach access logs, history and the dev proxy's logs), no
+// cookie, and never EventSource, which cannot send the header.
+describe("openEventStream", () => {
+  afterEach(() => {
+    resetSessionForTests();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** Each session bootstrap hands out a new token: tok-1, tok-2, ... */
+  function eventsFetch(eventsStatus = 200) {
+    let sessions = 0;
+    return vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/v1/session") {
+        sessions += 1;
+        const token = `tok-${sessions}`;
+        return { ok: true, status: 200, json: async () => ({ token, version: "0.1.0" }) } as Response;
+      }
+      if (path === "/v1/topics") {
+        return { ok: true, status: 200, json: async () => ({ topics: [] }) } as Response;
+      }
+      if (path.startsWith("/v1/events")) {
+        const body =
+          eventsStatus === 200 ? "" : JSON.stringify({ error: { code: "x", message: "x" } });
+        return new Response(body, { status: eventsStatus });
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    });
+  }
+
+  const eventsCalls = (fetchMock: ReturnType<typeof eventsFetch>) =>
+    fetchMock.mock.calls.filter(([u]) => String(u).includes("/v1/events"));
+  const sessionCalls = (fetchMock: ReturnType<typeof eventsFetch>) =>
+    fetchMock.mock.calls.filter(([u]) => String(u) === "/v1/session");
+
+  it("GETs /v1/events with the memoized X-EP-Token, an SSE Accept, no-store, and the caller's signal", async () => {
+    const fetchMock = eventsFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    await api("/v1/topics");
+    const controller = new AbortController();
+
+    const resp = await openEventStream(controller.signal);
+
+    expect(resp.status).toBe(200);
+    expect(sessionCalls(fetchMock)).toHaveLength(1); // the same memo as every route
+    const [[url, init]] = eventsCalls(fetchMock);
+    expect(String(url)).toBe("/v1/events");
+    expect((init as RequestInit).method ?? "GET").toBe("GET");
+    const headers = new Headers((init as RequestInit).headers);
+    expect(headers.get("X-EP-Token")).toBe("tok-1");
+    expect(headers.get("Accept")).toBe("text/event-stream");
+    expect((init as RequestInit).cache).toBe("no-store");
+    expect((init as RequestInit).signal).toBe(controller.signal);
+  });
+
+  it("never puts the token in the URL and never uses EventSource", async () => {
+    const eventSource = vi.fn();
+    vi.stubGlobal("EventSource", eventSource);
+    const fetchMock = eventsFetch();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await openEventStream(new AbortController().signal);
+
+    expect(eventSource).not.toHaveBeenCalled();
+    const calls = eventsCalls(fetchMock);
+    expect(calls).toHaveLength(1);
+    for (const [url] of fetchMock.mock.calls) {
+      expect(String(url)).not.toContain("tok-1");
+      expect(String(url)).not.toMatch(/token/i);
+    }
+    expect(String(calls[0][0])).not.toContain("?");
+  });
+
+  it.each([503, 404, 400, 500])(
+    "resolves with the %i response instead of throwing, so the caller picks the reconnect row",
+    async (status) => {
+      vi.stubGlobal("fetch", eventsFetch(status));
+      const resp = await openEventStream(new AbortController().signal);
+      expect(resp.status).toBe(status);
+    },
+  );
+
+  it("clears the memoized token on 401, so the next request bootstraps a fresh one", async () => {
+    const fetchMock = eventsFetch(401);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const resp = await openEventStream(new AbortController().signal);
+    expect(resp.status).toBe(401);
+    await api("/v1/topics");
+
+    expect(sessionCalls(fetchMock)).toHaveLength(2);
+    const topicsCall = fetchMock.mock.calls.find(([u]) => String(u) === "/v1/topics");
+    expect(new Headers((topicsCall![1] as RequestInit).headers).get("X-EP-Token")).toBe("tok-2");
+  });
+
+  it("keeps the memoized token on any other status", async () => {
+    const fetchMock = eventsFetch(503);
+    vi.stubGlobal("fetch", fetchMock);
+    await openEventStream(new AbortController().signal);
+    await api("/v1/topics");
+    expect(sessionCalls(fetchMock)).toHaveLength(1);
+  });
+
+  it("rejects when the request itself fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/v1/session") {
+          return { ok: true, status: 200, json: async () => ({ token: "tok", version: "0.1.0" }) } as Response;
+        }
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+    await expect(openEventStream(new AbortController().signal)).rejects.toBeDefined();
   });
 });
