@@ -1,7 +1,7 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PersonalizationPayload, RunStatus } from "../api/types";
 import RunBoardPage from "./RunBoardPage";
 
@@ -747,5 +747,204 @@ describe("RunBoardPage", () => {
       expect(await screen.findByText("Cost $1.23 (estimated)")).toBeInTheDocument();
       expect(screen.queryByText(/partial/i)).not.toBeInTheDocument();
     });
+  });
+});
+
+// T63 (plan decisions 15-17): the board stops remounting the guide preview on
+// mutations -- a mutation only refetches, and the iframe stays keyed by its
+// HTML -- and it remembers, in its own state, the last non-initial section the
+// frame reported, so a reloaded preview is sent back there.
+describe("RunBoardPage guide preview bridge", () => {
+  const POSITION = "education-pipeline:preview-position";
+  const SHOW = "education-pipeline:preview-show";
+  const GUIDE_V1 = "<!doctype html><p>Guide v1</p>";
+  const GUIDE_V2 = "<!doctype html><p>Guide v2</p>";
+
+  // One fake contentWindow per iframe element, so a replaced element is a
+  // new window, as a reloaded srcDoc is in the browser.
+  let windows: WeakMap<HTMLIFrameElement, { postMessage: ReturnType<typeof vi.fn> }>;
+  let restoreContentWindow: () => void;
+
+  function windowOf(frame: HTMLElement) {
+    return (frame as HTMLIFrameElement).contentWindow as unknown as {
+      postMessage: ReturnType<typeof vi.fn>;
+    };
+  }
+
+  function receive(source: unknown, data: unknown) {
+    const event = new MessageEvent("message", { data, origin: "null" });
+    Object.defineProperty(event, "source", { value: source });
+    act(() => {
+      window.dispatchEvent(event);
+    });
+  }
+
+  const report = (id: string, initial: boolean) => ({ type: POSITION, id, initial });
+  const repairFetches = () =>
+    vi.mocked(getStageContent).mock.calls.filter(([, stage]) => stage === "repair").length;
+  const previewFrame = () => screen.getByTitle("Interactive guide preview");
+
+  async function settle() {
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  }
+
+  const MUTATIONS = {
+    // AuditControls -> refreshWorkspace
+    "Prepare audit": () => vi.mocked(prepareAudit).mockResolvedValue({} as never),
+    // PrimaryAction -> the board's refresh -> mutationGeneration
+    "Run with provider": () =>
+      vi.mocked(enqueueJob).mockResolvedValue({
+        id: "job-preview",
+        topic_id: "t",
+        stage: "outline",
+        provider: "claude-code",
+        model: "sonnet",
+        effort: null,
+        status: "queued",
+        created_at: "2026-09-27T00:00:00Z",
+        started_at: null,
+        ended_at: null,
+        exit_code: null,
+        error: null,
+      }),
+  } as const;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getConfigProviders).mockResolvedValue({ providers: planProviders });
+    vi.mocked(getConfigCatalog).mockResolvedValue({ providers: planCatalog, presets: [] });
+    vi.mocked(getRunPlan).mockResolvedValue(makePlan());
+    vi.mocked(getPersonalization).mockResolvedValue(personalization);
+    vi.mocked(getRunStatus).mockResolvedValue(interactiveStatus);
+    vi.mocked(getJobs).mockResolvedValue({ jobs: [] });
+    vi.mocked(getStageContent).mockResolvedValue({
+      topic_id: "t",
+      stage: "repair",
+      prompt: null,
+      response: null,
+      approved: '{"schema_version":"1.1","course":{"id":"t"}}',
+      response_sha256: "c".repeat(64),
+      content_type: "application/vnd.education-pipeline.guide+json;version=1.0",
+    });
+    vi.mocked(postGuidePreview).mockResolvedValue({
+      html: GUIDE_V1,
+      content_sha256: "a".repeat(64),
+      validation: { blocking: 0, errors: 0, warnings: 0 },
+    });
+    windows = new WeakMap();
+    const spy = vi
+      .spyOn(HTMLIFrameElement.prototype, "contentWindow", "get")
+      .mockImplementation(function (this: HTMLIFrameElement) {
+        let contentWindow = windows.get(this);
+        if (!contentWindow) {
+          contentWindow = { postMessage: vi.fn() };
+          windows.set(this, contentWindow);
+        }
+        return contentWindow as unknown as Window;
+      });
+    restoreContentWindow = () => spy.mockRestore();
+  });
+
+  afterEach(() => {
+    restoreContentWindow();
+  });
+
+  it.each(Object.keys(MUTATIONS) as Array<keyof typeof MUTATIONS>)(
+    "a %s mutation that leaves the guide HTML unchanged refetches but keeps the same iframe",
+    async (button) => {
+      MUTATIONS[button]();
+      renderAt("/topics/t");
+      const frame = await screen.findByTitle("Interactive guide preview");
+      expect(frame).toHaveAttribute("srcdoc", GUIDE_V1);
+      expect(repairFetches()).toBe(1);
+
+      await userEvent.click(await screen.findByRole("button", { name: button }));
+      await waitFor(() => expect(repairFetches()).toBe(2));
+      await settle();
+
+      expect(previewFrame()).toBe(frame);
+      expect(previewFrame()).toHaveAttribute("srcdoc", GUIDE_V1);
+    },
+  );
+
+  it("restores the reviewer's section into the reloaded preview when a mutation changes the guide HTML", async () => {
+    MUTATIONS["Prepare audit"]();
+    vi.mocked(postGuidePreview)
+      .mockResolvedValueOnce({
+        html: GUIDE_V1,
+        content_sha256: "a".repeat(64),
+        validation: { blocking: 0, errors: 0, warnings: 0 },
+      })
+      .mockResolvedValue({
+        html: GUIDE_V2,
+        content_sha256: "b".repeat(64),
+        validation: { blocking: 0, errors: 0, warnings: 0 },
+      });
+    renderAt("/topics/t");
+    const firstFrame = await screen.findByTitle("Interactive guide preview");
+    const firstWindow = windowOf(firstFrame);
+
+    receive(firstWindow, report("feedback-foundations", true));
+    expect(firstWindow.postMessage).not.toHaveBeenCalled(); // nothing remembered yet
+    receive(firstWindow, report("recognize-loop-types", false));
+    receive(firstWindow, report("garden-decision", false));
+
+    await userEvent.click(screen.getByRole("button", { name: "Prepare audit" }));
+    await waitFor(() => expect(previewFrame()).toHaveAttribute("srcdoc", GUIDE_V2));
+    const reloadedFrame = previewFrame();
+    expect(reloadedFrame).not.toBe(firstFrame);
+    const reloadedWindow = windowOf(reloadedFrame);
+
+    // The reloaded runtime boots at its first section; the board answers
+    // with the last non-initial section the reviewer was on.
+    receive(reloadedWindow, report("feedback-foundations", true));
+    expect(reloadedWindow.postMessage).toHaveBeenCalledTimes(1);
+    expect(reloadedWindow.postMessage).toHaveBeenCalledWith(
+      { type: SHOW, id: "garden-decision" },
+      "*",
+    );
+    expect(firstWindow.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("holds the remembered section in the board's own state, not a module global", async () => {
+    MUTATIONS["Prepare audit"]();
+    const first = renderAt("/topics/t");
+    const earlierFrame = await screen.findByTitle("Interactive guide preview");
+    receive(windowOf(earlierFrame), report("garden-decision", false));
+    first.unmount();
+
+    vi.mocked(postGuidePreview)
+      .mockResolvedValueOnce({
+        html: GUIDE_V1,
+        content_sha256: "a".repeat(64),
+        validation: { blocking: 0, errors: 0, warnings: 0 },
+      })
+      .mockResolvedValue({
+        html: GUIDE_V2,
+        content_sha256: "b".repeat(64),
+        validation: { blocking: 0, errors: 0, warnings: 0 },
+      });
+    renderAt("/topics/t");
+    const frame = await screen.findByTitle("Interactive guide preview");
+    const contentWindow = windowOf(frame);
+
+    // A fresh board has nothing to restore.
+    receive(contentWindow, report("feedback-foundations", true));
+    expect(contentWindow.postMessage).not.toHaveBeenCalled();
+
+    // Its own report is what it restores after the HTML changes.
+    receive(contentWindow, report("delays-and-leverage", false));
+    await userEvent.click(screen.getByRole("button", { name: "Prepare audit" }));
+    await waitFor(() => expect(previewFrame()).toHaveAttribute("srcdoc", GUIDE_V2));
+    const reloadedWindow = windowOf(previewFrame());
+    receive(reloadedWindow, report("feedback-foundations", true));
+    expect(reloadedWindow.postMessage).toHaveBeenCalledWith(
+      { type: SHOW, id: "delays-and-leverage" },
+      "*",
+    );
   });
 });

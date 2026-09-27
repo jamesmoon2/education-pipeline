@@ -159,6 +159,13 @@ ERROR_CATALOG: dict[str, ErrorCode] = dict(
             "Another education-pipeline process is writing to this workspace.",
             "Wait for the other command (or the daemon) to finish, then retry.",
         ),
+        # --- live-update stream (GET /v1/events) ----------------------------
+        _entry(
+            "events_capacity",
+            "Too many cockpit tabs hold a live-update stream, so this one polls.",
+            "Nothing to fix: the page keeps updating by polling. "
+            "Close unused cockpit tabs to get live updates back.",
+        ),
     ]
 )
 

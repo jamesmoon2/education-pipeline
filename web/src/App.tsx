@@ -1,6 +1,11 @@
-import { Link, NavLink, Route, Routes } from "react-router-dom";
+import { Link, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import BuildFreshnessBanner from "./components/BuildFreshnessBanner";
+import ErrorBoundary from "./components/ErrorBoundary";
 import GlobalJobActivity from "./components/GlobalJobActivity";
+import RouteErrorFallback from "./components/RouteErrorFallback";
+import ShortcutsProvider, { ShortcutsButton } from "./components/ShortcutsProvider";
+import ThemeToggle from "./components/ThemeToggle";
+import { EventsProvider } from "./hooks/useEvents";
 import NewRunPage from "./pages/NewRunPage";
 import RunBoardPage from "./pages/RunBoardPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -10,6 +15,18 @@ import ProfilesPage from "./pages/ProfilesPage";
 import ProfileEditorPage from "./pages/ProfileEditorPage";
 
 export default function App() {
+  // One events stream per tab, shared by the rail and every route.
+  return (
+    <EventsProvider>
+      <ShortcutsProvider>
+        <AppShell />
+      </ShortcutsProvider>
+    </EventsProvider>
+  );
+}
+
+function AppShell() {
+  const location = useLocation();
   return (
     <div className="app-shell">
       <header className="app-rail">
@@ -32,23 +49,33 @@ export default function App() {
           <NavLink to="/settings">Settings</NavLink>
         </nav>
         <GlobalJobActivity />
-        <p className="rail-footer">
-          <strong>Stored on this device</strong>
-          Courses, profiles, and runs live in your local workspace.
-        </p>
+        <div className="rail-footer">
+          <p>
+            <strong>Stored on this device</strong>
+            Courses, profiles, and runs live in your local workspace.
+          </p>
+          <ThemeToggle />
+        </div>
+        <ShortcutsButton />
       </header>
       <main className="workspace">
         <BuildFreshnessBanner />
-        <Routes>
-          <Route path="/" element={<TopicListPage />} />
-          <Route path="/new" element={<NewRunPage />} />
-          <Route path="/topics/:topicId" element={<RunBoardPage />} />
-          <Route path="/topics/:topicId/stages/:stage" element={<StageViewerPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/profiles" element={<ProfilesPage />} />
-          <Route path="/profiles/new" element={<ProfileEditorPage />} />
-          <Route path="/profiles/:profileId" element={<ProfileEditorPage />} />
-        </Routes>
+        {/* The rail and banner stay outside, so a page's render error leaves them usable. */}
+        <ErrorBoundary
+          resetKey={location.pathname}
+          fallback={(error, reset) => <RouteErrorFallback error={error} onRetry={reset} />}
+        >
+          <Routes>
+            <Route path="/" element={<TopicListPage />} />
+            <Route path="/new" element={<NewRunPage />} />
+            <Route path="/topics/:topicId" element={<RunBoardPage />} />
+            <Route path="/topics/:topicId/stages/:stage" element={<StageViewerPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/profiles" element={<ProfilesPage />} />
+            <Route path="/profiles/new" element={<ProfileEditorPage />} />
+            <Route path="/profiles/:profileId" element={<ProfileEditorPage />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   );

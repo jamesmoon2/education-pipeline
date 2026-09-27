@@ -52,8 +52,10 @@ export default function GlobalJobActivity({
   successToastMs?: number;
   topicsIntervalMs?: number;
 }) {
-  const { data, error } = usePolling(getJobs, intervalMs);
-  const { data: topicsData, error: topicsError } = usePolling(getTopics, topicsIntervalMs);
+  const { data, error } = usePolling(getJobs, intervalMs, { events: { jobs: true } });
+  const { data: topicsData, error: topicsError } = usePolling(getTopics, topicsIntervalMs, {
+    events: { run: "*", topics: true },
+  });
   const [toasts, setToasts] = useState<JobToast[]>([]);
   const seenStatus = useRef<Map<string, Job["status"]>>(new Map());
   const nextKey = useRef(0);

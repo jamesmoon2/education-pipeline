@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { ApiRequestError, getJobs, getPersonalization, getRunStatus, postAdvance } from "../api/client";
 import type { Job, RunStatus } from "../api/types";
 import AuditControls from "../components/AuditControls";
@@ -14,6 +14,7 @@ import PersonalizationPanel from "../components/PersonalizationPanel";
 import PipelineStepper from "../components/PipelineStepper";
 import PrimaryAction from "../components/PrimaryAction";
 import RunPlanPanel from "../components/RunPlanPanel";
+import { usePageShortcut } from "../components/ShortcutsProvider";
 import ValidationFindingsPanel, { NO_FINDINGS } from "../components/ValidationFindingsPanel";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
@@ -54,10 +55,14 @@ function InteractiveGuidePanels({
   status,
   mutationGeneration,
   onStatusChanged,
+  previewSection,
+  onPreviewSectionChange,
 }: {
   status: RunStatus;
   mutationGeneration: number;
   onStatusChanged: () => void;
+  previewSection: string | null;
+  onPreviewSectionChange: (id: string) => void;
 }) {
   const fetchPersonalization = useCallback(
     () => getPersonalization(status.topic_id),
@@ -67,9 +72,11 @@ function InteractiveGuidePanels({
     data: personalization,
     error,
     refresh: refreshPersonalization,
-  } = usePolling(fetchPersonalization, 5_000);
+  } = usePolling(fetchPersonalization, 5_000, { events: { run: status.topic_id } });
   const previewRef = useRef<CanonicalGuidePreviewHandle>(null);
   const observedMutationGeneration = useRef(mutationGeneration);
+  // Bumped by each mutation so the preview refetches in place; it no longer
+  // remounts, and its iframe reloads only when the rendered HTML changes.
   const [previewGeneration, setPreviewGeneration] = useState(0);
   const refreshWorkspace = useCallback(() => {
     onStatusChanged();
@@ -117,9 +124,11 @@ function InteractiveGuidePanels({
           )}
         </div>
         <CanonicalGuidePreview
-          key={previewGeneration}
           ref={previewRef}
           topicId={status.topic_id}
+          refreshGeneration={previewGeneration}
+          restoreSection={previewSection}
+          onSectionChange={onPreviewSectionChange}
         />
       </section>
       <section aria-labelledby="validation-heading">
@@ -160,7 +169,9 @@ function InteractiveGuidePanels({
 
 function RunBoardForTopic({ topicId }: { topicId: string }) {
   const fetchStatus = useCallback(() => getRunStatus(topicId), [topicId]);
-  const { data: status, error, refresh: refreshStatus } = usePolling(fetchStatus, 5_000);
+  const { data: status, error, refresh: refreshStatus } = usePolling(fetchStatus, 5_000, {
+    events: { run: topicId },
+  });
   // Single poll of the jobs endpoint, held here at the board level. JobsPanel
   // used to run its own identical poll for its table, doubling this request
   // stream; it now takes this payload (and error) as props instead, so there
@@ -168,7 +179,9 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
   // the board (action area and stage row) on the same cadence the Jobs table
   // below renders from.
   const fetchJobs = useCallback(() => getJobs(topicId), [topicId]);
-  const { data: jobsData, error: jobsError, refresh: refreshJobs } = usePolling(fetchJobs, 2_000);
+  const { data: jobsData, error: jobsError, refresh: refreshJobs } = usePolling(fetchJobs, 2_000, {
+    events: { run: topicId }, // every job save under the topic also sends run{topicId}
+  });
   // While the jobs poll is failing, usePolling keeps its last payload; a job
   // that terminated during the outage would stay presented as "Running…" in
   // the action area and on its stepper node. Treat the snapshot as unusable
@@ -182,6 +195,17 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
     setContentGeneration((generation) => generation + 1);
   }, [refreshStatus]);
   const start = useAction(refresh);
+  // The last section the reviewer moved to inside the guide preview. Held
+  // here, above anything that can unmount the preview, so a reloaded preview
+  // document is sent back to it.
+  const [previewSection, setPreviewSection] = useState<string | null>(null);
+  // `n` opens the stage the run's next action names.
+  const navigate = useNavigate();
+  const nextStage = status?.topic_id === topicId ? status.next_action.stage : null;
+  usePageShortcut(
+    "open-next-stage",
+    nextStage ? () => navigate(`/topics/${topicId}/stages/${nextStage}`) : null,
+  );
 
   if (error instanceof ApiRequestError && error.status === 404) {
     return (
@@ -259,6 +283,8 @@ function RunBoardForTopic({ topicId }: { topicId: string }) {
           status={status}
           mutationGeneration={contentGeneration}
           onStatusChanged={refreshStatus}
+          previewSection={previewSection}
+          onPreviewSectionChange={setPreviewSection}
         />
       )}
       <RunPlanPanel topicId={status.topic_id} nextStage={status.next_action.stage} />

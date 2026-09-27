@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ApiRequestError,
   approveAudit,
@@ -16,6 +16,7 @@ import ModuleRepairControl from "../components/ModuleRepairControl";
 import ResponseEditor from "../components/ResponseEditor";
 import ResponseForm from "../components/ResponseForm";
 import RunCostLine from "../components/RunCostLine";
+import { usePageShortcut } from "../components/ShortcutsProvider";
 import StageContentView from "../components/StageContentView";
 import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
@@ -68,8 +69,8 @@ function StageViewerForRoute({
     [topicId, stage],
   );
   const fetchRun = useCallback(() => getRunStatus(topicId), [topicId]);
-  const { data, error, refresh } = usePolling(fetchContent, 5_000);
-  const { data: run } = usePolling(fetchRun, 5_000);
+  const { data, error, refresh } = usePolling(fetchContent, 5_000, { events: { run: topicId } });
+  const { data: run } = usePolling(fetchRun, 5_000, { events: { run: topicId } });
   const requestedTab = searchParams.get("tab");
   const [tab, setTab] = useState<Tab>(
     TABS.includes(requestedTab as Tab) ? (requestedTab as Tab) : "prompt",
@@ -100,6 +101,22 @@ function StageViewerForRoute({
   const [deltaHidden, setDeltaHidden] = useState(false);
   const approve = useAction(refresh);
   const rerun = useAction(refresh);
+  // Computed above the early returns so the page's shortcuts can register:
+  // `a` only moves focus to "Approve {stage}", and only while it shows;
+  // Enter then approves (decision 6). `n` opens the run's next stage.
+  const needsApproval =
+    !!data &&
+    data.response !== null &&
+    (data.approved === null || data.approved !== data.response);
+  const showApprove = needsApproval && (data?.stage !== "audit" || tab === "response");
+  const approveButton = useRef<HTMLButtonElement>(null);
+  usePageShortcut("focus-approve", showApprove ? () => approveButton.current?.focus() : null);
+  const navigate = useNavigate();
+  const nextStage = run?.topic_id === topicId ? run.next_action.stage : null;
+  usePageShortcut(
+    "open-next-stage",
+    nextStage ? () => navigate(`/topics/${topicId}/stages/${nextStage}`) : null,
+  );
 
   if (error instanceof ApiRequestError && error.status === 404) {
     return (
@@ -127,9 +144,6 @@ function StageViewerForRoute({
   const isAudit = data.stage === "audit";
   const prompt = data.prompt;
   const canEdit = data.response !== null && (!finalized || isAudit);
-  const needsApproval =
-    data.response !== null &&
-    (data.approved === null || data.approved !== data.response);
   // Pending re-approval: an approved copy exists and the response drifted
   // from it (edit or provider rerun). Show the delta the approval decides on.
   // Not for module-scoped repairs: there the response is one module while
@@ -230,8 +244,9 @@ function StageViewerForRoute({
             {data.response === null ? "Paste response…" : "Paste replacement…"}
           </button>
         )}
-        {needsApproval && (!isAudit || tab === "response") && (
+        {showApprove && (
           <button
+            ref={approveButton}
             disabled={approve.busy}
             onClick={() =>
               approve.run(

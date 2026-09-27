@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { noticeMatches, useEvents, type NoticeFilter } from "./useEvents";
 
 /**
  * A value key for change detection. Two ticks that parsed the same response
@@ -15,13 +16,41 @@ function payloadKey(value: unknown): string | undefined {
   }
 }
 
-export function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number) {
+export interface PollingOptions {
+  /**
+   * The change notices this poller refetches on. While the events stream is
+   * up the interval chain stops, and the poller fetches once per resync
+   * (`hello`) and once per matching notice, with at most one follow-up queued
+   * behind a fetch in flight. Without a filter, or while the stream is down,
+   * it polls exactly as before. Held in a ref, so a fresh literal on every
+   * render restarts nothing.
+   */
+  events?: NoticeFilter;
+}
+
+interface PollControl {
+  /** Fetch now, or once more after the fetch in flight. */
+  request(): void;
+  /** Restart the interval chain with an immediate tick. */
+  resume(): void;
+  /** Stop the interval chain. */
+  stop(): void;
+}
+
+export function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number, options?: PollingOptions) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [nonce, setNonce] = useState(0);
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
   const lastKey = useRef<string | undefined>(undefined);
+
+  const { up, epoch, subscribe } = useEvents();
+  const filterRef = useRef(options?.events);
+  filterRef.current = options?.events;
+  const streaming = up && options?.events !== undefined;
+  const streamingRef = useRef(streaming);
+  const control = useRef<PollControl | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,11 +62,14 @@ export function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number) {
     // mount. A resume mid-fetch needs nothing anyway: the fetch in flight is
     // the fresh data it would have asked for.
     let inFlight = false;
+    // Stream requests that arrived during a fetch: one follow-up, however many.
+    let dirty = false;
     // A fresh mount (or refresh()/interval change) always publishes its first
     // payload, so an explicit refresh still hands consumers a new reference.
     lastKey.current = undefined;
 
     const tick = async () => {
+      let failed = false;
       if (document.visibilityState === "visible") {
         inFlight = true;
         try {
@@ -56,21 +88,42 @@ export function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number) {
             setError(null);
           }
         } catch (err) {
+          failed = true;
           if (!cancelled) setError(err instanceof Error ? err : new Error(String(err)));
         } finally {
           inFlight = false;
         }
       }
-      if (!cancelled) timer = window.setTimeout(tick, intervalMs);
+      if (cancelled) return;
+      if (dirty) {
+        dirty = false;
+        void tick();
+      } else if (!streamingRef.current || failed) {
+        // Polling; or, while the stream is up, a failed fetch retries on the
+        // interval until one succeeds, since no notice may come to heal it.
+        timer = window.setTimeout(tick, intervalMs);
+      }
+    };
+
+    const resume = () => {
+      if (cancelled || inFlight) return;
+      window.clearTimeout(timer);
+      void tick();
+    };
+    control.current = {
+      request: () => {
+        if (cancelled) return;
+        if (inFlight) dirty = true;
+        else resume();
+      },
+      resume,
+      stop: () => window.clearTimeout(timer),
     };
 
     void tick();
 
     const onVisibility = () => {
-      if (document.visibilityState === "visible" && !cancelled && !inFlight) {
-        window.clearTimeout(timer);
-        void tick();
-      }
+      if (document.visibilityState === "visible" && !streamingRef.current) resume();
     };
     document.addEventListener("visibilitychange", onVisibility);
 
@@ -80,6 +133,31 @@ export function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number) {
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [intervalMs, nonce]);
+
+  // Stream up: stop the chain. Stream down: restart it with an immediate tick.
+  useEffect(() => {
+    if (streamingRef.current === streaming) return;
+    streamingRef.current = streaming;
+    if (streaming) control.current?.stop();
+    else control.current?.resume();
+  }, [streaming]);
+
+  // Every hello after mount is one resync.
+  const seenEpoch = useRef(epoch);
+  useEffect(() => {
+    if (seenEpoch.current === epoch) return;
+    seenEpoch.current = epoch;
+    if (streamingRef.current) control.current?.request();
+  }, [epoch]);
+
+  useEffect(
+    () =>
+      subscribe((notice) => {
+        const filter = filterRef.current;
+        if (streamingRef.current && filter && noticeMatches(filter, notice)) control.current?.request();
+      }),
+    [subscribe],
+  );
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
   return { data, error, refresh };

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   enqueueJob,
@@ -24,6 +24,7 @@ import CopyPromptButton from "./CopyPromptButton";
 import ExportControls from "./ExportControls";
 import JobLogView from "./JobLogView";
 import ResponseForm from "./ResponseForm";
+import { usePageShortcut } from "./ShortcutsProvider";
 
 /** The active-job block for a queued/running provider job. Split out so
  *  `useNow`'s tick is scoped to exactly this block's lifetime -- it mounts
@@ -105,6 +106,16 @@ export default function PrimaryAction({
     next.action === "validate" ||
     next.action === "save_response";
 
+  // `a` only moves focus to the approve button; Enter then approves
+  // (decision 6). Nothing to approve leaves the key unclaimed.
+  const approveButton = useRef<HTMLButtonElement>(null);
+  usePageShortcut(
+    "focus-approve",
+    !activeJob && next.action === "approve" && stage
+      ? () => approveButton.current?.focus()
+      : null,
+  );
+
   if (activeJob) {
     return <ActiveJobStatus job={activeJob} />;
   }
@@ -184,6 +195,7 @@ export default function PrimaryAction({
               follow-ups only after it succeeds — including after an
               overwrite retry, which repeats the approval first. */}
           <button
+            ref={approveButton}
             disabled={busy}
             onClick={() =>
               run(

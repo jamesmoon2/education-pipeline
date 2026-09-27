@@ -297,6 +297,26 @@ export async function download(path: string, filename: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Open the daemon's change-notice stream (`GET /v1/events`). It uses the same
+ * memoized `X-EP-Token` header as every other route: never `EventSource`,
+ * which cannot send it, and never a query-string token, which would reach
+ * logs and history. Resolves with whatever status the daemon answers, so the
+ * caller picks its reconnect row; rejects only when the request itself fails.
+ * A 401 clears the token memo, so the next request bootstraps a fresh token.
+ */
+export async function openEventStream(signal: AbortSignal): Promise<Response> {
+  const memo = getToken();
+  const token = await memo;
+  const resp = await fetch("/v1/events", {
+    headers: { "X-EP-Token": token, Accept: "text/event-stream" },
+    cache: "no-store",
+    signal,
+  });
+  if (resp.status === 401 && tokenPromise === memo) tokenPromise = null;
+  return resp;
+}
+
 export const getWorkspace = () => api<WorkspacePayload>("/v1/workspace");
 export const getTopics = () => api<TopicsPayload>("/v1/topics");
 export const getTopic = (id: string) =>

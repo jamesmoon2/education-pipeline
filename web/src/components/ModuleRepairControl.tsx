@@ -34,7 +34,7 @@ export default function ModuleRepairControl({
   onPrepared: () => void;
 }) {
   const fetchModules = useCallback(() => getRepairModules(topicId), [topicId]);
-  const { data, error, refresh } = usePolling(fetchModules, 10_000);
+  const { data, error, refresh } = usePolling(fetchModules, 10_000, { events: { run: topicId } });
   const [moduleId, setModuleId] = useState("");
   const [sectionId, setSectionId] = useState("");
   const prepare = useAction(() => {

@@ -17,6 +17,7 @@ import { useAction } from "../hooks/useAction";
 import { usePolling } from "../hooks/usePolling";
 import { nextActionLabel } from "../lib/labels";
 import { costCompletenessTitle, formatUsd } from "../lib/cost";
+import { compareLibraryOrder, nextActionHref } from "../lib/shortcuts";
 import type { ProfileSummary, TopicSummary } from "../api/types";
 
 type StatusFilter = "all" | "no_run" | "in_progress" | "finalized";
@@ -66,27 +67,9 @@ export function filterAndSortTopics(
   } else if (options.sort === "completion") {
     sorted.sort((a, b) => completionScore(b) - completionScore(a));
   } else {
-    sorted.sort((a, b) => {
-      const left = a.last_activity ?? "";
-      const right = b.last_activity ?? "";
-      if (left === right) return a.id.localeCompare(b.id);
-      if (!left) return 1;
-      if (!right) return -1;
-      return right.localeCompare(left);
-    });
+    sorted.sort(compareLibraryOrder);
   }
   return sorted;
-}
-
-// Where the "Next action" cell takes you. An approval is the one action that
-// needs the pending response in front of the reviewer; every other action —
-// and a topic with no run yet — starts from the board's action area.
-function nextActionHref(topic: TopicSummary): string {
-  const next = topic.run?.next_action;
-  if (next?.action === "approve" && next.stage) {
-    return `/topics/${topic.id}/stages/${next.stage}?tab=response`;
-  }
-  return `/topics/${topic.id}`;
 }
 
 function formatActivity(stamp: string | null): string {
@@ -96,8 +79,10 @@ function formatActivity(stamp: string | null): string {
 }
 
 export default function TopicListPage() {
-  const { data, error, refresh } = usePolling(getTopics, 10_000);
-  const { data: profileData } = usePolling(getProfiles, 30_000);
+  const { data, error, refresh } = usePolling(getTopics, 10_000, {
+    events: { run: "*", topics: true },
+  });
+  const { data: profileData } = usePolling(getProfiles, 30_000, { events: { topics: true } });
   const [importKind, setImportKind] = useState<"topic" | "profile" | null>(null);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");

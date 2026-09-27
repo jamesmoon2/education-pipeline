@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-guide-schema="1.2" data-guide-runtime="1.2" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-F4x4cI/v6Oj+jmtG/IeAm6CHN6zAfhHMBa29R/zIW38='; script-src 'sha256-rJiSzJA9WSHRRb1JvP04rZMBxUcGsrxbRLJlhzuxSps='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
+<html lang="en" data-guide-schema="1.2" data-guide-runtime="1.2" data-guide-mode="export" data-guide-course="feedback-loops"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'none'; style-src 'sha256-F4x4cI/v6Oj+jmtG/IeAm6CHN6zAfhHMBa29R/zIW38='; script-src 'sha256-qvi39bqmpUVULpWMG6BQf+nItWpRQnw1547SiL5+pPs='; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="generator" content="Education Pipeline"><title>Thinking in Feedback Loops</title><style>/* Education Pipeline guide runtime stylesheet.
  * Derives from the product token system in docs/design-system.md (§4.2):
  * the guide surface reads with Literata on a white surface, interface
  * chrome uses the Plex Sans stack, and status is never color alone.
@@ -207,6 +207,8 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
   const qs = (sel, root) => (root || document).querySelector(sel);
   const qsa = (sel, root) => Array.from((root || document).querySelectorAll(sel));
   const PREVIEW_EVIDENCE_MESSAGE_TYPE = "education-pipeline:preview-evidence";
+  const PREVIEW_POSITION_MESSAGE_TYPE = "education-pipeline:preview-position";
+  const PREVIEW_SHOW_MESSAGE_TYPE = "education-pipeline:preview-show";
   const GUIDE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 
   function isPlainObject(v) {
@@ -952,6 +954,9 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
     let sections = [];
     let pages = [];
     let current = null;
+    // Told of each change to a different guide section (never the results
+    // page). Only the preview position bridge sets it.
+    let onSectionChange = null;
 
     function collect() {
       sections = qsa('main section[data-role="guide-section"]').map((el) => ({ id: el.id, el }));
@@ -1009,7 +1014,8 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
       const opts = options || {};
       const idx = indexOf(id);
       if (idx === -1) return false;
-      if (current && current !== id) maybeAutoCompleteLeaving(current);
+      const changed = current !== id;
+      if (current && changed) maybeAutoCompleteLeaving(current);
       pages.forEach((s) => s.el.classList.toggle("is-current", s.id === id));
       current = id;
       State.setLastSection(id);
@@ -1035,6 +1041,7 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
       // (how far back the missed block sits) can change.
       Review.refresh(id);
       Progress.update();
+      if (changed && onSectionChange && isSection(id)) onSectionChange(id);
       return true;
     }
     function next() {
@@ -1156,7 +1163,18 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
     function showSection(id) {
       return Boolean(id) && show(id, { focus: false });
     }
-    return { boot, toggleDrawer, revealEvidenceTarget, showSection, next, prev };
+    function isSection(id) {
+      return sectionIndexOf(id) > -1;
+    }
+    // Registers the section-change listener and returns the guide section on
+    // screen now (null on the results page).
+    function watchSections(listener) {
+      onSectionChange = listener;
+      return isSection(current) ? current : null;
+    }
+    return {
+      boot, toggleDrawer, revealEvidenceTarget, showSection, isSection, watchSections, next, prev,
+    };
   })();
 
   // ---------------------------------------------------------------------
@@ -1194,6 +1212,29 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
       if (!target) return;
       Nav.revealEvidenceTarget(target);
     });
+  }
+
+  // The preview reports its guide section to the cockpit (initial true for
+  // the boot position) and shows a section the cockpit names. The opaque
+  // srcDoc origin can only be addressed with "*"; both payloads carry only a
+  // section id the cockpit already holds. Exported guides never post.
+  function installPreviewPositionBridge() {
+    if (document.documentElement.dataset.guideMode !== "preview") return;
+    const report = (id, initial) =>
+      window.parent.postMessage({ type: PREVIEW_POSITION_MESSAGE_TYPE, id, initial }, "*");
+
+    // Installed before the boot report, which the cockpit may answer at once.
+    window.addEventListener("message", (event) => {
+      if (event.source !== window.parent || !isPlainObject(event.data)) return;
+      const keys = Object.keys(event.data).sort();
+      if (keys.length !== 2 || keys.join(",") !== "id,type") return;
+      if (event.data.type !== PREVIEW_SHOW_MESSAGE_TYPE) return;
+      if (typeof event.data.id !== "string" || !GUIDE_ID_PATTERN.test(event.data.id)) return;
+      if (Nav.isSection(event.data.id)) Nav.showSection(event.data.id);
+    });
+
+    const bootSection = Nav.watchSections((id) => report(id, false));
+    if (bootSection) report(bootSection, true);
   }
 
   // ---------------------------------------------------------------------
@@ -2565,6 +2606,7 @@ figure.block.diagram{margin:1.25rem 0;border-left-color:var(--ep-color-accent)}
       Nav.boot();
       installKeyboardPaging();
       installPreviewEvidenceBridge(guide);
+      installPreviewPositionBridge();
       Progress.update();
       // Stands on every load until the learner answers it or genuinely starts
       // this export; Migration.offer decides from the stored record itself.

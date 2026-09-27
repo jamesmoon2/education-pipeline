@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import re
 import secrets
+import selectors
+import socket
 import socketserver
 import sys
 import threading
@@ -27,6 +29,7 @@ from education_pipeline.config import (
     apply_overrides_lenient,
 )
 from education_pipeline.daemon import read_api, reveal, write_api
+from education_pipeline.daemon.events import EventHub, encode_frame, pump
 from education_pipeline.daemon.jobs import (
     TERMINAL_STATUSES,
     Job,
@@ -173,11 +176,18 @@ class DaemonContext:
     profiles: ProfileStore
     on_shutdown: Callable[[], None]
     web_dist: Path | None = None
+    #: The ``GET /v1/events`` hub. ``None`` builds a default one, which starts
+    #: no thread until a stream subscribes.
+    events: EventHub | None = None
     # Serializes the completion hook across worker threads: one batch's jobs
     # finish concurrently and must produce exactly one continuation.
     _chain_lock: threading.Lock = field(
         default_factory=threading.Lock, repr=False, compare=False
     )
+
+    def __post_init__(self) -> None:
+        if self.events is None:
+            self.events = EventHub(self.root)
 
     def enqueue_stage(
         self,
@@ -763,7 +773,47 @@ def _make_handler(context: DaemonContext):
             self.end_headers()
             self.wfile.write(body)
 
+        def _events_stream(self):
+            # Reached only through _do_get_dispatch, after _host_ok and
+            # _authed: an unauthenticated connection never takes a slot.
+            hub = context.events
+            sub = hub.subscribe()
+            if sub is None:
+                return self._error(
+                    503, "events_capacity", "event stream limit reached; poll instead"
+                )
+            selector = None
+            # Opens right after subscribe(): any failure below frees the slot.
+            try:
+                try:  # 13-byte keepalives must not wait on Nagle + delayed ACK
+                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except OSError:
+                    pass
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(encode_frame("hello", hub.hello_payload()))
+                selector = selectors.DefaultSelector()
+                selector.register(self.connection, selectors.EVENT_READ)
+                # Receive-only stream: a readable socket is EOF or stray bytes.
+                pump(hub, sub, self.wfile.write, lambda: bool(selector.select(0)))
+            except OSError:
+                pass  # the peer went away (or a write timed out): a normal end
+            except Exception as exc:
+                # A status line is out, so this only logs the type; the
+                # do_GET arms would write a second status line.
+                self._last_resort(exc)
+            finally:
+                hub.unsubscribe(sub)
+                self.close_connection = True
+                if selector is not None:
+                    selector.close()
+
         def _api_get_routes(self):
+            if self.path == "/v1/events":
+                return self._events_stream()
             if self.path.startswith("/v1/health"):
                 return self._send(
                     200,
