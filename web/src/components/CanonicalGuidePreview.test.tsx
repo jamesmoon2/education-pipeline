@@ -170,3 +170,55 @@ describe("CanonicalGuidePreview", () => {
     expect(frame).toHaveAttribute("srcdoc", html);
   });
 });
+
+describe("CanonicalGuidePreview preview position bridge (T63)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getStageContent).mockResolvedValue(stage);
+    vi.mocked(postGuidePreview).mockResolvedValue({
+      html: "<!doctype html><p>Canonical guide</p>",
+      content_sha256: "b".repeat(64),
+      validation: { blocking: 0, errors: 0, warnings: 0 },
+    });
+  });
+
+  function receive(source: unknown, data: unknown) {
+    const event = new MessageEvent("message", { data, origin: "null" });
+    Object.defineProperty(event, "source", { value: source });
+    act(() => {
+      window.dispatchEvent(event);
+    });
+  }
+
+  it("passes restoreSection and onSectionChange through to the frame", async () => {
+    const onSectionChange = vi.fn();
+    render(
+      <CanonicalGuidePreview
+        topicId="feedback-loops"
+        restoreSection="garden-decision"
+        onSectionChange={onSectionChange}
+      />,
+    );
+    const frame = await screen.findByTitle("Interactive guide preview");
+    const postMessage = vi.fn();
+    const contentWindow = { postMessage };
+    Object.defineProperty(frame, "contentWindow", { configurable: true, value: contentWindow });
+
+    receive(contentWindow, {
+      type: "education-pipeline:preview-position",
+      id: "feedback-foundations",
+      initial: true,
+    });
+    expect(postMessage).toHaveBeenCalledWith(
+      { type: "education-pipeline:preview-show", id: "garden-decision" },
+      "*",
+    );
+
+    receive(contentWindow, {
+      type: "education-pipeline:preview-position",
+      id: "delays-and-leverage",
+      initial: false,
+    });
+    expect(onSectionChange).toHaveBeenCalledWith("delays-and-leverage");
+  });
+});
