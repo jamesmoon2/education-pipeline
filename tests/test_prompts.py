@@ -2715,6 +2715,7 @@ def test_1_3_schema_reference_states_every_enumerated_value(stage: str) -> None:
     assert "`mode` (`single` or `multiple`)" in text
     assert "`quality` (`best`, `reasonable`, `weak` or `harmful`; exactly one `best`)" in text
     assert '"beginner"' not in text
+    assert "optional `authors` (a list of one or more name strings, even for one author)" in text
 
 
 def test_1_3_structural_examples_use_a_valid_difficulty() -> None:

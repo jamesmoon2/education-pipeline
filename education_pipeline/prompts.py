@@ -777,6 +777,10 @@ _ENUMERATED_VALUE_REWRITES = (
         "one `best`), `feedback`)",
     ),
     ('"difficulty": "beginner"', '"difficulty": "introductory"'),
+    (
+        "with optional `authors`, `url`",
+        "with optional `authors` (a list of one or more name strings, even for one author), `url`",
+    ),
 )
 
 
